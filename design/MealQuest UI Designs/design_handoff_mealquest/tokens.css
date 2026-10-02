@@ -1,0 +1,76 @@
+/* MealQuest design tokens — final palette "B4: Grape + teal blue on off-white".
+   Built on the Organic design system (styles.css in this bundle); these values OVERRIDE its defaults. */
+@import url('https://fonts.googleapis.com/css2?family=Bagel+Fat+One&family=Figtree:wght@400;600;700&display=swap');
+
+:root {
+  /* Ground + ink */
+  --color-bg: #f9f6f1;          /* oklch(0.975 0.008 85) — page / phone background */
+  --color-surface: #eee9de;     /* oklch(0.935 0.016 85) — cards, rows, inputs */
+  --color-text: #201e1d;
+  --color-divider: color-mix(in srgb, #201e1d 16%, transparent);
+  --on-accent: #f9f6f1;         /* text/icons on --color-accent fills (never dark text on grape) */
+
+  /* Primary accent — Grape (hue 300) */
+  --color-accent: #5a358c;      /* oklch(0.42 0.14 300) */
+  --color-accent-100: #f8f1ff;
+  --color-accent-200: #eedfff;
+  --color-accent-300: #dac3ff;
+  --color-accent-400: #c1a1f9;
+  --color-accent-500: #a47ee1;
+  --color-accent-600: #865fc0;
+  --color-accent-700: #68449b;  /* accent-colored small text on light grounds */
+  --color-accent-800: #4a2d73;
+  --color-accent-900: #2d1a49;
+
+  /* Second accent — Teal blue (hue 215) */
+  --color-accent-2: #29889c;    /* oklch(0.58 0.09 215) */
+  --color-accent-2-100: #e0fbff;
+  --color-accent-2-200: #bbf3ff;
+  --color-accent-2-300: #88e0f6;
+  --color-accent-2-400: #3fc7e4;
+  --color-accent-2-500: #00a9ca;
+  --color-accent-2-600: #008aaa; /* toggles ON, "Try it" button, + buttons */
+  --color-accent-2-700: #006b88;
+  --color-accent-2-800: #004c63; /* teal text on teal-100/200 fills */
+  --color-accent-2-900: #002f3e;
+
+  /* Neutrals (unchanged from Organic) */
+  --color-neutral-100: #f9f4ed;
+  --color-neutral-200: #eee7db;
+  --color-neutral-300: #dcd3c4;
+  --color-neutral-400: #c0b6a5;
+  --color-neutral-500: #a19786;
+  --color-neutral-600: #82796a;
+  --color-neutral-700: #645c50;
+  --color-neutral-800: #474238;
+  --color-neutral-900: #2e2b25;
+
+  /* Type */
+  --font-heading: "Bagel Fat One", system-ui, sans-serif; /* weight 400 only */
+  --font-body: "Figtree", system-ui, sans-serif;          /* 400 / 600 / 700 */
+  --font-mono: ui-monospace, Menlo, monospace;
+
+  /* Radii */
+  --radius-sm: 8px;
+  --radius-md: 16px;
+  --radius-lg: 28px;
+  --radius-card: 32px;   /* mobile hero cards */
+  --radius-pill: 999px;  /* buttons, inputs, tags, nav */
+
+  /* Spacing (Organic, density 1.1) */
+  --space-1: 4.4px; --space-2: 8.8px; --space-3: 13.2px; --space-4: 17.6px; --space-6: 26.4px; --space-8: 35.2px;
+
+  /* Elevation */
+  --shadow-sm: 0 1px 2px color-mix(in srgb, #2e2b25 14%, transparent);
+  --shadow-md: 0 3px 10px color-mix(in srgb, #2e2b25 16%, transparent);
+  --shadow-lg: 0 12px 32px color-mix(in srgb, #2e2b25 22%, transparent);
+
+  /* Motion */
+  --ease-spring: cubic-bezier(.34, 1.4, .64, 1);   /* nav pill, snap-back, bumps */
+  --ease-out-soft: cubic-bezier(.2, .8, .2, 1);    /* card promotion */
+  --ease-throw: cubic-bezier(.55, 0, .8, .4);      /* fly-off right */
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --motion-scale: 0; }
+}

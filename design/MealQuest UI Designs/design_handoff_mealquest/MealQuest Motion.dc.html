@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bagel+Fat+One&display=swap">
+<link rel="stylesheet" href="_ds/organic-cd54d318-425e-4a60-adfb-d590f70d40bd/styles.css">
+<style>body{margin:0;background:#e9e4dc}a{color:#68449b}a:hover{color:#4a2d73}button{font:inherit}button:focus-visible{outline:2px solid #5a358c;outline-offset:2px}</style>
+</helmet>
+<div style="--color-bg:#f9f6f1;--color-surface:#eee9de;--color-accent:#5a358c;--color-accent-100:#f8f1ff;--color-accent-200:#eedfff;--color-accent-300:#dac3ff;--color-accent-700:#68449b;--color-accent-800:#4a2d73;--color-accent-2:#29889c;--color-accent-2-100:#e0fbff;--color-accent-2-200:#bbf3ff;--color-accent-2-600:#008aaa;--color-accent-2-700:#006b88;--color-accent-2-800:#004c63;--color-accent-2-900:#002f3e;--on-accent:#f9f6f1;--font-heading:'Bagel Fat One',system-ui,sans-serif;min-height:100vh;padding:48px;display:flex;gap:48px;flex-wrap:wrap;align-items:flex-start;font-family:var(--font-body);color:var(--color-text)">
+<div style="width:360px;height:760px;position:relative;border-radius:36px;background:var(--color-bg);overflow:hidden;box-shadow:var(--shadow-lg);flex:none">
+<div style="height:40px;display:flex;align-items:center;justify-content:space-between;padding:0 26px;font-size:13px;font-weight:700"><span>9:41</span><span style="width:22px;height:10px;border-radius:3px;background:var(--color-text)"></span></div>
+<sc-if value="{{ onDiscover }}" hint-placeholder-val="{{ true }}">
+<div style="padding:8px 20px 0;display:flex;align-items:flex-end;justify-content:space-between">
+<div><div style="font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--color-accent-700)">Discover</div><div style="font-family:var(--font-heading);font-size:30px;line-height:1.1">Side quests</div></div>
+<div ref="{{ refCount }}" style="padding:7px 12px;border-radius:999px;background:var(--color-accent-2-200);color:var(--color-accent-2-800);font-size:12px;font-weight:700">Quest log · {{ questCount }}</div>
+</div>
+<div style="position:relative;margin:18px 20px 0;height:440px;perspective:1000px">
+<sc-for list="{{ cards }}" as="card" hint-placeholder-count="3">
+<div ref="{{ card.ref }}" onPointerDown="{{ card.onDown }}" onPointerMove="{{ card.onMove }}" onPointerUp="{{ card.onUp }}" onPointerCancel="{{ card.onUp }}" style="{{ card.style }}">
+<div style="height:220px;margin:10px;border-radius:24px;background:repeating-linear-gradient(135deg,#dcd3c4 0 8px,#eee7db 8px 16px);display:flex;align-items:center;justify-content:center;font:11px ui-monospace,Menlo,monospace;color:#645c50">dish photo</div>
+<div style="padding:4px 20px 0;display:flex;flex-direction:column;gap:10px">
+<div style="font-family:var(--font-heading);font-size:24px;line-height:1.1">{{ card.name }}</div>
+<div style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700;color:#645c50"><span style="display:flex;gap:3px"><span style="{{ card.d1 }}"></span><span style="{{ card.d2 }}"></span><span style="{{ card.d3 }}"></span></span>{{ card.diff }}</div>
+<div style="padding:12px 14px;border-radius:18px;background:var(--color-accent-2-100);color:var(--color-accent-2-900);font-size:13px;line-height:1.45"><b>Why this?</b> {{ card.why }}</div>
+</div>
+<div data-stamp="1" style="position:absolute;top:26px;left:22px;transform:rotate(-12deg);padding:6px 14px;border:3px solid var(--color-accent-2-700);border-radius:14px;font-family:var(--font-heading);font-size:24px;color:var(--color-accent-2-800);background:var(--color-accent-2-100);opacity:0;pointer-events:none">Try it!</div>
+<div data-pass="1" style="position:absolute;top:26px;right:22px;transform:rotate(12deg);padding:6px 14px;border:3px solid #474238;border-radius:14px;font-family:var(--font-heading);font-size:24px;color:#2e2b25;background:#f9f4ed;opacity:0;pointer-events:none">Pass</div>
+<div data-shade="1" style="position:absolute;inset:0;border-radius:32px;background:#201e1d;opacity:0;pointer-events:none"></div>
+</div>
+</sc-for>
+</div>
+<div style="display:flex;justify-content:center;gap:28px;margin-top:22px">
+<button onClick="{{ pass }}" style="border:0;background:none;padding:0;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:6px;font-size:11px;font-weight:700;color:#645c50"><span ref="{{ refPassBtn }}" style="width:62px;height:62px;border-radius:50%;background:#f9f4ed;box-shadow:var(--shadow-md);display:flex;align-items:center;justify-content:center;color:var(--color-text)"><svg viewBox="0 0 24 24" width="26" height="26" style="fill:none;stroke:currentColor;stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg></span>Pass</button>
+<button onClick="{{ tryIt }}" style="border:0;background:none;padding:0;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:6px;font-size:11px;font-weight:700;color:#645c50"><span ref="{{ refTryBtn }}" style="width:62px;height:62px;border-radius:50%;background:var(--color-accent-2-600);box-shadow:var(--shadow-md);display:flex;align-items:center;justify-content:center;color:var(--color-bg)"><svg viewBox="0 0 24 24" width="26" height="26" style="fill:none;stroke:currentColor;stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"></path></svg></span>Try it</button>
+</div>
+</sc-if>
+<sc-if value="{{ offDiscover }}" hint-placeholder-val="{{ false }}">
+<div style="padding:24px 20px;display:flex;flex-direction:column;gap:8px"><div style="font-family:var(--font-heading);font-size:30px">{{ tab }}</div><div style="font-size:14px;color:#645c50">Placeholder: see the static mockups for this tab. Tap Discover to return to the card demo.</div></div>
+</sc-if>
+<div style="position:absolute;left:12px;right:12px;bottom:16px;height:62px;border-radius:999px;background:var(--color-text);display:flex;align-items:center;justify-content:space-around;padding:0 6px">
+<div ref="{{ refPill }}" style="position:absolute;top:10px;height:42px;left:0;width:0;border-radius:999px;background:var(--color-accent);pointer-events:none"></div>
+<button ref="{{ refHome }}" onClick="{{ goHome }}" aria-label="Home" style="{{ navHome }}"><svg viewBox="0 0 24 24" width="21" height="21" style="flex:none;fill:none;stroke:currentColor;stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"></path><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg><sc-if value="{{ isHome }}" hint-placeholder-val="{{ false }}"><span data-label="1">Home</span></sc-if></button>
+<button ref="{{ refPlan }}" onClick="{{ goPlan }}" aria-label="Plan" style="{{ navPlan }}"><svg viewBox="0 0 24 24" width="21" height="21" style="flex:none;fill:none;stroke:currentColor;stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><path d="M8 2v4"></path><path d="M16 2v4"></path><rect width="18" height="18" x="3" y="4" rx="2"></rect><path d="M3 10h18"></path></svg><sc-if value="{{ isPlan }}" hint-placeholder-val="{{ false }}"><span data-label="1">Plan</span></sc-if></button>
+<button ref="{{ refDiscover }}" onClick="{{ goDiscover }}" aria-label="Discover" style="{{ navDiscover }}"><svg viewBox="0 0 24 24" width="21" height="21" style="flex:none;fill:none;stroke:currentColor;stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><circle cx="12" cy="12" r="10"></circle><path d="m16.24 7.76-1.804 5.411a2 2 0 0 1-1.265 1.265L7.76 16.24l1.804-5.411a2 2 0 0 1 1.265-1.265z"></path></svg><sc-if value="{{ isDiscover }}" hint-placeholder-val="{{ true }}"><span data-label="1">Discover</span></sc-if></button>
+<button ref="{{ refQuick }}" onClick="{{ goQuick }}" aria-label="Quick" style="{{ navQuick }}"><svg viewBox="0 0 24 24" width="21" height="21" style="flex:none;fill:none;stroke:currentColor;stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.020A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"></path></svg><sc-if value="{{ isQuick }}" hint-placeholder-val="{{ false }}"><span data-label="1">Quick</span></sc-if></button>
+<button ref="{{ refSettings }}" onClick="{{ goSettings }}" aria-label="Settings" style="{{ navSettings }}"><svg viewBox="0 0 24 24" width="21" height="21" style="flex:none;fill:none;stroke:currentColor;stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><path d="M10 5H3"></path><path d="M12 19H3"></path><path d="M14 3v4"></path><path d="M16 17v4"></path><path d="M21 12h-9"></path><path d="M21 19h-5"></path><path d="M21 5h-7"></path><path d="M8 10v4"></path><path d="M8 12H3"></path></svg><sc-if value="{{ isSettings }}" hint-placeholder-val="{{ false }}"><span data-label="1">Settings</span></sc-if></button>
+</div>
+</div>
+<div style="max-width:420px;display:flex;flex-direction:column;gap:18px">
+<div style="font-family:var(--font-heading);font-size:34px;line-height:1.1">MealQuest motion reference</div>
+<div style="font-size:14px;line-height:1.55;color:#474238">Live reference for the three signature animations. Tap the buttons, drag the card, or switch tabs. Exact keyframes are in the handoff README.</div>
+<div style="padding:18px 20px;border-radius:26px;background:#f9f6f1;display:flex;flex-direction:column;gap:6px"><div style="font-family:var(--font-heading);font-size:18px">Nav pill slide</div><div style="font-size:13px;line-height:1.5;color:#474238">Pill animates left + width to the tapped item, 420 ms, cubic-bezier(.34,1.4,.64,1). Other icons FLIP to their new spots on the same curve; label fades in after 120 ms.</div></div>
+<div style="padding:18px 20px;border-radius:26px;background:#f9f6f1;display:flex;flex-direction:column;gap:6px"><div style="font-family:var(--font-heading);font-size:18px">Try it</div><div style="font-size:13px;line-height:1.5;color:#474238">Stamp pops in. Card wiggles (±4°, 420 ms), pulls back slightly, then flies off right with a 28° tilt (480 ms, ease-in). Quest log pill bumps.</div></div>
+<div style="padding:18px 20px;border-radius:26px;background:#f9f6f1;display:flex;flex-direction:column;gap:6px"><div style="font-family:var(--font-heading);font-size:18px">Pass</div><div style="font-size:13px;line-height:1.5;color:#474238">Card folds over on its left edge (rotateY to −80°, shading darkens), then drops and tumbles off left (720 ms total).</div></div>
+<div style="display:flex;align-items:center;gap:10px;font-size:13px;font-weight:700;color:#474238"><button onClick="{{ toggleReduced }}" style="border:1.5px solid rgba(32,30,29,.16);background:none;border-radius:999px;padding:8px 14px;cursor:pointer;font-weight:700">Reduced motion: {{ reducedLabel }}</button><span>{{ lastAction }}</span></div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+const SPRING = 'cubic-bezier(.34,1.4,.64,1)';
+const DEPTH_TF = ['translateY(0px) scale(1)', 'translateY(8px) scale(.95)', 'translateY(16px) scale(.9)'];
+const DECK = [
+  { name: 'Korean beef bowls', level: 1, diff: 'Easy', why: 'You make Chicken stir-fry and Beef tacos most weeks. Same flavors, sweet-savory twist.' },
+  { name: 'Crock pot chicken tikka masala', level: 2, diff: 'Medium', why: 'Butter chicken night is a household favorite. This one cooks itself while you work.' },
+  { name: 'Lemon garlic shrimp orzo', level: 2, diff: 'Medium', why: 'Your Shrimp scampi is on repeat. Orzo makes it a one-pot night.' },
+  { name: 'Turkey chili', level: 1, diff: 'Easy', why: 'A lighter take on the chili you make every fall.' },
+  { name: 'Thai basil chicken', level: 2, diff: 'Medium', why: 'Close to your stir-fry, with a fresh herby kick.' }
+];
+class Component extends DCLogic {
+  state = { idx: 0, tab: 'Discover', quest: 6, reduced: false, last: '' };
+  busy = false; cardEls = []; nav = {}; drag = null;
+  constructor(p) {
+    super(p);
+    this.cardRefs = [0, 1, 2].map(d => el => { this.cardEls[d] = el; });
+    ['Home', 'Plan', 'Discover', 'Quick', 'Settings'].forEach(t => {
+      this['ref' + t] = el => { this.nav[t] = el; };
+      this['go' + t] = () => this.selectTab(t);
+    });
+    this.refPill = el => { this.pill = el; };
+    this.refCount = el => { this.countEl = el; };
+    this.refTryBtn = el => { this.tryBtn = el; };
+    this.refPassBtn = el => { this.passBtn = el; };
+  }
+  componentDidMount() {
+    this.state.reduced = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    this.forceUpdate();
+    const place = () => { const el = this.nav[this.state.tab]; if (el && this.pill) { this.pill.style.left = el.offsetLeft + 'px'; this.pill.style.width = el.offsetWidth + 'px'; } };
+    requestAnimationFrame(place);
+    document.fonts && document.fonts.ready.then(place);
+  }
+  selectTab(t) {
+    if (t === this.state.tab) return;
+    const before = {}; Object.keys(this.nav).forEach(k => before[k] = this.nav[k].getBoundingClientRect().left);
+    const from = { left: this.pill.offsetLeft, width: this.pill.offsetWidth };
+    this.setState({ tab: t }, () => {
+      const el = this.nav[t]; const to = { left: el.offsetLeft, width: el.offsetWidth };
+      this.pill.style.left = to.left + 'px'; this.pill.style.width = to.width + 'px';
+      if (this.state.reduced) return;
+      this.pill.animate([{ left: from.left + 'px', width: from.width + 'px' }, { left: to.left + 'px', width: to.width + 'px' }], { duration: 420, easing: SPRING });
+      Object.keys(this.nav).forEach(k => {
+        const dx = before[k] - this.nav[k].getBoundingClientRect().left;
+        if (Math.abs(dx) > 0.5) this.nav[k].animate([{ transform: `translateX(${dx}px)` }, { transform: 'translateX(0)' }], { duration: 420, easing: SPRING });
+      });
+      const lab = el.querySelector('[data-label]');
+      if (lab) lab.animate([{ opacity: 0, transform: 'translateX(-4px)' }, { opacity: 1, transform: 'none' }], { duration: 220, delay: 120, easing: 'ease-out', fill: 'backwards' });
+    });
+  }
+  top() { return this.cardEls[0]; }
+  bump(el) { el && el.animate([{ transform: 'scale(1)' }, { transform: 'scale(.88)' }, { transform: 'scale(1.06)' }, { transform: 'scale(1)' }], { duration: 300, easing: 'ease-out' }); }
+  tryIt = (fromDrag) => {
+    if (this.busy && fromDrag !== true) return; this.busy = true;
+    const el = this.top(); const stamp = el.querySelector('[data-stamp]');
+    if (fromDrag !== true) this.bump(this.tryBtn);
+    if (this.state.reduced) return el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 200, fill: 'forwards' }).finished.then(() => this.advance(true));
+    const cur = el.style.transform || 'translate(0px,0px) rotate(0deg)';
+    stamp.animate([{ opacity: 0, transform: 'rotate(-12deg) scale(1.5)' }, { opacity: 1, transform: 'rotate(-12deg) scale(1)' }], { duration: 220, easing: SPRING, fill: 'forwards' });
+    const wiggle = fromDrag === true ? Promise.resolve() : el.animate([
+      { transform: 'rotate(0deg)' }, { transform: 'rotate(-4deg)' }, { transform: 'rotate(4deg)' }, { transform: 'rotate(-3deg)' }, { transform: 'rotate(2deg)' }, { transform: 'rotate(0deg)' }
+    ], { duration: 420, easing: 'ease-in-out' }).finished;
+    wiggle.then(() => el.animate(
+      fromDrag === true
+        ? [{ transform: cur }, { transform: 'translate(150%,-60px) rotate(28deg)', opacity: 0 }]
+        : [{ transform: 'translate(0px,0px) rotate(0deg)' }, { transform: 'translate(-14px,4px) rotate(-3deg)', offset: 0.18 }, { transform: 'translate(150%,-60px) rotate(28deg)', opacity: 0 }],
+      { duration: fromDrag === true ? 340 : 480, easing: 'cubic-bezier(.55,0,.8,.4)', fill: 'forwards' }
+    ).finished).then(() => this.advance(true));
+  };
+  pass = (fromDrag) => {
+    if (this.busy && fromDrag !== true) return; this.busy = true;
+    const el = this.top(); const shade = el.querySelector('[data-shade]');
+    if (fromDrag !== true) this.bump(this.passBtn);
+    if (this.state.reduced) return el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 200, fill: 'forwards' }).finished.then(() => this.advance(false));
+    const cur = el.style.transform || 'translate(0px,0px) rotate(0deg)';
+    el.style.transformOrigin = '0% 50%';
+    shade.animate([{ opacity: 0 }, { opacity: 0.4, offset: 0.45 }, { opacity: 0.55 }], { duration: 720, fill: 'forwards' });
+    el.animate([
+      { transform: `${cur} rotateY(0deg)`, easing: 'cubic-bezier(.45,0,.85,.55)' },
+      { transform: `${cur} rotateY(-80deg)`, offset: 0.45, easing: 'cubic-bezier(.4,0,.9,.6)' },
+      { transform: 'translate(-45%,560px) rotate(-35deg) rotateY(-90deg)', opacity: 0 }
+    ], { duration: 720, fill: 'forwards' }).finished.then(() => this.advance(false));
+  };
+  advance(accepted) {
+    this.cardEls.forEach(el => { if (!el) return; el.getAnimations({ subtree: true }).forEach(a => a.cancel()); el.style.transform = ''; el.style.transformOrigin = ''; });
+    this.setState(s => ({ idx: s.idx + 1, quest: s.quest + (accepted ? 1 : 0), last: accepted ? 'Added to Quest log' : 'Passed' }), () => {
+      if (accepted) this.bump(this.countEl);
+      if (!this.state.reduced) [0, 1].forEach(d => { const el = this.cardEls[d]; el && el.animate([{ transform: DEPTH_TF[d + 1] }, { transform: DEPTH_TF[d] }], { duration: 300, easing: 'cubic-bezier(.2,.8,.2,1)' }); });
+      this.busy = false;
+    });
+  }
+  onDown = e => {
+    if (this.busy) return;
+    const el = this.top(); el.setPointerCapture(e.pointerId);
+    this.drag = { x: e.clientX, y: e.clientY, dx: 0 };
+  };
+  onMove = e => {
+    if (!this.drag) return;
+    const el = this.top(); const dx = e.clientX - this.drag.x, dy = e.clientY - this.drag.y; this.drag.dx = dx;
+    el.style.transform = `translate(${dx}px,${dy * 0.3}px) rotate(${dx / 18}deg)`;
+    el.querySelector('[data-stamp]').style.opacity = Math.max(0, Math.min(1, dx / 100));
+    el.querySelector('[data-pass]').style.opacity = Math.max(0, Math.min(1, -dx / 100));
+  };
+  onUp = () => {
+    if (!this.drag) return;
+    const el = this.top(); const dx = this.drag.dx; this.drag = null;
+    const st = el.querySelector('[data-stamp]'), ps = el.querySelector('[data-pass]');
+    if (dx > 110) { this.busy = true; ps.style.opacity = 0; return this.tryIt(true); }
+    if (dx < -110) { this.busy = true; st.style.opacity = 0; return this.pass(true); }
+    const cur = el.style.transform; el.style.transform = '';
+    st.style.opacity = 0; ps.style.opacity = 0;
+    if (cur) el.animate([{ transform: cur }, { transform: 'translate(0px,0px) rotate(0deg)' }], { duration: 420, easing: SPRING });
+  };
+  navStyle(t) {
+    const on = this.state.tab === t;
+    return { position: 'relative', zIndex: 1, display: 'flex', alignItems: 'center', gap: 6, height: 42, padding: '0 12px', border: 0, background: 'none', borderRadius: 999, cursor: 'pointer', fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap', color: on ? 'var(--on-accent)' : '#c0b6a5', transition: 'color .2s' };
+  }
+  renderVals() {
+    const s = this.state;
+    const dot = on => ({ width: 8, height: 8, borderRadius: '50%', background: on ? 'var(--color-accent)' : '#dcd3c4' });
+    const cards = [2, 1, 0].map(d => {
+      const c = DECK[(s.idx + d) % DECK.length];
+      return {
+        ...c, ref: this.cardRefs[d],
+        d1: dot(c.level >= 1), d2: dot(c.level >= 2), d3: dot(c.level >= 3),
+        onDown: d === 0 ? this.onDown : undefined, onMove: d === 0 ? this.onMove : undefined, onUp: d === 0 ? this.onUp : undefined,
+        style: { position: 'absolute', inset: 0, borderRadius: 32, background: d === 0 ? '#f9f4ed' : d === 1 ? 'var(--color-surface)' : '#dcd3c4', boxShadow: d === 0 ? 'var(--shadow-lg)' : 'none', overflow: 'hidden', transform: DEPTH_TF[d], zIndex: 3 - d, touchAction: 'none', userSelect: 'none', cursor: d === 0 ? 'grab' : 'default', willChange: 'transform' }
+      };
+    });
+    const v = {
+      cards, questCount: s.quest, tab: s.tab, onDiscover: s.tab === 'Discover', offDiscover: s.tab !== 'Discover',
+      pass: this.pass, tryIt: this.tryIt, refPill: this.refPill, refCount: this.refCount, refTryBtn: this.refTryBtn, refPassBtn: this.refPassBtn,
+      toggleReduced: () => this.setState(x => ({ reduced: !x.reduced })), reducedLabel: s.reduced ? 'on' : 'off', lastAction: s.last
+    };
+    ['Home', 'Plan', 'Discover', 'Quick', 'Settings'].forEach(t => {
+      v['ref' + t] = this['ref' + t]; v['go' + t] = this['go' + t]; v['nav' + t] = this.navStyle(t); v['is' + t] = s.tab === t;
+    });
+    return v;
+  }
+}
+</script>
+</body>
+</html>

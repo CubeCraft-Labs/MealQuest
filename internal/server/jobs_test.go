@@ -20,6 +20,8 @@ type draftResult struct {
 	Days int `json:"days"`
 }
 
+func (d draftResult) PublicJSON() ([]byte, error) { return json.Marshal(d) }
+
 // startedRunner registers a "draft" kind that publishes {"days":1}, waits
 // for release and returns {"days":7}, or fails with a *jobs.Failure when
 // fail is closed first. It starts the runner and stops it when the test ends.
@@ -34,11 +36,11 @@ func startedRunner(t *testing.T, release, fail <-chan struct{}) (*jobs.Runner, *
 		case <-release:
 			return draftResult{Days: 7}, nil
 		case <-fail:
-			return draftResult{}, &jobs.Failure{Message: "no Regulars to plan from"}
+			return draftResult{}, &jobs.Failure{Code: "no_regulars"}
 		case <-ctx.Done():
 			return draftResult{}, ctx.Err()
 		}
-	})
+	}, "no_regulars")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,8 +119,8 @@ func TestGetJobShowsFailure(t *testing.T) {
 	}
 
 	body := pollJob(t, router, id, func(b map[string]any) bool { return b["status"] == "failed" })
-	if body["error"] != "no Regulars to plan from" {
-		t.Errorf("error = %v, want the Failure message", body["error"])
+	if body["error"] != "no_regulars" {
+		t.Errorf("error = %v, want the Failure code", body["error"])
 	}
 }
 

@@ -67,8 +67,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 	settings := household.NewSettingsService(db)
-	// Job handlers are registered on the runner here, before Start.
-	runner, err := jobs.NewRunner(db, logger, jobWorkers)
+	runner, _, err := newJobRunner(db, logger)
 	if err != nil {
 		return err
 	}
@@ -184,6 +183,35 @@ func seedDefaults(ctx context.Context, db *store.Store, defaultTZ string) error 
 		return err
 	}
 	return household.SeedNotificationPrefs(ctx, db)
+}
+
+// jobKinds enqueues every job kind the server runs.
+type jobKinds struct {
+	builtins *jobs.Builtins
+}
+
+// newJobRunner returns the job runner with every job kind registered, ready
+// to Start.
+func newJobRunner(db *store.Store, logger *slog.Logger) (*jobs.Runner, *jobKinds, error) {
+	runner, err := jobs.NewRunner(db, logger, jobWorkers)
+	if err != nil {
+		return nil, nil, err
+	}
+	kinds, err := registerJobKinds(runner)
+	if err != nil {
+		return nil, nil, err
+	}
+	return runner, kinds, nil
+}
+
+// registerJobKinds registers every job kind's handler on runner. Each
+// feature's job kinds are registered here.
+func registerJobKinds(runner *jobs.Runner) (*jobKinds, error) {
+	builtins, err := jobs.RegisterBuiltins(runner)
+	if err != nil {
+		return nil, err
+	}
+	return &jobKinds{builtins: builtins}, nil
 }
 
 // logListening logs the startup line. Only the public URL's origin is logged

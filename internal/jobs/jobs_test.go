@@ -1,12 +1,15 @@
 package jobs
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -25,6 +28,8 @@ type countPayload struct {
 type countResult struct {
 	Done int `json:"done"`
 }
+
+func (c countResult) PublicJSON() ([]byte, error) { return json.Marshal(c) }
 
 func migratedStore(t *testing.T) *store.Store {
 	t.Helper()
@@ -46,11 +51,34 @@ func migratedStore(t *testing.T) *store.Store {
 
 func newRunner(t *testing.T, st *store.Store, workers int) *Runner {
 	t.Helper()
-	r, err := NewRunner(st, slog.New(slog.NewTextHandler(io.Discard, nil)), workers)
+	return newRunnerLogging(t, st, workers, io.Discard)
+}
+
+func newRunnerLogging(t *testing.T, st *store.Store, workers int, w io.Writer) *Runner {
+	t.Helper()
+	r, err := NewRunner(st, slog.New(slog.NewTextHandler(w, nil)), workers)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return r
+}
+
+// logBuffer collects log output written by concurrent workers.
+type logBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *logBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // start starts r and stops it when the test ends. The returned function
@@ -70,9 +98,9 @@ func start(t *testing.T, r *Runner) (stop func()) {
 	return stop
 }
 
-func register[P, R any](t *testing.T, r *Runner, kind string, h Handler[P, R]) *Kind[P] {
+func register[P any, R Public](t *testing.T, r *Runner, kind string, h Handler[P, R], failureCodes ...string) *Kind[P] {
 	t.Helper()
-	k, err := Register(r, kind, h)
+	k, err := Register(r, kind, h, failureCodes...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,20 +185,42 @@ func TestJobSucceeds(t *testing.T) {
 	}
 }
 
-func TestJobFailsWithFailureMessage(t *testing.T) {
+func TestJobFailsWithFailureCode(t *testing.T) {
 	t.Parallel()
-	r := newRunner(t, migratedStore(t), 1)
+	st := migratedStore(t)
+	r := newRunner(t, st, 1)
 	k := register(t, r, "suggest", func(context.Context, countPayload, func(countResult) error) (countResult, error) {
-		return countResult{}, fmt.Errorf("suggest: %w", &Failure{Message: "add some Regulars first"})
-	})
+		return countResult{}, fmt.Errorf("suggest: %w", &Failure{Code: "no_regulars"})
+	}, "no_regulars")
 	start(t, r)
 
 	job := waitFor(t, r, enqueue(t, k, countPayload{}), finished)
-	if job.Status != StatusFailed || job.Error == nil || *job.Error != "add some Regulars first" {
-		t.Fatalf("job = %+v, want failed with the Failure message", job)
+	if job.Status != StatusFailed || job.Error == nil || *job.Error != "no_regulars" {
+		t.Fatalf("job = %+v, want failed with code no_regulars", job)
 	}
 	if job.Result != nil {
 		t.Errorf("result = %s, want none", job.Result)
+	}
+	var stored string
+	if err := st.Reader.QueryRow("SELECT error FROM jobs WHERE id = ?", job.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != "no_regulars" {
+		t.Errorf("stored error = %q, want only the code", stored)
+	}
+}
+
+func TestUndeclaredFailureCodeIsInternal(t *testing.T) {
+	t.Parallel()
+	r := newRunner(t, migratedStore(t), 1)
+	k := register(t, r, "suggest", func(context.Context, countPayload, func(countResult) error) (countResult, error) {
+		return countResult{}, &Failure{Code: "not_declared"}
+	}, "no_regulars")
+	start(t, r)
+
+	job := waitFor(t, r, enqueue(t, k, countPayload{}), finished)
+	if job.Status != StatusFailed || job.Error == nil || *job.Error != CodeInternal {
+		t.Fatalf("job = %+v, want failed with %q", job, CodeInternal)
 	}
 }
 
@@ -180,43 +230,99 @@ type credential struct{ value string }
 
 func (credential) String() string { return "[REDACTED]" }
 
+// leakyResult holds a secret in exported and unexported fields; only
+// Dinners is public.
 type leakyResult struct {
-	Dinners []string   `json:"dinners"`
-	Key     credential `json:"key"`
-	Token   string     `json:"-"`
+	Dinners []string
+	Key     credential
+	Token   string
 	apiKey  string
 }
 
-// TestSecretsNeverStored proves a handler holding a secret cannot surface it
-// through its typed result, its partial results or its error text.
-func TestSecretsNeverStored(t *testing.T) {
+func (l leakyResult) PublicJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Dinners []string `json:"dinners"`
+	}{l.Dinners})
+}
+
+// badResult has no valid public JSON; its encoding error quotes a secret.
+type badResult struct{}
+
+func (badResult) PublicJSON() ([]byte, error) {
+	return nil, fmt.Errorf("encode with key %s", sentinelSecret)
+}
+
+// TestSecretsNeverStoredOrLogged proves a handler holding a secret cannot
+// surface it in the jobs row, Get's result or the log through its result,
+// partial results, *Failure, error text or result encoding error.
+func TestSecretsNeverStoredOrLogged(t *testing.T) {
 	t.Parallel()
 	st := migratedStore(t)
-	r := newRunner(t, st, 1)
+	var logs logBuffer
+	r := newRunnerLogging(t, st, 1, &logs)
 	secretResult := leakyResult{Dinners: []string{"Tacos"}, Key: credential{sentinelSecret}, Token: sentinelSecret, apiKey: sentinelSecret}
-	ok := register(t, r, "typed", func(_ context.Context, _ countPayload, publish func(leakyResult) error) (leakyResult, error) {
+	typed := register(t, r, "typed", func(_ context.Context, _ countPayload, publish func(leakyResult) error) (leakyResult, error) {
 		if err := publish(secretResult); err != nil {
 			return leakyResult{}, err
 		}
 		return secretResult, nil
 	})
-	failing := register(t, r, "leaky-error", func(context.Context, countPayload, func(leakyResult) error) (leakyResult, error) {
+	leakyError := register(t, r, "leaky-error", func(context.Context, countPayload, func(leakyResult) error) (leakyResult, error) {
 		return leakyResult{}, fmt.Errorf("GET https://api.example.com/v1?key=%s: 401 %s", sentinelSecret, sentinelSecret)
 	})
-	start(t, r)
+	leakyFailure := register(t, r, "leaky-failure", func(context.Context, countPayload, func(leakyResult) error) (leakyResult, error) {
+		return leakyResult{}, &Failure{Code: sentinelSecret}
+	}, "quota_exceeded")
+	failure := register(t, r, "failure", func(context.Context, countPayload, func(leakyResult) error) (leakyResult, error) {
+		return leakyResult{}, fmt.Errorf("call with key %s: %w", sentinelSecret, &Failure{Code: "quota_exceeded"})
+	}, "quota_exceeded")
+	badEncoding := register(t, r, "bad-encoding", func(context.Context, countPayload, func(badResult) error) (badResult, error) {
+		return badResult{}, nil
+	})
+	stop := start(t, r)
 
-	typed := waitFor(t, r, enqueue(t, ok, countPayload{}), finished)
-	if typed.Status != StatusSucceeded || string(typed.Result) != `{"dinners":["Tacos"],"key":{}}` {
-		t.Errorf("typed job = %+v (result %s), want succeeded with only the declared data", typed, typed.Result)
+	cases := []struct {
+		kind       *Kind[countPayload]
+		wantStatus Status
+		wantResult string
+		wantError  string
+	}{
+		{typed, StatusSucceeded, `{"dinners":["Tacos"]}`, ""},
+		{leakyError, StatusFailed, "", CodeInternal},
+		{leakyFailure, StatusFailed, "", CodeInternal},
+		{failure, StatusFailed, "", "quota_exceeded"},
+		{badEncoding, StatusFailed, "", CodeInternal},
 	}
-	failed := waitFor(t, r, enqueue(t, failing, countPayload{}), finished)
-	if failed.Status != StatusFailed || failed.Error == nil || *failed.Error != MessageInternal {
-		t.Errorf("leaky-error job = %+v, want failed with %q", failed, MessageInternal)
+	var ids []string
+	for _, c := range cases {
+		job := waitFor(t, r, enqueue(t, c.kind, countPayload{}), finished)
+		ids = append(ids, job.ID)
+		gotError := ""
+		if job.Error != nil {
+			gotError = *job.Error
+		}
+		if job.Status != c.wantStatus || string(job.Result) != c.wantResult || gotError != c.wantError {
+			t.Errorf("%s job = %+v (result %s), want %s with result %q and error %q", job.Kind, job, job.Result, c.wantStatus, c.wantResult, c.wantError)
+		}
+		body, err := json.Marshal(job)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(body), sentinelSecret) {
+			t.Errorf("%s job as served contains the secret: %s", job.Kind, body)
+		}
 	}
-	for _, id := range []string{typed.ID, failed.ID} {
+	stop()
+	for _, id := range ids {
 		if row := rawRow(t, st, id); strings.Contains(row, sentinelSecret) {
 			t.Errorf("job %s row contains the secret: %s", id, row)
 		}
+	}
+	if strings.Contains(logs.String(), sentinelSecret) {
+		t.Errorf("log contains the secret:\n%s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "code="+CodeInternal) {
+		t.Errorf("log does not record the internal_error code:\n%s", logs.String())
 	}
 }
 
@@ -285,8 +391,8 @@ func TestRestartFailsInterruptedJobsAndRunsQueuedOnes(t *testing.T) {
 	start(t, second)
 
 	job := waitFor(t, second, interrupted, finished)
-	if job.Status != StatusFailed || job.Error == nil || *job.Error != MessageInterrupted {
-		t.Errorf("interrupted job = %+v, want failed with %q", job, MessageInterrupted)
+	if job.Status != StatusFailed || job.Error == nil || *job.Error != CodeInterrupted {
+		t.Errorf("interrupted job = %+v, want failed with %q", job, CodeInterrupted)
 	}
 	if string(job.Result) != `{"done":1}` {
 		t.Errorf("interrupted job result = %s, want the last partial result kept", job.Result)
@@ -349,7 +455,7 @@ func TestJobWithoutHandlerFails(t *testing.T) {
 	r := newRunner(t, st, 1)
 	start(t, r)
 	job := waitFor(t, r, id, finished)
-	if job.Status != StatusFailed || job.Error == nil || *job.Error != "no handler for job kind retired" {
+	if job.Status != StatusFailed || job.Error == nil || *job.Error != CodeUnknownKind {
 		t.Errorf("job = %+v, want failed for a missing handler", job)
 	}
 }
@@ -379,6 +485,11 @@ func TestRegisterRefusesBadRegistrations(t *testing.T) {
 	if _, err := Register[countPayload, countResult](r, "nil", nil); err == nil {
 		t.Error("nil handler registered")
 	}
+	for _, code := range []string{"", "Bad Code", "sk-sentinel", CodeInternal, CodeInterrupted, CodeUnknownKind} {
+		if _, err := Register(r, "code", h, code); err == nil {
+			t.Errorf("failure code %q accepted", code)
+		}
+	}
 	start(t, r)
 	if _, err := Register(r, "late", h); err == nil {
 		t.Error("kind registered after Start")
@@ -400,5 +511,20 @@ func TestNewRunnerRefusesBadConfig(t *testing.T) {
 	}
 	if _, err := NewRunner(st, nil, 1); err == nil {
 		t.Error("nil logger accepted")
+	}
+}
+
+func TestNoopSucceeds(t *testing.T) {
+	t.Parallel()
+	r := newRunner(t, migratedStore(t), 1)
+	builtins, err := RegisterBuiltins(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start(t, r)
+
+	job := waitFor(t, r, enqueue(t, builtins.Noop, NoopPayload{}), finished)
+	if job.Kind != KindNoop || job.Status != StatusSucceeded || string(job.Result) != `{"ok":true}` || job.Error != nil {
+		t.Errorf("noop job = %+v (result %s), want succeeded with {\"ok\":true}", job, job.Result)
 	}
 }

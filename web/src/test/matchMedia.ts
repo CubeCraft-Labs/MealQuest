@@ -3,14 +3,16 @@ import { act } from '@testing-library/react'
 type Listener = (event: MediaQueryListEvent) => void
 
 // Replaces window.matchMedia with one that answers min-width / max-width
-// queries for a pretend viewport width (jsdom has no matchMedia and no
-// layout). Returns a function that resizes the pretend viewport and notifies
-// every query whose answer changed.
-export function mockViewport(initialWidth: number): (width: number) => void {
+// queries for a pretend viewport width, and prefers-reduced-motion: reduce
+// with reducedMotion (jsdom has no matchMedia and no layout). Returns a
+// function that resizes the pretend viewport and notifies every query whose
+// answer changed.
+export function mockViewport(initialWidth: number, { reducedMotion = false } = {}): (width: number) => void {
   let width = initialWidth
   const lists: { list: MediaQueryList; listeners: Set<Listener> }[] = []
 
   function evaluate(query: string): boolean {
+    if (query === '(prefers-reduced-motion: reduce)') return reducedMotion
     const min = /\(min-width:\s*(\d+)px\)/.exec(query)
     const max = /\(max-width:\s*(\d+)px\)/.exec(query)
     if (!min && !max) throw new Error(`mockViewport cannot evaluate ${JSON.stringify(query)}`)

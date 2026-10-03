@@ -74,20 +74,24 @@ describe('AppShell', () => {
     expect(bar.borderRadius).toBe('var(--radius-pill)')
   })
 
-  it('shows the active mobile item as icon and label on a grape pill, inactive items as neutral icons', () => {
+  it('shows the active mobile item as icon and label over the one grape pill, inactive items as neutral icons', () => {
     renderAt('/discover', MOBILE)
+    const pills = nav().querySelectorAll(`.${bottomBarStyles.pill}`)
+    expect(pills).toHaveLength(1)
+    const pill = declaredStyle(pills[0]!)
+    expect(pill.position).toBe('absolute')
+    expect(pill.top).toBe('10px')
+    expect(pill.height).toBe('42px')
+    expect(pill.background).toBe('var(--color-accent)')
+    expect(Number(pill.zIndex)).toBeLessThan(Number(declaredStyle(navLinks()[0]!).zIndex))
+
     const active = screen.getByRole('link', { name: 'Discover' })
-    const pill = active.firstElementChild!
-    expect(pill).toHaveClass(bottomBarStyles.active!)
-    expect(declaredStyle(pill).height).toBe('42px')
-    expect(declaredStyle(pill).background).toBe('var(--color-accent)')
-    expect(declaredStyle(pill).color).toBe('var(--on-accent)')
+    expect(declaredStyle(active).color).toBe('var(--on-accent)')
     expect(within(active).getByText('Discover')).toHaveClass(bottomBarStyles.label!)
     expect(declaredStyle(within(active).getByText('Discover')).fontSize).toBe('13px')
 
     const inactive = screen.getByRole('link', { name: 'Plan' })
     expect(declaredStyle(inactive).color).toBe('var(--color-neutral-400)')
-    expect(inactive.firstElementChild).not.toHaveClass(bottomBarStyles.active!)
     expect(within(inactive).getByText('Plan')).toHaveClass(bottomBarStyles.hiddenLabel!)
   })
 

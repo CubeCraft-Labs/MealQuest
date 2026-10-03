@@ -23,12 +23,36 @@ function layOut(element: HTMLElement): { left: number; width: number } {
   return { left: 0, width: 0 }
 }
 
+// jsdom paints nothing either, so bounding boxes come from the laid-out
+// offsets with the bar at the viewport's left edge. A test mid-slide sets
+// where the pill is drawn and how far each item is still translated.
+let drawnPill: { left: number; width: number } | null
+let translated: Map<Element, number>
+
+function box(left: number, width: number): DOMRect {
+  return { left, width, x: left, right: left + width, top: 0, y: 0, bottom: 0, height: 0 } as DOMRect
+}
+
 let animate: Mock<Element['animate']>
 
 beforeEach(() => {
+  drawnPill = null
+  translated = new Map()
   // jsdom has no Web Animations API.
-  animate = vi.fn<Element['animate']>()
+  animate = vi.fn<Element['animate']>(() => ({ cancel: vi.fn() }) as unknown as Animation)
   Element.prototype.animate = animate
+  vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+    if (!(this instanceof HTMLElement)) return box(0, 0)
+    if (this.classList.contains(styles.pill!)) {
+      return drawnPill
+        ? box(drawnPill.left, drawnPill.width)
+        : box(parseFloat(this.style.left), parseFloat(this.style.width))
+    }
+    if (this.classList.contains(styles.item!)) {
+      return box(this.offsetLeft + (translated.get(this) ?? 0), this.offsetWidth)
+    }
+    return box(0, 0)
+  })
   vi.spyOn(HTMLElement.prototype, 'offsetLeft', 'get').mockImplementation(function (this: HTMLElement) {
     return layOut(this).left
   })
@@ -62,6 +86,13 @@ function pill(): HTMLElement {
 
 function link(name: string): HTMLElement {
   return within(nav()).getByRole('link', { name })
+}
+
+function runningOn(element: Element): Animation[] {
+  return animate.mock.contexts
+    .map((target, i) => ({ target, animation: animate.mock.results[i]!.value as Animation }))
+    .filter(({ target }) => target === element)
+    .map(({ animation }) => animation)
 }
 
 function animationsOf(element: Element) {
@@ -168,6 +199,63 @@ describe('BottomBar', () => {
     expect(pill().style.left).toBe('120px')
     expect(pill().style.width).toBe('96px')
     expect(animate).not.toHaveBeenCalled()
+  })
+
+  it('starts a second slide from where the first one is on screen, not from its destination', () => {
+    renderAt('/')
+    fireEvent.click(link('Quick'))
+    const [firstPill] = runningOn(pill())
+    const firstPlan = runningOn(link('Plan'))[0]!
+
+    // Midway: the pill is drawn at 78 px on its way from 6 to 150, and Plan
+    // still carries 31 of its 62 px FLIP translation.
+    drawnPill = { left: 78, width: 110 }
+    translated.set(link('Plan'), 31)
+    animate.mockClear()
+    fireEvent.click(link('Settings'))
+
+    expect(firstPill!.cancel).toHaveBeenCalled()
+    expect(firstPlan.cancel).toHaveBeenCalled()
+    expect(animationsOf(pill())).toEqual([
+      {
+        keyframes: [
+          { left: '78px', width: '110px' },
+          { left: '198px', width: '110px' },
+        ],
+        options: { duration: 420, easing: SPRING },
+      },
+    ])
+    // Plan's layout does not move between Quick and Settings, so it only
+    // finishes the 31 px it had left. Settings moves 62 px left.
+    expect(animationsOf(link('Plan'))).toEqual([
+      {
+        keyframes: [{ transform: 'translateX(31px)' }, { transform: 'translateX(0)' }],
+        options: { duration: 420, easing: SPRING },
+      },
+    ])
+    expect(animationsOf(link('Settings'))).toEqual([
+      {
+        keyframes: [{ transform: 'translateX(62px)' }, { transform: 'translateX(0)' }],
+        options: { duration: 420, easing: SPRING },
+      },
+    ])
+  })
+
+  it('stops a running slide and places the pill on the active item when the viewport resizes', () => {
+    renderAt('/')
+    fireEvent.click(link('Quick'))
+    const slide = [pill(), link('Plan'), link('Discover'), link('Quick')].flatMap(runningOn)
+    expect(slide).toHaveLength(4)
+
+    animate.mockClear()
+    vi.spyOn(HTMLElement.prototype, 'offsetLeft', 'get').mockReturnValue(140)
+    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(96)
+    fireEvent(window, new Event('resize'))
+
+    for (const animation of slide) expect(animation.cancel).toHaveBeenCalled()
+    expect(animate).not.toHaveBeenCalled()
+    expect(pill().style.left).toBe('140px')
+    expect(pill().style.width).toBe('96px')
   })
 
   it('re-places the pill once the web fonts are ready', async () => {

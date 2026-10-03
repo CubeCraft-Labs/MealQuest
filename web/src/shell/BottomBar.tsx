@@ -11,12 +11,11 @@ const LABEL_MS = 220
 const LABEL_DELAY_MS = 120
 const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)'
 
-// Where the pill and every item sat when the pill was last placed, as layout
-// offsets within the bar (offsets ignore transforms, so a running FLIP does
-// not skew them).
+// The active item and every item's layout offset within the bar when the pill
+// was last placed (offsets ignore transforms, so a running FLIP does not skew
+// them).
 type Geometry = {
   active: HTMLElement | null
-  pill: { left: number; width: number }
   itemLefts: number[]
 }
 
@@ -27,36 +26,50 @@ export function BottomBar() {
   const barRef = useRef<HTMLElement>(null)
   const pillRef = useRef<HTMLSpanElement>(null)
   const placed = useRef<Geometry | null>(null)
+  // The pill slide and item FLIPs currently running.
+  const sliding = useRef<Animation[]>([])
+  const stopSlide = () => {
+    sliding.current.forEach((animation) => animation.cancel())
+    sliding.current = []
+  }
   const { pathname } = useLocation()
 
   // After each navigation: if the active item changed, move the pill to it and,
-  // motion allowed, slide the pill, FLIP the items and fade the label in.
+  // motion allowed, slide the pill, FLIP the items and fade the label in. A
+  // slide still running is measured where it is on screen, then stopped, so
+  // the next one starts from there instead of from its destination.
   useLayoutEffect(() => {
     const bar = barRef.current!
     const pill = pillRef.current!
     const active = activeItem(bar)
     const before = placed.current
     if (before && before.active === active) return
+    const from = before && onScreen(bar, pill, before)
+    stopSlide()
     placed.current = place(bar, pill, active)
-    if (!before || !active || window.matchMedia(REDUCED_MOTION_QUERY).matches) return
+    if (!before || !from || !active || window.matchMedia(REDUCED_MOTION_QUERY).matches) return
 
     const after = placed.current
     if (before.active) {
-      pill.animate(
-        [
-          { left: `${before.pill.left}px`, width: `${before.pill.width}px` },
-          { left: `${after.pill.left}px`, width: `${after.pill.width}px` },
-        ],
-        { duration: SLIDE_MS, easing: SPRING },
+      sliding.current.push(
+        pill.animate(
+          [
+            { left: `${from.pill.left}px`, width: `${from.pill.width}px` },
+            { left: `${active.offsetLeft}px`, width: `${active.offsetWidth}px` },
+          ],
+          { duration: SLIDE_MS, easing: SPRING },
+        ),
       )
     }
     items(bar).forEach((item, i) => {
-      const dx = before.itemLefts[i]! - after.itemLefts[i]!
+      const dx = from.itemLefts[i]! - after.itemLefts[i]!
       if (dx === 0) return
-      item.animate([{ transform: `translateX(${dx}px)` }, { transform: 'translateX(0)' }], {
-        duration: SLIDE_MS,
-        easing: SPRING,
-      })
+      sliding.current.push(
+        item.animate([{ transform: `translateX(${dx}px)` }, { transform: 'translateX(0)' }], {
+          duration: SLIDE_MS,
+          easing: SPRING,
+        }),
+      )
     })
     active.querySelector(`.${styles.label}`)!.animate(
       [
@@ -68,14 +81,16 @@ export function BottomBar() {
   }, [pathname])
 
   // Item widths change with the viewport and once the web fonts arrive, so
-  // re-place the pill (without animating) on both. A failed font load
+  // stop any running slide and re-place the pill (without animating) on both. A failed font load
   // rejects fonts.ready and is left to surface as an unhandled rejection.
   useLayoutEffect(() => {
     const bar = barRef.current!
     const pill = pillRef.current!
     let mounted = true
     const replace = () => {
-      if (mounted) placed.current = place(bar, pill, activeItem(bar))
+      if (!mounted) return
+      stopSlide()
+      placed.current = place(bar, pill, activeItem(bar))
     }
     window.addEventListener('resize', replace)
     // jsdom has no document.fonts; every browser the app targets does.
@@ -112,16 +127,26 @@ function activeItem(bar: HTMLElement): HTMLElement | null {
   return bar.querySelector<HTMLElement>(`.${styles.item}[aria-current="page"]`)
 }
 
+// Where the pill and items are on screen right now, as offsets within the
+// bar. Bounding boxes include a running slide: the pill's box is its animated
+// left and width, and an item's box is its current layout plus whatever FLIP
+// translation remains, which applies to the layout it had when last placed.
+function onScreen(bar: HTMLElement, pill: HTMLElement, before: Geometry) {
+  const origin = bar.getBoundingClientRect().left + bar.clientLeft
+  const pillBox = pill.getBoundingClientRect()
+  return {
+    pill: { left: pillBox.left - origin, width: pillBox.width },
+    itemLefts: items(bar).map(
+      (item, i) => before.itemLefts[i]! + item.getBoundingClientRect().left - origin - item.offsetLeft,
+    ),
+  }
+}
+
 // Puts the pill on the active item (hidden when no item is active) and
 // returns the resulting geometry.
 function place(bar: HTMLElement, pill: HTMLElement, active: HTMLElement | null): Geometry {
-  const geometry = {
-    active,
-    pill: { left: active?.offsetLeft ?? 0, width: active?.offsetWidth ?? 0 },
-    itemLefts: items(bar).map((item) => item.offsetLeft),
-  }
   pill.hidden = !active
-  pill.style.left = `${geometry.pill.left}px`
-  pill.style.width = `${geometry.pill.width}px`
-  return geometry
+  pill.style.left = `${active?.offsetLeft ?? 0}px`
+  pill.style.width = `${active?.offsetWidth ?? 0}px`
+  return { active, itemLefts: items(bar).map((item) => item.offsetLeft) }
 }

@@ -12,7 +12,7 @@ import (
 // GET /api/v1/me.
 const CSRFHeader = "X-MealQuest-CSRF"
 
-// requireCSRF passes GET, HEAD and OPTIONS requests to next; every other
+// requireCSRF passes GET requests to next; every other
 // request must carry CSRFHeader equal to its session's CSRF token or get 403
 // csrf. It runs behind requireSession, which puts the session in the context.
 func requireCSRF(logger *slog.Logger) func(http.Handler) http.Handler {
@@ -21,7 +21,7 @@ func requireCSRF(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.Method {
-			case http.MethodGet, http.MethodHead, http.MethodOptions:
+			case http.MethodGet:
 				next.ServeHTTP(w, r)
 				return
 			}

@@ -38,10 +38,9 @@ func TestCSRFThroughRouter(t *testing.T) {
 		{"POST with right header", http.MethodPost, "/api/v1/me", []string{testSession.CSRFToken}, http.StatusMethodNotAllowed, methodNotAllowedJSON},
 		{"PATCH with right header", http.MethodPatch, "/api/v1/settings/household", []string{testSession.CSRFToken}, http.StatusNotFound, notFoundJSON},
 		{"GET without header", http.MethodGet, "/api/v1/me", nil, http.StatusOK, ""},
-		// HEAD and OPTIONS pass the check and reach the router, which
-		// answers neither for /api/v1/me.
-		{"HEAD without header", http.MethodHead, "/api/v1/me", nil, http.StatusMethodNotAllowed, ""},
-		{"OPTIONS without header", http.MethodOptions, "/api/v1/me", nil, http.StatusMethodNotAllowed, methodNotAllowedJSON},
+		// Only GET is exempt; HEAD and OPTIONS need the header too.
+		{"HEAD without header", http.MethodHead, "/api/v1/me", nil, http.StatusForbidden, csrfJSON},
+		{"OPTIONS without header", http.MethodOptions, "/api/v1/me", nil, http.StatusForbidden, csrfJSON},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -89,6 +88,8 @@ func TestRequireCSRF(t *testing.T) {
 		{"right header reaches handler", http.MethodPost, &testSession, testSession.CSRFToken, http.StatusNoContent},
 		{"wrong header", http.MethodPut, &testSession, "nope", http.StatusForbidden},
 		{"GET needs no header", http.MethodGet, &testSession, "", http.StatusNoContent},
+		{"HEAD needs the header", http.MethodHead, &testSession, "", http.StatusForbidden},
+		{"OPTIONS needs the header", http.MethodOptions, &testSession, "", http.StatusForbidden},
 		{"no session in context", http.MethodPost, nil, "", http.StatusInternalServerError},
 		{"session without token", http.MethodPost, &auth.Session{Subject: "user-123"}, "", http.StatusInternalServerError},
 	} {

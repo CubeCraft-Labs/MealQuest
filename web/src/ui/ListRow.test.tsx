@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { expectMinHitArea } from '../test/hitArea.ts'
 import { ListRow } from './ListRow.tsx'
+import { Toggle } from './Toggle.tsx'
 
 describe('ListRow', () => {
   it('renders leading, title, meta and trailing slots without being interactive', () => {
@@ -27,5 +28,30 @@ describe('ListRow', () => {
     expectMinHitArea(row)
     fireEvent.click(row)
     expect(onClick).toHaveBeenCalledOnce()
+  })
+
+  it('keeps a trailing toggle outside the row button so each control fires only its own action', () => {
+    const onClick = vi.fn()
+    const onCheckedChange = vi.fn()
+    render(
+      <ListRow
+        title="Dinner reminders"
+        meta="Push at 4 pm"
+        trailing={<Toggle aria-label="Dinner reminders" checked={false} onCheckedChange={onCheckedChange} />}
+        onClick={onClick}
+      />,
+    )
+    const row = screen.getByRole('button', { name: /^Dinner reminders/ })
+    const toggle = screen.getByRole('switch', { name: 'Dinner reminders' })
+    expect(row).not.toContainElement(toggle)
+    expect(row.querySelector('button')).toBeNull()
+
+    fireEvent.click(toggle)
+    expect(onCheckedChange).toHaveBeenCalledExactlyOnceWith(true)
+    expect(onClick).not.toHaveBeenCalled()
+
+    fireEvent.click(row)
+    expect(onClick).toHaveBeenCalledOnce()
+    expect(onCheckedChange).toHaveBeenCalledOnce()
   })
 })

@@ -12,6 +12,9 @@ export type SliderProps = Omit<ComponentPropsWithRef<'input'>, 'type' | 'value' 
 // Name it with aria-label or aria-labelledby.
 export function Slider({ value, min, max, className, style, ...rest }: SliderProps) {
   if (!(max > min)) throw new Error(`Slider: max (${max}) must be greater than min (${min})`)
+  if (!(value >= min && value <= max)) {
+    throw new Error(`Slider: value (${value}) must be within [${min}, ${max}]`)
+  }
   const fill = `${((value - min) / (max - min)) * 100}%`
   return (
     <input

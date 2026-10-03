@@ -47,4 +47,23 @@ describe('Slider', () => {
       'max (1) must be greater than min (1)',
     )
   })
+
+  it('accepts values at both ends of the range', () => {
+    render(
+      <>
+        <Slider aria-label="At min" min={0} max={1} value={0} readOnly />
+        <Slider aria-label="At max" min={0} max={1} value={1} readOnly />
+      </>,
+    )
+    expect(screen.getByRole('slider', { name: 'At min' }).style.getPropertyValue('--slider-fill')).toBe('0%')
+    expect(screen.getByRole('slider', { name: 'At max' }).style.getPropertyValue('--slider-fill')).toBe('100%')
+  })
+
+  it.each([
+    [2, 'value (2) must be within [0, 1]'],
+    [-0.1, 'value (-0.1) must be within [0, 1]'],
+    [Number.NaN, 'value (NaN) must be within [0, 1]'],
+  ])('fails fast when the value %s is outside the range', (value, message) => {
+    expect(() => render(<Slider aria-label="Bad" min={0} max={1} value={value} readOnly />)).toThrow(message)
+  })
 })

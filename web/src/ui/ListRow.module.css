@@ -11,16 +11,34 @@
 }
 
 .interactive {
-  min-width: 44px;
-  border: 0;
+  padding: 0;
   border-radius: var(--radius-md);
-  background: transparent;
-  font: inherit;
-  cursor: pointer;
 }
 
 .interactive:hover {
   background: var(--color-neutral-200);
+}
+
+.main {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: 1 1 auto;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 14px 16px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.interactive > .trailing {
+  padding-right: 16px;
 }
 
 .leading,

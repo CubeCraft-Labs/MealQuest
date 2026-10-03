@@ -15,6 +15,7 @@ import (
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/config"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secretbox"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/server"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
@@ -56,7 +57,12 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		}
 	}()
 
-	router, err := server.NewRouter(logger, version, frontend.Assets())
+	if err := seedSettings(ctx, db, cfg.DefaultTZ); err != nil {
+		return err
+	}
+	settings := household.NewSettingsService(db)
+
+	router, err := server.NewRouter(logger, version, frontend.Assets(), settings)
 	if err != nil {
 		return err
 	}
@@ -116,6 +122,16 @@ func openStore(ctx context.Context, dataDir string) (*store.Store, error) {
 		return nil, errors.Join(err, db.Close())
 	}
 	return db, nil
+}
+
+// seedSettings creates the household settings on first boot, naming the
+// variable that supplies the zone when it is missing.
+func seedSettings(ctx context.Context, db *store.Store, defaultTZ string) error {
+	err := household.SeedSettings(ctx, db, defaultTZ)
+	if errors.Is(err, household.ErrNoDefaultZone) {
+		return fmt.Errorf("%s: required on first boot to create the household settings: %w", config.EnvDefaultTZ, err)
+	}
+	return err
 }
 
 // logListening logs the startup line. Only the public URL's origin is logged

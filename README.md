@@ -30,6 +30,7 @@ export MEALQUEST_PUBLIC_URL=http://localhost:5173
 export MEALQUEST_DATA_DIR="$HOME/.mealquest-dev"
 export MEALQUEST_SHUTDOWN_TIMEOUT=10s
 export MEALQUEST_SECRET_KEY_FILE="$HOME/.mealquest-dev/secret_key"
+export MEALQUEST_DEFAULT_TZ=America/New_York
 make dev
 ```
 
@@ -37,7 +38,10 @@ make dev
 (which proxies `/api`, `/auth` and `/media` to `:8080`). Open
 http://localhost:5173. Configuration is environment-only and fails fast:
 every variable above is required, and secrets are read only from files named
-by `*_FILE` variables.
+by `*_FILE` variables. The exception is `MEALQUEST_DEFAULT_TZ`, the IANA zone
+the household settings are created with on first boot: boot fails without it
+until those settings exist, and later boots ignore it (change the zone in
+household settings instead). When set, it must be a valid IANA zone.
 
 ## Common commands
 

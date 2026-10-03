@@ -3,6 +3,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 )
 
 // reservedPrefixes are owned by the API router and are never answered with the
@@ -17,8 +19,12 @@ import (
 var reservedPrefixes = []string{"/api", "/auth", "/media", "/health"}
 
 // NewRouter returns the HTTP handler for the service. version is reported by
-// GET /health; assets is the web build served for every other GET.
-func NewRouter(logger *slog.Logger, version string, assets fs.FS) (http.Handler, error) {
+// GET /health; assets is the web build served for every other GET; settings
+// serves /api/v1/settings/household.
+func NewRouter(logger *slog.Logger, version string, assets fs.FS, settings *household.SettingsService) (http.Handler, error) {
+	if settings == nil {
+		return nil, errors.New("server: nil household settings service")
+	}
 	notFound := apiErrorHandler(logger, http.StatusNotFound, "not_found", "not found")
 	methodNotAllowed := apiErrorHandler(logger, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 
@@ -35,6 +41,10 @@ func NewRouter(logger *slog.Logger, version string, assets fs.FS) (http.Handler,
 	r.Route("/api", func(r chi.Router) {
 		r.MethodNotAllowed(methodNotAllowed)
 		r.NotFound(notFound)
+		r.Route("/v1", func(r chi.Router) {
+			r.Get("/settings/household", getHouseholdSettings(logger, settings))
+			r.Patch("/settings/household", patchHouseholdSettings(logger, settings))
+		})
 	})
 	// Catch-all for the PWA. /auth and /media have no routes yet; the frontend
 	// handler passes them to notFound rather than the SPA fallback.
@@ -55,19 +65,8 @@ type apiError struct {
 
 // apiErrorHandler responds with status and a fixed, non-retryable API error.
 func apiErrorHandler(logger *slog.Logger, status int, code, message string) http.HandlerFunc {
-	body, err := json.Marshal(errorBody{Error: apiError{
-		Code:    code,
-		Message: message,
-	}})
-	if err != nil {
-		panic(err) // fixed string and bool fields cannot fail to marshal
-	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		if _, err := w.Write(body); err != nil {
-			logger.WarnContext(r.Context(), "write error response", "code", code, "error", err)
-		}
+		writeError(w, r, logger, status, code, message)
 	}
 }
 

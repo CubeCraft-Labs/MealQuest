@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -10,6 +11,10 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/migrations"
 )
 
 const (
@@ -20,16 +25,53 @@ const (
 
 func newTestRouter(t *testing.T, version string) http.Handler {
 	t.Helper()
+	return newTestRouterWith(t, version, newTestSettings(t))
+}
+
+func newTestRouterWith(t *testing.T, version string, settings *household.SettingsService) http.Handler {
+	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	assets := fstest.MapFS{
 		"index.html":             {Data: []byte(fixtureIndex)},
 		"assets/index-AbC123.js": {Data: []byte(fixtureAsset)},
 	}
-	r, err := NewRouter(logger, version, assets)
+	r, err := NewRouter(logger, version, assets, settings)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return r
+}
+
+// newTestSettings returns a settings service over a migrated temp database
+// seeded with zone America/New_York.
+func newTestSettings(t *testing.T) *household.SettingsService {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := store.Migrate(ctx, st.Writer, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+	if err := household.SeedSettings(ctx, st, "America/New_York"); err != nil {
+		t.Fatal(err)
+	}
+	return household.NewSettingsService(st)
+}
+
+func TestNewRouterRequiresSettings(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if _, err := NewRouter(logger, "dev", fstest.MapFS{"index.html": {}}, nil); err == nil {
+		t.Fatal("NewRouter accepted a nil settings service")
+	}
 }
 
 func TestHealth(t *testing.T) {

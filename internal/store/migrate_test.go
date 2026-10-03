@@ -175,8 +175,8 @@ func TestMigrateEmbeddedMigrations(t *testing.T) {
 	if err := Migrate(context.Background(), s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by", got)
 	}
 }
 
@@ -188,15 +188,16 @@ func TestMigrateBootstrapThenEmbeddedInitApplies(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A database migrated by the bootstrap-only build upgrades to the
-	// embedded set, which adds 0001_init.sql alongside the unchanged bootstrap.
+	// embedded set, which adds the later migrations alongside the unchanged
+	// bootstrap.
 	if err := Migrate(ctx, s.Writer, fstest.MapFS{"0000_bootstrap.sql": {Data: bootstrap}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by", got)
 	}
 	if !tableExists(t, s, "dinners") {
 		t.Error("table from 0001_init was not created")

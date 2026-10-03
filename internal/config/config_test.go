@@ -56,6 +56,25 @@ func TestLoad(t *testing.T) {
 			env:  valid(),
 		},
 		{
+			name: "default time zone set",
+			env:  with(map[string]string{EnvDefaultTZ: "America/New_York"}),
+		},
+		{
+			name:    "default time zone not an IANA zone",
+			env:     with(map[string]string{EnvDefaultTZ: "Mars/Olympus_Mons"}),
+			badVars: []string{EnvDefaultTZ},
+		},
+		{
+			name:    "default time zone set but empty",
+			env:     with(map[string]string{EnvDefaultTZ: ""}),
+			badVars: []string{EnvDefaultTZ},
+		},
+		{
+			name:    "default time zone Local refused",
+			env:     with(map[string]string{EnvDefaultTZ: "Local"}),
+			badVars: []string{EnvDefaultTZ},
+		},
+		{
 			name:    "one missing",
 			env:     with(nil, EnvHTTPAddr),
 			badVars: []string{EnvHTTPAddr},
@@ -232,6 +251,7 @@ func TestLoadValues(t *testing.T) {
 		EnvDataDir:         dir,
 		EnvShutdownTimeout: "1m30s",
 		EnvSecretKeyFile:   secretPath,
+		EnvDefaultTZ:       "Europe/London",
 	}
 	cfg, err := load(func(k string) (string, bool) { v, ok := env[k]; return v, ok })
 	if err != nil {
@@ -252,6 +272,9 @@ func TestLoadValues(t *testing.T) {
 	}
 	if cfg.SecretKey.Reveal() != "s3cret-value" {
 		t.Errorf("SecretKey.Reveal() = %q, want trailing newline trimmed", cfg.SecretKey.Reveal())
+	}
+	if cfg.DefaultTZ != "Europe/London" {
+		t.Errorf("DefaultTZ = %q, want Europe/London", cfg.DefaultTZ)
 	}
 }
 

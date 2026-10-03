@@ -85,6 +85,7 @@ type HouseholdSetting struct {
 	UpdatesSeenAt         sql.NullString
 	CreatedAt             string
 	UpdatedAt             string
+	UpdatedBy             sql.NullString
 }
 
 type IntegrationsGoogle struct {

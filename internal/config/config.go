@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 )
 
 // Environment variable names.
@@ -20,6 +22,7 @@ const (
 	EnvDataDir         = "MEALQUEST_DATA_DIR"
 	EnvShutdownTimeout = "MEALQUEST_SHUTDOWN_TIMEOUT"
 	EnvSecretKeyFile   = "MEALQUEST_SECRET_KEY_FILE"
+	EnvDefaultTZ       = "MEALQUEST_DEFAULT_TZ"
 )
 
 // Config is the validated service configuration.
@@ -29,6 +32,10 @@ type Config struct {
 	DataDir         string
 	ShutdownTimeout time.Duration
 	SecretKey       Secret
+	// DefaultTZ is the IANA zone the household settings are created with on
+	// first boot. It is optional here: boot requires it only while the
+	// settings do not exist yet. Empty when unset.
+	DefaultTZ string
 }
 
 // PublicOrigin returns the scheme and host of PublicURL, the only parts of it
@@ -51,6 +58,7 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 		DataDir:         r.dir(EnvDataDir),
 		ShutdownTimeout: r.duration(EnvShutdownTimeout),
 		SecretKey:       r.secretFile(EnvSecretKeyFile),
+		DefaultTZ:       r.optionalZone(EnvDefaultTZ),
 	}
 	if len(r.problems) > 0 {
 		return Config{}, &Error{Problems: r.problems}
@@ -205,6 +213,20 @@ func (r *reader) duration(name string) time.Duration {
 		return 0
 	}
 	return d
+}
+
+// optionalZone returns the IANA zone name in the variable, or "" when it is
+// unset. A set value must be a loadable zone.
+func (r *reader) optionalZone(name string) string {
+	v, ok := r.lookup(name)
+	if !ok {
+		return ""
+	}
+	if _, err := household.LoadZone(v); err != nil {
+		r.fail(name, "%v", err)
+		return ""
+	}
+	return v
 }
 
 // secretFile reads a secret from the file named by name, which must end in

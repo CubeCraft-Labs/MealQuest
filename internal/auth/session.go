@@ -91,8 +91,9 @@ func (m *SessionManager) StartSession(w http.ResponseWriter, r *http.Request, cl
 	}
 
 	// The cookie outlives idle gaps so a returning device presents its ID;
-	// the server decides whether the session is still live.
-	http.SetCookie(w, sessionCookie(id, int(m.max/time.Second)))
+	// the server decides whether the session is still live. Max-Age is whole
+	// seconds, rounded up so the cookie never ends before the absolute limit.
+	http.SetCookie(w, sessionCookie(id, int((m.max+time.Second-1)/time.Second)))
 	return nil
 }
 

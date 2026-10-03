@@ -305,6 +305,34 @@ func TestSessionAbsoluteExpiry(t *testing.T) {
 	}
 }
 
+// A max with fractional seconds rounds the cookie Max-Age up, so the browser
+// keeps the cookie until the server-side absolute limit.
+func TestSessionCookieOutlivesFractionalMax(t *testing.T) {
+	t.Parallel()
+	h := newSessionHarness(t)
+	h.sessions.idle, h.sessions.max = 1500*time.Millisecond, 2500*time.Millisecond
+	_, cookie := h.signIn(t)
+	if cookie.MaxAge != 3 {
+		t.Errorf("session cookie MaxAge = %d, want 3", cookie.MaxAge)
+	}
+	if r := h.rows(t)[0]; !r.expires.Equal(testEpoch.Add(1500 * time.Millisecond)) {
+		t.Errorf("expires_at = %v, want %v", r.expires, testEpoch.Add(1500*time.Millisecond))
+	}
+
+	h.advance(time.Second)
+	if _, err := h.use(cookie); err != nil {
+		t.Fatalf("at 1s SessionFor = %v, want the session", err)
+	}
+	h.clock = testEpoch.Add(2500*time.Millisecond - time.Millisecond)
+	if _, err := h.use(cookie); err != nil {
+		t.Fatalf("just inside the absolute limit SessionFor = %v, want the session", err)
+	}
+	h.clock = testEpoch.Add(2500 * time.Millisecond)
+	if _, err := h.use(cookie); !errors.Is(err, ErrNoSession) {
+		t.Errorf("at the absolute limit SessionFor = %v, want ErrNoSession", err)
+	}
+}
+
 // A lifetime shortened by configuration applies to existing sessions even
 // though their stored expires_at is later.
 func TestSessionLifetimeChecksUseCurrentConfig(t *testing.T) {

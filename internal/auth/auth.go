@@ -353,7 +353,7 @@ func (a *Auth) verify(ctx context.Context, code string, state loginState) (Claim
 	}
 	idToken, err := a.verifier.Verify(ctx, raw)
 	if err != nil {
-		return Claims{}, fmt.Errorf("verify ID token: %w", err)
+		return Claims{}, verifyError(err)
 	}
 	if subtle.ConstantTimeCompare([]byte(idToken.Nonce), []byte(state.Nonce)) != 1 {
 		return Claims{}, errors.New("ID token nonce mismatch")
@@ -402,6 +402,17 @@ func userinfoError(err error) error {
 		return fmt.Errorf("userinfo: request failed: %s: %w", transport.Op, transport.Err)
 	}
 	return errors.New("userinfo: endpoint returned an unusable response")
+}
+
+// verifyError reduces a failed ID token verification to a fixed category.
+// go-oidc's error text can carry the JWKS endpoint's response body or
+// token-supplied values, so only the expiry of an expired token is kept.
+func verifyError(err error) error {
+	var expired *oidc.TokenExpiredError
+	if errors.As(err, &expired) {
+		return fmt.Errorf("verify ID token: token expired at %s", expired.Expiry.UTC().Format(time.RFC3339))
+	}
+	return errors.New("verify ID token: token or provider key set rejected")
 }
 
 // member reports whether groups contains an allowed group.

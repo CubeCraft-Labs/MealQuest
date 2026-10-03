@@ -60,6 +60,8 @@ type fakeProvider struct {
 	userinfoHits int
 	// userinfoReply, when set, is returned by the userinfo endpoint instead.
 	userinfoReply *tokenReply
+	// jwksReply, when set, is returned by the JWKS endpoint instead.
+	jwksReply *tokenReply
 }
 
 type tokenReply struct {
@@ -110,6 +112,15 @@ func (p *fakeProvider) discovery(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (p *fakeProvider) jwks(w http.ResponseWriter, _ *http.Request) {
+	p.mu.Lock()
+	reply := p.jwksReply
+	p.mu.Unlock()
+	if reply != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(reply.status)
+		io.WriteString(w, reply.body)
+		return
+	}
 	writeJSON(w, map[string]any{"keys": []map[string]string{{
 		"kty": "RSA",
 		"kid": testKID,
@@ -308,6 +319,7 @@ func (m *memorySessions) started() []Claims {
 }
 
 type harness struct {
+	auth     *Auth
 	provider *fakeProvider
 	sessions *memorySessions
 	router   http.Handler
@@ -350,7 +362,7 @@ func newHarness(t *testing.T) *harness {
 	}
 	r := chi.NewRouter()
 	a.Mount(r)
-	return &harness{provider: p, sessions: sessions, router: r, logs: logs}
+	return &harness{auth: a, provider: p, sessions: sessions, router: r, logs: logs}
 }
 
 func (h *harness) get(target string, cookies ...*http.Cookie) *http.Response {
@@ -723,6 +735,66 @@ func TestCallbackExchangeFailureDoesNotLogProviderResponse(t *testing.T) {
 			}
 			if !strings.Contains(logs, tc.wantLogs) {
 				t.Errorf("logs = %q, want %q", logs, tc.wantLogs)
+			}
+		})
+	}
+}
+
+func TestCallbackKeySetFailureDoesNotLogProviderResponse(t *testing.T) {
+	t.Parallel()
+	const sentinel = "sentinel-jwks-body-5c1e"
+	tests := []struct {
+		name  string
+		reply tokenReply
+	}{
+		{"error response", tokenReply{http.StatusInternalServerError, sentinel}},
+		{"malformed success", tokenReply{http.StatusOK, `{"keys":"` + sentinel + `"`}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t)
+			h.provider.mu.Lock()
+			h.provider.jwksReply = &tc.reply
+			h.provider.mu.Unlock()
+
+			// The returned error, checked through verify directly.
+			l := h.login(t, LoginPath)
+			req := httptest.NewRequest(http.MethodGet, CallbackPath, nil)
+			req.AddCookie(l.cookie)
+			state, err := h.auth.cookie.read(req, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			code := h.provider.authorize(l.query.Get("code_challenge"), h.provider.signRS256(h.provider.claims(l.query.Get("nonce"))))
+			_, err = h.auth.verify(context.Background(), code, state)
+			if err == nil {
+				t.Fatal("verify succeeded with an unusable key set")
+			}
+			if strings.Contains(err.Error(), sentinel) {
+				t.Errorf("verify error contains the JWKS response: %v", err)
+			}
+
+			// The logs and response, through the callback.
+			l = h.login(t, LoginPath)
+			resp := h.callback(l, l.query.Get("state"), h.provider.signRS256(h.provider.claims(l.query.Get("nonce"))))
+
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Errorf("callback status = %d, want 401", resp.StatusCode)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			if strings.Contains(string(body), sentinel) {
+				t.Errorf("response contains the JWKS response: %s", body)
+			}
+			logs := h.logs.String()
+			if strings.Contains(logs, sentinel) {
+				t.Errorf("logs contain the JWKS response: %s", logs)
+			}
+			if want := "token or provider key set rejected"; !strings.Contains(logs, want) {
+				t.Errorf("logs = %q, want %q", logs, want)
+			}
+			if len(h.sessions.started()) != 0 {
+				t.Error("a session started")
 			}
 		})
 	}

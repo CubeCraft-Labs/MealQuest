@@ -13,28 +13,38 @@
   background: var(--color-text);
 }
 
-/* The whole bar height is the tap target; the 42 px pill sits inside it. */
+/* The one grape pill, shared by every item: BottomBar sets its left and width
+   to the active item's and slides it between items. */
+.pill {
+  position: absolute;
+  top: 10px;
+  height: 42px;
+  z-index: 0;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+  pointer-events: none;
+}
+
+/* The whole bar height is the tap target; the 42 px pill sits behind it.
+   Items stay above the pill. */
 .item {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 6px;
   height: 62px;
   min-width: 44px;
+  padding: 0 13px;
+  box-sizing: border-box;
   color: var(--color-neutral-400);
   text-decoration: none;
+  white-space: nowrap;
+  transition: color .2s;
 }
 
-.pill {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 42px;
-  padding: 0 13px;
-  border-radius: var(--radius-pill);
-}
-
-.active {
-  background: var(--color-accent);
+.item[aria-current='page'] {
   color: var(--on-accent);
 }
 

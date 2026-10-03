@@ -2,7 +2,7 @@ import { render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it } from 'vitest'
 import App from '../App.tsx'
-import { declaredStyle } from '../test/cssRules.ts'
+import { declaredStyle, outerSize } from '../test/cssRules.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
 import { mockViewport } from '../test/matchMedia.ts'
 import bottomBarStyles from './BottomBar.module.css'
@@ -69,6 +69,7 @@ describe('AppShell', () => {
     expect(bar.right).toBe('12px')
     expect(bar.bottom).toBe('calc(16px + env(safe-area-inset-bottom))')
     expect(bar.height).toBe('62px')
+    expect(outerSize(nav(), 'height')).toBe(62)
     expect(bar.background).toBe('var(--color-text)')
     expect(bar.borderRadius).toBe('var(--radius-pill)')
   })
@@ -111,9 +112,12 @@ describe('AppShell', () => {
     expect(screen.getAllByRole('navigation')).toHaveLength(1)
     expect(nav()).toHaveClass(railStyles.rail!)
     expect(declaredStyle(nav()).width).toBe('96px')
+    expect(outerSize(nav(), 'width')).toBe(96)
     expect(declaredStyle(nav()).background).toBe('var(--color-surface)')
     const mark = within(nav()).getByText('M')
     expect(declaredStyle(mark).width).toBe('48px')
+    expect(outerSize(mark, 'width')).toBe(48)
+    expect(outerSize(mark, 'height')).toBe(48)
     expect(declaredStyle(mark).background).toBe('var(--color-accent)')
     expect(screen.queryByText('MealQuest')).not.toBeInTheDocument()
     expect(screen.queryByText('Our kitchen')).not.toBeInTheDocument()
@@ -122,6 +126,8 @@ describe('AppShell', () => {
       const pill = link.firstElementChild!
       expect(declaredStyle(pill).width).toBe('56px')
       expect(declaredStyle(pill).height).toBe('36px')
+      expect(outerSize(pill, 'width')).toBe(56)
+      expect(outerSize(pill, 'height')).toBe(36)
       expect(declaredStyle(link).fontSize).toBe('11px')
       expect(declaredStyle(link).fontWeight).toBe('700')
       expectMinHitArea(link)
@@ -138,6 +144,8 @@ describe('AppShell', () => {
     expect(declaredStyle(sidebar).width).toBe('208px')
     expect(declaredStyle(sidebar).background).toBe('var(--color-surface)')
     expect(declaredStyle(sidebar).padding).toBe('28px 16px')
+    // The 16 px side padding sits inside the 208 px, not outside it.
+    expect(outerSize(sidebar, 'width')).toBe(208)
 
     const wordmark = within(sidebar).getByText('MealQuest')
     expect(declaredStyle(wordmark).fontFamily).toBe('var(--font-heading)')

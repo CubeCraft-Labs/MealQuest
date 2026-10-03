@@ -48,3 +48,28 @@ export function animationKeyframes(element: Element): CSSKeyframesRule {
   if (!keyframes) throw new Error(`no @keyframes named ${JSON.stringify(name)}`)
   return keyframes
 }
+
+function px(value: string, what: string): number {
+  if (value === '') return 0
+  const match = /^(\d+(?:\.\d+)?)px$/.exec(value)
+  if (!match) throw new Error(`${what} ${JSON.stringify(value)} is not a px length`)
+  return Number(match[1])
+}
+
+// The border-box size the element's declared rules give it on one axis:
+// width or height, plus padding and border unless box-sizing is border-box.
+// jsdom does no layout (getBoundingClientRect is all zeros), so this is the
+// way to catch padding that would push a fixed box past its specified size.
+export function outerSize(element: Element, axis: 'width' | 'height'): number {
+  const style = declaredStyle(element)
+  const size = px(style.getPropertyValue(axis), axis)
+  if (style.boxSizing === 'border-box') return size
+  const sides = axis === 'width' ? ['left', 'right'] : ['top', 'bottom']
+  return sides.reduce(
+    (total, side) =>
+      total +
+      px(style.getPropertyValue(`padding-${side}`), `padding-${side}`) +
+      px(style.getPropertyValue(`border-${side}-width`), `border-${side}-width`),
+    size,
+  )
+}

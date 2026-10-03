@@ -5,6 +5,7 @@
   bottom: calc(16px + env(safe-area-inset-bottom));
   height: 62px;
   padding: 0 6px;
+  box-sizing: border-box;
   display: flex;
   justify-content: space-around;
   align-items: center;

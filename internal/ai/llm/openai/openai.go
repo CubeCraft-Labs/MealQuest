@@ -90,8 +90,8 @@ func New(cfg Config) (*Provider, error) {
 	if u.User != nil || strings.ContainsAny(cfg.BaseURL, "?#") {
 		return nil, errors.New("openai: base URL must not carry credentials, a query or a fragment")
 	}
-	// Every other error that names caller-supplied text has the API key
-	// redacted from that text before it is quoted.
+	// An error that names caller-supplied text has the API key redacted from
+	// it before it is quoted.
 	switch cfg.StructuredOutput {
 	case JSONSchema, JSONObject, PromptOnly:
 	default:
@@ -99,8 +99,10 @@ func New(cfg Config) (*Provider, error) {
 	}
 	headers := make(http.Header, len(cfg.Headers)+1)
 	for name, value := range cfg.Headers {
-		// Invalid names and all values are never echoed: either may carry a
-		// credential.
+		// Caller-supplied names and values are never echoed: either may carry
+		// a credential, and canonicalising a name changes its case, which
+		// defeats redaction. Only a managed name, which is a fixed known
+		// string, is named.
 		if !validHeaderName(name) {
 			return nil, errors.New("openai: an extra header name is not a valid HTTP token")
 		}
@@ -109,7 +111,7 @@ func New(cfg Config) (*Provider, error) {
 			return nil, fmt.Errorf("openai: extra header %q is set by the adapter", canonical)
 		}
 		if !validHeaderValue(value) {
-			return nil, fmt.Errorf("openai: extra header %q has a control character in its value", redactKey(canonical, cfg.APIKey))
+			return nil, errors.New("openai: an extra header value has a control character")
 		}
 		headers.Set(canonical, value)
 	}

@@ -373,7 +373,7 @@ func TestVerify(t *testing.T) {
 func assertNoSecret(t *testing.T, err error) {
 	t.Helper()
 	for _, secret := range []string{testKey, "Bearer " + testKey, testKey[:12]} {
-		if strings.Contains(err.Error(), secret) {
+		if strings.Contains(strings.ToLower(err.Error()), strings.ToLower(secret)) {
 			t.Fatalf("error leaks %q: %v", secret, err)
 		}
 	}
@@ -633,7 +633,7 @@ func TestNewConfigErrorsNeverLeakKey(t *testing.T) {
 	cases := map[string]Config{
 		"key in invalid header name": {Headers: map[string]string{"Bearer " + testKey: "a"}},
 		"key as invalid header name": {Headers: map[string]string{testKey + ":": "a"}},
-		"key in name, bad value":     {Headers: map[string]string{"X-" + testKey: "a\nb"}},
+		"key in name, bad value":     {Headers: map[string]string{"x-" + testKey: "a\nb"}},
 		"key in structured output":   {StructuredOutput: StructuredOutput("Bearer " + testKey)},
 		"key with quote in mode":     {StructuredOutput: StructuredOutput(testKey + "\"\x00")},
 	}

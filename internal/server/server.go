@@ -16,9 +16,15 @@ import (
 // SPA's index.html.
 var reservedPrefixes = []string{"/api", "/auth", "/media", "/health"}
 
+// RouteMounter registers its own routes on the router.
+type RouteMounter interface {
+	Mount(r chi.Router)
+}
+
 // NewRouter returns the HTTP handler for the service. version is reported by
-// GET /health; assets is the web build served for every other GET.
-func NewRouter(logger *slog.Logger, version string, assets fs.FS) (http.Handler, error) {
+// GET /health; auth mounts the /auth routes; assets is the web build served
+// for every other GET.
+func NewRouter(logger *slog.Logger, version string, auth RouteMounter, assets fs.FS) (http.Handler, error) {
 	notFound := apiErrorHandler(logger, http.StatusNotFound, "not_found", "not found")
 	methodNotAllowed := apiErrorHandler(logger, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 
@@ -32,12 +38,14 @@ func NewRouter(logger *slog.Logger, version string, assets fs.FS) (http.Handler,
 	r.NotFound(notFound)
 
 	r.Get("/health", health(logger, version))
+	auth.Mount(r)
 	r.Route("/api", func(r chi.Router) {
 		r.MethodNotAllowed(methodNotAllowed)
 		r.NotFound(notFound)
 	})
-	// Catch-all for the PWA. /auth and /media have no routes yet; the frontend
-	// handler passes them to notFound rather than the SPA fallback.
+	// Catch-all for the PWA. Unknown /auth paths and /media (no routes yet)
+	// reach the frontend handler, which passes them to notFound rather than
+	// the SPA fallback.
 	r.Method(http.MethodGet, "/*", web)
 	r.Method(http.MethodHead, "/*", web)
 	return r, nil

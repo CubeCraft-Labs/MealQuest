@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/auth"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/config"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/server"
@@ -51,7 +52,18 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		}
 	}()
 
-	router, err := server.NewRouter(logger, version, frontend.Assets())
+	authFlow, err := auth.New(ctx, auth.Config{
+		Issuer:       cfg.OIDCIssuer.String(),
+		ClientID:     cfg.OIDCClientID,
+		ClientSecret: cfg.OIDCClientSecret.Reveal(),
+		PublicURL:    cfg.PublicURL,
+		SecretKey:    []byte(cfg.SecretKey.Reveal()),
+	}, sessionsPending{}, logger)
+	if err != nil {
+		return err
+	}
+
+	router, err := server.NewRouter(logger, version, authFlow, frontend.Assets())
 	if err != nil {
 		return err
 	}
@@ -101,6 +113,14 @@ func openStore(ctx context.Context, dataDir string) (*store.Store, error) {
 		return nil, errors.Join(err, db.Close())
 	}
 	return db, nil
+}
+
+// sessionsPending refuses every login until the session layer (Feature 03
+// task 2) replaces it.
+type sessionsPending struct{}
+
+func (sessionsPending) StartSession(http.ResponseWriter, *http.Request, auth.Claims) error {
+	return errors.New("session layer not implemented")
 }
 
 // logListening logs the startup line. Only the public URL's origin is logged

@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -65,15 +66,20 @@ type Config struct {
 	PublicURL *url.URL
 	// SecretKey is the server key the login cookie's signing key derives from.
 	SecretKey []byte
+	// AllowedGroups are the household's groups; a sign-in is refused unless
+	// the account is in at least one of them.
+	AllowedGroups []string
 }
 
 // Auth serves the login and callback routes.
 type Auth struct {
 	oauth    oauth2.Config
 	verifier *oidc.IDTokenVerifier
+	provider *oidc.Provider
 	client   *http.Client
 	cookie   loginCookie
 	sessions Sessions
+	allowed  []string
 	// endSessionURL is the provider's end_session_endpoint; logout ends
 	// there so the provider's own session ends too.
 	endSessionURL string
@@ -92,6 +98,8 @@ func New(ctx context.Context, cfg Config, sessions Sessions, logger *slog.Logger
 		return nil, errors.New("auth: secret key is required")
 	case sessions == nil:
 		return nil, errors.New("auth: session layer is required")
+	case len(cfg.AllowedGroups) == 0:
+		return nil, errors.New("auth: at least one allowed group is required")
 	}
 
 	if err := checkEndpoint("issuer", cfg.Issuer); err != nil {
@@ -118,6 +126,9 @@ func New(ctx context.Context, cfg Config, sessions Sessions, logger *slog.Logger
 		{"token endpoint", endpoint.TokenURL},
 		{"JWKS endpoint", discovered.JWKSURI},
 		{"end session endpoint", discovered.EndSessionURI},
+		// Groups come from userinfo when the ID token carries none, and the
+		// access token is sent there.
+		{"userinfo endpoint", provider.UserInfoEndpoint()},
 	} {
 		if err := checkEndpoint(e.name, e.raw); err != nil {
 			return nil, err
@@ -138,7 +149,9 @@ func New(ctx context.Context, cfg Config, sessions Sessions, logger *slog.Logger
 			ClientID:             cfg.ClientID,
 			SupportedSigningAlgs: []string{oidc.RS256},
 		}),
+		provider:      provider,
 		client:        client,
+		allowed:       slices.Clone(cfg.AllowedGroups),
 		cookie:        newLoginCookie(cfg.SecretKey),
 		sessions:      sessions,
 		endSessionURL: discovered.EndSessionURI,
@@ -218,7 +231,9 @@ func (a *Auth) login(w http.ResponseWriter, r *http.Request) {
 }
 
 // callback completes the flow: it checks state against the login cookie,
-// exchanges the code, verifies the ID token and nonce, then starts a session.
+// exchanges the code, verifies the ID token and nonce, then starts a session
+// if the account is in an allowed group. Membership is checked on every
+// login, so an account removed from the group is refused at its next one.
 func (a *Auth) callback(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	ctx := r.Context()
@@ -256,6 +271,22 @@ func (a *Auth) callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sign-in failed", http.StatusUnauthorized)
 		return
 	}
+	if !a.member(claims.Groups) {
+		if claims.Groups == nil {
+			a.logger.WarnContext(ctx, "sign-in refused: no groups claim in the ID token or userinfo", "subject", claims.Subject)
+		} else {
+			a.logger.WarnContext(ctx, "sign-in refused: not in an allowed group", "subject", claims.Subject)
+		}
+		// A session this browser already holds ends too, so a refused
+		// sign-in never leaves it signed in.
+		if err := a.sessions.EndSession(w, r); err != nil {
+			a.logger.ErrorContext(ctx, "end session", "error", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		a.refuse(w, r)
+		return
+	}
 	if err := a.sessions.StartSession(w, r, claims); err != nil {
 		a.logger.ErrorContext(ctx, "start session", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -278,7 +309,8 @@ func (a *Auth) logout(w http.ResponseWriter, r *http.Request) {
 
 // verify exchanges code for tokens and returns the verified ID token claims.
 // The verifier enforces RS256, issuer, audience and expiry; nonce is checked
-// here.
+// here. When the ID token has no groups claim, Groups comes from userinfo;
+// it stays nil when neither has one.
 func (a *Auth) verify(ctx context.Context, code string, state loginState) (Claims, error) {
 	token, err := a.oauth.Exchange(context.WithValue(ctx, oauth2.HTTPClient, a.client), code,
 		oauth2.VerifierOption(state.Verifier))
@@ -303,7 +335,48 @@ func (a *Auth) verify(ctx context.Context, code string, state loginState) (Claim
 	if claims.Subject == "" {
 		return Claims{}, errors.New("ID token has no subject")
 	}
+	if claims.Groups == nil {
+		groups, err := a.userinfoGroups(ctx, token, claims.Subject)
+		if err != nil {
+			return Claims{}, err
+		}
+		claims.Groups = groups
+	}
 	return claims, nil
+}
+
+// userinfoGroups returns the groups claim from the userinfo endpoint, nil if
+// it has none. The userinfo subject must match the ID token's subject.
+func (a *Auth) userinfoGroups(ctx context.Context, token *oauth2.Token, subject string) ([]string, error) {
+	info, err := a.provider.UserInfo(oidc.ClientContext(ctx, a.client), oauth2.StaticTokenSource(token))
+	if err != nil {
+		return nil, userinfoError(err)
+	}
+	if info.Subject != subject {
+		return nil, errors.New("userinfo subject does not match the ID token")
+	}
+	var claims struct {
+		Groups []string `json:"groups"`
+	}
+	if err := info.Claims(&claims); err != nil {
+		return nil, fmt.Errorf("decode userinfo claims: %w", err)
+	}
+	return claims.Groups, nil
+}
+
+// userinfoError reduces a failed userinfo request to a fixed category, like
+// exchangeError: go-oidc's error text can carry the response body.
+func userinfoError(err error) error {
+	var transport *url.Error
+	if errors.As(err, &transport) {
+		return fmt.Errorf("userinfo: request failed: %s: %w", transport.Op, transport.Err)
+	}
+	return errors.New("userinfo: endpoint returned an unusable response")
+}
+
+// member reports whether groups contains an allowed group.
+func (a *Auth) member(groups []string) bool {
+	return slices.ContainsFunc(groups, func(g string) bool { return slices.Contains(a.allowed, g) })
 }
 
 // exchangeError reduces a failed code exchange to a fixed category and safe

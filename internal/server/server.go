@@ -22,9 +22,10 @@ type RouteMounter interface {
 }
 
 // NewRouter returns the HTTP handler for the service. version is reported by
-// GET /health; auth mounts the /auth routes; assets is the web build served
-// for every other GET.
-func NewRouter(logger *slog.Logger, version string, auth RouteMounter, assets fs.FS) (http.Handler, error) {
+// GET /health; auth mounts the /auth routes; sessions guards /api/v1 and
+// /media; assets is the web build served for every other GET. /health, /auth
+// and the web build are public.
+func NewRouter(logger *slog.Logger, version string, auth RouteMounter, sessions SessionLookup, assets fs.FS) (http.Handler, error) {
 	notFound := apiErrorHandler(logger, http.StatusNotFound, "not_found", "not found")
 	methodNotAllowed := apiErrorHandler(logger, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 
@@ -39,13 +40,23 @@ func NewRouter(logger *slog.Logger, version string, auth RouteMounter, assets fs
 
 	r.Get("/health", health(logger, version))
 	auth.Mount(r)
+	// The session middleware wraps the whole /api/v1 and /media subrouters
+	// rather than being added with Use: chi skips a subrouter's middleware
+	// when it has no routes, which would leave it unguarded.
+	signedIn := requireSession(logger, sessions)
+	apiV1, media := chi.NewRouter(), chi.NewRouter()
+	for _, sub := range []*chi.Mux{apiV1, media} {
+		sub.MethodNotAllowed(methodNotAllowed)
+		sub.NotFound(notFound)
+	}
 	r.Route("/api", func(r chi.Router) {
 		r.MethodNotAllowed(methodNotAllowed)
 		r.NotFound(notFound)
+		r.Mount("/v1", signedIn(apiV1))
 	})
-	// Catch-all for the PWA. Unknown /auth paths and /media (no routes yet)
-	// reach the frontend handler, which passes them to notFound rather than
-	// the SPA fallback.
+	r.Mount("/media", signedIn(media))
+	// Catch-all for the PWA. Unknown /auth paths reach the frontend handler,
+	// which passes them to notFound rather than the SPA fallback.
 	r.Method(http.MethodGet, "/*", web)
 	r.Method(http.MethodHead, "/*", web)
 	return r, nil

@@ -57,17 +57,18 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 	authFlow, err := auth.New(ctx, auth.Config{
-		Issuer:       cfg.OIDCIssuer.String(),
-		ClientID:     cfg.OIDCClientID,
-		ClientSecret: cfg.OIDCClientSecret.Reveal(),
-		PublicURL:    cfg.PublicURL,
-		SecretKey:    []byte(cfg.SecretKey.Reveal()),
+		Issuer:        cfg.OIDCIssuer.String(),
+		ClientID:      cfg.OIDCClientID,
+		ClientSecret:  cfg.OIDCClientSecret.Reveal(),
+		PublicURL:     cfg.PublicURL,
+		SecretKey:     []byte(cfg.SecretKey.Reveal()),
+		AllowedGroups: cfg.OIDCAllowedGroups,
 	}, sessions, logger)
 	if err != nil {
 		return err
 	}
 
-	router, err := server.NewRouter(logger, version, authFlow, frontend.Assets())
+	router, err := server.NewRouter(logger, version, authFlow, sessions, frontend.Assets())
 	if err != nil {
 		return err
 	}

@@ -10,12 +10,12 @@ INSERT INTO household_settings (
 	id, timezone, dinner_time, reminder_time, review_time, plan_draft_dow,
 	plan_draft_time, suggestions_dow, suggestions_time, chat_autosend_dow,
 	chat_autosend_time, onboarding_completed_at, updates_seen_at,
-	created_at, updated_at
+	updated_by, created_at, updated_at
 ) VALUES (
 	1, ?, ?, ?, ?, ?,
 	?, ?, ?, ?,
 	?, ?, ?,
-	?, ?
+	?, ?, ?
 )
 ON CONFLICT (id) DO UPDATE SET
 	timezone = excluded.timezone,
@@ -30,6 +30,7 @@ ON CONFLICT (id) DO UPDATE SET
 	chat_autosend_time = excluded.chat_autosend_time,
 	onboarding_completed_at = excluded.onboarding_completed_at,
 	updates_seen_at = excluded.updates_seen_at,
+	updated_by = excluded.updated_by,
 	updated_at = excluded.updated_at
 RETURNING *;
 

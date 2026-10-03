@@ -44,6 +44,7 @@ export MEALQUEST_OIDC_ALLOWED_GROUPS=mealquest-admin
 # X-Forwarded-For/-Proto headers are honoured (production: Traefik). Unset
 # trusts no peer, which is right for local development.
 # export MEALQUEST_TRUSTED_PROXY=10.60.1.33
+export MEALQUEST_DEFAULT_TZ=America/New_York
 make dev
 ```
 
@@ -51,11 +52,16 @@ make dev
 (which proxies `/api`, `/auth` and `/media` to `:8080`). Open
 http://localhost:5173. Configuration is environment-only and fails fast:
 every variable above is required except the commented-out session
-lifetimes (when set they must be positive, with MAX at least IDLE) and
-trusted proxy list (every entry must be an IP or CIDR), and
+lifetimes (when set they must be positive, with MAX at least IDLE),
+trusted proxy list (every entry must be an IP or CIDR) and
+`MEALQUEST_DEFAULT_TZ`, and
 secrets are read only from files named by `*_FILE` variables. `MEALQUEST_PUBLIC_URL`, `MEALQUEST_OIDC_ISSUER` and the
 endpoints the issuer advertises must be `https://`; plain `http://` is
 accepted only for `localhost`, `127.0.0.1` and `[::1]`.
+`MEALQUEST_DEFAULT_TZ` is the IANA zone the household settings are created
+with on first boot: until those settings exist, boot fails unless it is a
+valid IANA zone. Later boots ignore it, set or not (change the zone in
+household settings instead).
 
 ## Common commands
 

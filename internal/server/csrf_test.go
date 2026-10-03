@@ -34,9 +34,10 @@ func TestCSRFThroughRouter(t *testing.T) {
 		{"PATCH without header", http.MethodPatch, "/api/v1/settings/household", nil, http.StatusForbidden, csrfJSON},
 		{"DELETE with wrong header", http.MethodDelete, "/api/v1/me", []string{"wrong-token"}, http.StatusForbidden, csrfJSON},
 		// The right token passes the check and reaches the router, which has
-		// no POST /api/v1/me.
+		// no POST /api/v1/me, and the settings handler, which refuses the
+		// empty body.
 		{"POST with right header", http.MethodPost, "/api/v1/me", []string{testSession.CSRFToken}, http.StatusMethodNotAllowed, methodNotAllowedJSON},
-		{"PATCH with right header", http.MethodPatch, "/api/v1/settings/household", []string{testSession.CSRFToken}, http.StatusNotFound, notFoundJSON},
+		{"PATCH with right header", http.MethodPatch, "/api/v1/settings/household", []string{testSession.CSRFToken}, http.StatusBadRequest, `{"error":{"code":"invalid_request","message":"request body must be a JSON object","retryable":false}}`},
 		{"GET without header", http.MethodGet, "/api/v1/me", nil, http.StatusOK, ""},
 		// Only GET is exempt; HEAD and OPTIONS need the header too.
 		{"HEAD without header", http.MethodHead, "/api/v1/me", nil, http.StatusForbidden, csrfJSON},

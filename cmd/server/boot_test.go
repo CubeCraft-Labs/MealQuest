@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/config"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secretbox"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/migrations"
@@ -52,6 +53,11 @@ func loadConfig(t *testing.T, keyFile string) config.Config {
 	t.Setenv(config.EnvOIDCClientID, "mealquest")
 	t.Setenv(config.EnvOIDCClientSecretFile, clientSecretPath)
 	t.Setenv(config.EnvOIDCAllowedGroups, "mealquest-admin")
+	// MEALQUEST_DEFAULT_TZ is left unset; t.Setenv restores any outer value.
+	t.Setenv(config.EnvDefaultTZ, "")
+	if err := os.Unsetenv(config.EnvDefaultTZ); err != nil {
+		t.Fatal(err)
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
@@ -200,5 +206,127 @@ func TestLoadMissingSecretKeyFileStopsBoot(t *testing.T) {
 	var cfgErr *config.Error
 	if !errors.As(err, &cfgErr) || !strings.Contains(err.Error(), config.EnvSecretKeyFile) {
 		t.Fatalf("Load error = %v, want a config error naming %s", err, config.EnvSecretKeyFile)
+	}
+}
+
+func TestRunWithoutValidDefaultZoneOnFirstBootStops(t *testing.T) {
+	tests := []struct {
+		name      string
+		defaultTZ *string // nil leaves MEALQUEST_DEFAULT_TZ unset
+		want      error
+	}{
+		{"unset", nil, household.ErrNoDefaultZone},
+		{"not an IANA zone", ptr("Mars/Olympus_Mons"), household.ErrInvalidDefaultZone},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			loadConfig(t, validKeyFile(t))
+			if tt.defaultTZ != nil {
+				t.Setenv(config.EnvDefaultTZ, *tt.defaultTZ)
+			}
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var logs bytes.Buffer
+			errc := make(chan error, 1)
+			go func() { errc <- run(cfg, slog.New(slog.NewJSONHandler(&logs, nil))) }()
+
+			select {
+			case err = <-errc:
+			case <-time.After(10 * time.Second):
+				t.Fatal("run kept going with no household settings and no valid default zone")
+			}
+			if !errors.Is(err, tt.want) || !strings.Contains(err.Error(), config.EnvDefaultTZ) {
+				t.Fatalf("run error = %v, want %v naming %s", err, tt.want, config.EnvDefaultTZ)
+			}
+			if strings.Contains(logs.String(), `"listening"`) {
+				t.Errorf("run started listening without household settings: %s", logs.String())
+			}
+		})
+	}
+}
+
+// A reboot over existing household settings must not depend on
+// MEALQUEST_DEFAULT_TZ: config.Load accepts an invalid value and seeding
+// ignores it, keeping the stored zone.
+func TestRebootWithSettingsIgnoresInvalidDefaultZone(t *testing.T) {
+	ctx := context.Background()
+	cfg := loadConfig(t, validKeyFile(t))
+
+	db, err := openStore(ctx, cfg.DataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seedSettings(ctx, db, "America/Denver"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv(config.EnvDefaultTZ, "Mars/Olympus_Mons")
+	cfg, err = config.Load()
+	if err != nil {
+		t.Fatalf("Load with an invalid %s and existing settings: %v", config.EnvDefaultTZ, err)
+	}
+	db, err = openStore(ctx, cfg.DataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := seedSettings(ctx, db, cfg.DefaultTZ); err != nil {
+		t.Fatalf("reboot with %s=%q: %v", config.EnvDefaultTZ, cfg.DefaultTZ, err)
+	}
+	got, err := household.NewSettingsService(db).Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Timezone != "America/Denver" {
+		t.Errorf("timezone after reboot = %q, want America/Denver", got.Timezone)
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+func TestSeedSettingsAtBoot(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	// First boot seeds from the default zone.
+	db, err := openStore(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seedSettings(ctx, db, "America/Denver"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A later boot needs no default zone and keeps the stored one.
+	db, err = openStore(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := seedSettings(ctx, db, ""); err != nil {
+		t.Fatalf("reboot without %s: %v", config.EnvDefaultTZ, err)
+	}
+	got, err := household.NewSettingsService(db).Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Timezone != "America/Denver" {
+		t.Errorf("timezone after reboot = %q, want America/Denver", got.Timezone)
 	}
 }

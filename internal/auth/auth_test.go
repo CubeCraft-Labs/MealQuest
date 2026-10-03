@@ -21,6 +21,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -571,14 +572,37 @@ func TestCallbackTamperedLoginCookie(t *testing.T) {
 	}
 }
 
+// The provider's error and error_description are untrusted text and never
+// reach the logs; only the fixed category does.
 func TestCallbackProviderError(t *testing.T) {
 	t.Parallel()
+	const (
+		errorMarker       = "provider-error-marker"
+		descriptionMarker = "description-marker-" + testClientSecret
+	)
 	h := newHarness(t)
 	l := h.login(t, LoginPath)
-	q := url.Values{"error": {"access_denied"}, "state": {l.query.Get("state")}}
+	q := url.Values{
+		"error":             {errorMarker},
+		"error_description": {descriptionMarker},
+		"state":             {l.query.Get("state")},
+	}
 	resp := h.get(CallbackPath+"?"+q.Encode(), l.cookie)
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("callback status = %d, want 401", resp.StatusCode)
+	}
+	assertLoginCookieCleared(t, resp)
+	if n := len(h.sessions.started()); n != 0 {
+		t.Errorf("started %d sessions, want 0", n)
+	}
+	logs := h.logs.String()
+	for _, marker := range []string{errorMarker, descriptionMarker} {
+		if strings.Contains(logs, marker) {
+			t.Errorf("logs contain provider text %q: %s", marker, logs)
+		}
+	}
+	if !strings.Contains(logs, "identity provider returned an authorization error") {
+		t.Errorf("logs = %q, want the authorization error category", logs)
 	}
 }
 
@@ -773,5 +797,105 @@ func TestNewRejectsRemoteHTTPEndpoint(t *testing.T) {
 				t.Errorf("New error = %v, want %s rejected", err, tc.name)
 			}
 		})
+	}
+}
+
+// A token endpoint on https:// that redirects the code exchange to plain
+// http:// must not receive a follow-up request: Go would resend the client
+// secret in the Authorization header. The plaintext target is loopback, so
+// only the downgrade rule stops it.
+func TestCallbackRefusesTokenRedirectToHTTP(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			t.Parallel()
+			var plaintextHits atomic.Int32
+			plaintext := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				plaintextHits.Add(1)
+				http.Error(w, "unreachable", http.StatusTeapot)
+			}))
+			t.Cleanup(plaintext.Close)
+			var tlsHits atomic.Int32
+			tlsToken := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				tlsHits.Add(1)
+				http.Redirect(w, r, plaintext.URL+"/token", status)
+			}))
+			t.Cleanup(tlsToken.Close)
+
+			p := newFakeProvider(t)
+			p.discoveryOverrides = map[string]any{"token_endpoint": tlsToken.URL + "/token"}
+			sessions := &memorySessions{}
+			logs := &syncBuffer{}
+			a, err := New(context.Background(), Config{
+				Issuer:       p.issuer(),
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				PublicURL:    testPublicURL,
+				SecretKey:    []byte("server-secret-key"),
+			}, sessions, slog.New(slog.NewTextHandler(logs, nil)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Trust the test server's certificate; the redirect policy stays.
+			a.client.Transport = tlsToken.Client().Transport
+			r := chi.NewRouter()
+			a.Mount(r)
+			h := &harness{provider: p, sessions: sessions, router: r, logs: logs}
+			l := h.login(t, LoginPath)
+
+			resp := h.callback(l, l.query.Get("state"), "unused")
+
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Errorf("callback status = %d, want 401", resp.StatusCode)
+			}
+			if n := tlsHits.Load(); n != 1 {
+				t.Errorf("https token endpoint hit %d times, want 1", n)
+			}
+			if n := plaintextHits.Load(); n != 0 {
+				t.Errorf("plaintext endpoint hit %d times, want 0", n)
+			}
+			if n := len(sessions.started()); n != 0 {
+				t.Errorf("started %d sessions, want 0", n)
+			}
+			if got := logs.String(); !strings.Contains(got, "downgrade") {
+				t.Errorf("logs = %q, want the downgrade refusal", got)
+			}
+		})
+	}
+}
+
+func TestCheckRedirect(t *testing.T) {
+	t.Parallel()
+	request := func(raw string) *http.Request {
+		req, err := http.NewRequest(http.MethodPost, raw, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return req
+	}
+	tests := []struct {
+		from, to string
+		ok       bool
+	}{
+		{"https://auth.example.com/token", "https://auth2.example.com/token", true},
+		{"http://127.0.0.1:9000/token", "http://localhost:9001/token", true},
+		{"http://127.0.0.1:9000/token", "https://auth.example.com/token", true},
+		{"https://auth.example.com/token", "http://auth.example.com/token", false},
+		{"https://127.0.0.1:9000/token", "http://127.0.0.1:9001/token", false},
+		{"http://127.0.0.1:9000/token", "http://auth.example.com/token", false},
+		{"https://auth.example.com/token", "ftp://auth.example.com/token", false},
+	}
+	for _, tc := range tests {
+		err := checkRedirect(request(tc.to), []*http.Request{request(tc.from)})
+		if (err == nil) != tc.ok {
+			t.Errorf("redirect %s -> %s: error = %v, want ok=%v", tc.from, tc.to, err, tc.ok)
+		}
+	}
+	via := make([]*http.Request, maxRedirects)
+	for i := range via {
+		via[i] = request("https://auth.example.com/token")
+	}
+	if err := checkRedirect(request("https://auth.example.com/token"), via); err == nil {
+		t.Errorf("redirect after %d hops: error = nil, want limit", maxRedirects)
 	}
 }

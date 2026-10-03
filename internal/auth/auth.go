@@ -91,7 +91,7 @@ func New(ctx context.Context, cfg Config, sessions SessionStarter, logger *slog.
 		return nil, err
 	}
 
-	client := &http.Client{Timeout: providerTimeout}
+	client := &http.Client{Timeout: providerTimeout, CheckRedirect: checkRedirect}
 	provider, err := oidc.NewProvider(oidc.ClientContext(ctx, client), cfg.Issuer)
 	if err != nil {
 		return nil, fmt.Errorf("auth: OIDC discovery: %w", err)
@@ -145,6 +145,26 @@ func checkEndpoint(name, raw string) error {
 	}
 	if err := secureurl.Check(u); err != nil {
 		return fmt.Errorf("auth: OIDC %s %q: %w", name, raw, err)
+	}
+	return nil
+}
+
+// maxRedirects matches net/http's default redirect limit.
+const maxRedirects = 10
+
+// checkRedirect is the provider client's redirect policy. On a 307 or 308 to
+// the same host Go resends the body and Authorization header, which carry the
+// code and client secret, so every target must pass secureurl.Check and an
+// https:// request never follows a redirect to plain http://, even loopback.
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirects {
+		return fmt.Errorf("stopped after %d redirects", maxRedirects)
+	}
+	if err := secureurl.Check(req.URL); err != nil {
+		return fmt.Errorf("redirect refused: %w", err)
+	}
+	if via[len(via)-1].URL.Scheme == "https" && req.URL.Scheme != "https" {
+		return errors.New("redirect refused: https:// to plain http:// downgrade")
 	}
 	return nil
 }
@@ -203,8 +223,10 @@ func (a *Auth) callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sign-in state mismatch; start again", http.StatusBadRequest)
 		return
 	}
-	if e := q.Get("error"); e != "" {
-		a.logger.WarnContext(ctx, "identity provider refused sign-in", "error", e, "description", q.Get("error_description"))
+	if q.Get("error") != "" {
+		// error and error_description are provider-supplied text; only the
+		// fixed category is logged.
+		a.logger.WarnContext(ctx, "identity provider returned an authorization error")
 		http.Error(w, "sign-in was refused", http.StatusUnauthorized)
 		return
 	}
@@ -268,9 +290,9 @@ func exchangeError(err error) error {
 	case errors.As(err, &retrieve):
 		return fmt.Errorf("exchange code: token endpoint rejected the request (HTTP %d)", retrieve.Response.StatusCode)
 	case errors.As(err, &transport):
-		// Request failures never carry the response; the URL is the token
-		// endpoint from discovery.
-		return fmt.Errorf("exchange code: token request failed: %w", transport)
+		// Request failures never carry the response. The URL is dropped: after
+		// a refused redirect it is the provider-supplied Location.
+		return fmt.Errorf("exchange code: token request failed: %s: %w", transport.Op, transport.Err)
 	default:
 		return errors.New("exchange code: token endpoint returned an unusable response")
 	}

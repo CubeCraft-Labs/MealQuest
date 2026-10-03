@@ -29,6 +29,15 @@ docker compose project "mealquest" — 10.60.1.14
 One Go service serves the API, the auth flow, media and the PWA. Its SQLite
 database is replicated by Litestream to the NAS.
 
+Traefik terminates TLS. The service honours `X-Forwarded-For` and
+`X-Forwarded-Proto` only from peers listed in `MEALQUEST_TRUSTED_PROXY`
+(comma-separated IPs/CIDRs; production lists `10.60.1.33`); from any other
+peer they are ignored. The client is the rightmost `X-Forwarded-For` address
+that is not a trusted proxy. The resolved client IP is added as `client_ip`
+to every log line written while handling a request, and the auth routes
+refuse requests whose resolved scheme differs from `MEALQUEST_PUBLIC_URL`'s. The OIDC redirect URI is always built
+from `MEALQUEST_PUBLIC_URL`, never from request headers.
+
 ## Repository layout
 
 | Path | Purpose |

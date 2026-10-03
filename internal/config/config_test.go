@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
 )
 
 func TestLoad(t *testing.T) {
@@ -294,6 +297,48 @@ func TestLoad(t *testing.T) {
 			badVars: []string{EnvSessionMax},
 		},
 		{
+			name: "trusted proxy IP",
+			env:  with(map[string]string{EnvTrustedProxy: "10.60.1.33"}),
+		},
+		{
+			name: "trusted proxy IPs and CIDRs",
+			env:  with(map[string]string{EnvTrustedProxy: "10.60.1.33, 172.16.0.0/12,2001:db8::/32,::1"}),
+		},
+		{
+			name: "blank trusted proxy trusts no peer",
+			env:  with(map[string]string{EnvTrustedProxy: "  "}),
+		},
+		{
+			name:    "trusted proxy not an IP",
+			env:     with(map[string]string{EnvTrustedProxy: "traefik"}),
+			badVars: []string{EnvTrustedProxy},
+		},
+		{
+			name:    "trusted proxy invalid CIDR",
+			env:     with(map[string]string{EnvTrustedProxy: "10.60.1.0/33"}),
+			badVars: []string{EnvTrustedProxy},
+		},
+		{
+			name:    "trusted proxy CIDR with host bits",
+			env:     with(map[string]string{EnvTrustedProxy: "10.60.1.33/24"}),
+			badVars: []string{EnvTrustedProxy},
+		},
+		{
+			name:    "trusted proxy empty entry",
+			env:     with(map[string]string{EnvTrustedProxy: "10.60.1.33,,10.60.1.34"}),
+			badVars: []string{EnvTrustedProxy},
+		},
+		{
+			name:    "trusted proxy trusting everyone",
+			env:     with(map[string]string{EnvTrustedProxy: "0.0.0.0/0"}),
+			badVars: []string{EnvTrustedProxy},
+		},
+		{
+			name:    "trusted proxy with port",
+			env:     with(map[string]string{EnvTrustedProxy: "10.60.1.33:443"}),
+			badVars: []string{EnvTrustedProxy},
+		},
+		{
 			name: "several invalid values are all named",
 			env: with(map[string]string{
 				EnvShutdownTimeout: "soon",
@@ -402,14 +447,23 @@ func TestLoadValues(t *testing.T) {
 		t.Errorf("SessionIdle, SessionMax = %v, %v, want defaults 720h, 4320h", cfg.SessionIdle, cfg.SessionMax)
 	}
 
+	if cfg.TrustedProxy != nil {
+		t.Errorf("TrustedProxy = %v, want none when unset", cfg.TrustedProxy)
+	}
+
 	env[EnvSessionIdle] = "12h"
 	env[EnvSessionMax] = "36h"
+	env[EnvTrustedProxy] = "10.60.1.33, 172.16.0.0/12"
 	cfg, err = load(func(k string) (string, bool) { v, ok := env[k]; return v, ok })
 	if err != nil {
 		t.Fatalf("load() error = %v", err)
 	}
 	if cfg.SessionIdle != 12*time.Hour || cfg.SessionMax != 36*time.Hour {
 		t.Errorf("SessionIdle, SessionMax = %v, %v, want 12h, 36h", cfg.SessionIdle, cfg.SessionMax)
+	}
+	want := forwarded.Trusted{netip.MustParsePrefix("10.60.1.33/32"), netip.MustParsePrefix("172.16.0.0/12")}
+	if !slices.Equal(cfg.TrustedProxy, want) {
+		t.Errorf("TrustedProxy = %v, want %v", cfg.TrustedProxy, want)
 	}
 }
 

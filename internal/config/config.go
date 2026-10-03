@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secureurl"
 )
 
@@ -30,6 +31,8 @@ const (
 
 	EnvSessionIdle = "MEALQUEST_SESSION_IDLE"
 	EnvSessionMax  = "MEALQUEST_SESSION_MAX"
+
+	EnvTrustedProxy = "MEALQUEST_TRUSTED_PROXY"
 )
 
 // Session lifetime defaults (D-004): long enough that the kitchen tablet
@@ -58,6 +61,10 @@ type Config struct {
 	SessionIdle time.Duration
 	// SessionMax ends every session this long after sign-in, used or not.
 	SessionMax time.Duration
+
+	// TrustedProxy lists the reverse proxies whose X-Forwarded-For and
+	// X-Forwarded-Proto headers are honoured. Empty trusts no peer.
+	TrustedProxy forwarded.Trusted
 }
 
 // PublicOrigin returns the scheme and host of PublicURL, the only parts of it
@@ -88,6 +95,8 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 
 		SessionIdle: r.sessionDuration(EnvSessionIdle, DefaultSessionIdle),
 		SessionMax:  r.sessionDuration(EnvSessionMax, DefaultSessionMax),
+
+		TrustedProxy: r.trustedProxy(EnvTrustedProxy),
 	}
 	if cfg.SessionIdle > 0 && cfg.SessionMax > 0 && cfg.SessionMax < cfg.SessionIdle {
 		r.fail(EnvSessionMax, "must be at least %s (%s)", EnvSessionIdle, cfg.SessionIdle)
@@ -175,6 +184,18 @@ func (r *reader) list(name string) []string {
 		}
 	}
 	return items
+}
+
+// trustedProxy parses an optional comma-separated list of IP addresses and
+// CIDR prefixes with forwarded.ParseTrusted. Unset or blank trusts no peer.
+func (r *reader) trustedProxy(name string) forwarded.Trusted {
+	v, _ := r.lookup(name)
+	t, err := forwarded.ParseTrusted(v)
+	if err != nil {
+		r.fail(name, "%v", err)
+		return nil
+	}
+	return t
 }
 
 func (r *reader) listenAddr(name string) string {

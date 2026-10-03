@@ -17,6 +17,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strings"
@@ -26,6 +27,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
 )
 
 const (
@@ -347,10 +350,31 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := chi.NewRouter()
-	a.Mount(r)
+	r := publicRouter(a, testPublicURL.Scheme)
 	return &harness{provider: p, sessions: sessions, router: r, logs: logs}
 }
+
+// publicRouter mounts a's routes behind the request-origin resolution the
+// server installs, with every request taken to have arrived over scheme.
+// Requests with noOrigin set skip the resolution.
+func publicRouter(a *Auth, scheme string) http.Handler {
+	r := chi.NewRouter()
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if req.Header.Get(noOrigin) == "" {
+				o := forwarded.Origin{ClientIP: netip.MustParseAddr("192.0.2.1"), Scheme: scheme}
+				req = req.WithContext(forwarded.NewContext(req.Context(), o))
+			}
+			next.ServeHTTP(w, req)
+		})
+	})
+	a.Mount(r)
+	return r
+}
+
+// noOrigin is a test-only request header telling publicRouter to leave the
+// request's origin unresolved.
+const noOrigin = "X-Test-No-Origin"
 
 func (h *harness) get(target string, cookies ...*http.Cookie) *http.Response {
 	req := httptest.NewRequest(http.MethodGet, target, nil)
@@ -430,6 +454,127 @@ func TestLoginRedirect(t *testing.T) {
 	}
 	if c.MaxAge <= 0 || c.MaxAge > 600 {
 		t.Errorf("login cookie MaxAge = %d, want 1-600 seconds", c.MaxAge)
+	}
+}
+
+func TestAuthRoutesRequirePublicScheme(t *testing.T) {
+	t.Parallel()
+	p := newFakeProvider(t)
+	logs := &syncBuffer{}
+	a, err := New(context.Background(), Config{
+		Issuer:        p.issuer(),
+		ClientID:      testClientID,
+		ClientSecret:  testClientSecret,
+		PublicURL:     testPublicURL,
+		SecretKey:     []byte("server-secret-key"),
+		AllowedGroups: testAllowedGroups,
+	}, &memorySessions{}, slog.New(slog.NewTextHandler(logs, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The proxy's X-Forwarded-Proto was not honoured: the request looks like
+	// plain http while the public URL is https.
+	plain := publicRouter(a, "http")
+	for _, req := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, LoginPath, nil),
+		httptest.NewRequest(http.MethodGet, CallbackPath+"?code=c&state=s", nil),
+		httptest.NewRequest(http.MethodPost, LogoutPath, nil),
+	} {
+		rec := httptest.NewRecorder()
+		plain.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s %s over http = %d, want 400", req.Method, req.URL.Path, rec.Code)
+		}
+		if loc := rec.Header().Get("Location"); loc != "" {
+			t.Errorf("%s %s over http redirected to %q", req.Method, req.URL.Path, loc)
+		}
+		if c := rec.Result().Cookies(); len(c) != 0 {
+			t.Errorf("%s %s over http set cookies %v", req.Method, req.URL.Path, c)
+		}
+	}
+	if !strings.Contains(logs.String(), "trusted peer") {
+		t.Errorf("logs = %q, want the scheme mismatch explained", logs.String())
+	}
+
+	bare := chi.NewRouter()
+	a.Mount(bare)
+	rec := httptest.NewRecorder()
+	bare.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, LoginPath, nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("login without a resolved origin = %d, want 500", rec.Code)
+	}
+}
+
+// TestLoginBehindTraefik resolves each request with forwarded.Resolve, as
+// the server's middleware does, trusting Traefik only.
+func TestLoginBehindTraefik(t *testing.T) {
+	t.Parallel()
+	p := newFakeProvider(t)
+	a, err := New(context.Background(), Config{
+		Issuer:        p.issuer(),
+		ClientID:      testClientID,
+		ClientSecret:  testClientSecret,
+		PublicURL:     testPublicURL,
+		SecretKey:     []byte("server-secret-key"),
+		AllowedGroups: testAllowedGroups,
+	}, &memorySessions{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	trusted, err := forwarded.ParseTrusted("10.60.1.33")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := chi.NewRouter()
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			o, err := forwarded.Resolve(req, trusted)
+			if err != nil {
+				t.Errorf("Resolve: %v", err)
+				return
+			}
+			next.ServeHTTP(w, req.WithContext(forwarded.NewContext(req.Context(), o)))
+		})
+	})
+	a.Mount(r)
+
+	login := func(peer string) *http.Response {
+		// Traefik reaches the service over plain http on its internal
+		// address; the host headers must not leak into the redirect URI.
+		req := httptest.NewRequest(http.MethodGet, "http://mealquest:8080"+LoginPath, nil)
+		req.RemoteAddr = peer
+		req.Header.Set("X-Forwarded-For", "203.0.113.7")
+		req.Header.Set("X-Forwarded-Proto", "https")
+		req.Header.Set("X-Forwarded-Host", "evil.example.com")
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec.Result()
+	}
+
+	resp := login("10.60.1.33:41000")
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("login via Traefik status = %d, want 302", resp.StatusCode)
+	}
+	loc, err := url.Parse(resp.Header.Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := loc.Query().Get("redirect_uri"), "https://meals.example.com/auth/callback"; got != want {
+		t.Errorf("redirect_uri = %q, want %q from the public URL", got, want)
+	}
+	cookies := resp.Cookies()
+	if len(cookies) != 1 || cookies[0].Name != loginCookieName || !cookies[0].Secure {
+		t.Errorf("login cookies = %v, want one Secure %s", cookies, loginCookieName)
+	}
+
+	// The same headers from an untrusted peer are ignored: the request is
+	// plain http, so sign-in is refused rather than setting a Secure cookie
+	// the browser would drop.
+	resp = login("198.51.100.9:5000")
+	if resp.StatusCode != http.StatusBadRequest || len(resp.Cookies()) != 0 {
+		t.Errorf("login spoofing X-Forwarded-Proto = %d with cookies %v, want 400 and none",
+			resp.StatusCode, resp.Cookies())
 	}
 }
 
@@ -904,8 +1049,7 @@ func TestCallbackRefusesTokenRedirectToHTTP(t *testing.T) {
 			}
 			// Trust the test server's certificate; the redirect policy stays.
 			a.client.Transport = tlsToken.Client().Transport
-			r := chi.NewRouter()
-			a.Mount(r)
+			r := publicRouter(a, testPublicURL.Scheme)
 			h := &harness{provider: p, sessions: sessions, router: r, logs: logs}
 			l := h.login(t, LoginPath)
 

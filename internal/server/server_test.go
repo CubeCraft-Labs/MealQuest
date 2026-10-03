@@ -27,7 +27,7 @@ func newTestRouter(t *testing.T, version string) http.Handler {
 		"index.html":             {Data: []byte(fixtureIndex)},
 		"assets/index-AbC123.js": {Data: []byte(fixtureAsset)},
 	}
-	r, err := NewRouter(logger, version, stubAuth{}, stubSessions{}, assets)
+	r, err := NewRouter(logger, version, nil, stubAuth{}, stubSessions{}, assets)
 	if err != nil {
 		t.Fatal(err)
 	}

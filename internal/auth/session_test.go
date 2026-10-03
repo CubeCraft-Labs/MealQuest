@@ -13,8 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/migrations"
 )
@@ -72,8 +70,7 @@ func newSessionHarness(t *testing.T) *sessionHarness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := chi.NewRouter()
-	a.Mount(r)
+	r := publicRouter(a, testPublicURL.Scheme)
 	h.harness = &harness{provider: p, router: r, logs: logs}
 	h.auth = a
 	return h

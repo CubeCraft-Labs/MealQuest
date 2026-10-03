@@ -40,6 +40,10 @@ export MEALQUEST_OIDC_ALLOWED_GROUPS=mealquest-admin
 # and always MEALQUEST_SESSION_MAX after sign-in (default 4320h).
 # export MEALQUEST_SESSION_IDLE=720h
 # export MEALQUEST_SESSION_MAX=4320h
+# Optional: comma-separated IPs/CIDRs of reverse proxies whose
+# X-Forwarded-For/-Proto headers are honoured (production: Traefik). Unset
+# trusts no peer, which is right for local development.
+# export MEALQUEST_TRUSTED_PROXY=10.60.1.33
 make dev
 ```
 
@@ -47,7 +51,8 @@ make dev
 (which proxies `/api`, `/auth` and `/media` to `:8080`). Open
 http://localhost:5173. Configuration is environment-only and fails fast:
 every variable above is required except the commented-out session
-lifetimes (when set they must be positive, with MAX at least IDLE), and
+lifetimes (when set they must be positive, with MAX at least IDLE) and
+trusted proxy list (every entry must be an IP or CIDR), and
 secrets are read only from files named by `*_FILE` variables. `MEALQUEST_PUBLIC_URL`, `MEALQUEST_OIDC_ISSUER` and the
 endpoints the issuer advertises must be `https://`; plain `http://` is
 accepted only for `localhost`, `127.0.0.1` and `[::1]`.

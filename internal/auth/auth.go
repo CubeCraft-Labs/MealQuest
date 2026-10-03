@@ -19,6 +19,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/oauth2"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secureurl"
 )
 
@@ -83,7 +84,10 @@ type Auth struct {
 	// endSessionURL is the provider's end_session_endpoint; logout ends
 	// there so the provider's own session ends too.
 	endSessionURL string
-	logger        *slog.Logger
+	// publicScheme is the public URL's scheme; requests to the auth routes
+	// must have arrived over it.
+	publicScheme string
+	logger       *slog.Logger
 }
 
 // New discovers the provider at cfg.Issuer and returns the login flow. It
@@ -155,6 +159,7 @@ func New(ctx context.Context, cfg Config, sessions Sessions, logger *slog.Logger
 		cookie:        newLoginCookie(cfg.SecretKey),
 		sessions:      sessions,
 		endSessionURL: discovered.EndSessionURI,
+		publicScheme:  cfg.PublicURL.Scheme,
 		logger:        logger,
 	}, nil
 }
@@ -193,10 +198,37 @@ func checkRedirect(req *http.Request, via []*http.Request) error {
 }
 
 // Mount registers GET LoginPath, GET CallbackPath and POST LogoutPath on r.
+// The routes need the request's resolved scheme in the context (see package
+// forwarded) and refuse requests that did not arrive over the public URL's
+// scheme.
 func (a *Auth) Mount(r chi.Router) {
+	r = r.With(a.requirePublicScheme)
 	r.Get(LoginPath, a.login)
 	r.Get(CallbackPath, a.callback)
 	r.Post(LogoutPath, a.logout)
+}
+
+// requirePublicScheme refuses a request whose resolved scheme differs from
+// the public URL's. The login and session cookies are Secure, and the
+// redirect URI is always built from the public URL, so a sign-in reaching the
+// service over another scheme cannot work: behind a TLS-terminating proxy
+// this means the proxy's X-Forwarded-Proto was not honoured, because the
+// proxy is not a trusted peer.
+func (a *Auth) requirePublicScheme(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		scheme, ok := forwarded.Scheme(r.Context())
+		switch {
+		case !ok:
+			a.logger.ErrorContext(r.Context(), "auth route reached without a resolved request scheme")
+			http.Error(w, "internal error", http.StatusInternalServerError)
+		case scheme != a.publicScheme:
+			a.logger.WarnContext(r.Context(), "auth request scheme differs from the public URL; is the proxy a trusted peer?",
+				"scheme", scheme, "public_scheme", a.publicScheme)
+			http.Error(w, "sign-in must use the service's public URL", http.StatusBadRequest)
+		default:
+			next.ServeHTTP(w, r)
+		}
+	})
 }
 
 // EndSessionURL is the provider's end_session_endpoint.

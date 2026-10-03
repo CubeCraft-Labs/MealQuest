@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
 )
 
@@ -21,12 +22,14 @@ type RouteMounter interface {
 	Mount(r chi.Router)
 }
 
-// NewRouter returns the HTTP handler for the service. version is reported by
+// NewRouter returns the HTTP handler for the service. Every request first
+// has its client address and scheme resolved, honouring forwarded headers
+// only from a peer in trusted (see resolveOrigin). version is reported by
 // GET /health; auth mounts the /auth routes; sessions guards /api/v1 and
 // /media; assets is the web build served for every other GET. /health, /auth
 // and the web build are public. Requests to /api/v1 other than GET, HEAD and
 // OPTIONS also need the session's CSRF token in CSRFHeader.
-func NewRouter(logger *slog.Logger, version string, auth RouteMounter, sessions SessionLookup, assets fs.FS) (http.Handler, error) {
+func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, assets fs.FS) (http.Handler, error) {
 	notFound := apiErrorHandler(logger, http.StatusNotFound, "not_found", "not found")
 	methodNotAllowed := apiErrorHandler(logger, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 
@@ -36,6 +39,7 @@ func NewRouter(logger *slog.Logger, version string, auth RouteMounter, sessions 
 	}
 
 	r := chi.NewRouter()
+	r.Use(resolveOrigin(logger, trusted))
 	r.MethodNotAllowed(methodNotAllowed)
 	r.NotFound(notFound)
 

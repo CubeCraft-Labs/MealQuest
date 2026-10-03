@@ -391,8 +391,8 @@ func TestRestartFailsInterruptedJobsAndRunsQueuedOnes(t *testing.T) {
 	start(t, second)
 
 	job := waitFor(t, second, interrupted, finished)
-	if job.Status != StatusFailed || job.Error == nil || *job.Error != CodeInterrupted {
-		t.Errorf("interrupted job = %+v, want failed with %q", job, CodeInterrupted)
+	if job.Status != StatusFailed || job.Error == nil || *job.Error != "interrupted by restart" {
+		t.Errorf("interrupted job = %+v, want failed with %q", job, "interrupted by restart")
 	}
 	if string(job.Result) != `{"done":1}` {
 		t.Errorf("interrupted job result = %s, want the last partial result kept", job.Result)

@@ -41,7 +41,9 @@ const (
 // Failure codes the runner stores itself. A kind cannot declare them.
 const (
 	// CodeInterrupted is the error of a job a previous process left running.
-	CodeInterrupted = "interrupted"
+	// It is fixed framework text, not a snake-case code, so no kind can
+	// declare it.
+	CodeInterrupted = "interrupted by restart"
 	// CodeInternal is the error of a job whose handler failed with anything
 	// but a *Failure with a code its kind declared, or whose payload or
 	// result could not be encoded. The underlying error is neither stored
@@ -152,7 +154,7 @@ func Register[P any, R Public](r *Runner, kind string, h Handler[P, R], failureC
 		if !codePattern.MatchString(code) {
 			return nil, fmt.Errorf("jobs: register %q: failure code %q is not lower-case snake case", kind, code)
 		}
-		if code == CodeInterrupted || code == CodeInternal || code == CodeUnknownKind {
+		if code == CodeInternal || code == CodeUnknownKind {
 			return nil, fmt.Errorf("jobs: register %q: failure code %q is reserved for the runner", kind, code)
 		}
 		declared[code] = true

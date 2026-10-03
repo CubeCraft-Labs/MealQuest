@@ -1,0 +1,51 @@
+.rail {
+  width: 96px;
+  padding: 24px 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  background: var(--color-surface);
+}
+
+.mark {
+  width: 48px;
+  height: 48px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--color-accent);
+  color: var(--on-accent);
+  font-family: var(--font-heading);
+  font-size: 22px;
+}
+
+.item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  min-width: 56px;
+  min-height: 44px;
+  color: var(--color-neutral-700);
+  font-size: 11px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.pill {
+  width: 56px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-pill);
+}
+
+.active {
+  background: var(--color-accent);
+  color: var(--on-accent);
+}

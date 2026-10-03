@@ -85,26 +85,31 @@ func New(cfg Config) (*Provider, error) {
 	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, errors.New("openai: base URL must be an absolute http or https URL")
 	}
-	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+	// A trailing "?" or "#" parses to an empty query or fragment, yet the
+	// endpoint path appended to it would land in the query or fragment.
+	if u.User != nil || strings.ContainsAny(cfg.BaseURL, "?#") {
 		return nil, errors.New("openai: base URL must not carry credentials, a query or a fragment")
 	}
+	// Every other error that names caller-supplied text has the API key
+	// redacted from that text before it is quoted.
 	switch cfg.StructuredOutput {
 	case JSONSchema, JSONObject, PromptOnly:
 	default:
-		return nil, fmt.Errorf("openai: unknown structured output mode %q", cfg.StructuredOutput)
+		return nil, fmt.Errorf("openai: unknown structured output mode %q", redactKey(string(cfg.StructuredOutput), cfg.APIKey))
 	}
 	headers := make(http.Header, len(cfg.Headers)+1)
 	for name, value := range cfg.Headers {
-		// Values are never echoed: one may carry a credential.
+		// Invalid names and all values are never echoed: either may carry a
+		// credential.
 		if !validHeaderName(name) {
-			return nil, fmt.Errorf("openai: extra header name %q is not a valid HTTP token", name)
+			return nil, errors.New("openai: an extra header name is not a valid HTTP token")
 		}
 		canonical := textproto.CanonicalMIMEHeaderKey(name)
 		if managedHeaders[canonical] {
 			return nil, fmt.Errorf("openai: extra header %q is set by the adapter", canonical)
 		}
 		if !validHeaderValue(value) {
-			return nil, fmt.Errorf("openai: extra header %q has a control character in its value", canonical)
+			return nil, fmt.Errorf("openai: extra header %q has a control character in its value", redactKey(canonical, cfg.APIKey))
 		}
 		headers.Set(canonical, value)
 	}
@@ -486,9 +491,13 @@ func (p *Provider) transportError(err error) error {
 	if errors.As(err, &ue) {
 		err = ue.Err
 	}
-	detail := err.Error()
-	if p.apiKey != "" {
-		detail = strings.ReplaceAll(detail, p.apiKey, "[REDACTED]")
+	return &transportFailure{detail: redactKey(err.Error(), p.apiKey), kind: kind}
+}
+
+// redactKey replaces every occurrence of a non-empty key in s.
+func redactKey(s, key string) string {
+	if key == "" {
+		return s
 	}
-	return &transportFailure{detail: detail, kind: kind}
+	return strings.ReplaceAll(s, key, "[REDACTED]")
 }

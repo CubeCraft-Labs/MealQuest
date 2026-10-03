@@ -627,6 +627,31 @@ func TestNewRejectsBadHeaderWithoutEchoingValue(t *testing.T) {
 	assertNoSecret(t, err)
 }
 
+// TestNewConfigErrorsNeverLeakKey covers every New error that names
+// caller-supplied text, each with the API key embedded in that text.
+func TestNewConfigErrorsNeverLeakKey(t *testing.T) {
+	cases := map[string]Config{
+		"key in invalid header name": {Headers: map[string]string{"Bearer " + testKey: "a"}},
+		"key as invalid header name": {Headers: map[string]string{testKey + ":": "a"}},
+		"key in name, bad value":     {Headers: map[string]string{"X-" + testKey: "a\nb"}},
+		"key in structured output":   {StructuredOutput: StructuredOutput("Bearer " + testKey)},
+		"key with quote in mode":     {StructuredOutput: StructuredOutput(testKey + "\"\x00")},
+	}
+	for name, cfg := range cases {
+		cfg.BaseURL = "https://example.com/v1"
+		cfg.APIKey = testKey
+		if cfg.StructuredOutput == "" {
+			cfg.StructuredOutput = JSONSchema
+		}
+		_, err := New(cfg)
+		if err == nil {
+			t.Errorf("%s: New() = nil error", name)
+			continue
+		}
+		assertNoSecret(t, err)
+	}
+}
+
 func TestAcceptHeader(t *testing.T) {
 	for name, tc := range map[string]struct {
 		headers map[string]string
@@ -664,6 +689,9 @@ func TestNewRejectsBadConfig(t *testing.T) {
 		"key, relative base": {BaseURL: "example.com/v1?key=" + testKey, StructuredOutput: JSONSchema},
 		"key, ftp base":      {BaseURL: "ftp://example.com/v1?key=" + testKey, StructuredOutput: JSONSchema},
 		"key, unparseable":   {BaseURL: "https://example.com/%zz?key=" + testKey, StructuredOutput: JSONSchema},
+		"empty query":        {BaseURL: "https://example.com/v1?", StructuredOutput: JSONSchema},
+		"empty fragment":     {BaseURL: "https://example.com/v1#", StructuredOutput: JSONSchema},
+		"empty both":         {BaseURL: "https://example.com/v1?#", StructuredOutput: JSONSchema},
 		"unknown mode":       {BaseURL: "https://example.com/v1", StructuredOutput: "json"},
 		"no mode":            {BaseURL: "https://example.com/v1"},
 		"authorization hdr":  {BaseURL: "https://example.com/v1", StructuredOutput: JSONSchema, Headers: map[string]string{"authorization": "Bearer x"}},

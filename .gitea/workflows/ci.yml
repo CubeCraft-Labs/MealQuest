@@ -1,0 +1,60 @@
+# Runs on every push and pull request (no branch filter) so feature branches,
+# their pull requests, and dev/main are all checked. Runs directly on the
+# self-hosted act_runner; no container: key.
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -race ./...
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: npm ci
+        working-directory: web
+        run: npm ci
+
+      - name: npm run typecheck
+        working-directory: web
+        run: npm run typecheck
+
+      - name: npm test
+        working-directory: web
+        run: npm test
+
+      - name: npm run build
+        working-directory: web
+        run: npm run build
+
+      # Embed the real PWA, as `make embed` does, then build the static binary.
+      - name: go build (embedded PWA)
+        run: |
+          rm -rf internal/frontend/dist
+          mkdir -p internal/frontend/dist
+          cp -R web/dist/. internal/frontend/dist/
+          CGO_ENABLED=0 go build -o bin/mealquest ./cmd/server

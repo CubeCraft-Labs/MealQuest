@@ -1,0 +1,2 @@
+-- 0001_init: placeholder so the migrations embed compiles.
+-- Replaced by the full v1 schema in Feature 02 task 3.

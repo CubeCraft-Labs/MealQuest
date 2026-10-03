@@ -333,6 +333,22 @@ func TestSessionCookieOutlivesFractionalMax(t *testing.T) {
 	}
 }
 
+// A lifetime near the largest accepted duration still yields a positive,
+// rounded-up cookie Max-Age rather than overflowing.
+func TestSessionCookieMaxAgeNearLargestMax(t *testing.T) {
+	t.Parallel()
+	largest, err := time.ParseDuration("2562047h47m16.854s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newSessionHarness(t)
+	h.sessions.max = largest
+	_, cookie := h.signIn(t)
+	if want := 9223372037; cookie.MaxAge != want {
+		t.Errorf("session cookie MaxAge = %d, want %d", cookie.MaxAge, want)
+	}
+}
+
 // A lifetime shortened by configuration applies to existing sessions even
 // though their stored expires_at is later.
 func TestSessionLifetimeChecksUseCurrentConfig(t *testing.T) {

@@ -93,8 +93,19 @@ func (m *SessionManager) StartSession(w http.ResponseWriter, r *http.Request, cl
 	// The cookie outlives idle gaps so a returning device presents its ID;
 	// the server decides whether the session is still live. Max-Age is whole
 	// seconds, rounded up so the cookie never ends before the absolute limit.
-	http.SetCookie(w, sessionCookie(id, int((m.max+time.Second-1)/time.Second)))
+	http.SetCookie(w, sessionCookie(id, cookieMaxAge(m.max)))
 	return nil
+}
+
+// cookieMaxAge is lifetime in whole seconds, rounded up. It rounds the
+// quotient rather than adding to lifetime, which would overflow near the
+// largest time.Duration.
+func cookieMaxAge(lifetime time.Duration) int {
+	seconds := lifetime / time.Second
+	if lifetime%time.Second != 0 {
+		seconds++
+	}
+	return int(seconds)
 }
 
 // SessionFor returns the live session r carries and slides its last use to

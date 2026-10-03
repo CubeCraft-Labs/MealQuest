@@ -7,14 +7,35 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"testing/fstest"
 )
+
+const (
+	fixtureIndex = "<!doctype html><title>fixture index</title>"
+	fixtureAsset = "console.log('fixture asset')"
+	notFoundJSON = `{"error":{"code":"not_found","message":"not found","retryable":false}}`
+)
+
+func newTestRouter(t *testing.T, version string) http.Handler {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	assets := fstest.MapFS{
+		"index.html":             {Data: []byte(fixtureIndex)},
+		"assets/index-AbC123.js": {Data: []byte(fixtureAsset)},
+	}
+	r, err := NewRouter(logger, version, assets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
 
 func TestHealth(t *testing.T) {
 	t.Parallel()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := httptest.NewServer(NewRouter(logger, "1.2.3"))
+	srv := httptest.NewServer(newTestRouter(t, "1.2.3"))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/health")
@@ -42,9 +63,8 @@ func TestHealth(t *testing.T) {
 func TestHealthRejectsOtherMethods(t *testing.T) {
 	t.Parallel()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	rec := httptest.NewRecorder()
-	NewRouter(logger, "dev").ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
+	newTestRouter(t, "dev").ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", rec.Code)
@@ -68,21 +88,95 @@ func TestHealthRejectsOtherMethods(t *testing.T) {
 	}
 }
 
-func TestUnknownPathNotFound(t *testing.T) {
+func TestReservedPathsNotFound(t *testing.T) {
 	t.Parallel()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	rec := httptest.NewRecorder()
-	NewRouter(logger, "dev").ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/unknown", nil))
+	router := newTestRouter(t, "dev")
+	tests := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api"},
+		{http.MethodGet, "/api/unknown"},
+		{http.MethodPost, "/api/unknown"},
+		{http.MethodGet, "/auth/callback"},
+		{http.MethodGet, "/media/photo.jpg"},
+		{http.MethodGet, "/health/deep"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			t.Parallel()
 
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want 404", rec.Code)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(tt.method, tt.path, nil))
+
+			if rec.Code != http.StatusNotFound {
+				t.Errorf("status = %d, want 404", rec.Code)
+			}
+			if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+				t.Errorf("Content-Type = %q, want application/json", ct)
+			}
+			if got := rec.Body.String(); got != notFoundJSON {
+				t.Errorf("body = %s, want %s", got, notFoundJSON)
+			}
+		})
 	}
-	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
-		t.Errorf("Content-Type = %q, want application/json", ct)
+}
+
+func TestFrontend(t *testing.T) {
+	t.Parallel()
+
+	router := newTestRouter(t, "dev")
+	tests := []struct {
+		path      string
+		wantBody  string
+		wantCache string
+	}{
+		{"/", fixtureIndex, "no-cache"},
+		{"/assets/index-AbC123.js", fixtureAsset, "public, max-age=31536000, immutable"},
+		{"/quests/42", fixtureIndex, "no-cache"},
 	}
-	const want = `{"error":{"code":"not_found","message":"not found","retryable":false}}`
-	if got := rec.Body.String(); got != want {
-		t.Errorf("body = %s, want %s", got, want)
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			t.Parallel()
+
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.path, nil))
+
+			if rec.Code != http.StatusOK {
+				t.Errorf("status = %d, want 200", rec.Code)
+			}
+			if got := rec.Body.String(); got != tt.wantBody {
+				t.Errorf("body = %q, want %q", got, tt.wantBody)
+			}
+			if got := rec.Header().Get("Cache-Control"); got != tt.wantCache {
+				t.Errorf("Cache-Control = %q, want %q", got, tt.wantCache)
+			}
+		})
+	}
+}
+
+func TestHealthNotShadowed(t *testing.T) {
+	t.Parallel()
+
+	rec := httptest.NewRecorder()
+	newTestRouter(t, "dev").ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+	if body := rec.Body.String(); rec.Code != http.StatusOK || strings.Contains(body, fixtureIndex) {
+		t.Errorf("GET /health = %d %q, want 200 health JSON", rec.Code, body)
+	}
+}
+
+func TestFrontendRejectsOtherMethods(t *testing.T) {
+	t.Parallel()
+
+	rec := httptest.NewRecorder()
+	newTestRouter(t, "dev").ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/quests/42", nil))
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), fixtureIndex) {
+		t.Errorf("body = %q, want no index.html", rec.Body.String())
 	}
 }

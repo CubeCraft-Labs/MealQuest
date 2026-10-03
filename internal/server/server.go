@@ -13,6 +13,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 )
 
 // reservedPrefixes are owned by the API router and are never answered with the
@@ -28,12 +29,16 @@ type RouteMounter interface {
 // has its client address and scheme resolved, honouring forwarded headers
 // only from a peer in trusted (see resolveOrigin). version is reported by
 // GET /health; auth mounts the /auth routes; sessions guards /api/v1 and
-// /media; settings serves /api/v1/settings/household; assets is the web build
+// /media; settings serves /api/v1/settings/household; runner serves
+// /api/v1/jobs/{id}; assets is the web build
 // served for every other GET. /health, /auth and the web build are public.
 // Requests to /api/v1 other than GET also need the session's CSRF token in CSRFHeader.
-func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, settings *household.SettingsService, assets fs.FS) (http.Handler, error) {
+func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, settings *household.SettingsService, runner *jobs.Runner, assets fs.FS) (http.Handler, error) {
 	if settings == nil {
 		return nil, errors.New("server: nil household settings service")
+	}
+	if runner == nil {
+		return nil, errors.New("server: nil job runner")
 	}
 	notFound := apiErrorHandler(logger, http.StatusNotFound, "not_found", "not found")
 	methodNotAllowed := apiErrorHandler(logger, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
@@ -63,6 +68,7 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Get("/me", me(logger))
 	apiV1.Get("/settings/household", getHouseholdSettings(logger, settings))
 	apiV1.Patch("/settings/household", patchHouseholdSettings(logger, settings))
+	apiV1.Get("/jobs/{id}", getJob(logger, runner))
 	r.Route("/api", func(r chi.Router) {
 		r.MethodNotAllowed(methodNotAllowed)
 		r.NotFound(notFound)

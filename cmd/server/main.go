@@ -18,6 +18,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secretbox"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/server"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
@@ -26,6 +27,9 @@ import (
 
 // version is set at build time with -ldflags "-X main.version=<version>".
 var version = "dev"
+
+// jobWorkers is the number of background jobs run at once.
+const jobWorkers = 2
 
 func main() {
 	cfg, err := config.Load()
@@ -63,6 +67,11 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 	settings := household.NewSettingsService(db)
+	// Job handlers are registered on the runner here, before Start.
+	runner, err := jobs.NewRunner(db, logger, jobWorkers)
+	if err != nil {
+		return err
+	}
 
 	sessions, err := auth.NewSessionManager(db, cfg.SessionIdle, cfg.SessionMax)
 	if err != nil {
@@ -80,8 +89,20 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, frontend.Assets())
+	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, runner, frontend.Assets())
 	if err != nil {
+		return err
+	}
+
+	// Start fails the jobs a previous process left running before any
+	// worker runs. The workers stop, and are waited for, before the
+	// database closes.
+	jobsCtx, stopJobs := context.WithCancel(ctx)
+	defer func() {
+		stopJobs()
+		runner.Wait()
+	}()
+	if err := runner.Start(jobsCtx); err != nil {
 		return err
 	}
 	srv := &http.Server{

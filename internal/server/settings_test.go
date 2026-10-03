@@ -84,7 +84,7 @@ func TestGetHouseholdSettings(t *testing.T) {
 func TestPatchHouseholdSettings(t *testing.T) {
 	t.Parallel()
 	settings := newTestSettings(t)
-	router := newTestRouterWith(t, "dev", settings)
+	router := newTestRouterWith(t, "dev", settings, newTestRunner(t))
 
 	var notified []household.Settings
 	settings.Subscribe(func(s household.Settings) { notified = append(notified, s) })
@@ -146,7 +146,7 @@ func TestPatchHouseholdSettingsRejected(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			settings := newTestSettings(t)
-			router := newTestRouterWith(t, "dev", settings)
+			router := newTestRouterWith(t, "dev", settings, newTestRunner(t))
 			notified := 0
 			settings.Subscribe(func(household.Settings) { notified++ })
 
@@ -216,7 +216,7 @@ func TestHouseholdSettingsWithRealSession(t *testing.T) {
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	router, err := NewRouter(logger, "dev", nil, stubAuth{}, sessions, household.NewSettingsService(st),
-		fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
+		newTestRunner(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
 	if err != nil {
 		t.Fatal(err)
 	}

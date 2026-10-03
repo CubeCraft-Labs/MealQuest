@@ -54,7 +54,9 @@ type Config struct {
 	// need it.
 	Model string
 	// Headers are extra request headers, e.g. OpenRouter's HTTP-Referer and
-	// X-Title. They must not set Authorization or Content-Type.
+	// X-Title. An Accept header replaces the default "application/json".
+	// Headers the adapter or net/http set themselves (see managedHeaders)
+	// are rejected.
 	Headers map[string]string
 	// StructuredOutput is how JSON is requested when a Request has a Schema.
 	StructuredOutput StructuredOutput
@@ -91,16 +93,23 @@ func New(cfg Config) (*Provider, error) {
 	default:
 		return nil, fmt.Errorf("openai: unknown structured output mode %q", cfg.StructuredOutput)
 	}
-	headers := make(http.Header, len(cfg.Headers))
+	headers := make(http.Header, len(cfg.Headers)+1)
 	for name, value := range cfg.Headers {
+		// Values are never echoed: one may carry a credential.
+		if !validHeaderName(name) {
+			return nil, fmt.Errorf("openai: extra header name %q is not a valid HTTP token", name)
+		}
 		canonical := textproto.CanonicalMIMEHeaderKey(name)
-		if canonical == "Authorization" || canonical == "Content-Type" {
+		if managedHeaders[canonical] {
 			return nil, fmt.Errorf("openai: extra header %q is set by the adapter", canonical)
 		}
-		if name == "" || strings.ContainsAny(name, " \t\r\n:") || strings.ContainsAny(value, "\r\n") {
-			return nil, fmt.Errorf("openai: extra header %q is malformed", name)
+		if !validHeaderValue(value) {
+			return nil, fmt.Errorf("openai: extra header %q has a control character in its value", canonical)
 		}
 		headers.Set(canonical, value)
+	}
+	if headers.Get("Accept") == "" {
+		headers.Set("Accept", "application/json")
 	}
 	return &Provider{
 		base:    strings.TrimRight(cfg.BaseURL, "/"),
@@ -110,6 +119,46 @@ func New(cfg Config) (*Provider, error) {
 		mode:    cfg.StructuredOutput,
 		client:  &http.Client{},
 	}, nil
+}
+
+// managedHeaders are the request headers the adapter or net/http set; a
+// configured value for one would be overwritten or ignored.
+var managedHeaders = map[string]bool{
+	"Authorization":     true,
+	"Content-Type":      true,
+	"Content-Length":    true,
+	"Transfer-Encoding": true,
+	"Host":              true,
+	"Connection":        true,
+}
+
+// validHeaderName reports whether name is an RFC 9110 field-name: a
+// non-empty token of letters, digits and !#$%&'*+-.^_`|~.
+func validHeaderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9':
+		case strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// validHeaderValue reports whether value is an RFC 9110 field-value: no
+// control characters other than horizontal tab, so no CR, LF or DEL.
+func validHeaderValue(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if c := value[i]; (c < 0x20 && c != '\t') || c == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // maxResponseBody caps a successful response body; a larger one is an error.
@@ -339,7 +388,6 @@ func (p *Provider) do(ctx context.Context, method, path string, payload []byte) 
 	if payload != nil {
 		httpReq.Header.Set("Content-Type", "application/json")
 	}
-	httpReq.Header.Set("Accept", "application/json")
 	if p.apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 	}

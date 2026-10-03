@@ -619,6 +619,40 @@ func TestGenerateRejectsInvalidRequests(t *testing.T) {
 	}
 }
 
+func TestNewRejectsBadHeaderWithoutEchoingValue(t *testing.T) {
+	_, err := New(Config{BaseURL: "https://example.com/v1", StructuredOutput: JSONSchema, Headers: map[string]string{"X-Title": testKey + "\u0019"}})
+	if err == nil {
+		t.Fatal("New() = nil error")
+	}
+	assertNoSecret(t, err)
+}
+
+func TestAcceptHeader(t *testing.T) {
+	for name, tc := range map[string]struct {
+		headers map[string]string
+		want    string
+	}{
+		"default":    {nil, "application/json"},
+		"configured": {map[string]string{"accept": "application/json, text/event-stream"}, "application/json, text/event-stream"},
+	} {
+		vs := newVendorServer(t, reply{status: 200, fixture: "openai_models.json"})
+		p := newProvider(t, vs.URL+"/v1", JSONSchema, tc.headers)
+		if _, err := p.ListModels(context.Background()); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got := vs.only(t).header.Values("Accept"); len(got) != 1 || got[0] != tc.want {
+			t.Errorf("%s: Accept = %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
+func TestNewAcceptsValidHeaders(t *testing.T) {
+	headers := map[string]string{"X-Trace_ID.v2!#$%&'*+^`|~": "tab\tand obs-text \xe2\x9c\x93", "X-Empty": ""}
+	if _, err := New(Config{BaseURL: "https://example.com/v1", StructuredOutput: JSONSchema, Headers: headers}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNewRejectsBadConfig(t *testing.T) {
 	cases := map[string]Config{
 		"empty base":         {StructuredOutput: JSONSchema},
@@ -636,6 +670,15 @@ func TestNewRejectsBadConfig(t *testing.T) {
 		"content-type hdr":   {BaseURL: "https://example.com/v1", StructuredOutput: JSONSchema, Headers: map[string]string{"Content-Type": "text/plain"}},
 		"header newline":     {BaseURL: "https://example.com/v1", StructuredOutput: JSONSchema, Headers: map[string]string{"X-Title": "a\r\nb"}},
 		"header bad name":    {BaseURL: "https://example.com/v1", StructuredOutput: JSONSchema, Headers: map[string]string{"X Title": "a"}},
+		"header empty name":  {BaseURL: "https://example.com/v1", StructuredOutput: JSONSchema, Headers: map[string]string{"": "a"}},
+		"header bracket":     {BaseURL: "https://example.com/v1", StructuredOutput: JSONSchema, Headers: map[string]string{"X[Trace]": "a"}},
+		"header colon":       {BaseURL: "https://example.com/v1", StructuredOutput: JSONSchema, Headers: map[string]string{"X-Title:": "a"}},
+		"header non-ASCII":   {BaseURL: "https://example.com/v1", StructuredOutput: JSONSchema, Headers: map[string]string{"X-Tïtle": "a"}},
+		"header U+0019":      {BaseURL: "https://example.com/v1", StructuredOutput: JSONSchema, Headers: map[string]string{"X-Title": "a\u0019b"}},
+		"header NUL":         {BaseURL: "https://example.com/v1", StructuredOutput: JSONSchema, Headers: map[string]string{"X-Title": "a\x00b"}},
+		"header DEL":         {BaseURL: "https://example.com/v1", StructuredOutput: JSONSchema, Headers: map[string]string{"X-Title": "a\x7fb"}},
+		"host hdr":           {BaseURL: "https://example.com/v1", StructuredOutput: JSONSchema, Headers: map[string]string{"host": "other.example"}},
+		"content-length hdr": {BaseURL: "https://example.com/v1", StructuredOutput: JSONSchema, Headers: map[string]string{"Content-Length": "1"}},
 	}
 	for name, cfg := range cases {
 		cfg.APIKey = testKey

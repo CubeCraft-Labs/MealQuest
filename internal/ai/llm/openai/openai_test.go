@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -496,6 +497,48 @@ func TestTransportErrorHasNoSecret(t *testing.T) {
 		t.Fatal("Generate against a closed server succeeded")
 	}
 	assertNoSecret(t, err)
+}
+
+// TestTransportErrorWithKeyInBaseURLPath fails the exchange against a base
+// URL whose path holds the key, which New accepts; net/http names the full
+// request URL in its transport errors.
+func TestTransportErrorWithKeyInBaseURLPath(t *testing.T) {
+	refused := newVendorServer(t, reply{status: 200})
+	refusedBase := refused.URL
+	refused.Close()
+
+	dropped := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		conn.Close()
+	}))
+	t.Cleanup(dropped.Close)
+
+	for name, base := range map[string]string{
+		"connection refused": refusedBase + "/v1/" + testKey,
+		"connection dropped": dropped.URL + "/v1/" + testKey,
+	} {
+		p := newProvider(t, base, JSONSchema, nil)
+		_, genErr := p.Generate(context.Background(), schemaRequest())
+		_, listErr := p.ListModels(context.Background())
+		verifyErr := p.Verify(context.Background())
+		for _, err := range []error{genErr, listErr, verifyErr} {
+			if err == nil {
+				t.Fatalf("%s: nil error", name)
+			}
+			assertNoSecret(t, err)
+			var ue *url.Error
+			if errors.As(err, &ue) {
+				t.Fatalf("%s: error chain exposes the request URL: %v", name, ue)
+			}
+			if errors.Is(err, llm.ErrTimeout) || errors.Is(err, llm.ErrProvider) {
+				t.Fatalf("%s: err = %v, want an untyped transport failure", name, err)
+			}
+		}
+	}
 }
 
 // TestKeyedErrorsNeverLeakKey drives every error path of the keyed OpenAI

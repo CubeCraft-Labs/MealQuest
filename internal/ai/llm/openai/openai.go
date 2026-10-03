@@ -330,7 +330,8 @@ func (p *Provider) do(ctx context.Context, method, path string, payload []byte) 
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, method, p.base+path, reqBody)
 	if err != nil {
-		return nil, 0, fmt.Errorf("build request: %w", err)
+		// The parse error names the URL, whose path may hold the API key.
+		return nil, 0, errors.New("build request: request URL is invalid")
 	}
 	for name, values := range p.headers {
 		httpReq.Header[name] = values
@@ -345,20 +346,20 @@ func (p *Provider) do(ctx context.Context, method, path string, payload []byte) 
 
 	httpResp, err := p.client.Do(httpReq)
 	if err != nil {
-		return nil, 0, transportError(err)
+		return nil, 0, p.transportError(err)
 	}
 	defer httpResp.Body.Close()
 
 	if httpResp.StatusCode < 200 || httpResp.StatusCode > 299 {
 		body, err := io.ReadAll(io.LimitReader(httpResp.Body, maxErrorBody))
 		if err != nil {
-			return nil, httpResp.StatusCode, transportError(err)
+			return nil, httpResp.StatusCode, p.transportError(err)
 		}
 		return nil, httpResp.StatusCode, p.statusError(httpResp, body)
 	}
 	body, err := io.ReadAll(io.LimitReader(httpResp.Body, maxResponseBody+1))
 	if err != nil {
-		return nil, httpResp.StatusCode, transportError(err)
+		return nil, httpResp.StatusCode, p.transportError(err)
 	}
 	if len(body) > maxResponseBody {
 		return nil, httpResp.StatusCode, fmt.Errorf("response body exceeds %d bytes", maxResponseBody)
@@ -405,11 +406,41 @@ func isTimeout(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout())
 }
 
-// transportError reports a failure to complete the HTTP exchange. The
-// underlying error names the URL, never the request headers.
-func transportError(err error) error {
-	if isTimeout(err) {
-		return fmt.Errorf("%w: %w", llm.ErrTimeout, err)
+// transportFailure is a failed HTTP exchange. It carries the cause's text
+// with the request URL removed and the API key redacted, and unwraps only to
+// the cause's category: llm.ErrTimeout, context.Canceled or nothing.
+type transportFailure struct {
+	detail string
+	kind   error
+}
+
+func (e *transportFailure) Error() string {
+	if e.kind == llm.ErrTimeout {
+		return fmt.Sprintf("%s: transport: %s", llm.ErrTimeout, e.detail)
 	}
-	return err
+	return "transport: " + e.detail
+}
+
+func (e *transportFailure) Unwrap() error { return e.kind }
+
+// transportError reports a failure to complete the HTTP exchange. A
+// *url.Error names the request URL, and a base URL path may hold the API
+// key, so only the wrapped cause is kept, rendered with the key redacted.
+func (p *Provider) transportError(err error) error {
+	var kind error
+	switch {
+	case isTimeout(err):
+		kind = llm.ErrTimeout
+	case errors.Is(err, context.Canceled):
+		kind = context.Canceled
+	}
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		err = ue.Err
+	}
+	detail := err.Error()
+	if p.apiKey != "" {
+		detail = strings.ReplaceAll(detail, p.apiKey, "[REDACTED]")
+	}
+	return &transportFailure{detail: detail, kind: kind}
 }

@@ -3,6 +3,7 @@ package jobs
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/migrations"
 )
@@ -526,5 +528,43 @@ func TestNoopSucceeds(t *testing.T) {
 	job := waitFor(t, r, enqueue(t, builtins.Noop, NoopPayload{}), finished)
 	if job.Kind != KindNoop || job.Status != StatusSucceeded || string(job.Result) != `{"ok":true}` || job.Error != nil {
 		t.Errorf("noop job = %+v (result %s), want succeeded with {\"ok\":true}", job, job.Result)
+	}
+}
+
+func TestClaimErrorIsRetried(t *testing.T) {
+	st := migratedStore(t)
+	logs := &logBuffer{}
+	r := newRunnerLogging(t, st, 1, logs)
+	k := register(t, r, "count", func(ctx context.Context, p countPayload, publish func(countResult) error) (countResult, error) {
+		return countResult{Done: p.Steps}, nil
+	})
+	id := enqueue(t, k, countPayload{Steps: 3})
+	// Drop the wake token, as for a job queued before a restart, so only
+	// the retry can find the job.
+	<-r.wake
+
+	var claims atomic.Int32
+	claim := r.claim
+	r.claim = func(ctx context.Context, now sql.NullString) (db.Job, error) {
+		if claims.Add(1) == 1 {
+			return db.Job{}, errors.New("database is locked " + sentinelSecret)
+		}
+		return claim(ctx, now)
+	}
+	start(t, r)
+
+	job := waitFor(t, r, id, finished)
+	if job.Status != StatusSucceeded || string(job.Result) != `{"done":3}` {
+		t.Fatalf("job = %+v (result %s), want succeeded with {\"done\":3}", job, job.Result)
+	}
+	if n := claims.Load(); n < 2 {
+		t.Fatalf("claims = %d, want a retry after the error", n)
+	}
+	out := logs.String()
+	if !strings.Contains(out, "claim job failed; retrying") {
+		t.Fatalf("claim error not logged: %s", out)
+	}
+	if strings.Contains(out, sentinelSecret) {
+		t.Fatalf("claim error text logged: %s", out)
 	}
 }

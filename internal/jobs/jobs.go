@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"regexp"
 	"sync"
+	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
@@ -51,6 +52,14 @@ const (
 	CodeInternal = "internal_error"
 	// CodeUnknownKind is the error of a job whose kind has no handler.
 	CodeUnknownKind = "unknown_kind"
+)
+
+// Claim retry backoff. A worker whose claim fails with a database error
+// retries after claimRetryMin, doubling up to claimRetryMax, so a job queued
+// when the error clears is claimed without waiting for a wake token.
+const (
+	claimRetryMin = 50 * time.Millisecond
+	claimRetryMax = 5 * time.Second
 )
 
 // codePattern is the form of every failure code: lower-case snake case.
@@ -105,6 +114,8 @@ type Runner struct {
 	// wake holds up to one token per worker; Enqueue adds one so an idle
 	// worker looks for the new job.
 	wake chan struct{}
+	// claim claims the oldest queued job, marking it running at now.
+	claim func(ctx context.Context, now sql.NullString) (db.Job, error)
 
 	mu       sync.Mutex
 	handlers map[string]runFunc
@@ -129,6 +140,7 @@ func NewRunner(st *store.Store, logger *slog.Logger, workers int) (*Runner, erro
 		logger:   logger,
 		workers:  workers,
 		wake:     make(chan struct{}, workers),
+		claim:    db.New(st.Writer).ClaimNextJob,
 		handlers: make(map[string]runFunc),
 	}, nil
 }
@@ -289,23 +301,37 @@ func (r *Runner) Get(ctx context.Context, id string) (Job, error) {
 }
 
 // work claims and runs queued jobs until ctx is cancelled, waiting for a
-// wake token whenever none is queued.
+// wake token whenever none is queued. A claim that fails with a database
+// error is retried with backoff rather than waiting for a token, so a job
+// already queued is not stranded by a transient error.
 func (r *Runner) work(ctx context.Context) {
 	defer r.wg.Done()
-	q := db.New(r.st.Writer)
+	backoff := claimRetryMin
 	for ctx.Err() == nil {
-		job, err := q.ClaimNextJob(ctx, sql.NullString{String: store.Now().String(), Valid: true})
-		if err == nil {
+		job, err := r.claim(ctx, sql.NullString{String: store.Now().String(), Valid: true})
+		switch {
+		case err == nil:
+			backoff = claimRetryMin
 			r.run(ctx, job)
 			continue
+		case errors.Is(err, sql.ErrNoRows):
+			backoff = claimRetryMin
+			select {
+			case <-r.wake:
+			case <-ctx.Done():
+			}
+			continue
+		case ctx.Err() != nil:
+			return
 		}
-		if !errors.Is(err, sql.ErrNoRows) && ctx.Err() == nil {
-			r.logger.ErrorContext(ctx, "claim job", "error", err)
-		}
+		r.logger.ErrorContext(ctx, "claim job failed; retrying", "reason", "database error", "retry_in", backoff)
+		timer := time.NewTimer(backoff)
 		select {
-		case <-r.wake:
+		case <-timer.C:
 		case <-ctx.Done():
+			timer.Stop()
 		}
+		backoff = min(2*backoff, claimRetryMax)
 	}
 }
 

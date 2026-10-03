@@ -4,7 +4,8 @@
 #
 # The Makefile is the single build definition: CI runs `make test` and
 # `make build` so it fails whenever either target would, and the binary
-# carries the Makefile's -trimpath and version-stamped -ldflags.
+# carries the Makefile's -trimpath and version-stamped -ldflags (the
+# `make build` log shows the -X main.version=... value).
 name: CI
 
 on: [push, pull_request]
@@ -29,7 +30,3 @@ jobs:
 
       - name: make build
         run: make build
-
-      # Shows the build settings, including the -ldflags version stamp.
-      - name: show binary build info
-        run: go version -m bin/mealquest

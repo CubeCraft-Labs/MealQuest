@@ -1,0 +1,15 @@
+# sqlc code generation. Regenerate with `make sqlc` (pinned sqlc version in the
+# Makefile); `make sqlc-check` fails when internal/db is stale. sqlc reads only
+# the top-level *.sql files of the schema directory, so migrations/queries/ is
+# not treated as schema.
+version: "2"
+sql:
+  - engine: sqlite
+    schema: migrations
+    queries: migrations/queries
+    gen:
+      go:
+        package: db
+        out: internal/db
+        sql_package: database/sql
+        emit_interface: true

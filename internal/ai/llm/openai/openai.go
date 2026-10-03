@@ -90,25 +90,22 @@ func New(cfg Config) (*Provider, error) {
 	if u.User != nil || strings.ContainsAny(cfg.BaseURL, "?#") {
 		return nil, errors.New("openai: base URL must not carry credentials, a query or a fragment")
 	}
-	// An error that names caller-supplied text has the API key redacted from
-	// it before it is quoted.
+	// No error from New quotes caller-supplied text or a name derived from
+	// it: any such text may equal or contain the API key, and redaction
+	// cannot catch a fragment or a case-changed copy of it.
 	switch cfg.StructuredOutput {
 	case JSONSchema, JSONObject, PromptOnly:
 	default:
-		return nil, fmt.Errorf("openai: unknown structured output mode %q", redactKey(string(cfg.StructuredOutput), cfg.APIKey))
+		return nil, errors.New("openai: unknown structured output mode")
 	}
 	headers := make(http.Header, len(cfg.Headers)+1)
 	for name, value := range cfg.Headers {
-		// Caller-supplied names and values are never echoed: either may carry
-		// a credential, and canonicalising a name changes its case, which
-		// defeats redaction. Only a managed name, which is a fixed known
-		// string, is named.
 		if !validHeaderName(name) {
 			return nil, errors.New("openai: an extra header name is not a valid HTTP token")
 		}
 		canonical := textproto.CanonicalMIMEHeaderKey(name)
 		if managedHeaders[canonical] {
-			return nil, fmt.Errorf("openai: extra header %q is set by the adapter", canonical)
+			return nil, errors.New("openai: an extra header is set by the adapter")
 		}
 		if !validHeaderValue(value) {
 			return nil, errors.New("openai: an extra header value has a control character")

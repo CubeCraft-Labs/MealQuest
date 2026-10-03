@@ -652,6 +652,38 @@ func TestNewConfigErrorsNeverLeakKey(t *testing.T) {
 	}
 }
 
+// TestNewManagedHeaderErrorNeverLeaksKey uses an API key that is itself a
+// managed header name, so naming the rejected header would print the key.
+func TestNewManagedHeaderErrorNeverLeaksKey(t *testing.T) {
+	for _, key := range []string{"Authorization", "Content-Type", "Host"} {
+		_, err := New(Config{
+			BaseURL:          "https://example.com/v1",
+			APIKey:           key,
+			StructuredOutput: JSONSchema,
+			Headers:          map[string]string{key: "x"},
+		})
+		if err == nil {
+			t.Errorf("key %q: New() = nil error", key)
+			continue
+		}
+		for _, secret := range []string{key, "Bearer " + key} {
+			if strings.Contains(strings.ToLower(err.Error()), strings.ToLower(secret)) {
+				t.Errorf("key %q: error leaks %q: %v", key, secret, err)
+			}
+		}
+	}
+}
+
+// TestNewModeErrorNeverLeaksKeyFragment uses a structured output mode that is
+// a fragment of the API key, which redacting the whole key would not catch.
+func TestNewModeErrorNeverLeaksKeyFragment(t *testing.T) {
+	_, err := New(Config{BaseURL: "https://example.com/v1", APIKey: testKey, StructuredOutput: StructuredOutput(testKey[:20])})
+	if err == nil {
+		t.Fatal("New() = nil error")
+	}
+	assertNoSecret(t, err)
+}
+
 func TestAcceptHeader(t *testing.T) {
 	for name, tc := range map[string]struct {
 		headers map[string]string

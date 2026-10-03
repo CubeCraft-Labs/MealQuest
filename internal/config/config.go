@@ -86,8 +86,8 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 		OIDCClientSecret:  r.secretFile(EnvOIDCClientSecretFile),
 		OIDCAllowedGroups: r.list(EnvOIDCAllowedGroups),
 
-		SessionIdle: r.optionalDuration(EnvSessionIdle, DefaultSessionIdle),
-		SessionMax:  r.optionalDuration(EnvSessionMax, DefaultSessionMax),
+		SessionIdle: r.sessionDuration(EnvSessionIdle, DefaultSessionIdle),
+		SessionMax:  r.sessionDuration(EnvSessionMax, DefaultSessionMax),
 	}
 	if cfg.SessionIdle > 0 && cfg.SessionMax > 0 && cfg.SessionMax < cfg.SessionIdle {
 		r.fail(EnvSessionMax, "must be at least %s (%s)", EnvSessionIdle, cfg.SessionIdle)
@@ -275,6 +275,18 @@ func (r *reader) optionalDuration(name string, def time.Duration) time.Duration 
 		return def
 	}
 	return r.parseDuration(name, v)
+}
+
+// sessionDuration is optionalDuration restricted to whole milliseconds:
+// session expiry is stored as a store.Timestamp, which keeps millisecond
+// precision, so a finer duration could not be honoured.
+func (r *reader) sessionDuration(name string, def time.Duration) time.Duration {
+	d := r.optionalDuration(name, def)
+	if d%time.Millisecond != 0 {
+		r.fail(name, "duration must be a whole number of milliseconds, got %s", d)
+		return 0
+	}
+	return d
 }
 
 func (r *reader) parseDuration(name, v string) time.Duration {

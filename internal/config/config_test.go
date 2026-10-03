@@ -270,6 +270,20 @@ func TestLoad(t *testing.T) {
 			badVars: []string{EnvSessionMax},
 		},
 		{
+			name: "whole-millisecond session lifetimes",
+			env:  with(map[string]string{EnvSessionIdle: "1ms", EnvSessionMax: "2ms"}),
+		},
+		{
+			name:    "sub-millisecond session idle",
+			env:     with(map[string]string{EnvSessionIdle: "1500us", EnvSessionMax: "2ms"}),
+			badVars: []string{EnvSessionIdle},
+		},
+		{
+			name:    "sub-millisecond session max",
+			env:     with(map[string]string{EnvSessionIdle: "1ms", EnvSessionMax: "1ms500us"}),
+			badVars: []string{EnvSessionMax},
+		},
+		{
 			name:    "session max below idle",
 			env:     with(map[string]string{EnvSessionIdle: "48h", EnvSessionMax: "24h"}),
 			badVars: []string{EnvSessionMax},

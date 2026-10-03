@@ -14,7 +14,8 @@ import (
 func NewRouter(logger *slog.Logger, version string) http.Handler {
 	r := chi.NewRouter()
 	r.Get("/health", health(logger, version))
-	r.MethodNotAllowed(methodNotAllowed(logger))
+	r.MethodNotAllowed(apiErrorHandler(logger, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed"))
+	r.NotFound(apiErrorHandler(logger, http.StatusNotFound, "not_found", "not found"))
 	return r
 }
 
@@ -28,19 +29,20 @@ type apiError struct {
 	Retryable bool   `json:"retryable"`
 }
 
-func methodNotAllowed(logger *slog.Logger) http.HandlerFunc {
+// apiErrorHandler responds with status and a fixed, non-retryable API error.
+func apiErrorHandler(logger *slog.Logger, status int, code, message string) http.HandlerFunc {
 	body, err := json.Marshal(errorBody{Error: apiError{
-		Code:    "method_not_allowed",
-		Message: "method not allowed",
+		Code:    code,
+		Message: message,
 	}})
 	if err != nil {
 		panic(err) // fixed string and bool fields cannot fail to marshal
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		w.WriteHeader(status)
 		if _, err := w.Write(body); err != nil {
-			logger.WarnContext(r.Context(), "write method not allowed response", "error", err)
+			logger.WarnContext(r.Context(), "write error response", "code", code, "error", err)
 		}
 	}
 }

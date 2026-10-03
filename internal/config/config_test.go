@@ -103,6 +103,43 @@ func TestLoad(t *testing.T) {
 			badVars: []string{EnvHTTPAddr},
 		},
 		{
+			name: "listen address with IP host",
+			env:  with(map[string]string{EnvHTTPAddr: "127.0.0.1:8080"}),
+		},
+		{
+			name: "listen address with IPv6 host",
+			env:  with(map[string]string{EnvHTTPAddr: "[::1]:8080"}),
+		},
+		{
+			name: "listen address with hostname",
+			env:  with(map[string]string{EnvHTTPAddr: "localhost:8080"}),
+		},
+		{
+			name:    "listen host with space",
+			env:     with(map[string]string{EnvHTTPAddr: "bad host:8080"}),
+			badVars: []string{EnvHTTPAddr},
+		},
+		{
+			name:    "listen host with leading hyphen label",
+			env:     with(map[string]string{EnvHTTPAddr: "-bad.example.com:8080"}),
+			badVars: []string{EnvHTTPAddr},
+		},
+		{
+			name:    "listen host with empty label",
+			env:     with(map[string]string{EnvHTTPAddr: "bad..example.com:8080"}),
+			badVars: []string{EnvHTTPAddr},
+		},
+		{
+			name:    "listen host with label over 63 chars",
+			env:     with(map[string]string{EnvHTTPAddr: strings.Repeat("a", 64) + ".example.com:8080"}),
+			badVars: []string{EnvHTTPAddr},
+		},
+		{
+			name:    "public URL without hostname",
+			env:     with(map[string]string{EnvPublicURL: "http://:8080"}),
+			badVars: []string{EnvPublicURL},
+		},
+		{
 			name:    "relative public URL",
 			env:     with(map[string]string{EnvPublicURL: "meals.example.com"}),
 			badVars: []string{EnvPublicURL},

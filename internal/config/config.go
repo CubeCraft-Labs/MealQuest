@@ -119,9 +119,14 @@ func (r *reader) listenAddr(name string) string {
 	if !ok {
 		return ""
 	}
-	_, port, err := net.SplitHostPort(v)
+	host, port, err := net.SplitHostPort(v)
 	if err != nil {
 		r.fail(name, "invalid listen address %q (want host:port or :port)", v)
+		return ""
+	}
+	// An empty host listens on all interfaces.
+	if host != "" && net.ParseIP(host) == nil && !validHostname(host) {
+		r.fail(name, "invalid host %q in listen address (want IP address or hostname)", host)
 		return ""
 	}
 	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
@@ -131,6 +136,25 @@ func (r *reader) listenAddr(name string) string {
 	return v
 }
 
+// validHostname reports whether h is a DNS hostname: dot-separated labels of
+// 1-63 letters, digits and hyphens, not starting or ending with a hyphen.
+func validHostname(h string) bool {
+	if len(h) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(strings.TrimSuffix(h, "."), ".") {
+		if len(label) < 1 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, c := range label {
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func (r *reader) httpURL(name string) *url.URL {
 	v, ok := r.required(name)
 	if !ok {
@@ -138,7 +162,7 @@ func (r *reader) httpURL(name string) *url.URL {
 	}
 	// The value is never echoed: it may carry credentials.
 	u, err := url.Parse(v)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
 		r.fail(name, "invalid URL (want absolute http:// or https:// URL)")
 		return nil
 	}

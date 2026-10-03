@@ -67,3 +67,22 @@ func TestHealthRejectsOtherMethods(t *testing.T) {
 		t.Errorf("error body = %v, want %v", got.Error, want)
 	}
 }
+
+func TestUnknownPathNotFound(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	rec := httptest.NewRecorder()
+	NewRouter(logger, "dev").ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/unknown", nil))
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	const want = `{"error":{"code":"not_found","message":"not found","retryable":false}}`
+	if got := rec.Body.String(); got != want {
+		t.Errorf("body = %s, want %s", got, want)
+	}
+}

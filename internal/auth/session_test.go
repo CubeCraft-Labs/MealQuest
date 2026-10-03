@@ -62,11 +62,12 @@ func newSessionHarness(t *testing.T) *sessionHarness {
 	p := newFakeProvider(t)
 	logs := &syncBuffer{}
 	a, err := New(ctx, Config{
-		Issuer:       p.issuer(),
-		ClientID:     testClientID,
-		ClientSecret: testClientSecret,
-		PublicURL:    testPublicURL,
-		SecretKey:    []byte("server-secret-key"),
+		Issuer:        p.issuer(),
+		ClientID:      testClientID,
+		ClientSecret:  testClientSecret,
+		PublicURL:     testPublicURL,
+		SecretKey:     []byte("server-secret-key"),
+		AllowedGroups: testAllowedGroups,
 	}, sessions, slog.New(slog.NewTextHandler(logs, nil)))
 	if err != nil {
 		t.Fatal(err)
@@ -490,11 +491,12 @@ func TestNewRequiresEndSessionEndpoint(t *testing.T) {
 	p := newFakeProvider(t)
 	p.discoveryOverrides = map[string]any{"end_session_endpoint": nil}
 	_, err := New(context.Background(), Config{
-		Issuer:       p.issuer(),
-		ClientID:     testClientID,
-		ClientSecret: testClientSecret,
-		PublicURL:    testPublicURL,
-		SecretKey:    []byte("k"),
+		Issuer:        p.issuer(),
+		ClientID:      testClientID,
+		ClientSecret:  testClientSecret,
+		PublicURL:     testPublicURL,
+		SecretKey:     []byte("k"),
+		AllowedGroups: testAllowedGroups,
 	}, &memorySessions{}, slog.New(slog.DiscardHandler))
 	if err == nil || !strings.Contains(err.Error(), "end session endpoint") {
 		t.Errorf("New error = %v, want the missing end session endpoint named", err)

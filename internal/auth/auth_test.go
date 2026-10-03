@@ -36,6 +36,9 @@ const (
 
 var testPublicURL = &url.URL{Scheme: "https", Host: "meals.example.com"}
 
+// testAllowedGroups are the household's groups in tests.
+var testAllowedGroups = []string{"mealquest-admin", "mealquest-family"}
+
 // fakeProvider is an OIDC provider serving discovery, JWKS and a token
 // endpoint. Each issued code maps to the ID token the token endpoint returns.
 type fakeProvider struct {
@@ -50,6 +53,12 @@ type fakeProvider struct {
 	// tokenReply, when set, is returned by the token endpoint instead of a
 	// token.
 	tokenReply *tokenReply
+	// userinfo is the userinfo endpoint's response; userinfoHits counts
+	// requests to it.
+	userinfo     map[string]any
+	userinfoHits int
+	// userinfoReply, when set, is returned by the userinfo endpoint instead.
+	userinfoReply *tokenReply
 }
 
 type tokenReply struct {
@@ -73,6 +82,7 @@ func newFakeProvider(t *testing.T) *fakeProvider {
 	mux.HandleFunc("GET /.well-known/openid-configuration", p.discovery)
 	mux.HandleFunc("GET /jwks", p.jwks)
 	mux.HandleFunc("POST /token", p.token)
+	mux.HandleFunc("GET /userinfo", p.userinfoEndpoint)
 	p.srv = httptest.NewServer(mux)
 	t.Cleanup(p.srv.Close)
 	return p
@@ -86,6 +96,7 @@ func (p *fakeProvider) discovery(w http.ResponseWriter, _ *http.Request) {
 		"authorization_endpoint":                p.issuer() + "/authorize",
 		"token_endpoint":                        p.issuer() + "/token",
 		"jwks_uri":                              p.issuer() + "/jwks",
+		"userinfo_endpoint":                     p.issuer() + "/userinfo",
 		"end_session_endpoint":                  p.issuer() + "/end-session/",
 		"response_types_supported":              []string{"code"},
 		"subject_types_supported":               []string{"public"},
@@ -146,6 +157,41 @@ func (p *fakeProvider) token(w http.ResponseWriter, r *http.Request) {
 		"expires_in":   3600,
 		"id_token":     issued.idToken,
 	})
+}
+
+// userinfoEndpoint checks the access token and returns p.userinfo, which
+// defaults to the test user without a groups claim.
+func (p *fakeProvider) userinfoEndpoint(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Authorization") != "Bearer access-token" {
+		http.Error(w, `{"error":"invalid_token"}`, http.StatusUnauthorized)
+		return
+	}
+	p.mu.Lock()
+	p.userinfoHits++
+	info, reply := p.userinfo, p.userinfoReply
+	p.mu.Unlock()
+	if reply != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(reply.status)
+		io.WriteString(w, reply.body)
+		return
+	}
+	if info == nil {
+		info = map[string]any{"sub": "user-123", "email": "cook@example.com"}
+	}
+	writeJSON(w, info)
+}
+
+func (p *fakeProvider) setUserinfo(info map[string]any) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.userinfo = info
+}
+
+func (p *fakeProvider) userinfoRequests() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.userinfoHits
 }
 
 // authorize stands in for the user signing in at the provider: it records a
@@ -291,11 +337,12 @@ func newHarness(t *testing.T) *harness {
 	sessions := &memorySessions{}
 	logs := &syncBuffer{}
 	a, err := New(context.Background(), Config{
-		Issuer:       p.issuer(),
-		ClientID:     testClientID,
-		ClientSecret: testClientSecret,
-		PublicURL:    testPublicURL,
-		SecretKey:    []byte("server-secret-key"),
+		Issuer:        p.issuer(),
+		ClientID:      testClientID,
+		ClientSecret:  testClientSecret,
+		PublicURL:     testPublicURL,
+		SecretKey:     []byte("server-secret-key"),
+		AllowedGroups: testAllowedGroups,
 	}, sessions, slog.New(slog.NewTextHandler(logs, nil)))
 	if err != nil {
 		t.Fatal(err)
@@ -730,11 +777,12 @@ func TestNewFailsWhenDiscoveryFails(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(srv.Close)
 	_, err := New(context.Background(), Config{
-		Issuer:       srv.URL,
-		ClientID:     testClientID,
-		ClientSecret: testClientSecret,
-		PublicURL:    testPublicURL,
-		SecretKey:    []byte("k"),
+		Issuer:        srv.URL,
+		ClientID:      testClientID,
+		ClientSecret:  testClientSecret,
+		PublicURL:     testPublicURL,
+		SecretKey:     []byte("k"),
+		AllowedGroups: testAllowedGroups,
 	}, &memorySessions{}, slog.New(slog.DiscardHandler))
 	if err == nil {
 		t.Fatal("New succeeded without a discovery document")
@@ -747,11 +795,12 @@ func TestNewFailsOnIssuerMismatch(t *testing.T) {
 	// Discovery trims the trailing slash, so this fetches the provider's
 	// document, which reports the issuer without it.
 	_, err := New(context.Background(), Config{
-		Issuer:       p.issuer() + "/",
-		ClientID:     testClientID,
-		ClientSecret: testClientSecret,
-		PublicURL:    testPublicURL,
-		SecretKey:    []byte("k"),
+		Issuer:        p.issuer() + "/",
+		ClientID:      testClientID,
+		ClientSecret:  testClientSecret,
+		PublicURL:     testPublicURL,
+		SecretKey:     []byte("k"),
+		AllowedGroups: testAllowedGroups,
 	}, &memorySessions{}, slog.New(slog.DiscardHandler))
 	if err == nil {
 		t.Fatal("New accepted a provider reporting a different issuer")
@@ -772,11 +821,12 @@ func TestNewRejectsRemoteHTTPIssuer(t *testing.T) {
 	t.Parallel()
 	for _, issuer := range []string{"http://auth.example.com/application/o/mealquest/", "http://192.0.2.10"} {
 		_, err := New(context.Background(), Config{
-			Issuer:       issuer,
-			ClientID:     testClientID,
-			ClientSecret: testClientSecret,
-			PublicURL:    testPublicURL,
-			SecretKey:    []byte("k"),
+			Issuer:        issuer,
+			ClientID:      testClientID,
+			ClientSecret:  testClientSecret,
+			PublicURL:     testPublicURL,
+			SecretKey:     []byte("k"),
+			AllowedGroups: testAllowedGroups,
 		}, &memorySessions{}, slog.New(slog.DiscardHandler))
 		if err == nil || !strings.Contains(err.Error(), "issuer") {
 			t.Errorf("New(issuer %q) error = %v, want issuer rejected", issuer, err)
@@ -793,6 +843,7 @@ func TestNewRejectsRemoteHTTPEndpoint(t *testing.T) {
 		{"token_endpoint", "token endpoint"},
 		{"jwks_uri", "JWKS endpoint"},
 		{"end_session_endpoint", "end session endpoint"},
+		{"userinfo_endpoint", "userinfo endpoint"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.field, func(t *testing.T) {
@@ -800,11 +851,12 @@ func TestNewRejectsRemoteHTTPEndpoint(t *testing.T) {
 			p := newFakeProvider(t)
 			p.discoveryOverrides = map[string]any{tc.field: "http://auth.example.com/" + tc.field}
 			_, err := New(context.Background(), Config{
-				Issuer:       p.issuer(),
-				ClientID:     testClientID,
-				ClientSecret: testClientSecret,
-				PublicURL:    testPublicURL,
-				SecretKey:    []byte("k"),
+				Issuer:        p.issuer(),
+				ClientID:      testClientID,
+				ClientSecret:  testClientSecret,
+				PublicURL:     testPublicURL,
+				SecretKey:     []byte("k"),
+				AllowedGroups: testAllowedGroups,
 			}, &memorySessions{}, slog.New(slog.DiscardHandler))
 			if err == nil || !strings.Contains(err.Error(), tc.name) {
 				t.Errorf("New error = %v, want %s rejected", err, tc.name)
@@ -840,11 +892,12 @@ func TestCallbackRefusesTokenRedirectToHTTP(t *testing.T) {
 			sessions := &memorySessions{}
 			logs := &syncBuffer{}
 			a, err := New(context.Background(), Config{
-				Issuer:       p.issuer(),
-				ClientID:     testClientID,
-				ClientSecret: testClientSecret,
-				PublicURL:    testPublicURL,
-				SecretKey:    []byte("server-secret-key"),
+				Issuer:        p.issuer(),
+				ClientID:      testClientID,
+				ClientSecret:  testClientSecret,
+				PublicURL:     testPublicURL,
+				SecretKey:     []byte("server-secret-key"),
+				AllowedGroups: testAllowedGroups,
 			}, sessions, slog.New(slog.NewTextHandler(logs, nil)))
 			if err != nil {
 				t.Fatal(err)

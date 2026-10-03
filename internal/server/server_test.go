@@ -27,7 +27,7 @@ func newTestRouter(t *testing.T, version string) http.Handler {
 		"index.html":             {Data: []byte(fixtureIndex)},
 		"assets/index-AbC123.js": {Data: []byte(fixtureAsset)},
 	}
-	r, err := NewRouter(logger, version, stubAuth{}, assets)
+	r, err := NewRouter(logger, version, stubAuth{}, stubSessions{}, assets)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,6 +126,8 @@ func TestReservedPathsNotFound(t *testing.T) {
 	}{
 		{http.MethodGet, "/api"},
 		{http.MethodGet, "/api/unknown"},
+		{http.MethodGet, "/api/v1/unknown"},
+		{http.MethodPost, "/api/v1/unknown"},
 		{http.MethodPost, "/api/unknown"},
 		{http.MethodGet, "/auth/unknown"},
 		{http.MethodGet, "/media/photo.jpg"},
@@ -137,8 +139,11 @@ func TestReservedPathsNotFound(t *testing.T) {
 		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
 			t.Parallel()
 
+			// Signed in, so /api/v1 and /media reach their routers.
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			req.AddCookie(validSessionCookie)
 			rec := httptest.NewRecorder()
-			router.ServeHTTP(rec, httptest.NewRequest(tt.method, tt.path, nil))
+			router.ServeHTTP(rec, req)
 
 			if rec.Code != http.StatusNotFound {
 				t.Errorf("status = %d, want 404", rec.Code)

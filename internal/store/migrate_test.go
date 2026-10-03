@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"io/fs"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -199,5 +200,64 @@ func TestMigrateBootstrapThenEmbeddedInitApplies(t *testing.T) {
 	}
 	if !tableExists(t, s, "dinners") {
 		t.Error("table from 0001_init was not created")
+	}
+}
+
+// schemaSQL returns every schema object's definition, so a test can prove a
+// later Migrate created or altered nothing.
+func schemaSQL(t *testing.T, s *Store) []string {
+	t.Helper()
+	rows, err := s.Reader.Query("SELECT type || ' ' || name || ': ' || coalesce(sql, '') FROM sqlite_schema ORDER BY type, name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var def string
+		if err := rows.Scan(&def); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, def)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func TestMigrateReopenSameDataDirIsNoOp(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	first, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(ctx, first.Writer, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+	before, beforeSchema := migrationRows(t, first), schemaSQL(t, first)
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := second.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := Migrate(ctx, second.Writer, migrations.FS); err != nil {
+		t.Fatalf("migrate after reopen: %v", err)
+	}
+	if after := migrationRows(t, second); !slices.Equal(after, before) {
+		t.Errorf("schema_migrations changed on reopen:\n got %v\nwant %v", after, before)
+	}
+	if afterSchema := schemaSQL(t, second); !slices.Equal(afterSchema, beforeSchema) {
+		t.Errorf("schema changed on reopen:\n got %v\nwant %v", afterSchema, beforeSchema)
 	}
 }

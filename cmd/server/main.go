@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -40,7 +41,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	db, err := store.Open(ctx, cfg.DataDir)
+	db, err := openStore(ctx, cfg.DataDir)
 	if err != nil {
 		return err
 	}
@@ -49,9 +50,6 @@ func run(cfg config.Config, logger *slog.Logger) error {
 			logger.Error("close database", "error", err)
 		}
 	}()
-	if err := store.Migrate(ctx, db.Writer, migrations.FS); err != nil {
-		return err
-	}
 
 	router, err := server.NewRouter(logger, version, frontend.Assets())
 	if err != nil {
@@ -86,6 +84,23 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 	return nil
+}
+
+// bootMigrations is the migration set applied at boot. Tests replace it to
+// prove a failing migration stops the boot.
+var bootMigrations fs.FS = migrations.FS
+
+// openStore opens the database in dataDir and applies bootMigrations. On a
+// migration failure it closes the database and returns the error.
+func openStore(ctx context.Context, dataDir string) (*store.Store, error) {
+	db, err := store.Open(ctx, dataDir)
+	if err != nil {
+		return nil, err
+	}
+	if err := store.Migrate(ctx, db.Writer, bootMigrations); err != nil {
+		return nil, errors.Join(err, db.Close())
+	}
+	return db, nil
 }
 
 // logListening logs the startup line. Only the public URL's origin is logged

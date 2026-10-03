@@ -568,3 +568,39 @@ func TestClaimErrorIsRetried(t *testing.T) {
 		t.Fatalf("claim error text logged: %s", out)
 	}
 }
+
+func TestRunnerEnqueueByKindName(t *testing.T) {
+	t.Parallel()
+	st := migratedStore(t)
+	r := newRunner(t, st, 1)
+	register(t, r, "count", func(_ context.Context, p countPayload, _ func(countResult) error) (countResult, error) {
+		return countResult{Done: p.Steps}, nil
+	})
+	ctx := context.Background()
+
+	if _, err := r.Enqueue(ctx, "no_such_kind", json.RawMessage(`{}`)); !errors.Is(err, ErrUnknownKind) {
+		t.Errorf("unknown kind error = %v, want ErrUnknownKind", err)
+	}
+	for _, payload := range []string{`{"steps":"three"}`, `{"other":1}`, `[]`, ``} {
+		if _, err := r.Enqueue(ctx, "count", json.RawMessage(payload)); !errors.Is(err, ErrInvalidPayload) {
+			t.Errorf("payload %q error = %v, want ErrInvalidPayload", payload, err)
+		}
+	}
+	var n int
+	if err := st.Reader.QueryRow("SELECT COUNT(*) FROM jobs").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("refused enqueues stored %d jobs, want 0", n)
+	}
+
+	id, err := r.Enqueue(ctx, "count", json.RawMessage(`{"steps":3}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	start(t, r)
+	job := waitFor(t, r, id, finished)
+	if job.Kind != "count" || job.Status != StatusSucceeded || string(job.Result) != `{"done":3}` {
+		t.Errorf("job = %+v (result %s), want succeeded with {\"done\":3}", job, job.Result)
+	}
+}

@@ -68,6 +68,14 @@ var codePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 // ErrNotFound is returned by Get for an unknown job id.
 var ErrNotFound = errors.New("jobs: job not found")
 
+// ErrUnknownKind is returned by Runner.Enqueue for a kind with no
+// registered handler.
+var ErrUnknownKind = errors.New("jobs: unknown job kind")
+
+// ErrInvalidPayload is returned by Runner.Enqueue for a payload that does
+// not decode into the kind's payload type.
+var ErrInvalidPayload = errors.New("jobs: payload does not decode")
+
 // Failure is a handler error reporting a failure code the household may
 // see. Code must be one the job's kind declared at registration; the runner
 // stores it as the job's error. Any other handler error, including a Failure
@@ -106,6 +114,13 @@ type Job struct {
 // never quotes an error.
 type runFunc func(ctx context.Context, payload string, publish func(json.RawMessage) error) (result json.RawMessage, code, reason string)
 
+// handler is a registered kind: run runs a job, and check reports whether
+// a payload decodes into the kind's payload type.
+type handler struct {
+	run   runFunc
+	check func(payload []byte) bool
+}
+
 // Runner owns the job handlers and the worker pool.
 type Runner struct {
 	st      *store.Store
@@ -118,7 +133,7 @@ type Runner struct {
 	claim func(ctx context.Context, now sql.NullString) (db.Job, error)
 
 	mu       sync.Mutex
-	handlers map[string]runFunc
+	handlers map[string]handler
 	started  bool
 
 	wg sync.WaitGroup
@@ -141,7 +156,7 @@ func NewRunner(st *store.Store, logger *slog.Logger, workers int) (*Runner, erro
 		workers:  workers,
 		wake:     make(chan struct{}, workers),
 		claim:    db.New(st.Writer).ClaimNextJob,
-		handlers: make(map[string]runFunc),
+		handlers: make(map[string]handler),
 	}, nil
 }
 
@@ -179,11 +194,9 @@ func Register[P any, R Public](r *Runner, kind string, h Handler[P, R], failureC
 	if _, ok := r.handlers[kind]; ok {
 		return nil, fmt.Errorf("jobs: register %q: kind already registered", kind)
 	}
-	r.handlers[kind] = func(ctx context.Context, payload string, publish func(json.RawMessage) error) (json.RawMessage, string, string) {
-		var p P
-		dec := json.NewDecoder(bytes.NewReader([]byte(payload)))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&p); err != nil {
+	run := func(ctx context.Context, payload string, publish func(json.RawMessage) error) (json.RawMessage, string, string) {
+		p, err := decodePayload[P]([]byte(payload))
+		if err != nil {
 			return nil, CodeInternal, "payload does not decode"
 		}
 		result, err := h(ctx, p, func(partial R) error {
@@ -209,7 +222,21 @@ func Register[P any, R Public](r *Runner, kind string, h Handler[P, R], failureC
 		}
 		return data, "", ""
 	}
+	check := func(payload []byte) bool {
+		_, err := decodePayload[P](payload)
+		return err == nil
+	}
+	r.handlers[kind] = handler{run: run, check: check}
 	return &Kind[P]{r: r, name: kind}, nil
+}
+
+// decodePayload decodes payload into P, refusing unknown fields.
+func decodePayload[P any](payload []byte) (P, error) {
+	var p P
+	dec := json.NewDecoder(bytes.NewReader(payload))
+	dec.DisallowUnknownFields()
+	err := dec.Decode(&p)
+	return p, err
 }
 
 // publicJSON returns v's PublicJSON, refusing anything that is not one JSON
@@ -229,19 +256,43 @@ func (k *Kind[P]) Enqueue(ctx context.Context, payload P) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("jobs: enqueue %s: encode payload: %w", k.name, err)
 	}
+	return k.r.enqueue(ctx, k.name, data)
+}
+
+// Enqueue stores a queued job of kind with its JSON payload and returns its
+// id, as Kind.Enqueue does for a kind known at compile time. It returns
+// ErrUnknownKind for a kind with no registered handler and
+// ErrInvalidPayload for a payload that does not decode into the kind's
+// payload type; neither stores a job.
+func (r *Runner) Enqueue(ctx context.Context, kind string, payload json.RawMessage) (string, error) {
+	r.mu.Lock()
+	h, ok := r.handlers[kind]
+	r.mu.Unlock()
+	if !ok {
+		return "", ErrUnknownKind
+	}
+	if !h.check(payload) {
+		return "", ErrInvalidPayload
+	}
+	return r.enqueue(ctx, kind, payload)
+}
+
+// enqueue stores a queued job of kind with its encoded payload and wakes a
+// worker.
+func (r *Runner) enqueue(ctx context.Context, kind string, payload []byte) (string, error) {
 	id := store.NewID()
 	now := store.Now().String()
-	if err := db.New(k.r.st.Writer).CreateJob(ctx, db.CreateJobParams{
+	if err := db.New(r.st.Writer).CreateJob(ctx, db.CreateJobParams{
 		ID:        id,
-		Kind:      k.name,
-		Payload:   string(data),
+		Kind:      kind,
+		Payload:   string(payload),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}); err != nil {
-		return "", fmt.Errorf("jobs: enqueue %s: %w", k.name, err)
+		return "", fmt.Errorf("jobs: enqueue %s: %w", kind, err)
 	}
 	select {
-	case k.r.wake <- struct{}{}:
+	case r.wake <- struct{}{}:
 	default: // every worker already has a token and will look again
 	}
 	return id, nil
@@ -365,7 +416,7 @@ func (r *Runner) run(ctx context.Context, job db.Job) {
 		return nil
 	}
 
-	result, code, reason := h(ctx, job.Payload, publish)
+	result, code, reason := h.run(ctx, job.Payload, publish)
 	if code != "" {
 		if ctx.Err() != nil {
 			logger.WarnContext(write, "job interrupted by shutdown; it fails at the next start")

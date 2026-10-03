@@ -13,14 +13,18 @@ single Go service with the React PWA embedded in the binary.
 
 ## Quick start
 
-Requirements: Go 1.25 and Node.js 22.22.2 or newer (or 24.15 or newer).
-Vite and Vitest need at least 22.12; jsdom in the committed lockfile needs
-22.22.2 on the 22 line.
+Requirements: Go 1.25 and Node.js `^22.22.2 || ^24.15.0 || >=26.0.0` — that
+is, 22.22.2 or later on the 22 line, 24.15.0 or later on the 24 line, or 26.0.0
+or later. Node.js 23, 24.0–24.14 and 25 are not supported: this is the
+`engines` range of jsdom in the committed lockfile, the strictest of all the
+web dependencies.
 
 ```sh
 (cd web && npm ci)
 mkdir -p ~/.mealquest-dev   # outside the repository: it holds a secret
+chmod 700 ~/.mealquest-dev
 head -c 32 /dev/urandom | base64 > ~/.mealquest-dev/secret_key
+chmod 600 ~/.mealquest-dev/secret_key
 export MEALQUEST_HTTP_ADDR=:8080
 export MEALQUEST_PUBLIC_URL=http://localhost:5173
 export MEALQUEST_DATA_DIR="$HOME/.mealquest-dev"

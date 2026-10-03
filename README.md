@@ -30,6 +30,12 @@ export MEALQUEST_PUBLIC_URL=http://localhost:5173
 export MEALQUEST_DATA_DIR="$HOME/.mealquest-dev"
 export MEALQUEST_SHUTDOWN_TIMEOUT=10s
 export MEALQUEST_SECRET_KEY_FILE="$HOME/.mealquest-dev/secret_key"
+# Authentik OAuth2/OpenID provider for MealQuest (redirect URI:
+# $MEALQUEST_PUBLIC_URL/auth/callback). Save its client secret to the file.
+export MEALQUEST_OIDC_ISSUER=https://auth.example.com/application/o/mealquest/
+export MEALQUEST_OIDC_CLIENT_ID=mealquest
+export MEALQUEST_OIDC_CLIENT_SECRET_FILE="$HOME/.mealquest-dev/oidc_client_secret"
+export MEALQUEST_OIDC_ALLOWED_GROUPS=mealquest-admin
 make dev
 ```
 

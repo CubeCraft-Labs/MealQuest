@@ -20,6 +20,11 @@ const (
 	EnvDataDir         = "MEALQUEST_DATA_DIR"
 	EnvShutdownTimeout = "MEALQUEST_SHUTDOWN_TIMEOUT"
 	EnvSecretKeyFile   = "MEALQUEST_SECRET_KEY_FILE"
+
+	EnvOIDCIssuer           = "MEALQUEST_OIDC_ISSUER"
+	EnvOIDCClientID         = "MEALQUEST_OIDC_CLIENT_ID"
+	EnvOIDCClientSecretFile = "MEALQUEST_OIDC_CLIENT_SECRET_FILE"
+	EnvOIDCAllowedGroups    = "MEALQUEST_OIDC_ALLOWED_GROUPS"
 )
 
 // Config is the validated service configuration.
@@ -29,6 +34,13 @@ type Config struct {
 	DataDir         string
 	ShutdownTimeout time.Duration
 	SecretKey       Secret
+
+	// OIDCIssuer is the Authentik issuer URL used for discovery.
+	OIDCIssuer       *url.URL
+	OIDCClientID     string
+	OIDCClientSecret Secret
+	// OIDCAllowedGroups lists the groups whose members may sign in.
+	OIDCAllowedGroups []string
 }
 
 // PublicOrigin returns the scheme and host of PublicURL, the only parts of it
@@ -51,6 +63,11 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 		DataDir:         r.dir(EnvDataDir),
 		ShutdownTimeout: r.duration(EnvShutdownTimeout),
 		SecretKey:       r.secretFile(EnvSecretKeyFile),
+
+		OIDCIssuer:        r.httpURL(EnvOIDCIssuer),
+		OIDCClientID:      r.str(EnvOIDCClientID),
+		OIDCClientSecret:  r.secretFile(EnvOIDCClientSecretFile),
+		OIDCAllowedGroups: r.list(EnvOIDCAllowedGroups),
 	}
 	if len(r.problems) > 0 {
 		return Config{}, &Error{Problems: r.problems}
@@ -112,6 +129,29 @@ func (r *reader) required(name string) (string, bool) {
 		return "", false
 	}
 	return v, true
+}
+
+func (r *reader) str(name string) string {
+	v, _ := r.required(name)
+	return v
+}
+
+// list parses a comma-separated list. Every entry must be non-empty after
+// trimming spaces.
+func (r *reader) list(name string) []string {
+	v, ok := r.required(name)
+	if !ok {
+		return nil
+	}
+	items := strings.Split(v, ",")
+	for i, item := range items {
+		items[i] = strings.TrimSpace(item)
+		if items[i] == "" {
+			r.fail(name, "empty entry in comma-separated list %q", v)
+			return nil
+		}
+	}
+	return items
 }
 
 func (r *reader) listenAddr(name string) string {

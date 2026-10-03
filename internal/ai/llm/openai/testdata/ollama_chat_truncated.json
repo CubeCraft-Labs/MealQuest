@@ -1,0 +1,15 @@
+{
+  "id": "chatcmpl-418",
+  "object": "chat.completion",
+  "created": 1741570330,
+  "model": "llama3.2",
+  "system_fingerprint": "fp_ollama",
+  "choices": [
+    {
+      "index": 0,
+      "message": {"role": "assistant", "content": "{\"dinners\": [{\"name\": \"Crock pot ch"},
+      "finish_reason": "length"
+    }
+  ],
+  "usage": {"prompt_tokens": 512, "completion_tokens": 16, "total_tokens": 528}
+}

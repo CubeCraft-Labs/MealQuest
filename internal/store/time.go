@@ -86,6 +86,17 @@ func ParseLocalDate(s string) (LocalDate, error) {
 	return LocalDate{t.Year(), t.Month(), t.Day()}, nil
 }
 
+// LocalDateOf returns the calendar date of t in t's own location.
+func LocalDateOf(t time.Time) LocalDate {
+	y, m, d := t.Date()
+	return LocalDate{y, m, d}
+}
+
+// Date returns the year, month and day of d.
+func (d LocalDate) Date() (year int, month time.Month, day int) {
+	return d.year, d.month, d.day
+}
+
 // String returns the YYYY-MM-DD form.
 func (d LocalDate) String() string {
 	return fmt.Sprintf("%04d-%02d-%02d", d.year, int(d.month), d.day)
@@ -96,10 +107,14 @@ func (d LocalDate) IsZero() bool {
 	return d == LocalDate{}
 }
 
-// Value implements driver.Valuer. The zero LocalDate is an error.
+// Value implements driver.Valuer. The zero LocalDate is an error, as is a
+// year outside 0000–9999, which the four-digit stored form cannot represent.
 func (d LocalDate) Value() (driver.Value, error) {
 	if d.IsZero() {
 		return nil, errors.New("store: zero LocalDate")
+	}
+	if d.year < 0 || d.year > 9999 {
+		return nil, fmt.Errorf("store: LocalDate year %d outside 0000-9999", d.year)
 	}
 	return d.String(), nil
 }

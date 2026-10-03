@@ -102,6 +102,8 @@ func TestReservedPathsNotFound(t *testing.T) {
 		{http.MethodGet, "/auth/callback"},
 		{http.MethodGet, "/media/photo.jpg"},
 		{http.MethodGet, "/health/deep"},
+		{http.MethodGet, "/auth/../quests/42"},
+		{http.MethodGet, "/api%2F..%2Fquests/42"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
@@ -135,6 +137,7 @@ func TestFrontend(t *testing.T) {
 		{"/", fixtureIndex, "no-cache"},
 		{"/assets/index-AbC123.js", fixtureAsset, "public, max-age=31536000, immutable"},
 		{"/quests/42", fixtureIndex, "no-cache"},
+		{"/quests/42/edit", fixtureIndex, "no-cache"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {

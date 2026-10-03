@@ -12,6 +12,7 @@ import (
 const (
 	indexBody    = "<!doctype html><title>fixture index</title>"
 	assetBody    = "console.log('fixture asset')"
+	robotsBody   = "User-agent: *"
 	swBody       = "self.addEventListener('fetch', () => {})"
 	manifestBody = `{"name":"MealQuest"}`
 	notFoundBody = "reserved not found"
@@ -23,6 +24,7 @@ func fixture() fstest.MapFS {
 		"sw.js":                  {Data: []byte(swBody)},
 		"manifest.webmanifest":   {Data: []byte(manifestBody)},
 		"assets/index-AbC123.js": {Data: []byte(assetBody)},
+		"robots.txt":             {Data: []byte(robotsBody)},
 	}
 }
 
@@ -50,6 +52,7 @@ func TestServe(t *testing.T) {
 		wantCache string
 	}{
 		{"hashed asset", http.MethodGet, "/assets/index-AbC123.js", assetBody, cacheImmutable},
+		{"unhashed asset", http.MethodGet, "/robots.txt", robotsBody, cacheImmutable},
 		{"root", http.MethodGet, "/", indexBody, cacheNoCache},
 		{"index.html", http.MethodGet, "/index.html", indexBody, cacheNoCache},
 		{"service worker", http.MethodGet, "/sw.js", swBody, cacheNoCache},
@@ -97,7 +100,7 @@ func TestReservedPrefixesNotServed(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler(t)
-	for _, path := range []string{"/api", "/api/unknown", "/auth/login", "/media/x.jpg", "/health", "/health/deep", "/x/../api/unknown"} {
+	for _, path := range []string{"/api", "/api/unknown", "/auth/login", "/media/x.jpg", "/health", "/health/deep", "/x/../api/unknown", "/auth/../quests/42", "/api%2F..%2Fquests/42"} {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
 

@@ -48,7 +48,8 @@ func Assets() fs.FS {
 // NewHandler returns a handler that serves files from fsys. A GET or HEAD for a
 // path that is not a file in fsys is answered with index.html so client-side
 // routes load the app. Paths equal to or under a reserved prefix (for example
-// "/api") are never answered with index.html; they are passed to notFound.
+// "/api") are never answered with index.html, whether before or after the path
+// is cleaned; they are passed to notFound.
 // fsys must contain index.html.
 func NewHandler(fsys fs.FS, logger *slog.Logger, notFound http.Handler, reserved ...string) (http.Handler, error) {
 	if _, err := fs.Stat(fsys, indexFile); err != nil {
@@ -66,7 +67,9 @@ type handler struct {
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	urlPath := path.Clean("/" + r.URL.Path)
-	if h.isReserved(urlPath) {
+	// Check the uncleaned path too, so dot segments cannot escape a reserved
+	// prefix into the fallback ("/auth/../quests/42" cleans to "/quests/42").
+	if h.isReserved(r.URL.Path) || h.isReserved(urlPath) {
 		h.notFound.ServeHTTP(w, r)
 		return
 	}

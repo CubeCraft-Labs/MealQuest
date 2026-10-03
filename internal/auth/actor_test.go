@@ -11,10 +11,18 @@ func TestActorContext(t *testing.T) {
 	if _, ok := ActorFrom(context.Background()); ok {
 		t.Error("ActorFrom found an actor in an empty context")
 	}
-	want := Actor{Subject: "user-123", Email: "cook@example.com", Name: "Home Cook", Groups: []string{"mealquest-admin"}}
-	got, ok := ActorFrom(WithActor(context.Background(), want))
-	if !ok || got.Subject != want.Subject || got.Email != want.Email || got.Name != want.Name || !slices.Equal(got.Groups, want.Groups) {
-		t.Errorf("ActorFrom = %+v (ok=%v), want %+v", got, ok, want)
+	if _, ok := SessionFrom(context.Background()); ok {
+		t.Error("SessionFrom found a session in an empty context")
+	}
+	s := Session{Subject: "user-123", Email: "cook@example.com", Name: "Home Cook", Groups: []string{"mealquest-admin"}, CSRFToken: "t"}
+	ctx := WithSession(context.Background(), s)
+	gotSession, ok := SessionFrom(ctx)
+	if !ok || gotSession.Subject != s.Subject || gotSession.CSRFToken != s.CSRFToken {
+		t.Errorf("SessionFrom = %+v (ok=%v), want %+v", gotSession, ok, s)
+	}
+	got, ok := ActorFrom(ctx)
+	if !ok || got.Subject != s.Subject || got.Email != s.Email || got.Name != s.Name || !slices.Equal(got.Groups, s.Groups) {
+		t.Errorf("ActorFrom = %+v (ok=%v), want the session's actor", got, ok)
 	}
 }
 

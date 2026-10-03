@@ -11,6 +11,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secureurl"
 )
 
 // Environment variable names.
@@ -20,6 +23,23 @@ const (
 	EnvDataDir         = "MEALQUEST_DATA_DIR"
 	EnvShutdownTimeout = "MEALQUEST_SHUTDOWN_TIMEOUT"
 	EnvSecretKeyFile   = "MEALQUEST_SECRET_KEY_FILE"
+
+	EnvOIDCIssuer           = "MEALQUEST_OIDC_ISSUER"
+	EnvOIDCClientID         = "MEALQUEST_OIDC_CLIENT_ID"
+	EnvOIDCClientSecretFile = "MEALQUEST_OIDC_CLIENT_SECRET_FILE"
+	EnvOIDCAllowedGroups    = "MEALQUEST_OIDC_ALLOWED_GROUPS"
+
+	EnvSessionIdle = "MEALQUEST_SESSION_IDLE"
+	EnvSessionMax  = "MEALQUEST_SESSION_MAX"
+
+	EnvTrustedProxy = "MEALQUEST_TRUSTED_PROXY"
+)
+
+// Session lifetime defaults (D-004): long enough that the kitchen tablet
+// stays signed in.
+const (
+	DefaultSessionIdle = 720 * time.Hour  // 30 days
+	DefaultSessionMax  = 4320 * time.Hour // 180 days
 )
 
 // Config is the validated service configuration.
@@ -29,6 +49,22 @@ type Config struct {
 	DataDir         string
 	ShutdownTimeout time.Duration
 	SecretKey       Secret
+
+	// OIDCIssuer is the Authentik issuer URL used for discovery.
+	OIDCIssuer       *url.URL
+	OIDCClientID     string
+	OIDCClientSecret Secret
+	// OIDCAllowedGroups lists the groups whose members may sign in.
+	OIDCAllowedGroups []string
+
+	// SessionIdle ends a session left unused this long.
+	SessionIdle time.Duration
+	// SessionMax ends every session this long after sign-in, used or not.
+	SessionMax time.Duration
+
+	// TrustedProxy lists the reverse proxies whose X-Forwarded-For and
+	// X-Forwarded-Proto headers are honoured. Empty trusts no peer.
+	TrustedProxy forwarded.Trusted
 }
 
 // PublicOrigin returns the scheme and host of PublicURL, the only parts of it
@@ -47,10 +83,23 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 	r := reader{lookup: lookup}
 	cfg := Config{
 		HTTPAddr:        r.listenAddr(EnvHTTPAddr),
-		PublicURL:       r.httpURL(EnvPublicURL),
+		PublicURL:       r.secureURL(EnvPublicURL),
 		DataDir:         r.dir(EnvDataDir),
 		ShutdownTimeout: r.duration(EnvShutdownTimeout),
 		SecretKey:       r.secretFile(EnvSecretKeyFile),
+
+		OIDCIssuer:        r.secureURL(EnvOIDCIssuer),
+		OIDCClientID:      r.str(EnvOIDCClientID),
+		OIDCClientSecret:  r.secretFile(EnvOIDCClientSecretFile),
+		OIDCAllowedGroups: r.list(EnvOIDCAllowedGroups),
+
+		SessionIdle: r.sessionDuration(EnvSessionIdle, DefaultSessionIdle),
+		SessionMax:  r.sessionDuration(EnvSessionMax, DefaultSessionMax),
+
+		TrustedProxy: r.trustedProxy(EnvTrustedProxy),
+	}
+	if cfg.SessionIdle > 0 && cfg.SessionMax > 0 && cfg.SessionMax < cfg.SessionIdle {
+		r.fail(EnvSessionMax, "must be at least %s (%s)", EnvSessionIdle, cfg.SessionIdle)
 	}
 	if len(r.problems) > 0 {
 		return Config{}, &Error{Problems: r.problems}
@@ -114,6 +163,41 @@ func (r *reader) required(name string) (string, bool) {
 	return v, true
 }
 
+func (r *reader) str(name string) string {
+	v, _ := r.required(name)
+	return v
+}
+
+// list parses a comma-separated list. Every entry must be non-empty after
+// trimming spaces.
+func (r *reader) list(name string) []string {
+	v, ok := r.required(name)
+	if !ok {
+		return nil
+	}
+	items := strings.Split(v, ",")
+	for i, item := range items {
+		items[i] = strings.TrimSpace(item)
+		if items[i] == "" {
+			r.fail(name, "empty entry in comma-separated list %q", v)
+			return nil
+		}
+	}
+	return items
+}
+
+// trustedProxy parses an optional comma-separated list of IP addresses and
+// CIDR prefixes with forwarded.ParseTrusted. Unset or blank trusts no peer.
+func (r *reader) trustedProxy(name string) forwarded.Trusted {
+	v, _ := r.lookup(name)
+	t, err := forwarded.ParseTrusted(v)
+	if err != nil {
+		r.fail(name, "%v", err)
+		return nil
+	}
+	return t
+}
+
 func (r *reader) listenAddr(name string) string {
 	v, ok := r.required(name)
 	if !ok {
@@ -155,15 +239,21 @@ func validHostname(h string) bool {
 	return true
 }
 
-func (r *reader) httpURL(name string) *url.URL {
+// secureURL reads an absolute URL that must pass secureurl.Check: https://,
+// or http:// to a loopback host only.
+func (r *reader) secureURL(name string) *url.URL {
 	v, ok := r.required(name)
 	if !ok {
 		return nil
 	}
 	// The value is never echoed: it may carry credentials.
 	u, err := url.Parse(v)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
-		r.fail(name, "invalid URL (want absolute http:// or https:// URL)")
+	if err != nil {
+		r.fail(name, "invalid URL (want absolute https:// URL)")
+		return nil
+	}
+	if err := secureurl.Check(u); err != nil {
+		r.fail(name, "invalid URL: %v", err)
 		return nil
 	}
 	if u.User != nil {
@@ -195,6 +285,32 @@ func (r *reader) duration(name string) time.Duration {
 	if !ok {
 		return 0
 	}
+	return r.parseDuration(name, v)
+}
+
+// optionalDuration returns def when name is unset. A set value, even an empty
+// one, must be a valid positive duration.
+func (r *reader) optionalDuration(name string, def time.Duration) time.Duration {
+	v, ok := r.lookup(name)
+	if !ok {
+		return def
+	}
+	return r.parseDuration(name, v)
+}
+
+// sessionDuration is optionalDuration restricted to whole milliseconds:
+// session expiry is stored as a store.Timestamp, which keeps millisecond
+// precision, so a finer duration could not be honoured.
+func (r *reader) sessionDuration(name string, def time.Duration) time.Duration {
+	d := r.optionalDuration(name, def)
+	if d%time.Millisecond != 0 {
+		r.fail(name, "duration must be a whole number of milliseconds, got %s", d)
+		return 0
+	}
+	return d
+}
+
+func (r *reader) parseDuration(name, v string) time.Duration {
 	d, err := time.ParseDuration(v)
 	if err != nil {
 		r.fail(name, "invalid duration %q (want e.g. 10s, 1m)", v)

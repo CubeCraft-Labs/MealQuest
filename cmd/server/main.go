@@ -13,7 +13,9 @@ import (
 	"syscall"
 	"time"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/auth"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/config"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/server"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
@@ -30,7 +32,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	logger := slog.New(forwarded.LogHandler(slog.NewJSONHandler(os.Stdout, nil)))
 	if err := run(cfg, logger); err != nil {
 		logger.Error("server stopped", "error", err)
 		os.Exit(1)
@@ -51,7 +53,23 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		}
 	}()
 
-	router, err := server.NewRouter(logger, version, frontend.Assets())
+	sessions, err := auth.NewSessionManager(db, cfg.SessionIdle, cfg.SessionMax)
+	if err != nil {
+		return err
+	}
+	authFlow, err := auth.New(ctx, auth.Config{
+		Issuer:        cfg.OIDCIssuer.String(),
+		ClientID:      cfg.OIDCClientID,
+		ClientSecret:  cfg.OIDCClientSecret.Reveal(),
+		PublicURL:     cfg.PublicURL,
+		SecretKey:     []byte(cfg.SecretKey.Reveal()),
+		AllowedGroups: cfg.OIDCAllowedGroups,
+	}, sessions, logger)
+	if err != nil {
+		return err
+	}
+
+	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, frontend.Assets())
 	if err != nil {
 		return err
 	}
@@ -109,6 +127,7 @@ func logListening(logger *slog.Logger, cfg config.Config) {
 	logger.Info("listening",
 		"addr", cfg.HTTPAddr,
 		"public_origin", cfg.PublicOrigin(),
+		"trusted_proxy", cfg.TrustedProxy,
 		"data_dir", cfg.DataDir,
 		"version", version,
 	)

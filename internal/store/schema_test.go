@@ -165,7 +165,7 @@ func testRow(table string, i int) map[string]any {
 		r["attempts"] = 0
 	case "jobs":
 		r["kind"] = "suggest"
-		r["status"] = "pending"
+		r["status"] = "queued"
 		r["payload"] = "{}"
 	case "schedule_runs":
 		r["schedule"] = "plan_draft"
@@ -330,7 +330,7 @@ func TestSchemaEnumChecksRejectInvalidValues(t *testing.T) {
 		{"notification_prefs", "chat", 2},
 		{"notification_outbox", "channel", "email"},
 		{"notification_outbox", "status", "queued"},
-		{"jobs", "status", "queued"},
+		{"jobs", "status", "bogus"},
 		{"schedule_runs", "schedule", "hourly"},
 	}
 	s := seededStore(t)

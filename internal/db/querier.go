@@ -6,17 +6,25 @@ package db
 
 import (
 	"context"
+	"database/sql"
 )
 
 type Querier interface {
 	// An unknown id returns sql.ErrNoRows.
 	ArchiveDinner(ctx context.Context, arg ArchiveDinnerParams) (Dinner, error)
+	// Marks the oldest queued job running and returns it. Returns sql.ErrNoRows
+	// when no job is queued.
+	ClaimNextJob(ctx context.Context, now sql.NullString) (Job, error)
 	CreateDinner(ctx context.Context, arg CreateDinnerParams) (Dinner, error)
+	CreateJob(ctx context.Context, arg CreateJobParams) error
 	CreatePhoto(ctx context.Context, arg CreatePhotoParams) (Photo, error)
 	CreateRecipeIngredient(ctx context.Context, arg CreateRecipeIngredientParams) error
 	CreateRecipeStep(ctx context.Context, arg CreateRecipeStepParams) error
 	DeleteRecipeIngredients(ctx context.Context, recipeID string) error
 	DeleteRecipeSteps(ctx context.Context, recipeID string) error
+	FailJob(ctx context.Context, arg FailJobParams) (int64, error)
+	// Fails every job left running, at boot before any worker starts.
+	FailRunningJobs(ctx context.Context, arg FailRunningJobsParams) (int64, error)
 	// Returns sql.ErrNoRows until the row exists.
 	GetAISettings(ctx context.Context) (AiSetting, error)
 	// Returns sql.ErrNoRows until the row exists.
@@ -26,6 +34,7 @@ type Querier interface {
 	GetHouseholdSettings(ctx context.Context) (HouseholdSetting, error)
 	// Returns sql.ErrNoRows until the row exists.
 	GetIntegrationsGoogle(ctx context.Context) (IntegrationsGoogle, error)
+	GetJob(ctx context.Context, id string) (Job, error)
 	// Finds stored image bytes by content hash. The schema does not make sha256
 	// unique, so the earliest-created (lowest id) match is returned.
 	GetPhotoBySHA256(ctx context.Context, sha256 string) (Photo, error)
@@ -36,8 +45,11 @@ type Querier interface {
 	ListDinnersByStatus(ctx context.Context, status string) ([]Dinner, error)
 	ListRecipeIngredients(ctx context.Context, recipeID string) ([]RecipeIngredient, error)
 	ListRecipeSteps(ctx context.Context, recipeID string) ([]RecipeStep, error)
+	// Stores a partial result of a running job.
+	PublishJobResult(ctx context.Context, arg PublishJobResultParams) (int64, error)
 	// An unknown id returns sql.ErrNoRows.
 	SetDinnerFavorite(ctx context.Context, arg SetDinnerFavoriteParams) (Dinner, error)
+	SucceedJob(ctx context.Context, arg SucceedJobParams) (int64, error)
 	// An unknown id returns sql.ErrNoRows.
 	UpdateDinner(ctx context.Context, arg UpdateDinnerParams) (Dinner, error)
 	// Creates the single row (id 1) or replaces every column except id and

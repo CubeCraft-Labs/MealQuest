@@ -102,6 +102,25 @@ func TestLocalDateRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLocalDateOf(t *testing.T) {
+	auckland, err := time.LoadLocation("Pacific/Auckland")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 2026-10-03T20:00Z is already 2026-10-04 in Auckland (UTC+13).
+	instant := time.Date(2026, time.October, 3, 20, 0, 0, 0, time.UTC)
+	if got := LocalDateOf(instant).String(); got != "2026-10-03" {
+		t.Errorf("LocalDateOf(UTC) = %s, want 2026-10-03", got)
+	}
+	d := LocalDateOf(instant.In(auckland))
+	if got := d.String(); got != "2026-10-04" {
+		t.Errorf("LocalDateOf(Auckland) = %s, want 2026-10-04", got)
+	}
+	if y, m, day := d.Date(); y != 2026 || m != time.October || day != 4 {
+		t.Errorf("Date() = %d-%d-%d, want 2026-10-4", y, m, day)
+	}
+}
+
 func TestLocalDateRejectsInvalid(t *testing.T) {
 	for _, str := range []string{
 		"", "2026-02-30", "2026-02-29", "2026-13-01", "2026-00-10", "2026-10-00",
@@ -118,6 +137,12 @@ func TestLocalDateRejectsInvalid(t *testing.T) {
 	}
 	if _, err := (LocalDate{}).Value(); err == nil {
 		t.Error("zero LocalDate Value succeeded")
+	}
+	for _, y := range []int{-1, 10000} {
+		d := LocalDateOf(time.Date(y, time.January, 1, 0, 0, 0, 0, time.UTC))
+		if _, err := d.Value(); err == nil {
+			t.Errorf("LocalDate year %d Value succeeded", y)
+		}
 	}
 	var d LocalDate
 	if err := d.Scan(nil); err == nil {

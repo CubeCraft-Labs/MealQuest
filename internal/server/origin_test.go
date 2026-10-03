@@ -44,8 +44,8 @@ func newOriginRouter(t *testing.T, logs io.Writer) http.Handler {
 		t.Fatal(err)
 	}
 	logger := slog.New(forwarded.LogHandler(slog.NewJSONHandler(logs, nil)))
-	r, err := NewRouter(logger, "dev", trusted, probeAuth{}, stubSessions{},
-		fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
+	r, err := NewRouter(logger, "dev", trusted, probeAuth{}, stubSessions{}, newTestSettings(t),
+		newTestRunner(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
 	if err != nil {
 		t.Fatal(err)
 	}

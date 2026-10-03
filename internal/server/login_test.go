@@ -82,8 +82,8 @@ func newLoginRouter(t *testing.T, issuer string) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := NewRouter(logger, "dev", trusted, flow, sessions,
-		fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
+	r, err := NewRouter(logger, "dev", trusted, flow, sessions, newTestSettings(t),
+		newTestRunner(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
 	if err != nil {
 		t.Fatal(err)
 	}

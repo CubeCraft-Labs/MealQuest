@@ -175,8 +175,8 @@ func TestMigrateEmbeddedMigrations(t *testing.T) {
 	if err := Migrate(context.Background(), s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status", got)
 	}
 }
 
@@ -188,15 +188,16 @@ func TestMigrateBootstrapThenEmbeddedInitApplies(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A database migrated by the bootstrap-only build upgrades to the
-	// embedded set, which adds 0001_init.sql alongside the unchanged bootstrap.
+	// embedded set, which adds the later migrations alongside the unchanged
+	// bootstrap.
 	if err := Migrate(ctx, s.Writer, fstest.MapFS{"0000_bootstrap.sql": {Data: bootstrap}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status", got)
 	}
 	if !tableExists(t, s, "dinners") {
 		t.Error("table from 0001_init was not created")
@@ -259,5 +260,52 @@ func TestMigrateReopenSameDataDirIsNoOp(t *testing.T) {
 	}
 	if afterSchema := schemaSQL(t, second); !slices.Equal(afterSchema, beforeSchema) {
 		t.Errorf("schema changed on reopen:\n got %v\nwant %v", afterSchema, beforeSchema)
+	}
+}
+
+// TestMigrateJobsStatusMapsLegacyRows upgrades a database holding jobs in
+// every 0001 status and checks 0003 carries each row over with its status
+// mapped and every other column unchanged.
+func TestMigrateJobsStatusMapsLegacyRows(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	before := fstest.MapFS{}
+	for _, name := range []string{"0000_bootstrap.sql", "0001_init.sql", "0002_household_settings_updated_by.sql"} {
+		body, err := fs.ReadFile(migrations.FS, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[name] = &fstest.MapFile{Data: body}
+	}
+	if err := Migrate(ctx, s.Writer, before); err != nil {
+		t.Fatal(err)
+	}
+	legacy := map[string]string{"pending": "queued", "running": "running", "done": "succeeded", "failed": "failed"}
+	for old := range legacy {
+		if _, err := s.Writer.Exec(`INSERT INTO jobs (id, kind, status, payload, result, error, started_at, finished_at, created_at, updated_at)
+			VALUES (?, 'suggest', ?, '{"n":1}', '{"r":2}', 'boom', 's', 'f', 'c', 'u')`, "job-"+old, old); err != nil {
+			t.Fatalf("insert %s job: %v", old, err)
+		}
+	}
+
+	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+	for old, want := range legacy {
+		var kind, status, payload, result, errText, startedAt, finishedAt, createdAt, updatedAt string
+		if err := s.Reader.QueryRow(`SELECT kind, status, payload, result, error, started_at, finished_at, created_at, updated_at FROM jobs WHERE id = ?`, "job-"+old).
+			Scan(&kind, &status, &payload, &result, &errText, &startedAt, &finishedAt, &createdAt, &updatedAt); err != nil {
+			t.Fatalf("read %s job: %v", old, err)
+		}
+		if status != want {
+			t.Errorf("%s job status = %q, want %q", old, status, want)
+		}
+		got := []string{kind, payload, result, errText, startedAt, finishedAt, createdAt, updatedAt}
+		if wantCols := []string{"suggest", `{"n":1}`, `{"r":2}`, "boom", "s", "f", "c", "u"}; !slices.Equal(got, wantCols) {
+			t.Errorf("%s job columns = %v, want %v", old, got, wantCols)
+		}
+	}
+	if tableExists(t, s, "jobs_new") {
+		t.Error("jobs_new left behind")
 	}
 }

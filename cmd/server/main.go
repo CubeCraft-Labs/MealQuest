@@ -17,6 +17,9 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/config"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secretbox"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/server"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/migrations"
@@ -24,6 +27,9 @@ import (
 
 // version is set at build time with -ldflags "-X main.version=<version>".
 var version = "dev"
+
+// jobWorkers is the number of background jobs run at once.
+const jobWorkers = 2
 
 func main() {
 	cfg, err := config.Load()
@@ -43,6 +49,10 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	if _, err := openSecretBox(cfg.SecretKey); err != nil {
+		return err
+	}
+
 	db, err := openStore(ctx, cfg.DataDir)
 	if err != nil {
 		return err
@@ -52,6 +62,15 @@ func run(cfg config.Config, logger *slog.Logger) error {
 			logger.Error("close database", "error", err)
 		}
 	}()
+
+	if err := seedDefaults(ctx, db, cfg.DefaultTZ); err != nil {
+		return err
+	}
+	settings := household.NewSettingsService(db)
+	runner, _, err := newJobRunner(db, logger)
+	if err != nil {
+		return err
+	}
 
 	sessions, err := auth.NewSessionManager(db, cfg.SessionIdle, cfg.SessionMax)
 	if err != nil {
@@ -69,8 +88,20 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, frontend.Assets())
+	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, runner, frontend.Assets())
 	if err != nil {
+		return err
+	}
+
+	// Start fails the jobs a previous process left running before any
+	// worker runs. The workers stop, and are waited for, before the
+	// database closes.
+	jobsCtx, stopJobs := context.WithCancel(ctx)
+	defer func() {
+		stopJobs()
+		runner.Wait()
+	}()
+	if err := runner.Start(jobsCtx); err != nil {
 		return err
 	}
 	srv := &http.Server{
@@ -104,6 +135,16 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	return nil
 }
 
+// openSecretBox builds the secret box from the configured key, naming the
+// variable whose file holds a bad key. The key itself is never reported.
+func openSecretBox(key config.Secret) (*secretbox.Box, error) {
+	box, err := secretbox.New(key.Reveal())
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", config.EnvSecretKeyFile, err)
+	}
+	return box, nil
+}
+
 // bootMigrations is the migration set applied at boot. Tests replace it to
 // prove a failing migration stops the boot.
 var bootMigrations fs.FS = migrations.FS
@@ -119,6 +160,58 @@ func openStore(ctx context.Context, dataDir string) (*store.Store, error) {
 		return nil, errors.Join(err, db.Close())
 	}
 	return db, nil
+}
+
+// seedSettings creates the household settings on first boot, naming the
+// variable that supplies the zone when it is missing or invalid. Once the
+// settings exist the variable is ignored.
+func seedSettings(ctx context.Context, db *store.Store, defaultTZ string) error {
+	err := household.SeedSettings(ctx, db, defaultTZ)
+	if errors.Is(err, household.ErrNoDefaultZone) || errors.Is(err, household.ErrInvalidDefaultZone) {
+		return fmt.Errorf("%s: a valid IANA zone is required on first boot to create the household settings: %w", config.EnvDefaultTZ, err)
+	}
+	return err
+}
+
+// seedDefaults creates the household settings, AI settings and notification
+// preferences that do not exist yet. Existing rows are never changed.
+func seedDefaults(ctx context.Context, db *store.Store, defaultTZ string) error {
+	if err := seedSettings(ctx, db, defaultTZ); err != nil {
+		return err
+	}
+	if err := household.SeedAISettings(ctx, db); err != nil {
+		return err
+	}
+	return household.SeedNotificationPrefs(ctx, db)
+}
+
+// jobKinds enqueues every job kind the server runs.
+type jobKinds struct {
+	builtins *jobs.Builtins
+}
+
+// newJobRunner returns the job runner with every job kind registered, ready
+// to Start.
+func newJobRunner(db *store.Store, logger *slog.Logger) (*jobs.Runner, *jobKinds, error) {
+	runner, err := jobs.NewRunner(db, logger, jobWorkers)
+	if err != nil {
+		return nil, nil, err
+	}
+	kinds, err := registerJobKinds(runner)
+	if err != nil {
+		return nil, nil, err
+	}
+	return runner, kinds, nil
+}
+
+// registerJobKinds registers every job kind's handler on runner. Each
+// feature's job kinds are registered here.
+func registerJobKinds(runner *jobs.Runner) (*jobKinds, error) {
+	builtins, err := jobs.RegisterBuiltins(runner)
+	if err != nil {
+		return nil, err
+	}
+	return &jobKinds{builtins: builtins}, nil
 }
 
 // logListening logs the startup line. Only the public URL's origin is logged

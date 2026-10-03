@@ -57,7 +57,7 @@ func (q *Queries) GetChatSettings(ctx context.Context) (ChatSetting, error) {
 }
 
 const getHouseholdSettings = `-- name: GetHouseholdSettings :one
-SELECT id, timezone, dinner_time, reminder_time, review_time, plan_draft_dow, plan_draft_time, suggestions_dow, suggestions_time, chat_autosend_dow, chat_autosend_time, onboarding_completed_at, updates_seen_at, created_at, updated_at FROM household_settings
+SELECT id, timezone, dinner_time, reminder_time, review_time, plan_draft_dow, plan_draft_time, suggestions_dow, suggestions_time, chat_autosend_dow, chat_autosend_time, onboarding_completed_at, updates_seen_at, created_at, updated_at, updated_by FROM household_settings
 WHERE id = 1
 `
 
@@ -81,6 +81,7 @@ func (q *Queries) GetHouseholdSettings(ctx context.Context) (HouseholdSetting, e
 		&i.UpdatesSeenAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.UpdatedBy,
 	)
 	return i, err
 }
@@ -248,12 +249,12 @@ INSERT INTO household_settings (
 	id, timezone, dinner_time, reminder_time, review_time, plan_draft_dow,
 	plan_draft_time, suggestions_dow, suggestions_time, chat_autosend_dow,
 	chat_autosend_time, onboarding_completed_at, updates_seen_at,
-	created_at, updated_at
+	updated_by, created_at, updated_at
 ) VALUES (
 	1, ?, ?, ?, ?, ?,
 	?, ?, ?, ?,
 	?, ?, ?,
-	?, ?
+	?, ?, ?
 )
 ON CONFLICT (id) DO UPDATE SET
 	timezone = excluded.timezone,
@@ -268,8 +269,9 @@ ON CONFLICT (id) DO UPDATE SET
 	chat_autosend_time = excluded.chat_autosend_time,
 	onboarding_completed_at = excluded.onboarding_completed_at,
 	updates_seen_at = excluded.updates_seen_at,
+	updated_by = excluded.updated_by,
 	updated_at = excluded.updated_at
-RETURNING id, timezone, dinner_time, reminder_time, review_time, plan_draft_dow, plan_draft_time, suggestions_dow, suggestions_time, chat_autosend_dow, chat_autosend_time, onboarding_completed_at, updates_seen_at, created_at, updated_at
+RETURNING id, timezone, dinner_time, reminder_time, review_time, plan_draft_dow, plan_draft_time, suggestions_dow, suggestions_time, chat_autosend_dow, chat_autosend_time, onboarding_completed_at, updates_seen_at, created_at, updated_at, updated_by
 `
 
 type UpsertHouseholdSettingsParams struct {
@@ -285,6 +287,7 @@ type UpsertHouseholdSettingsParams struct {
 	ChatAutosendTime      string
 	OnboardingCompletedAt sql.NullString
 	UpdatesSeenAt         sql.NullString
+	UpdatedBy             sql.NullString
 	CreatedAt             string
 	UpdatedAt             string
 }
@@ -305,6 +308,7 @@ func (q *Queries) UpsertHouseholdSettings(ctx context.Context, arg UpsertHouseho
 		arg.ChatAutosendTime,
 		arg.OnboardingCompletedAt,
 		arg.UpdatesSeenAt,
+		arg.UpdatedBy,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
@@ -325,6 +329,7 @@ func (q *Queries) UpsertHouseholdSettings(ctx context.Context, arg UpsertHouseho
 		&i.UpdatesSeenAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.UpdatedBy,
 	)
 	return i, err
 }

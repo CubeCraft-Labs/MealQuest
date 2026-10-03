@@ -69,6 +69,16 @@ func TestLoad(t *testing.T) {
 			env:  valid(),
 		},
 		{
+			name: "default time zone set",
+			env:  with(map[string]string{EnvDefaultTZ: "America/New_York"}),
+		},
+		{
+			// Validated only when seeding the household settings, so a
+			// stale value cannot stop a boot that no longer uses it.
+			name: "default time zone not an IANA zone",
+			env:  with(map[string]string{EnvDefaultTZ: "Mars/Olympus_Mons"}),
+		},
+		{
 			name:    "one missing",
 			env:     with(nil, EnvHTTPAddr),
 			badVars: []string{EnvHTTPAddr},
@@ -410,6 +420,8 @@ func TestLoadValues(t *testing.T) {
 		EnvOIDCClientID:         "mealquest",
 		EnvOIDCClientSecretFile: clientSecretPath,
 		EnvOIDCAllowedGroups:    " mealquest-admin ,family",
+
+		EnvDefaultTZ: "Europe/London",
 	}
 	cfg, err := load(func(k string) (string, bool) { v, ok := env[k]; return v, ok })
 	if err != nil {
@@ -464,6 +476,9 @@ func TestLoadValues(t *testing.T) {
 	want := forwarded.Trusted{netip.MustParsePrefix("10.60.1.33/32"), netip.MustParsePrefix("172.16.0.0/12")}
 	if !slices.Equal(cfg.TrustedProxy, want) {
 		t.Errorf("TrustedProxy = %v, want %v", cfg.TrustedProxy, want)
+	}
+	if cfg.DefaultTZ != "Europe/London" {
+		t.Errorf("DefaultTZ = %q, want Europe/London", cfg.DefaultTZ)
 	}
 }
 

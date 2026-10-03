@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"maps"
@@ -786,6 +787,41 @@ func TestNewFailsWhenDiscoveryFails(t *testing.T) {
 	}, &memorySessions{}, slog.New(slog.DiscardHandler))
 	if err == nil {
 		t.Fatal("New succeeded without a discovery document")
+	}
+}
+
+func TestNewDiscoveryErrorOmitsProviderBody(t *testing.T) {
+	t.Parallel()
+	const sentinel = "sentinel-discovery-body-7f3a"
+	for _, status := range []int{http.StatusNotFound, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(status)
+				io.WriteString(w, sentinel)
+			}))
+			t.Cleanup(srv.Close)
+			logs := &syncBuffer{}
+			_, err := New(context.Background(), Config{
+				Issuer:        srv.URL,
+				ClientID:      testClientID,
+				ClientSecret:  testClientSecret,
+				PublicURL:     testPublicURL,
+				SecretKey:     []byte("k"),
+				AllowedGroups: testAllowedGroups,
+			}, &memorySessions{}, slog.New(slog.NewTextHandler(logs, nil)))
+			if err == nil {
+				t.Fatal("New succeeded without a discovery document")
+			}
+			// cmd/server logs the returned error at startup.
+			slog.New(slog.NewTextHandler(logs, nil)).Error("startup failed", "err", err)
+			if strings.Contains(logs.String(), sentinel) {
+				t.Errorf("logs contain the provider response body: %s", logs)
+			}
+			if want := fmt.Sprintf("auth: OIDC discovery: provider answered HTTP %d", status); err.Error() != want {
+				t.Errorf("error = %q, want %q", err, want)
+			}
+		})
 	}
 }
 

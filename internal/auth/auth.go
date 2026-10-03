@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -107,9 +108,12 @@ func New(ctx context.Context, cfg Config, sessions Sessions, logger *slog.Logger
 	}
 
 	client := &http.Client{Timeout: providerTimeout, CheckRedirect: checkRedirect}
-	provider, err := oidc.NewProvider(oidc.ClientContext(ctx, client), cfg.Issuer)
+	discovery := *client
+	recorder := &statusRecorder{next: http.DefaultTransport}
+	discovery.Transport = recorder
+	provider, err := oidc.NewProvider(oidc.ClientContext(ctx, &discovery), cfg.Issuer)
 	if err != nil {
-		return nil, fmt.Errorf("auth: OIDC discovery: %w", err)
+		return nil, discoveryError(err, int(recorder.status.Load()))
 	}
 	endpoint := provider.Endpoint()
 	var discovered struct {
@@ -157,6 +161,32 @@ func New(ctx context.Context, cfg Config, sessions Sessions, logger *slog.Logger
 		endSessionURL: discovered.EndSessionURI,
 		logger:        logger,
 	}, nil
+}
+
+// statusRecorder records the status of the last response it carries.
+type statusRecorder struct {
+	next   http.RoundTripper
+	status atomic.Int32
+}
+
+func (s *statusRecorder) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := s.next.RoundTrip(req)
+	if err == nil {
+		s.status.Store(int32(resp.StatusCode))
+	}
+	return resp, err
+}
+
+// discoveryError reports a failed discovery. go-oidc puts the provider's
+// response body in its error for a non-200 discovery response, so that
+// error is replaced by the status alone. Transport errors carry no response
+// content and keep their cause.
+func discoveryError(err error, status int) error {
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) && status != 0 && status != http.StatusOK {
+		return fmt.Errorf("auth: OIDC discovery: provider answered HTTP %d", status)
+	}
+	return fmt.Errorf("auth: OIDC discovery: %w", err)
 }
 
 // checkEndpoint applies secureurl.Check to the provider URL raw, naming the

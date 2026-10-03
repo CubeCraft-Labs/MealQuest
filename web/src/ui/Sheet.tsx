@@ -15,17 +15,19 @@ export type SheetProps = SheetName & {
 
 const focusableSelector = [
   'a[href]',
-  'button:not([disabled])',
-  'input:not([disabled])',
-  'select:not([disabled])',
-  'textarea:not([disabled])',
+  'button',
+  'input',
+  'select',
+  'textarea',
   '[tabindex]',
 ].join(',')
 
-// Whether an element can take keyboard focus: a negative tabIndex, a hidden,
-// aria-hidden or inert ancestor (or self), display: none on the way up to the
-// panel, or visibility: hidden all rule it out.
+// Whether an element can take keyboard focus: being disabled (by its own
+// attribute or a disabled fieldset), a negative tabIndex, a hidden, aria-hidden
+// or inert ancestor (or self), display: none on the way up to the panel, or
+// visibility: hidden all rule it out.
 function isKeyboardFocusable(element: HTMLElement, panel: HTMLElement): boolean {
+  if (element.matches(':disabled')) return false
   if (element.tabIndex < 0) return false
   if (element.closest('[hidden], [aria-hidden="true"], [inert]')) return false
   if (getComputedStyle(element).visibility === 'hidden') return false

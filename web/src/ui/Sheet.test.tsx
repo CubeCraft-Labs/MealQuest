@@ -137,6 +137,31 @@ describe('Sheet', () => {
     expect(last).toHaveFocus()
   })
 
+  it('does not stop the Tab trap on a control disabled by its fieldset', () => {
+    render(
+      <Sheet aria-label="Quest log" open onClose={() => {}}>
+        <fieldset disabled>
+          <button type="button">Disabled first</button>
+        </fieldset>
+        <button type="button">Try it</button>
+        <button type="button">Pass</button>
+        <fieldset disabled>
+          <button type="button">Disabled last</button>
+        </fieldset>
+      </Sheet>,
+    )
+    const first = screen.getByRole('button', { name: 'Try it' })
+    const last = screen.getByRole('button', { name: 'Pass' })
+    expect(first).toHaveFocus()
+
+    last.focus()
+    fireEvent.keyDown(last, { key: 'Tab' })
+    expect(first).toHaveFocus()
+
+    fireEvent.keyDown(first, { key: 'Tab', shiftKey: true })
+    expect(last).toHaveFocus()
+  })
+
   it('wraps Tab and Shift+Tab inside the sheet', () => {
     render(<Harness />)
     openSheet()

@@ -32,6 +32,8 @@ ENV MEALQUEST_HTTP_ADDR=:8080 \
 VOLUME /data
 EXPOSE 8080
 USER 10001:10001
+# Probe the port from MEALQUEST_HTTP_ADDR (text after the last colon) so an
+# overridden listen address stays healthy.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget -q -O /dev/null http://127.0.0.1:8080/health || exit 1
+    CMD wget -q -O /dev/null "http://127.0.0.1:${MEALQUEST_HTTP_ADDR##*:}/health" || exit 1
 ENTRYPOINT ["/usr/local/bin/mealquest"]

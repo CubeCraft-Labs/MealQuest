@@ -16,5 +16,9 @@ bin/
 .env*
 **/.env*
 deploy/secrets/
-*.pem
-*.key
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.jks
+**/*.keystore

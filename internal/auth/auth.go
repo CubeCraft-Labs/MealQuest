@@ -25,6 +25,7 @@ import (
 const (
 	LoginPath    = "/auth/login"
 	CallbackPath = "/auth/callback"
+	LogoutPath   = "/auth/logout"
 )
 
 // providerTimeout bounds every request to the identity provider.
@@ -43,11 +44,14 @@ type Claims struct {
 	Groups            []string `json:"groups"`
 }
 
-// SessionStarter is the session layer's entry point. StartSession is called
-// once per successful login with claims from a verified ID token; it must set
-// the session cookie on w. A returned error aborts the login with 500.
-type SessionStarter interface {
+// Sessions is the session layer. StartSession is called once per successful
+// login with claims from a verified ID token; it must set the session cookie
+// on w. EndSession is called on logout; it must end the session r carries,
+// if any, and clear the cookie on w. A returned error fails the request with
+// 500.
+type Sessions interface {
 	StartSession(w http.ResponseWriter, r *http.Request, claims Claims) error
+	EndSession(w http.ResponseWriter, r *http.Request) error
 }
 
 // Config is what New needs to reach the identity provider.
@@ -69,13 +73,16 @@ type Auth struct {
 	verifier *oidc.IDTokenVerifier
 	client   *http.Client
 	cookie   loginCookie
-	sessions SessionStarter
-	logger   *slog.Logger
+	sessions Sessions
+	// endSessionURL is the provider's end_session_endpoint; logout ends
+	// there so the provider's own session ends too.
+	endSessionURL string
+	logger        *slog.Logger
 }
 
 // New discovers the provider at cfg.Issuer and returns the login flow. It
 // fails if discovery fails or the issuer the provider reports differs.
-func New(ctx context.Context, cfg Config, sessions SessionStarter, logger *slog.Logger) (*Auth, error) {
+func New(ctx context.Context, cfg Config, sessions Sessions, logger *slog.Logger) (*Auth, error) {
 	switch {
 	case cfg.Issuer == "", cfg.ClientID == "", cfg.ClientSecret == "":
 		return nil, errors.New("auth: issuer, client ID and client secret are required")
@@ -84,7 +91,7 @@ func New(ctx context.Context, cfg Config, sessions SessionStarter, logger *slog.
 	case len(cfg.SecretKey) == 0:
 		return nil, errors.New("auth: secret key is required")
 	case sessions == nil:
-		return nil, errors.New("auth: session starter is required")
+		return nil, errors.New("auth: session layer is required")
 	}
 
 	if err := checkEndpoint("issuer", cfg.Issuer); err != nil {
@@ -98,7 +105,8 @@ func New(ctx context.Context, cfg Config, sessions SessionStarter, logger *slog.
 	}
 	endpoint := provider.Endpoint()
 	var discovered struct {
-		JWKSURI string `json:"jwks_uri"`
+		JWKSURI       string `json:"jwks_uri"`
+		EndSessionURI string `json:"end_session_endpoint"`
 	}
 	if err := provider.Claims(&discovered); err != nil {
 		return nil, fmt.Errorf("auth: OIDC discovery: %w", err)
@@ -109,6 +117,7 @@ func New(ctx context.Context, cfg Config, sessions SessionStarter, logger *slog.
 		{"authorization endpoint", endpoint.AuthURL},
 		{"token endpoint", endpoint.TokenURL},
 		{"JWKS endpoint", discovered.JWKSURI},
+		{"end session endpoint", discovered.EndSessionURI},
 	} {
 		if err := checkEndpoint(e.name, e.raw); err != nil {
 			return nil, err
@@ -129,10 +138,11 @@ func New(ctx context.Context, cfg Config, sessions SessionStarter, logger *slog.
 			ClientID:             cfg.ClientID,
 			SupportedSigningAlgs: []string{oidc.RS256},
 		}),
-		client:   client,
-		cookie:   newLoginCookie(cfg.SecretKey),
-		sessions: sessions,
-		logger:   logger,
+		client:        client,
+		cookie:        newLoginCookie(cfg.SecretKey),
+		sessions:      sessions,
+		endSessionURL: discovered.EndSessionURI,
+		logger:        logger,
 	}, nil
 }
 
@@ -169,11 +179,15 @@ func checkRedirect(req *http.Request, via []*http.Request) error {
 	return nil
 }
 
-// Mount registers GET LoginPath and GET CallbackPath on r.
+// Mount registers GET LoginPath, GET CallbackPath and POST LogoutPath on r.
 func (a *Auth) Mount(r chi.Router) {
 	r.Get(LoginPath, a.login)
 	r.Get(CallbackPath, a.callback)
+	r.Post(LogoutPath, a.logout)
 }
+
+// EndSessionURL is the provider's end_session_endpoint.
+func (a *Auth) EndSessionURL() string { return a.endSessionURL }
 
 // login starts the authorization code flow with PKCE (S256). The optional
 // "return" query parameter must be a same-origin path; anything else fails
@@ -248,6 +262,18 @@ func (a *Auth) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, state.Return, http.StatusSeeOther)
+}
+
+// logout ends the session, clears the cookie and sends the browser to the
+// provider's end_session_endpoint to end the provider session as well.
+func (a *Auth) logout(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if err := a.sessions.EndSession(w, r); err != nil {
+		a.logger.ErrorContext(r.Context(), "end session", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, a.endSessionURL, http.StatusSeeOther)
 }
 
 // verify exchanges code for tokens and returns the verified ID token claims.

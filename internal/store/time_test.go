@@ -60,6 +60,15 @@ func TestTimestampRejects(t *testing.T) {
 	if _, err := (Timestamp{}).Value(); err == nil {
 		t.Error("zero Timestamp Value succeeded")
 	}
+	for _, tm := range []time.Time{
+		time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(-1, 12, 31, 0, 0, 0, 0, time.UTC),
+		time.Date(9999, 12, 31, 23, 0, 0, 0, time.FixedZone("west", -2*3600)),
+	} {
+		if v, err := (Timestamp{tm}).Value(); err == nil {
+			t.Errorf("Timestamp{%v}.Value() = %v, want error", tm, v)
+		}
+	}
 	for _, src := range []any{
 		nil, int64(0), []byte("2026-10-03T12:37:05.123Z"), "2026-10-03T12:37:05Z",
 		"2026-10-03T08:37:05.123-04:00", "2026-10-03T12:37:05,123Z", "garbage",

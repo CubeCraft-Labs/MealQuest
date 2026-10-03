@@ -29,10 +29,14 @@ func (t Timestamp) String() string {
 	return t.UTC().Format(timestampLayout)
 }
 
-// Value implements driver.Valuer. The zero Timestamp is an error.
+// Value implements driver.Valuer. The zero Timestamp is an error, as is a UTC
+// year outside 0000–9999, which the four-digit stored form cannot represent.
 func (t Timestamp) Value() (driver.Value, error) {
 	if t.IsZero() {
 		return nil, errors.New("store: zero Timestamp")
+	}
+	if y := t.UTC().Year(); y < 0 || y > 9999 {
+		return nil, fmt.Errorf("store: Timestamp year %d outside 0000-9999", y)
 	}
 	return t.String(), nil
 }

@@ -3,13 +3,17 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
 )
 
 func TestLoad(t *testing.T) {
@@ -21,6 +25,10 @@ func TestLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 	unreadablePath := filepath.Join(dir, "missing_secret")
+	clientSecretPath := filepath.Join(dir, "oidc_client_secret")
+	if err := os.WriteFile(clientSecretPath, []byte("client-s3cret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	emptyPath := filepath.Join(dir, "empty_secret")
 	if err := os.WriteFile(emptyPath, []byte("\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -33,6 +41,11 @@ func TestLoad(t *testing.T) {
 			EnvDataDir:         dir,
 			EnvShutdownTimeout: "15s",
 			EnvSecretKeyFile:   secretPath,
+
+			EnvOIDCIssuer:           "https://auth.example.com/application/o/mealquest/",
+			EnvOIDCClientID:         "mealquest",
+			EnvOIDCClientSecretFile: clientSecretPath,
+			EnvOIDCAllowedGroups:    "mealquest-admin",
 		}
 	}
 	with := func(changes map[string]string, unset ...string) map[string]string {
@@ -70,6 +83,7 @@ func TestLoad(t *testing.T) {
 			env:  map[string]string{},
 			badVars: []string{
 				EnvHTTPAddr, EnvPublicURL, EnvDataDir, EnvShutdownTimeout, EnvSecretKeyFile,
+				EnvOIDCIssuer, EnvOIDCClientID, EnvOIDCClientSecretFile, EnvOIDCAllowedGroups,
 			},
 		},
 		{
@@ -140,6 +154,24 @@ func TestLoad(t *testing.T) {
 			badVars: []string{EnvPublicURL},
 		},
 		{
+			name:    "plain HTTP public URL on a remote host",
+			env:     with(map[string]string{EnvPublicURL: "http://meals.example.com"}),
+			badVars: []string{EnvPublicURL},
+		},
+		{
+			name:    "plain HTTP public URL on a non-loopback IP",
+			env:     with(map[string]string{EnvPublicURL: "http://192.168.1.20:8080"}),
+			badVars: []string{EnvPublicURL},
+		},
+		{
+			name: "plain HTTP public URL on 127.0.0.1",
+			env:  with(map[string]string{EnvPublicURL: "http://127.0.0.1:8080"}),
+		},
+		{
+			name: "plain HTTP public URL on [::1]",
+			env:  with(map[string]string{EnvPublicURL: "http://[::1]:8080"}),
+		},
+		{
 			name:    "relative public URL",
 			env:     with(map[string]string{EnvPublicURL: "meals.example.com"}),
 			badVars: []string{EnvPublicURL},
@@ -168,6 +200,143 @@ func TestLoad(t *testing.T) {
 			name:    "inline secret rejected",
 			env:     with(map[string]string{"MEALQUEST_SECRET_KEY": "inline"}),
 			badVars: []string{"MEALQUEST_SECRET_KEY"},
+		},
+		{
+			name:    "inline OIDC client secret rejected",
+			env:     with(map[string]string{"MEALQUEST_OIDC_CLIENT_SECRET": "inline"}),
+			badVars: []string{"MEALQUEST_OIDC_CLIENT_SECRET"},
+		},
+		{
+			name:    "unreadable OIDC client secret file",
+			env:     with(map[string]string{EnvOIDCClientSecretFile: unreadablePath}),
+			badVars: []string{EnvOIDCClientSecretFile},
+		},
+		{
+			name:    "relative OIDC issuer",
+			env:     with(map[string]string{EnvOIDCIssuer: "auth.example.com"}),
+			badVars: []string{EnvOIDCIssuer},
+		},
+		{
+			name:    "non-http OIDC issuer",
+			env:     with(map[string]string{EnvOIDCIssuer: "ftp://auth.example.com"}),
+			badVars: []string{EnvOIDCIssuer},
+		},
+		{
+			name:    "plain HTTP OIDC issuer on a remote host",
+			env:     with(map[string]string{EnvOIDCIssuer: "http://auth.example.com/application/o/mealquest/"}),
+			badVars: []string{EnvOIDCIssuer},
+		},
+		{
+			name: "plain HTTP OIDC issuer on localhost",
+			env:  with(map[string]string{EnvOIDCIssuer: "http://localhost:9000/application/o/mealquest/"}),
+		},
+		{
+			name: "several allowed groups",
+			env:  with(map[string]string{EnvOIDCAllowedGroups: "mealquest-admin, family"}),
+		},
+		{
+			name:    "empty allowed group entry",
+			env:     with(map[string]string{EnvOIDCAllowedGroups: "mealquest-admin,,family"}),
+			badVars: []string{EnvOIDCAllowedGroups},
+		},
+		{
+			name:    "trailing comma in allowed groups",
+			env:     with(map[string]string{EnvOIDCAllowedGroups: "mealquest-admin,"}),
+			badVars: []string{EnvOIDCAllowedGroups},
+		},
+		{
+			name:    "blank OIDC client ID",
+			env:     with(map[string]string{EnvOIDCClientID: "  "}),
+			badVars: []string{EnvOIDCClientID},
+		},
+		{
+			name: "session lifetimes set",
+			env:  with(map[string]string{EnvSessionIdle: "24h", EnvSessionMax: "48h"}),
+		},
+		{
+			name: "session max equal to idle",
+			env:  with(map[string]string{EnvSessionIdle: "24h", EnvSessionMax: "24h"}),
+		},
+		{
+			name:    "invalid session idle",
+			env:     with(map[string]string{EnvSessionIdle: "a month"}),
+			badVars: []string{EnvSessionIdle},
+		},
+		{
+			name:    "empty session idle",
+			env:     with(map[string]string{EnvSessionIdle: ""}),
+			badVars: []string{EnvSessionIdle},
+		},
+		{
+			name:    "non-positive session max",
+			env:     with(map[string]string{EnvSessionMax: "-1h"}),
+			badVars: []string{EnvSessionMax},
+		},
+		{
+			name: "whole-millisecond session lifetimes",
+			env:  with(map[string]string{EnvSessionIdle: "1ms", EnvSessionMax: "2ms"}),
+		},
+		{
+			name:    "sub-millisecond session idle",
+			env:     with(map[string]string{EnvSessionIdle: "1500us", EnvSessionMax: "2ms"}),
+			badVars: []string{EnvSessionIdle},
+		},
+		{
+			name:    "sub-millisecond session max",
+			env:     with(map[string]string{EnvSessionIdle: "1ms", EnvSessionMax: "1ms500us"}),
+			badVars: []string{EnvSessionMax},
+		},
+		{
+			name:    "session max below idle",
+			env:     with(map[string]string{EnvSessionIdle: "48h", EnvSessionMax: "24h"}),
+			badVars: []string{EnvSessionMax},
+		},
+		{
+			name:    "session max below default idle",
+			env:     with(map[string]string{EnvSessionMax: "719h"}),
+			badVars: []string{EnvSessionMax},
+		},
+		{
+			name: "trusted proxy IP",
+			env:  with(map[string]string{EnvTrustedProxy: "10.60.1.33"}),
+		},
+		{
+			name: "trusted proxy IPs and CIDRs",
+			env:  with(map[string]string{EnvTrustedProxy: "10.60.1.33, 172.16.0.0/12,2001:db8::/32,::1"}),
+		},
+		{
+			name: "blank trusted proxy trusts no peer",
+			env:  with(map[string]string{EnvTrustedProxy: "  "}),
+		},
+		{
+			name:    "trusted proxy not an IP",
+			env:     with(map[string]string{EnvTrustedProxy: "traefik"}),
+			badVars: []string{EnvTrustedProxy},
+		},
+		{
+			name:    "trusted proxy invalid CIDR",
+			env:     with(map[string]string{EnvTrustedProxy: "10.60.1.0/33"}),
+			badVars: []string{EnvTrustedProxy},
+		},
+		{
+			name:    "trusted proxy CIDR with host bits",
+			env:     with(map[string]string{EnvTrustedProxy: "10.60.1.33/24"}),
+			badVars: []string{EnvTrustedProxy},
+		},
+		{
+			name:    "trusted proxy empty entry",
+			env:     with(map[string]string{EnvTrustedProxy: "10.60.1.33,,10.60.1.34"}),
+			badVars: []string{EnvTrustedProxy},
+		},
+		{
+			name:    "trusted proxy trusting everyone",
+			env:     with(map[string]string{EnvTrustedProxy: "0.0.0.0/0"}),
+			badVars: []string{EnvTrustedProxy},
+		},
+		{
+			name:    "trusted proxy with port",
+			env:     with(map[string]string{EnvTrustedProxy: "10.60.1.33:443"}),
+			badVars: []string{EnvTrustedProxy},
 		},
 		{
 			name: "several invalid values are all named",
@@ -211,7 +380,7 @@ func TestLoad(t *testing.T) {
 					t.Errorf("error message %q does not name %s", err.Error(), v)
 				}
 			}
-			if cfg != (Config{}) {
+			if !reflect.ValueOf(cfg).IsZero() {
 				t.Errorf("load() returned non-zero Config alongside error: %+v", cfg)
 			}
 		})
@@ -226,12 +395,21 @@ func TestLoadValues(t *testing.T) {
 	if err := os.WriteFile(secretPath, []byte("s3cret-value\r\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	clientSecretPath := filepath.Join(dir, "oidc_client_secret")
+	if err := os.WriteFile(clientSecretPath, []byte("client-s3cret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	env := map[string]string{
 		EnvHTTPAddr:        "127.0.0.1:9000",
 		EnvPublicURL:       "http://localhost:9000",
 		EnvDataDir:         dir,
 		EnvShutdownTimeout: "1m30s",
 		EnvSecretKeyFile:   secretPath,
+
+		EnvOIDCIssuer:           "https://auth.example.com/application/o/mealquest/",
+		EnvOIDCClientID:         "mealquest",
+		EnvOIDCClientSecretFile: clientSecretPath,
+		EnvOIDCAllowedGroups:    " mealquest-admin ,family",
 	}
 	cfg, err := load(func(k string) (string, bool) { v, ok := env[k]; return v, ok })
 	if err != nil {
@@ -253,6 +431,40 @@ func TestLoadValues(t *testing.T) {
 	if cfg.SecretKey.Reveal() != "s3cret-value" {
 		t.Errorf("SecretKey.Reveal() = %q, want trailing newline trimmed", cfg.SecretKey.Reveal())
 	}
+	if got, want := cfg.OIDCIssuer.String(), "https://auth.example.com/application/o/mealquest/"; got != want {
+		t.Errorf("OIDCIssuer = %q, want %q", got, want)
+	}
+	if cfg.OIDCClientID != "mealquest" {
+		t.Errorf("OIDCClientID = %q", cfg.OIDCClientID)
+	}
+	if cfg.OIDCClientSecret.Reveal() != "client-s3cret" {
+		t.Errorf("OIDCClientSecret.Reveal() = %q", cfg.OIDCClientSecret.Reveal())
+	}
+	if want := []string{"mealquest-admin", "family"}; !slices.Equal(cfg.OIDCAllowedGroups, want) {
+		t.Errorf("OIDCAllowedGroups = %q, want %q", cfg.OIDCAllowedGroups, want)
+	}
+	if cfg.SessionIdle != 720*time.Hour || cfg.SessionMax != 4320*time.Hour {
+		t.Errorf("SessionIdle, SessionMax = %v, %v, want defaults 720h, 4320h", cfg.SessionIdle, cfg.SessionMax)
+	}
+
+	if cfg.TrustedProxy != nil {
+		t.Errorf("TrustedProxy = %v, want none when unset", cfg.TrustedProxy)
+	}
+
+	env[EnvSessionIdle] = "12h"
+	env[EnvSessionMax] = "36h"
+	env[EnvTrustedProxy] = "10.60.1.33, 172.16.0.0/12"
+	cfg, err = load(func(k string) (string, bool) { v, ok := env[k]; return v, ok })
+	if err != nil {
+		t.Fatalf("load() error = %v", err)
+	}
+	if cfg.SessionIdle != 12*time.Hour || cfg.SessionMax != 36*time.Hour {
+		t.Errorf("SessionIdle, SessionMax = %v, %v, want 12h, 36h", cfg.SessionIdle, cfg.SessionMax)
+	}
+	want := forwarded.Trusted{netip.MustParsePrefix("10.60.1.33/32"), netip.MustParsePrefix("172.16.0.0/12")}
+	if !slices.Equal(cfg.TrustedProxy, want) {
+		t.Errorf("TrustedProxy = %v, want %v", cfg.TrustedProxy, want)
+	}
 }
 
 func TestSecretRedacted(t *testing.T) {
@@ -260,7 +472,7 @@ func TestSecretRedacted(t *testing.T) {
 
 	s := Secret{value: "s3cret-value"}
 	for _, format := range []string{"%v", "%s", "%+v", "%#v"} {
-		cfg := Config{SecretKey: s}
+		cfg := Config{SecretKey: s, OIDCClientSecret: s}
 		for _, out := range []string{fmt.Sprintf(format, s), fmt.Sprintf(format, cfg)} {
 			if strings.Contains(out, "s3cret-value") {
 				t.Errorf("format %s leaked secret: %s", format, out)

@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
 )
 
@@ -16,9 +17,18 @@ import (
 // SPA's index.html.
 var reservedPrefixes = []string{"/api", "/auth", "/media", "/health"}
 
-// NewRouter returns the HTTP handler for the service. version is reported by
-// GET /health; assets is the web build served for every other GET.
-func NewRouter(logger *slog.Logger, version string, assets fs.FS) (http.Handler, error) {
+// RouteMounter registers its own routes on the router.
+type RouteMounter interface {
+	Mount(r chi.Router)
+}
+
+// NewRouter returns the HTTP handler for the service. Every request first
+// has its client address and scheme resolved, honouring forwarded headers
+// only from a peer in trusted (see resolveOrigin). version is reported by
+// GET /health; auth mounts the /auth routes; sessions guards /api/v1 and
+// /media; assets is the web build served for every other GET. /health, /auth
+// and the web build are public. Requests to /api/v1 other than GET also need the session's CSRF token in CSRFHeader.
+func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, assets fs.FS) (http.Handler, error) {
 	notFound := apiErrorHandler(logger, http.StatusNotFound, "not_found", "not found")
 	methodNotAllowed := apiErrorHandler(logger, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 
@@ -28,16 +38,31 @@ func NewRouter(logger *slog.Logger, version string, assets fs.FS) (http.Handler,
 	}
 
 	r := chi.NewRouter()
+	r.Use(resolveOrigin(logger, trusted))
 	r.MethodNotAllowed(methodNotAllowed)
 	r.NotFound(notFound)
 
 	r.Get("/health", health(logger, version))
+	auth.Mount(r)
+	// The session middleware wraps the whole /api/v1 and /media subrouters
+	// rather than being added with Use: chi skips a subrouter's middleware
+	// when it has no routes, which would leave it unguarded.
+	signedIn := requireSession(logger, sessions)
+	csrf := requireCSRF(logger)
+	apiV1, media := chi.NewRouter(), chi.NewRouter()
+	for _, sub := range []*chi.Mux{apiV1, media} {
+		sub.MethodNotAllowed(methodNotAllowed)
+		sub.NotFound(notFound)
+	}
+	apiV1.Get("/me", me(logger))
 	r.Route("/api", func(r chi.Router) {
 		r.MethodNotAllowed(methodNotAllowed)
 		r.NotFound(notFound)
+		r.Mount("/v1", signedIn(csrf(apiV1)))
 	})
-	// Catch-all for the PWA. /auth and /media have no routes yet; the frontend
-	// handler passes them to notFound rather than the SPA fallback.
+	r.Mount("/media", signedIn(media))
+	// Catch-all for the PWA. Unknown /auth paths reach the frontend handler,
+	// which passes them to notFound rather than the SPA fallback.
 	r.Method(http.MethodGet, "/*", web)
 	r.Method(http.MethodHead, "/*", web)
 	return r, nil

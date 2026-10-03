@@ -34,8 +34,13 @@ func useBootMigrations(t *testing.T, m fstest.MapFS) {
 // holds keyFile. Tests that call it must not run in parallel.
 func loadConfig(t *testing.T, keyFile string) config.Config {
 	t.Helper()
-	keyPath := filepath.Join(t.TempDir(), "secret_key")
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "secret_key")
 	if err := os.WriteFile(keyPath, []byte(keyFile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	clientSecretPath := filepath.Join(dir, "oidc_client_secret")
+	if err := os.WriteFile(clientSecretPath, []byte("client-secret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv(config.EnvHTTPAddr, "127.0.0.1:0")
@@ -43,6 +48,10 @@ func loadConfig(t *testing.T, keyFile string) config.Config {
 	t.Setenv(config.EnvDataDir, t.TempDir())
 	t.Setenv(config.EnvShutdownTimeout, "1s")
 	t.Setenv(config.EnvSecretKeyFile, keyPath)
+	t.Setenv(config.EnvOIDCIssuer, "https://auth.example.com/application/o/mealquest/")
+	t.Setenv(config.EnvOIDCClientID, "mealquest")
+	t.Setenv(config.EnvOIDCClientSecretFile, clientSecretPath)
+	t.Setenv(config.EnvOIDCAllowedGroups, "mealquest-admin")
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)

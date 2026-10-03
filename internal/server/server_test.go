@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/go-chi/chi/v5"
 )
 
 const (
@@ -25,11 +27,37 @@ func newTestRouter(t *testing.T, version string) http.Handler {
 		"index.html":             {Data: []byte(fixtureIndex)},
 		"assets/index-AbC123.js": {Data: []byte(fixtureAsset)},
 	}
-	r, err := NewRouter(logger, version, assets)
+	r, err := NewRouter(logger, version, nil, stubAuth{}, stubSessions{}, assets)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return r
+}
+
+// stubAuth mounts a fixed GET /auth/login in place of the real auth flow.
+type stubAuth struct{}
+
+func (stubAuth) Mount(r chi.Router) {
+	r.Get("/auth/login", func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, "stub login")
+	})
+}
+
+func TestAuthRoutesMounted(t *testing.T) {
+	t.Parallel()
+
+	router := newTestRouter(t, "dev")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/auth/login", nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != "stub login" {
+		t.Errorf("GET /auth/login = %d %q, want the mounted handler", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/auth/login", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /auth/login status = %d, want 405", rec.Code)
+	}
 }
 
 func TestHealth(t *testing.T) {
@@ -98,8 +126,10 @@ func TestReservedPathsNotFound(t *testing.T) {
 	}{
 		{http.MethodGet, "/api"},
 		{http.MethodGet, "/api/unknown"},
+		{http.MethodGet, "/api/v1/unknown"},
+		{http.MethodPost, "/api/v1/unknown"},
 		{http.MethodPost, "/api/unknown"},
-		{http.MethodGet, "/auth/callback"},
+		{http.MethodGet, "/auth/unknown"},
 		{http.MethodGet, "/media/photo.jpg"},
 		{http.MethodGet, "/health/deep"},
 		{http.MethodGet, "/auth/../quests/42"},
@@ -109,8 +139,13 @@ func TestReservedPathsNotFound(t *testing.T) {
 		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
 			t.Parallel()
 
+			// Signed in with the CSRF token, so /api/v1 and /media reach
+			// their routers.
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			req.AddCookie(validSessionCookie)
+			req.Header.Set(CSRFHeader, testSession.CSRFToken)
 			rec := httptest.NewRecorder()
-			router.ServeHTTP(rec, httptest.NewRequest(tt.method, tt.path, nil))
+			router.ServeHTTP(rec, req)
 
 			if rec.Code != http.StatusNotFound {
 				t.Errorf("status = %d, want 404", rec.Code)

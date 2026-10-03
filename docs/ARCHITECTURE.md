@@ -25,8 +25,8 @@ docker compose project "mealquest" — 10.60.1.14
    └── Litestream  SQLite replication → Synology NAS 10.60.1.50
 ```
 
-One container serves the API, the auth flow, media and the PWA. SQLite lives
-on the host volume and is continuously replicated by Litestream to the NAS.
+One Go service serves the API, the auth flow, media and the PWA. Its SQLite
+database is replicated by Litestream to the NAS.
 
 ## Repository layout
 
@@ -44,9 +44,9 @@ on the host volume and is continuously replicated by Litestream to the NAS.
 | `internal/suggest`, `internal/plan`, `internal/shopping`, `internal/ideas` | Feature services. |
 | `internal/gcal`, `internal/notify`, `internal/push`, `internal/chat` | Integrations. |
 | `internal/jobs`, `internal/scheduler` | Background jobs and schedules. |
-| `migrations/` | SQL migrations (embedded; no goose/golang-migrate). |
+| `migrations/` | SQL migrations (no goose or golang-migrate). |
 | `web/` | React PWA. |
-| `deploy/` | Compose, Traefik route, Litestream config. |
+| `deploy/` | Deployment files. |
 | `docs/` | Documentation. |
 | `design/` | Requirements and UI handoff (read-only reference). |
 
@@ -67,10 +67,11 @@ on the host volume and is continuously replicated by Litestream to the NAS.
 
 ## Authentication
 
-- Authentik OIDC; the backend is a **confidential client** (authorization
-  code flow handled server-side with `coreos/go-oidc/v3` and `x/oauth2`).
-- Session cookie `__Host-mealquest_session` (Secure, HttpOnly, path `/`).
-- Unsafe requests require the CSRF header `X-MealQuest-CSRF`.
+- Authentik OIDC; the backend is a **confidential client**
+  (`coreos/go-oidc/v3`, `golang.org/x/oauth2`).
+- Session cookie `__Host-mealquest_session` (HttpOnly, Secure,
+  SameSite=Lax). Sessions expire after 30 days idle or 180 days absolute.
+- Non-GET requests require the CSRF header `X-MealQuest-CSRF`.
 - Access requires membership of the Authentik group `mealquest-admin`.
   There is a **single role**: one shared household, no per-person profiles.
 
@@ -80,47 +81,55 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 
 | Table | Holds |
 | --- | --- |
-| `household_settings` | Household name, timezone, preferences. |
-| `recipes` | Dinners: name, method, minutes, difficulty, source, lifecycle status. |
-| `recipe_ingredients` | Ingredients with quantities per recipe. |
-| `recipe_steps` | Ordered steps per recipe. |
-| `photos` | Cached recipe photos. |
-| `dinners` | Dinner records and lifecycle state. |
-| `suggestion_batches` | One AI suggestion run. |
-| `suggestions` | Side quests with reason ("Why this?") and Try it / Pass status. |
-| `week_plans` | One plan per Monday-start week; draft or synced. |
-| `plan_days` | The dinner for each day of a week plan. |
-| `rotation_reviews` | Rotation check answers ("Keep it in rotation?"). |
-| `shopping_lists` | One Supply run per week; frozen into the Supply archive after the week. |
-| `shopping_groups` | Items grouped by dinner. |
-| `shopping_items` | Items, quantity, needed / have-it. |
-| `ai_settings` | Provider, model, temperature, system prompt, API key (`_ct`). |
-| `recipe_search_settings` | Recipe search configuration (searxng). |
-| `integrations_google` | Google Calendar OAuth tokens (`_ct`) and calendar id. |
-| `chat_settings` | Google Chat webhook URL (`_ct`). |
-| `notification_prefs` | Per-event push / Chat toggles, reminder time. |
-| `push_subscriptions` | Web Push subscriptions. |
-| `notification_outbox` | Pending notifications for delivery. |
-| `jobs` | Durable background job queue. |
-| `schedule_runs` | Record of scheduled runs (idempotency). |
-| `ai_runs` | Every AI skill call: inputs, outputs, validation, timing. |
-| `sessions` | Server-side sessions. |
+| `household_settings` | One row: timezone, dinner_time (17:30), reminder_time (16:30), review_time (09:00), plan_draft day/time (Fri 09:00), suggestions day/time (Sun 08:00), chat_autosend day/time (Sat 08:00), onboarding_completed_at, updates_seen_at. |
+| `recipes` | A real recipe page: source_url (unique), site_name, title, total/prep/cook minutes, yield, raw_jsonld, fetched_at. |
+| `recipe_ingredients` | recipe_id, position, raw_text, name, qty, unit, note. |
+| `recipe_steps` | recipe_id, position, text. |
+| `photos` | source_url, local_path, width, height, sha256, fetched_at. |
+| `dinners` | The meal record and its lifecycle: name, normalized_name, status (`suggested` / `quest_log` / `tried` / `regular` / `archived`), origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by. |
+| `suggestion_batches` | trigger, status, ai_run_id. |
+| `suggestions` | dinner_id, batch_id, reason, cited_regular_ids (JSON), status, decided_at. |
+| `week_plans` | week_start (unique), status (`draft` / `synced` / `changed`), ai_note, ai_run_id, calendar_synced_at. |
+| `plan_days` | plan_id, date (unique per plan), dinner_id, is_new, calendar_event_id. |
+| `rotation_reviews` | dinner_id + plan_date (unique), status, decision (`keep` / `drop` / `not_made`), decided_at, updated_by. |
+| `shopping_lists` | week_start (unique), plan_id, title, status (`current` / `archived`), sent_to_chat_at, frozen_at. |
+| `shopping_groups` / `shopping_items` | One group per dinner/day; item name, qty, needed (bool), position. |
+| `ai_settings` | One row: provider, base_url, model, temperature, system_prompt, api_key_ct, api_key_last4, key_verified_at. |
+| `recipe_search_settings` | One row: provider (`searxng` / `brave`), base_url, api_key_ct. |
+| `integrations_google` | One row: refresh_token_ct, calendar_id, calendar_name, connected_at, last_sync_error. |
+| `chat_settings` | One row: webhook_url_ct, space_label, last_test_at, last_test_status. |
+| `notification_prefs` | event (`plan_ready` / `list_ready` / `day_of_reminder` / `new_suggestions` / `rotation_review`), push, chat. |
+| `push_subscriptions` | endpoint (unique), p256dh, auth, user_agent, failure_count, last_success_at. |
+| `notification_outbox` | event_key + channel (unique), payload, status, attempts, next_attempt_at, last_error. |
+| `jobs` | kind, status, payload, result (progressive), error, timestamps. |
+| `schedule_runs` | schedule, period_key (unique). |
+| `ai_runs` | skill, skill_version, provider, model, temperature, status, latency_ms, tokens_in/out, error, redacted request/response (30-day retention). |
+| `sessions` | id_hash, subject, email, name, groups, csrf_token, created/last_seen/expires. |
+
+`recipes` holds a fetched recipe page; `dinners` holds the household's meal
+record and its lifecycle, optionally linked to a recipe and a photo.
 
 ## Dinner lifecycle
 
 ```
-suggested ──Try it──▶ quest_log ──cooked──▶ tried ──Rotation check──▶ regular
-    │                                          └────────────────────▶ archived
-    └──Pass──▶ declined (not suggested again)
+suggested (deck) ──Try it──▶ quest_log ──planned date passes──▶ tried
+    │                            ▲                                │
+    │                            └──────── explicit decision ─────┤
+    │                                                             ├──▶ regular
+    │                                                             └──▶ archived
+    └──Pass──▶ archived (name kept for dedupe)
 ```
 
-Promotion to Regular is **never automatic** (D-021): it happens only when the
-household answers "Keep it in rotation?".
+From `tried`, an explicit decision moves the dinner to `regular`, to
+`archived`, or back to `quest_log`. Promotion to `regular` is **never
+automatic** (D-021).
 
 ## API surface
 
 - JSON API under `/api/v1`, using the error body above for every failure.
-- `/auth/*` — OIDC login, callback, logout.
+  It requires the session cookie and, for non-GET requests, the
+  `X-MealQuest-CSRF` header.
+- `/auth/*` — the OIDC flow.
 - `/media/*` — cached photos.
 - `/health` — liveness.
 - Everything else serves the embedded PWA with SPA fallback.
@@ -129,24 +138,23 @@ household answers "Keep it in rotation?".
 
 - **Provider interface** (`ai/llm`) with adapters for OpenAI-compatible,
   Anthropic and Ollama endpoints, called over plain HTTP — no vendor SDKs.
-- **Skill harness** (`ai/harness`): each skill (suggestions, week draft,
-  ingredient ideas, quick ideas, archive post titles, …) layers its prompt —
-  system prompt from `ai_settings`, skill instructions, household context —
-  then validates the structured output against the skill's schema. An invalid
-  response gets **one repair retry**; a second failure is an error, never a
-  silent fallback. Every call is recorded in `ai_runs`.
+- **Skill harness** (`ai/harness`): prompt layering, validation of the
+  structured output, and **one repair retry**; if the repair also fails the
+  run fails — no silent fallback. Every call is recorded in `ai_runs`.
 
 ## Recipe grounding
 
-- Recipes are grounded in real pages found via the `searxng` sidecar.
-- Fetching is **SSRF-safe** (public addresses only, size and time limits).
+- Dinners are grounded in real recipe pages found through recipe search
+  (`searxng` or `brave`, per `recipe_search_settings`).
+- Fetching is **SSRF-safe**.
 - Recipe data is parsed from schema.org `Recipe` JSON-LD.
-- Photos are downloaded, processed (`golang.org/x/image`) and cached locally;
-  the client never hot-links external images.
+- Photos are cached locally (`photos`) and processed with
+  `golang.org/x/image`.
 
 ## Scheduler
 
-Times are in the household timezone.
+Times are in the household timezone; the defaults below are set in
+`household_settings`.
 
 | Schedule | When | Does |
 | --- | --- | --- |
@@ -155,15 +163,16 @@ Times are in the household timezone.
 | `shopping_chat_autosend` | Saturday 08:00 | Sends the Supply run to Google Chat. |
 | `day_of_reminder` | Daily 16:30 | Tonight's dinner reminder. |
 | `rotation_check` | Daily 09:00 | Asks "Keep it in rotation?" for tried dinners. |
-| `week_rollover` | Monday 00:05 | Freezes last week's list into the Supply archive, rolls the plan. |
-| `ai_runs` purge | Periodic | Deletes old `ai_runs` rows. |
+| `week_rollover` | Monday 00:05 | Freezes last week's Supply run into the Supply archive. |
+| `ai_runs` purge | Daily | Deletes `ai_runs` rows past 30-day retention. |
 
 Runs are recorded in `schedule_runs` and executed through `jobs`.
 
 ## Notifications
 
-- Events: plan ready, list ready, day-of reminder, new suggestions; each can
-  go to Web Push and/or Google Chat per `notification_prefs`.
+- Events: `plan_ready`, `list_ready`, `day_of_reminder`, `new_suggestions`,
+  `rotation_review`; each can go to Web Push and/or Google Chat per
+  `notification_prefs`.
 - Delivery goes through `notification_outbox`.
 - Web Push uses VAPID (`webpush-go`). Google Chat uses the stored incoming
   webhook.
@@ -172,9 +181,10 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
 
 - One-way push: the app is the source of truth; edits in Google Calendar do
   not come back.
-- OAuth once in Settings; one event per planned dinner.
-- **Deterministic event ids** derived from the plan day, so re-pushing
-  updates the same events instead of creating duplicates.
+- Connected once with Google OAuth in Settings; one event per planned
+  dinner.
+- **Deterministic event ids**; each plan day records its
+  `calendar_event_id`.
 
 ## Frontend
 
@@ -188,17 +198,23 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
 | Route | Screen |
 | --- | --- |
 | `/` | Home |
-| `/onboarding` | Add Regulars |
+| `/onboarding` | Add regular dinners |
 | `/plan` | Weekly plan (Draft board) |
-| `/plan/shopping` | Supply run |
+| `/plan/shopping` | Shopping list (Supply run) |
 | `/plan/shopping/archive` | Supply archive |
-| `/discover` | Swipe Side quests |
+| `/discover` | Swipe suggestions (Side quests) |
 | `/quick` | Quick dinners |
 | `/cook-from-pantry` | Cook from what I have |
-| `/dinner/:id` | Recipe detail / Kitchen reading mode |
+| `/dinner/:id` | Recipe / dinner detail (Kitchen reading mode on tablet) |
 | `/settings` | Settings home |
+| `/settings/household` | Household settings |
+| `/settings/regulars` | Regular dinners |
+| `/settings/calendar` | Google Calendar connection |
 | `/settings/notifications` | Notifications and Google Chat |
 | `/settings/ai` | Admin · AI assistant |
+
+`/settings/household`, `/settings/regulars` and `/settings/calendar` come from
+CTXD; the other routes are defined in the UI handoff.
 
 ## Boundaries and gotchas
 

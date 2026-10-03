@@ -174,33 +174,30 @@ func TestMigrateEmbeddedMigrations(t *testing.T) {
 	if err := Migrate(context.Background(), s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap" {
-		t.Errorf("versions = %q, want 0000_bootstrap", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init", got)
 	}
 }
 
-func TestMigrateEmbeddedThenNewMigrationApplies(t *testing.T) {
+func TestMigrateBootstrapThenEmbeddedInitApplies(t *testing.T) {
 	ctx := context.Background()
 	s := openTestStore(t)
-	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
-		t.Fatal(err)
-	}
 	bootstrap, err := fs.ReadFile(migrations.FS, "0000_bootstrap.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A later build adds 0001_init.sql alongside the unchanged bootstrap.
-	upgraded := fstest.MapFS{
-		"0000_bootstrap.sql": {Data: bootstrap},
-		"0001_init.sql":      {Data: []byte("CREATE TABLE later (id INTEGER PRIMARY KEY);")},
+	// A database migrated by the bootstrap-only build upgrades to the
+	// embedded set, which adds 0001_init.sql alongside the unchanged bootstrap.
+	if err := Migrate(ctx, s.Writer, fstest.MapFS{"0000_bootstrap.sql": {Data: bootstrap}}); err != nil {
+		t.Fatal(err)
 	}
-	if err := Migrate(ctx, s.Writer, upgraded); err != nil {
+	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
 	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init" {
 		t.Errorf("versions = %q, want 0000_bootstrap,0001_init", got)
 	}
-	if !tableExists(t, s, "later") {
+	if !tableExists(t, s, "dinners") {
 		t.Error("table from 0001_init was not created")
 	}
 }

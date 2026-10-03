@@ -21,10 +21,11 @@ var (
 	validSessionCookie  = &http.Cookie{Name: auth.SessionCookieName, Value: "valid"}
 	brokenSessionCookie = &http.Cookie{Name: auth.SessionCookieName, Value: "broken"}
 	testSession         = auth.Session{
-		Subject: "user-123",
-		Email:   "cook@example.com",
-		Name:    "Home Cook",
-		Groups:  []string{"mealquest-admin"},
+		Subject:   "user-123",
+		Email:     "cook@example.com",
+		Name:      "Home Cook",
+		Groups:    []string{"mealquest-admin"},
+		CSRFToken: "csrf-token-123",
 	}
 )
 

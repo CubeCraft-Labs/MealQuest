@@ -24,7 +24,8 @@ type RouteMounter interface {
 // NewRouter returns the HTTP handler for the service. version is reported by
 // GET /health; auth mounts the /auth routes; sessions guards /api/v1 and
 // /media; assets is the web build served for every other GET. /health, /auth
-// and the web build are public.
+// and the web build are public. Requests to /api/v1 other than GET, HEAD and
+// OPTIONS also need the session's CSRF token in CSRFHeader.
 func NewRouter(logger *slog.Logger, version string, auth RouteMounter, sessions SessionLookup, assets fs.FS) (http.Handler, error) {
 	notFound := apiErrorHandler(logger, http.StatusNotFound, "not_found", "not found")
 	methodNotAllowed := apiErrorHandler(logger, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
@@ -44,15 +45,17 @@ func NewRouter(logger *slog.Logger, version string, auth RouteMounter, sessions 
 	// rather than being added with Use: chi skips a subrouter's middleware
 	// when it has no routes, which would leave it unguarded.
 	signedIn := requireSession(logger, sessions)
+	csrf := requireCSRF(logger)
 	apiV1, media := chi.NewRouter(), chi.NewRouter()
 	for _, sub := range []*chi.Mux{apiV1, media} {
 		sub.MethodNotAllowed(methodNotAllowed)
 		sub.NotFound(notFound)
 	}
+	apiV1.Get("/me", me(logger))
 	r.Route("/api", func(r chi.Router) {
 		r.MethodNotAllowed(methodNotAllowed)
 		r.NotFound(notFound)
-		r.Mount("/v1", signedIn(apiV1))
+		r.Mount("/v1", signedIn(csrf(apiV1)))
 	})
 	r.Mount("/media", signedIn(media))
 	// Catch-all for the PWA. Unknown /auth paths reach the frontend handler,

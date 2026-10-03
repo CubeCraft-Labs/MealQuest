@@ -139,9 +139,11 @@ func TestReservedPathsNotFound(t *testing.T) {
 		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
 			t.Parallel()
 
-			// Signed in, so /api/v1 and /media reach their routers.
+			// Signed in with the CSRF token, so /api/v1 and /media reach
+			// their routers.
 			req := httptest.NewRequest(tt.method, tt.path, nil)
 			req.AddCookie(validSessionCookie)
+			req.Header.Set(CSRFHeader, testSession.CSRFToken)
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, req)
 

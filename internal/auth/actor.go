@@ -19,17 +19,27 @@ func (s Session) Actor() Actor {
 	return Actor{Subject: s.Subject, Email: s.Email, Name: s.Name, Groups: slices.Clone(s.Groups)}
 }
 
-type actorKey struct{}
+type sessionKey struct{}
 
-// WithActor returns a copy of ctx carrying actor. The session middleware
-// calls it for every authenticated request.
-func WithActor(ctx context.Context, actor Actor) context.Context {
-	return context.WithValue(ctx, actorKey{}, actor)
+// WithSession returns a copy of ctx carrying s. The session middleware calls
+// it for every authenticated request.
+func WithSession(ctx context.Context, s Session) context.Context {
+	return context.WithValue(ctx, sessionKey{}, s)
 }
 
-// ActorFrom returns the actor WithActor stored in ctx. ok is false when ctx
-// has none, which behind the session middleware means a wiring bug.
+// SessionFrom returns the session WithSession stored in ctx. ok is false when
+// ctx has none, which behind the session middleware means a wiring bug.
+func SessionFrom(ctx context.Context) (s Session, ok bool) {
+	s, ok = ctx.Value(sessionKey{}).(Session)
+	return s, ok
+}
+
+// ActorFrom returns the actor of the session WithSession stored in ctx. ok is
+// false when ctx has none.
 func ActorFrom(ctx context.Context) (actor Actor, ok bool) {
-	actor, ok = ctx.Value(actorKey{}).(Actor)
-	return actor, ok
+	s, ok := SessionFrom(ctx)
+	if !ok {
+		return Actor{}, false
+	}
+	return s.Actor(), true
 }

@@ -15,8 +15,8 @@ type SessionLookup interface {
 }
 
 // requireSession is the RequireSession middleware. It passes requests with a
-// live session to next with the session's actor in the context (read it with
-// auth.ActorFrom); others get 401 unauthenticated.
+// live session to next with the session in the context (read it with
+// auth.SessionFrom or auth.ActorFrom); others get 401 unauthenticated.
 func requireSession(logger *slog.Logger, sessions SessionLookup) func(http.Handler) http.Handler {
 	unauthenticated := apiErrorHandler(logger, http.StatusUnauthorized, "unauthenticated", "sign in required")
 	internal := apiErrorHandler(logger, http.StatusInternalServerError, "internal", "internal error")
@@ -30,7 +30,7 @@ func requireSession(logger *slog.Logger, sessions SessionLookup) func(http.Handl
 				logger.ErrorContext(r.Context(), "look up session", "error", err)
 				internal(w, r)
 			default:
-				next.ServeHTTP(w, r.WithContext(auth.WithActor(r.Context(), s.Actor())))
+				next.ServeHTTP(w, r.WithContext(auth.WithSession(r.Context(), s)))
 			}
 		})
 	}

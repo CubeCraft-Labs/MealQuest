@@ -5,7 +5,9 @@
 # The Makefile is the single build definition: CI runs `make test` and
 # `make build` so it fails whenever either target would, and the binary
 # carries the Makefile's -trimpath and version-stamped -ldflags (the
-# `make build` log shows the -X main.version=... value).
+# `make build` log shows the -X main.version=... value). `make sqlc-check`
+# fails when the committed internal/db code is stale against sqlc.yaml,
+# migrations/ and migrations/queries/.
 name: CI
 
 on: [push, pull_request]
@@ -27,6 +29,11 @@ jobs:
 
       - name: make test
         run: make test
+
+      - name: make sqlc-check
+        run: |
+          make sqlc-install
+          make sqlc-check SQLC="$(go env GOPATH)/bin/sqlc"
 
       - name: make build
         run: make build

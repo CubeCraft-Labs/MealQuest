@@ -3,6 +3,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 )
 
 // reservedPrefixes are owned by the API router and are never answered with the
@@ -26,9 +28,13 @@ type RouteMounter interface {
 // has its client address and scheme resolved, honouring forwarded headers
 // only from a peer in trusted (see resolveOrigin). version is reported by
 // GET /health; auth mounts the /auth routes; sessions guards /api/v1 and
-// /media; assets is the web build served for every other GET. /health, /auth
-// and the web build are public. Requests to /api/v1 other than GET also need the session's CSRF token in CSRFHeader.
-func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, assets fs.FS) (http.Handler, error) {
+// /media; settings serves /api/v1/settings/household; assets is the web build
+// served for every other GET. /health, /auth and the web build are public.
+// Requests to /api/v1 other than GET also need the session's CSRF token in CSRFHeader.
+func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, settings *household.SettingsService, assets fs.FS) (http.Handler, error) {
+	if settings == nil {
+		return nil, errors.New("server: nil household settings service")
+	}
 	notFound := apiErrorHandler(logger, http.StatusNotFound, "not_found", "not found")
 	methodNotAllowed := apiErrorHandler(logger, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 
@@ -55,6 +61,8 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 		sub.NotFound(notFound)
 	}
 	apiV1.Get("/me", me(logger))
+	apiV1.Get("/settings/household", getHouseholdSettings(logger, settings))
+	apiV1.Patch("/settings/household", patchHouseholdSettings(logger, settings))
 	r.Route("/api", func(r chi.Router) {
 		r.MethodNotAllowed(methodNotAllowed)
 		r.NotFound(notFound)
@@ -80,19 +88,8 @@ type apiError struct {
 
 // apiErrorHandler responds with status and a fixed, non-retryable API error.
 func apiErrorHandler(logger *slog.Logger, status int, code, message string) http.HandlerFunc {
-	body, err := json.Marshal(errorBody{Error: apiError{
-		Code:    code,
-		Message: message,
-	}})
-	if err != nil {
-		panic(err) // fixed string and bool fields cannot fail to marshal
-	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		if _, err := w.Write(body); err != nil {
-			logger.WarnContext(r.Context(), "write error response", "code", code, "error", err)
-		}
+		writeError(w, r, logger, status, code, message)
 	}
 }
 

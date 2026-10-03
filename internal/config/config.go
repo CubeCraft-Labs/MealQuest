@@ -33,6 +33,8 @@ const (
 	EnvSessionMax  = "MEALQUEST_SESSION_MAX"
 
 	EnvTrustedProxy = "MEALQUEST_TRUSTED_PROXY"
+
+	EnvDefaultTZ = "MEALQUEST_DEFAULT_TZ"
 )
 
 // Session lifetime defaults (D-004): long enough that the kitchen tablet
@@ -65,6 +67,12 @@ type Config struct {
 	// TrustedProxy lists the reverse proxies whose X-Forwarded-For and
 	// X-Forwarded-Proto headers are honoured. Empty trusts no peer.
 	TrustedProxy forwarded.Trusted
+
+	// DefaultTZ is the IANA zone the household settings are created with on
+	// first boot. It is optional and not validated here: boot requires and
+	// validates it only while the settings do not exist yet, and ignores it
+	// once they do. Empty when unset.
+	DefaultTZ string
 }
 
 // PublicOrigin returns the scheme and host of PublicURL, the only parts of it
@@ -97,6 +105,8 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 		SessionMax:  r.sessionDuration(EnvSessionMax, DefaultSessionMax),
 
 		TrustedProxy: r.trustedProxy(EnvTrustedProxy),
+
+		DefaultTZ: r.optional(EnvDefaultTZ),
 	}
 	if cfg.SessionIdle > 0 && cfg.SessionMax > 0 && cfg.SessionMax < cfg.SessionIdle {
 		r.fail(EnvSessionMax, "must be at least %s (%s)", EnvSessionIdle, cfg.SessionIdle)
@@ -321,6 +331,12 @@ func (r *reader) parseDuration(name, v string) time.Duration {
 		return 0
 	}
 	return d
+}
+
+// optional returns the variable's value, or "" when it is unset.
+func (r *reader) optional(name string) string {
+	v, _ := r.lookup(name)
+	return v
 }
 
 // secretFile reads a secret from the file named by name, which must end in

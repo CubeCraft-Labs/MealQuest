@@ -17,6 +17,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/config"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secretbox"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/server"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
@@ -58,6 +59,11 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		}
 	}()
 
+	if err := seedSettings(ctx, db, cfg.DefaultTZ); err != nil {
+		return err
+	}
+	settings := household.NewSettingsService(db)
+
 	sessions, err := auth.NewSessionManager(db, cfg.SessionIdle, cfg.SessionMax)
 	if err != nil {
 		return err
@@ -74,7 +80,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, frontend.Assets())
+	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, frontend.Assets())
 	if err != nil {
 		return err
 	}
@@ -134,6 +140,17 @@ func openStore(ctx context.Context, dataDir string) (*store.Store, error) {
 		return nil, errors.Join(err, db.Close())
 	}
 	return db, nil
+}
+
+// seedSettings creates the household settings on first boot, naming the
+// variable that supplies the zone when it is missing or invalid. Once the
+// settings exist the variable is ignored.
+func seedSettings(ctx context.Context, db *store.Store, defaultTZ string) error {
+	err := household.SeedSettings(ctx, db, defaultTZ)
+	if errors.Is(err, household.ErrNoDefaultZone) || errors.Is(err, household.ErrInvalidDefaultZone) {
+		return fmt.Errorf("%s: a valid IANA zone is required on first boot to create the household settings: %w", config.EnvDefaultTZ, err)
+	}
+	return err
 }
 
 // logListening logs the startup line. Only the public URL's origin is logged

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -12,6 +13,10 @@ import (
 	"testing/fstest"
 
 	"github.com/go-chi/chi/v5"
+
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/migrations"
 )
 
 const (
@@ -22,12 +27,17 @@ const (
 
 func newTestRouter(t *testing.T, version string) http.Handler {
 	t.Helper()
+	return newTestRouterWith(t, version, newTestSettings(t))
+}
+
+func newTestRouterWith(t *testing.T, version string, settings *household.SettingsService) http.Handler {
+	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	assets := fstest.MapFS{
 		"index.html":             {Data: []byte(fixtureIndex)},
 		"assets/index-AbC123.js": {Data: []byte(fixtureAsset)},
 	}
-	r, err := NewRouter(logger, version, nil, stubAuth{}, stubSessions{}, assets)
+	r, err := NewRouter(logger, version, nil, stubAuth{}, stubSessions{}, settings, assets)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,6 +67,38 @@ func TestAuthRoutesMounted(t *testing.T) {
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/auth/login", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("POST /auth/login status = %d, want 405", rec.Code)
+	}
+}
+
+// newTestSettings returns a settings service over a migrated temp database
+// seeded with zone America/New_York.
+func newTestSettings(t *testing.T) *household.SettingsService {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := store.Migrate(ctx, st.Writer, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+	if err := household.SeedSettings(ctx, st, "America/New_York"); err != nil {
+		t.Fatal(err)
+	}
+	return household.NewSettingsService(st)
+}
+
+func TestNewRouterRequiresSettings(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, nil, fstest.MapFS{"index.html": {}}); err == nil {
+		t.Fatal("NewRouter accepted a nil settings service")
 	}
 }
 

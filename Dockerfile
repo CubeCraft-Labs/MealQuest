@@ -32,8 +32,11 @@ ENV MEALQUEST_HTTP_ADDR=:8080 \
 VOLUME /data
 EXPOSE 8080
 USER 10001:10001
-# Probe the port from MEALQUEST_HTTP_ADDR (text after the last colon) so an
-# overridden listen address stays healthy.
+# Probe the listener from MEALQUEST_HTTP_ADDR: host is everything before the
+# last colon (IPv6 keeps its brackets). Wildcard hosts map to loopback, as
+# does localhost: Go listens on its IPv4 address but wget would try ::1.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget -q -O /dev/null "http://127.0.0.1:${MEALQUEST_HTTP_ADDR##*:}/health" || exit 1
+    CMD host="${MEALQUEST_HTTP_ADDR%:*}"; \
+    case "$host" in ""|0.0.0.0|"[::]"|localhost) host=127.0.0.1 ;; esac; \
+    wget -q -O /dev/null "http://${host}:${MEALQUEST_HTTP_ADDR##*:}/health" || exit 1
 ENTRYPOINT ["/usr/local/bin/mealquest"]

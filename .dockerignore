@@ -10,6 +10,8 @@ design/
 node_modules
 web/node_modules
 web/dist
+# Generated embed output; the Go stage takes the PWA from the web stage.
+internal/frontend/dist/
 bin/
 *.db
 *.db-*

@@ -7,7 +7,10 @@
 #   make docker  Build the container image from ./Dockerfile.
 
 FRONTEND_DIST := internal/frontend/dist
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# Dirty means a tracked change outside the generated embed output, which
+# `make embed` rewrites; plain `--dirty` would flag every rebuild.
+GIT_DIRTY := $(shell git status --porcelain --untracked-files=no -- . ':(exclude)$(FRONTEND_DIST)' 2>/dev/null)
+VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo dev)$(if $(GIT_DIRTY),-dirty)
 IMAGE ?= mealquest:$(VERSION)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 

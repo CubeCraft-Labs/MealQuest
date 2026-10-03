@@ -15,6 +15,7 @@ import (
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/config"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secretbox"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/server"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/migrations"
@@ -40,6 +41,10 @@ func main() {
 func run(cfg config.Config, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if _, err := openSecretBox(cfg.SecretKey); err != nil {
+		return err
+	}
 
 	db, err := openStore(ctx, cfg.DataDir)
 	if err != nil {
@@ -84,6 +89,16 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 	return nil
+}
+
+// openSecretBox builds the secret box from the configured key, naming the
+// variable whose file holds a bad key. The key itself is never reported.
+func openSecretBox(key config.Secret) (*secretbox.Box, error) {
+	box, err := secretbox.New(key.Reveal())
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", config.EnvSecretKeyFile, err)
+	}
+	return box, nil
 }
 
 // bootMigrations is the migration set applied at boot. Tests replace it to

@@ -1,0 +1,15 @@
+.icon {
+  display: inline-block;
+  flex: none;
+  vertical-align: middle;
+}
+
+.nav {
+  width: 22px;
+  height: 22px;
+}
+
+.inline {
+  width: 16px;
+  height: 16px;
+}

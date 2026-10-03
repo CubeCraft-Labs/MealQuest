@@ -59,7 +59,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		}
 	}()
 
-	if err := seedSettings(ctx, db, cfg.DefaultTZ); err != nil {
+	if err := seedDefaults(ctx, db, cfg.DefaultTZ); err != nil {
 		return err
 	}
 	settings := household.NewSettingsService(db)
@@ -151,6 +151,18 @@ func seedSettings(ctx context.Context, db *store.Store, defaultTZ string) error 
 		return fmt.Errorf("%s: a valid IANA zone is required on first boot to create the household settings: %w", config.EnvDefaultTZ, err)
 	}
 	return err
+}
+
+// seedDefaults creates the household settings, AI settings and notification
+// preferences that do not exist yet. Existing rows are never changed.
+func seedDefaults(ctx context.Context, db *store.Store, defaultTZ string) error {
+	if err := seedSettings(ctx, db, defaultTZ); err != nil {
+		return err
+	}
+	if err := household.SeedAISettings(ctx, db); err != nil {
+		return err
+	}
+	return household.SeedNotificationPrefs(ctx, db)
 }
 
 // logListening logs the startup line. Only the public URL's origin is logged

@@ -330,3 +330,41 @@ func TestSeedSettingsAtBoot(t *testing.T) {
 		t.Errorf("timezone after reboot = %q, want America/Denver", got.Timezone)
 	}
 }
+
+func TestSeedDefaultsAtBoot(t *testing.T) {
+	ctx := context.Background()
+	db, err := openStore(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := seedDefaults(ctx, db, "America/Denver"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := household.NewSettingsService(db).Get(ctx); err != nil {
+		t.Errorf("household settings: %v", err)
+	}
+	var provider string
+	if err := db.Reader.QueryRowContext(ctx, `SELECT provider FROM ai_settings`).Scan(&provider); err != nil {
+		t.Errorf("AI settings: %v", err)
+	} else if provider != household.SeedAIProvider {
+		t.Errorf("AI provider = %q, want %q", provider, household.SeedAIProvider)
+	}
+	var prefs int
+	if err := db.Reader.QueryRowContext(ctx, `SELECT count(*) FROM notification_prefs`).Scan(&prefs); err != nil {
+		t.Fatal(err)
+	}
+	if prefs != 5 {
+		t.Errorf("%d notification preferences, want 5", prefs)
+	}
+
+	// A second boot seeds nothing new and succeeds.
+	if err := seedDefaults(ctx, db, ""); err != nil {
+		t.Fatalf("reboot: %v", err)
+	}
+}

@@ -1,0 +1,26 @@
+/* Radius and inset come from the --photo-radius and --photo-inset custom
+   properties the component sets from its props. Size it with className. */
+.frame {
+  display: block;
+  margin: var(--photo-inset);
+  border-radius: var(--photo-radius);
+  overflow: hidden;
+}
+
+.photo {
+  object-fit: cover;
+  filter: saturate(0.6) contrast(0.85) brightness(1.1) opacity(0.94);
+}
+
+.placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: repeating-linear-gradient(
+    135deg,
+    var(--color-neutral-300) 0 8px,
+    var(--color-neutral-200) 8px 16px
+  );
+  color: var(--color-neutral-700);
+  font: 11px var(--font-mono);
+}

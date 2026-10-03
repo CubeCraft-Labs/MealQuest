@@ -1,2 +1,18 @@
 .DS_Store
 design/.DS_Store
+
+# Secrets and local environment
+.env*
+deploy/secrets/
+
+# Build artifacts and dependencies
+node_modules
+dist
+bin/
+# Placeholder so the Go embed compiles on a fresh clone; built assets stay ignored.
+!internal/frontend/dist/
+internal/frontend/dist/*
+!internal/frontend/dist/index.html
+
+# Local databases
+*.db

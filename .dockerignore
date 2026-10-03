@@ -1,0 +1,26 @@
+# Keep the build context small and free of secrets and local state.
+.git
+.gitignore
+.dockerignore
+Dockerfile
+.remember/
+.claude/
+design/
+**/.DS_Store
+node_modules
+web/node_modules
+web/dist
+# Generated embed output; the Go stage takes the PWA from the web stage.
+internal/frontend/dist/
+bin/
+*.db
+*.db-*
+.env*
+**/.env*
+deploy/secrets/
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.jks
+**/*.keystore

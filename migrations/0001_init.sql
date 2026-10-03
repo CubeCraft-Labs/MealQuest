@@ -1,16 +1,18 @@
 -- 0001_init: the initial v1 schema (CTXD CONTEXT.MD data model).
 --
 -- Conventions:
---   * Row ids are ULIDs stored as TEXT. Single-row settings tables use
---     id INTEGER PRIMARY KEY CHECK (id = 1) so a second row is refused.
+--   * Row ids are ULIDs stored as TEXT NOT NULL PRIMARY KEY (SQLite would
+--     otherwise accept NULL in a TEXT primary key). Single-row settings tables
+--     use id INTEGER PRIMARY KEY CHECK (id = 1) so a second row is refused.
 --   * Timestamps are UTC RFC 3339 TEXT. Household-local dates (week_start,
 --     plan day) are YYYY-MM-DD TEXT; household-local times are HH:MM TEXT.
 --   * Columns ending in _ct only ever hold secretbox ciphertext.
 --   * Every enum column has a CHECK. Booleans are INTEGER CHECK (x IN (0, 1)).
---     Days of the week are INTEGER 0-6, Sunday = 0 (Go time.Weekday).
+--     Days of the week are INTEGER IN (0, 1, 2, 3, 4, 5, 6), Sunday = 0 (Go
+--     time.Weekday); IN rather than BETWEEN so fractional values are refused.
 --   * Foreign keys use the default NO ACTION, so deleting a parent that still
---     has children is refused. The one exception is ai_run_id: ai_runs rows
---     are purged after 30 days, so references to them are ON DELETE SET NULL.
+--     has children is refused. This includes ai_run_id: the 30-day ai_runs
+--     purge must clear those references explicitly before deleting.
 --   * Defaults exist only where CTXD names one (household_settings times and
 --     shopping_items.needed).
 --
@@ -32,11 +34,11 @@ CREATE TABLE household_settings (
 	dinner_time             TEXT    NOT NULL DEFAULT '17:30',
 	reminder_time           TEXT    NOT NULL DEFAULT '16:30',
 	review_time             TEXT    NOT NULL DEFAULT '09:00',
-	plan_draft_dow          INTEGER NOT NULL DEFAULT 5 CHECK (plan_draft_dow BETWEEN 0 AND 6),
+	plan_draft_dow          INTEGER NOT NULL DEFAULT 5 CHECK (plan_draft_dow IN (0, 1, 2, 3, 4, 5, 6)),
 	plan_draft_time         TEXT    NOT NULL DEFAULT '09:00',
-	suggestions_dow         INTEGER NOT NULL DEFAULT 0 CHECK (suggestions_dow BETWEEN 0 AND 6),
+	suggestions_dow         INTEGER NOT NULL DEFAULT 0 CHECK (suggestions_dow IN (0, 1, 2, 3, 4, 5, 6)),
 	suggestions_time        TEXT    NOT NULL DEFAULT '08:00',
-	chat_autosend_dow       INTEGER NOT NULL DEFAULT 6 CHECK (chat_autosend_dow BETWEEN 0 AND 6),
+	chat_autosend_dow       INTEGER NOT NULL DEFAULT 6 CHECK (chat_autosend_dow IN (0, 1, 2, 3, 4, 5, 6)),
 	chat_autosend_time      TEXT    NOT NULL DEFAULT '08:00',
 	onboarding_completed_at TEXT,
 	updates_seen_at         TEXT,
@@ -45,7 +47,7 @@ CREATE TABLE household_settings (
 );
 
 CREATE TABLE ai_runs (
-	id                 TEXT    PRIMARY KEY,
+	id                 TEXT    NOT NULL PRIMARY KEY,
 	skill              TEXT    NOT NULL,
 	skill_version      TEXT    NOT NULL,
 	provider           TEXT    NOT NULL CHECK (provider IN ('openai_compatible', 'anthropic', 'ollama')),
@@ -63,7 +65,7 @@ CREATE TABLE ai_runs (
 );
 
 CREATE TABLE recipes (
-	id            TEXT    PRIMARY KEY,
+	id            TEXT    NOT NULL PRIMARY KEY,
 	source_url    TEXT    NOT NULL UNIQUE,
 	site_name     TEXT,
 	title         TEXT    NOT NULL,
@@ -78,7 +80,7 @@ CREATE TABLE recipes (
 );
 
 CREATE TABLE recipe_ingredients (
-	id         TEXT    PRIMARY KEY,
+	id         TEXT    NOT NULL PRIMARY KEY,
 	recipe_id  TEXT    NOT NULL REFERENCES recipes (id),
 	position   INTEGER NOT NULL,
 	raw_text   TEXT    NOT NULL,
@@ -91,7 +93,7 @@ CREATE TABLE recipe_ingredients (
 );
 
 CREATE TABLE recipe_steps (
-	id         TEXT    PRIMARY KEY,
+	id         TEXT    NOT NULL PRIMARY KEY,
 	recipe_id  TEXT    NOT NULL REFERENCES recipes (id),
 	position   INTEGER NOT NULL,
 	text       TEXT    NOT NULL,
@@ -100,7 +102,7 @@ CREATE TABLE recipe_steps (
 );
 
 CREATE TABLE photos (
-	id         TEXT    PRIMARY KEY,
+	id         TEXT    NOT NULL PRIMARY KEY,
 	source_url TEXT    NOT NULL,
 	local_path TEXT    NOT NULL,
 	width      INTEGER NOT NULL,
@@ -112,7 +114,7 @@ CREATE TABLE photos (
 );
 
 CREATE TABLE dinners (
-	id               TEXT    PRIMARY KEY,
+	id               TEXT    NOT NULL PRIMARY KEY,
 	name             TEXT    NOT NULL,
 	normalized_name  TEXT    NOT NULL,
 	status           TEXT    NOT NULL CHECK (status IN ('suggested', 'quest_log', 'tried', 'regular', 'archived')),
@@ -131,16 +133,16 @@ CREATE TABLE dinners (
 );
 
 CREATE TABLE suggestion_batches (
-	id         TEXT PRIMARY KEY,
+	id         TEXT NOT NULL PRIMARY KEY,
 	trigger    TEXT NOT NULL CHECK (trigger IN ('scheduled', 'manual', 'replenish')),
 	status     TEXT NOT NULL CHECK (status IN ('pending', 'running', 'done', 'failed')),
-	ai_run_id  TEXT REFERENCES ai_runs (id) ON DELETE SET NULL,
+	ai_run_id  TEXT REFERENCES ai_runs (id),
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 );
 
 CREATE TABLE suggestions (
-	id                TEXT PRIMARY KEY,
+	id                TEXT NOT NULL PRIMARY KEY,
 	dinner_id         TEXT NOT NULL REFERENCES dinners (id),
 	batch_id          TEXT NOT NULL REFERENCES suggestion_batches (id),
 	reason            TEXT NOT NULL,
@@ -152,18 +154,18 @@ CREATE TABLE suggestions (
 );
 
 CREATE TABLE week_plans (
-	id                 TEXT PRIMARY KEY,
+	id                 TEXT NOT NULL PRIMARY KEY,
 	week_start         TEXT NOT NULL UNIQUE,
 	status             TEXT NOT NULL CHECK (status IN ('draft', 'synced', 'changed')),
 	ai_note            TEXT,
-	ai_run_id          TEXT REFERENCES ai_runs (id) ON DELETE SET NULL,
+	ai_run_id          TEXT REFERENCES ai_runs (id),
 	calendar_synced_at TEXT,
 	created_at         TEXT NOT NULL,
 	updated_at         TEXT NOT NULL
 );
 
 CREATE TABLE plan_days (
-	id                TEXT    PRIMARY KEY,
+	id                TEXT    NOT NULL PRIMARY KEY,
 	plan_id           TEXT    NOT NULL REFERENCES week_plans (id),
 	date              TEXT    NOT NULL,
 	dinner_id         TEXT    REFERENCES dinners (id),
@@ -175,7 +177,7 @@ CREATE TABLE plan_days (
 );
 
 CREATE TABLE rotation_reviews (
-	id         TEXT PRIMARY KEY,
+	id         TEXT NOT NULL PRIMARY KEY,
 	dinner_id  TEXT NOT NULL REFERENCES dinners (id),
 	plan_date  TEXT NOT NULL,
 	status     TEXT NOT NULL CHECK (status IN ('pending', 'decided')),
@@ -188,7 +190,7 @@ CREATE TABLE rotation_reviews (
 );
 
 CREATE TABLE shopping_lists (
-	id              TEXT PRIMARY KEY,
+	id              TEXT NOT NULL PRIMARY KEY,
 	week_start      TEXT NOT NULL UNIQUE,
 	plan_id         TEXT NOT NULL REFERENCES week_plans (id),
 	title           TEXT NOT NULL,
@@ -200,7 +202,7 @@ CREATE TABLE shopping_lists (
 );
 
 CREATE TABLE shopping_groups (
-	id         TEXT    PRIMARY KEY,
+	id         TEXT    NOT NULL PRIMARY KEY,
 	list_id    TEXT    NOT NULL REFERENCES shopping_lists (id),
 	dinner_id  TEXT    NOT NULL REFERENCES dinners (id),
 	position   INTEGER NOT NULL,
@@ -209,7 +211,7 @@ CREATE TABLE shopping_groups (
 );
 
 CREATE TABLE shopping_items (
-	id         TEXT    PRIMARY KEY,
+	id         TEXT    NOT NULL PRIMARY KEY,
 	group_id   TEXT    NOT NULL REFERENCES shopping_groups (id),
 	name       TEXT    NOT NULL,
 	qty        TEXT,
@@ -264,7 +266,7 @@ CREATE TABLE chat_settings (
 );
 
 CREATE TABLE notification_prefs (
-	event      TEXT    PRIMARY KEY CHECK (event IN ('plan_ready', 'list_ready', 'day_of_reminder', 'new_suggestions', 'rotation_review')),
+	event      TEXT    NOT NULL PRIMARY KEY CHECK (event IN ('plan_ready', 'list_ready', 'day_of_reminder', 'new_suggestions', 'rotation_review')),
 	push       INTEGER NOT NULL CHECK (push IN (0, 1)),
 	chat       INTEGER NOT NULL CHECK (chat IN (0, 1)),
 	created_at TEXT    NOT NULL,
@@ -272,7 +274,7 @@ CREATE TABLE notification_prefs (
 );
 
 CREATE TABLE push_subscriptions (
-	id              TEXT    PRIMARY KEY,
+	id              TEXT    NOT NULL PRIMARY KEY,
 	endpoint        TEXT    NOT NULL UNIQUE,
 	p256dh          TEXT    NOT NULL,
 	auth            TEXT    NOT NULL,
@@ -284,7 +286,7 @@ CREATE TABLE push_subscriptions (
 );
 
 CREATE TABLE notification_outbox (
-	id              TEXT    PRIMARY KEY,
+	id              TEXT    NOT NULL PRIMARY KEY,
 	event_key       TEXT    NOT NULL,
 	channel         TEXT    NOT NULL CHECK (channel IN ('push', 'chat')),
 	payload         TEXT    NOT NULL, -- JSON
@@ -298,7 +300,7 @@ CREATE TABLE notification_outbox (
 );
 
 CREATE TABLE jobs (
-	id          TEXT PRIMARY KEY,
+	id          TEXT NOT NULL PRIMARY KEY,
 	kind        TEXT NOT NULL,
 	status      TEXT NOT NULL CHECK (status IN ('pending', 'running', 'done', 'failed')),
 	payload     TEXT NOT NULL, -- JSON
@@ -311,7 +313,7 @@ CREATE TABLE jobs (
 );
 
 CREATE TABLE schedule_runs (
-	id         TEXT PRIMARY KEY,
+	id         TEXT NOT NULL PRIMARY KEY,
 	schedule   TEXT NOT NULL CHECK (schedule IN ('suggestions_weekly', 'plan_draft', 'shopping_chat_autosend', 'day_of_reminder', 'rotation_check', 'week_rollover', 'ai_runs_purge')),
 	period_key TEXT NOT NULL,
 	created_at TEXT NOT NULL,
@@ -319,7 +321,7 @@ CREATE TABLE schedule_runs (
 );
 
 CREATE TABLE sessions (
-	id_hash      TEXT PRIMARY KEY,
+	id_hash      TEXT NOT NULL PRIMARY KEY,
 	subject      TEXT NOT NULL,
 	email        TEXT NOT NULL,
 	name         TEXT NOT NULL,

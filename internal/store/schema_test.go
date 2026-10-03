@@ -302,6 +302,9 @@ func TestSchemaEnumChecksRejectInvalidValues(t *testing.T) {
 		{"household_settings", "plan_draft_dow", 7},
 		{"household_settings", "suggestions_dow", -1},
 		{"household_settings", "chat_autosend_dow", 7},
+		{"household_settings", "plan_draft_dow", 5.5},
+		{"household_settings", "suggestions_dow", 0.5},
+		{"household_settings", "chat_autosend_dow", 3.5},
 		{"ai_runs", "provider", "openai"},
 		{"ai_runs", "status", "done"},
 		{"dinners", "status", "deck"},
@@ -332,7 +335,7 @@ func TestSchemaEnumChecksRejectInvalidValues(t *testing.T) {
 	}
 	s := seededStore(t)
 	for _, c := range cases {
-		t.Run(c.table+"."+c.column, func(t *testing.T) {
+		t.Run(fmt.Sprintf("%s.%s=%v", c.table, c.column, c.bad), func(t *testing.T) {
 			row := testRow(c.table, 1)
 			if slices.Contains(singleRowTables, c.table) {
 				row = testRow(c.table, 0)
@@ -405,6 +408,82 @@ func TestSchemaUniqueConstraintsRejectDuplicates(t *testing.T) {
 	}
 }
 
+// TestSchemaCompositeUniqueAllowsPartialOverlap shows each composite UNIQUE
+// spans all its columns: a row sharing only some of them with the seeded row
+// is accepted. (Sharing only the other columns is covered by the distinct row
+// in TestSchemaUniqueConstraintsRejectDuplicates.)
+func TestSchemaCompositeUniqueAllowsPartialOverlap(t *testing.T) {
+	cases := []struct {
+		name   string
+		table  string
+		shared string         // column copied from the seeded row
+		parent string         // row 1 of this table is inserted first, if set
+		set    map[string]any // columns that differ from the seeded row
+	}{
+		{"same date, different plan", "plan_days", "date", "week_plans", map[string]any{"plan_id": rowID("week_plans", 1)}},
+		{"same plan_date, different dinner", "rotation_reviews", "plan_date", "dinners", map[string]any{"dinner_id": rowID("dinners", 1)}},
+		{"same event_key, different channel", "notification_outbox", "event_key", "", map[string]any{"channel": "chat"}},
+		{"same period_key, different schedule", "schedule_runs", "period_key", "", map[string]any{"schedule": "week_rollover"}},
+	}
+	s := seededStore(t)
+	for _, c := range cases {
+		t.Run(c.table+": "+c.name, func(t *testing.T) {
+			row := testRow(c.table, 1)
+			row[c.shared] = testRow(c.table, 0)[c.shared]
+			for k, v := range c.set {
+				row[k] = v
+			}
+			inRolledBackTx(t, s, func(tx *sql.Tx) {
+				if c.parent != "" {
+					if err := insertSchemaRow(tx, c.parent, testRow(c.parent, 1)); err != nil {
+						t.Fatalf("insert parent: %v", err)
+					}
+				}
+				if err := insertSchemaRow(tx, c.table, row); err != nil {
+					t.Fatalf("row rejected: %v", err)
+				}
+			})
+		})
+	}
+}
+
+// TestSchemaTextPrimaryKeysRejectNull guards against SQLite's legacy
+// acceptance of NULL in non-INTEGER primary keys.
+func TestSchemaTextPrimaryKeysRejectNull(t *testing.T) {
+	s := seededStore(t)
+	ctx := context.Background()
+	for _, table := range schemaTables {
+		if slices.Contains(singleRowTables, table) {
+			continue
+		}
+		key := "id"
+		switch table {
+		case "notification_prefs":
+			key = "event"
+		case "sessions":
+			key = "id_hash"
+		}
+		t.Run(table+"."+key, func(t *testing.T) {
+			inRolledBackTx(t, s, func(tx *sql.Tx) {
+				// Two NULL-key rows: neither may be accepted, so NULL can
+				// never stand in for a key, once or repeatedly.
+				for i := 1; i <= 2; i++ {
+					row := testRow(table, i)
+					row[key] = nil
+					wantConstraintError(t, insertSchemaRow(tx, table, row), "NOT NULL", fmt.Sprintf("%s.%s = NULL (row %d)", table, key, i))
+				}
+				var n int
+				if err := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT count(*) FROM "%s" WHERE "%s" IS NULL`, table, key)).Scan(&n); err != nil {
+					t.Fatal(err)
+				}
+				if n != 0 {
+					t.Errorf("%d rows with NULL %s", n, key)
+				}
+			})
+		})
+	}
+}
+
 func TestSchemaSingleRowTablesRejectSecondRow(t *testing.T) {
 	s := migratedStore(t)
 	for _, table := range singleRowTables {
@@ -432,6 +511,9 @@ func TestSchemaDeleteParentWithChildrenRefused(t *testing.T) {
 		{"shopping_lists", "shopping_groups", "list_id"},
 		{"dinners", "shopping_groups", "dinner_id"},
 		{"shopping_groups", "shopping_items", "group_id"},
+		// ai_runs too: the purge must clear references before deleting.
+		{"ai_runs", "suggestion_batches", "ai_run_id"},
+		{"ai_runs", "week_plans", "ai_run_id"},
 	}
 	s := seededStore(t)
 	for _, c := range cases {
@@ -470,22 +552,5 @@ func TestSchemaDeleteParentWithChildrenRefused(t *testing.T) {
 				}
 			})
 		})
-	}
-}
-
-func TestSchemaAIRunPurgeClearsReferences(t *testing.T) {
-	s := seededStore(t)
-	ctx := context.Background()
-	if _, err := s.Writer.ExecContext(ctx, `DELETE FROM ai_runs WHERE id = ?`, rowID("ai_runs", 0)); err != nil {
-		t.Fatalf("purge ai_runs: %v", err)
-	}
-	for _, table := range []string{"suggestion_batches", "week_plans"} {
-		var ref sql.NullString
-		if err := s.Writer.QueryRowContext(ctx, fmt.Sprintf(`SELECT ai_run_id FROM "%s" WHERE id = ?`, table), rowID(table, 0)).Scan(&ref); err != nil {
-			t.Fatal(err)
-		}
-		if ref.Valid {
-			t.Errorf("%s.ai_run_id = %q after purge, want NULL", table, ref.String)
-		}
 	}
 }

@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secureurl"
 )
 
 // Environment variable names.
@@ -59,12 +61,12 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 	r := reader{lookup: lookup}
 	cfg := Config{
 		HTTPAddr:        r.listenAddr(EnvHTTPAddr),
-		PublicURL:       r.httpURL(EnvPublicURL),
+		PublicURL:       r.secureURL(EnvPublicURL),
 		DataDir:         r.dir(EnvDataDir),
 		ShutdownTimeout: r.duration(EnvShutdownTimeout),
 		SecretKey:       r.secretFile(EnvSecretKeyFile),
 
-		OIDCIssuer:        r.httpURL(EnvOIDCIssuer),
+		OIDCIssuer:        r.secureURL(EnvOIDCIssuer),
 		OIDCClientID:      r.str(EnvOIDCClientID),
 		OIDCClientSecret:  r.secretFile(EnvOIDCClientSecretFile),
 		OIDCAllowedGroups: r.list(EnvOIDCAllowedGroups),
@@ -195,15 +197,21 @@ func validHostname(h string) bool {
 	return true
 }
 
-func (r *reader) httpURL(name string) *url.URL {
+// secureURL reads an absolute URL that must pass secureurl.Check: https://,
+// or http:// to a loopback host only.
+func (r *reader) secureURL(name string) *url.URL {
 	v, ok := r.required(name)
 	if !ok {
 		return nil
 	}
 	// The value is never echoed: it may carry credentials.
 	u, err := url.Parse(v)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
-		r.fail(name, "invalid URL (want absolute http:// or https:// URL)")
+	if err != nil {
+		r.fail(name, "invalid URL (want absolute https:// URL)")
+		return nil
+	}
+	if err := secureurl.Check(u); err != nil {
+		r.fail(name, "invalid URL: %v", err)
 		return nil
 	}
 	if u.User != nil {

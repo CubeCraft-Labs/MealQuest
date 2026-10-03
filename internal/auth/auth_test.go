@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/hmac"
@@ -12,6 +13,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -42,6 +44,16 @@ type fakeProvider struct {
 
 	mu    sync.Mutex
 	codes map[string]issuedCode
+	// discoveryOverrides replace fields of the discovery document.
+	discoveryOverrides map[string]any
+	// tokenReply, when set, is returned by the token endpoint instead of a
+	// token.
+	tokenReply *tokenReply
+}
+
+type tokenReply struct {
+	status int
+	body   string
 }
 
 type issuedCode struct {
@@ -68,7 +80,7 @@ func newFakeProvider(t *testing.T) *fakeProvider {
 func (p *fakeProvider) issuer() string { return p.srv.URL }
 
 func (p *fakeProvider) discovery(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, map[string]any{
+	doc := map[string]any{
 		"issuer":                                p.issuer(),
 		"authorization_endpoint":                p.issuer() + "/authorize",
 		"token_endpoint":                        p.issuer() + "/token",
@@ -76,7 +88,11 @@ func (p *fakeProvider) discovery(w http.ResponseWriter, _ *http.Request) {
 		"response_types_supported":              []string{"code"},
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": []string{"RS256", "HS256"},
-	})
+	}
+	p.mu.Lock()
+	maps.Copy(doc, p.discoveryOverrides)
+	p.mu.Unlock()
+	writeJSON(w, doc)
 }
 
 func (p *fakeProvider) jwks(w http.ResponseWriter, _ *http.Request) {
@@ -93,6 +109,15 @@ func (p *fakeProvider) jwks(w http.ResponseWriter, _ *http.Request) {
 // token checks client authentication, the code and the PKCE verifier before
 // returning the code's ID token.
 func (p *fakeProvider) token(w http.ResponseWriter, r *http.Request) {
+	p.mu.Lock()
+	reply := p.tokenReply
+	p.mu.Unlock()
+	if reply != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(reply.status)
+		io.WriteString(w, reply.body)
+		return
+	}
 	id, secret, ok := r.BasicAuth()
 	if !ok || id != testClientID || secret != testClientSecret {
 		http.Error(w, `{"error":"invalid_client"}`, http.StatusUnauthorized)
@@ -226,25 +251,45 @@ type harness struct {
 	provider *fakeProvider
 	sessions *memorySessions
 	router   http.Handler
+	logs     *syncBuffer
+}
+
+// syncBuffer is a bytes.Buffer safe for concurrent log writes.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	p := newFakeProvider(t)
 	sessions := &memorySessions{}
+	logs := &syncBuffer{}
 	a, err := New(context.Background(), Config{
 		Issuer:       p.issuer(),
 		ClientID:     testClientID,
 		ClientSecret: testClientSecret,
 		PublicURL:    testPublicURL,
 		SecretKey:    []byte("server-secret-key"),
-	}, sessions, slog.New(slog.DiscardHandler))
+	}, sessions, slog.New(slog.NewTextHandler(logs, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	r := chi.NewRouter()
 	a.Mount(r)
-	return &harness{provider: p, sessions: sessions, router: r}
+	return &harness{provider: p, sessions: sessions, router: r, logs: logs}
 }
 
 func (h *harness) get(target string, cookies ...*http.Cookie) *http.Response {
@@ -548,6 +593,57 @@ func TestCallbackSessionError(t *testing.T) {
 	}
 }
 
+// A failed code exchange is logged by category and status only: the token
+// endpoint's body and error_description may echo credentials.
+func TestCallbackExchangeFailureDoesNotLogProviderResponse(t *testing.T) {
+	t.Parallel()
+	const leaked = "leaked-" + testClientSecret
+	tests := []struct {
+		name     string
+		reply    tokenReply
+		wantLogs string
+	}{
+		{
+			name:     "error response",
+			reply:    tokenReply{http.StatusBadRequest, `{"error":"invalid_grant","error_description":"` + leaked + `"}`},
+			wantLogs: "HTTP 400",
+		},
+		{
+			name:     "unparseable error response",
+			reply:    tokenReply{http.StatusInternalServerError, leaked},
+			wantLogs: "HTTP 500",
+		},
+		{
+			name:     "success without access token",
+			reply:    tokenReply{http.StatusOK, `{"id_token":"` + leaked + `"}`},
+			wantLogs: "unusable response",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t)
+			h.provider.mu.Lock()
+			h.provider.tokenReply = &tc.reply
+			h.provider.mu.Unlock()
+			l := h.login(t, LoginPath)
+
+			resp := h.callback(l, l.query.Get("state"), "unused")
+
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Errorf("callback status = %d, want 401", resp.StatusCode)
+			}
+			logs := h.logs.String()
+			if strings.Contains(logs, leaked) {
+				t.Errorf("logs contain the provider response: %s", logs)
+			}
+			if !strings.Contains(logs, tc.wantLogs) {
+				t.Errorf("logs = %q, want %q", logs, tc.wantLogs)
+			}
+		})
+	}
+}
+
 func TestLoginCookieExpires(t *testing.T) {
 	t.Parallel()
 	c := newLoginCookie([]byte("server-secret-key"))
@@ -634,4 +730,48 @@ func assertLoginCookieCleared(t *testing.T, resp *http.Response) {
 		}
 	}
 	t.Errorf("callback did not clear the %s cookie", loginCookieName)
+}
+
+func TestNewRejectsRemoteHTTPIssuer(t *testing.T) {
+	t.Parallel()
+	for _, issuer := range []string{"http://auth.example.com/application/o/mealquest/", "http://192.0.2.10"} {
+		_, err := New(context.Background(), Config{
+			Issuer:       issuer,
+			ClientID:     testClientID,
+			ClientSecret: testClientSecret,
+			PublicURL:    testPublicURL,
+			SecretKey:    []byte("k"),
+		}, &memorySessions{}, slog.New(slog.DiscardHandler))
+		if err == nil || !strings.Contains(err.Error(), "issuer") {
+			t.Errorf("New(issuer %q) error = %v, want issuer rejected", issuer, err)
+		}
+	}
+}
+
+func TestNewRejectsRemoteHTTPEndpoint(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		field, name string
+	}{
+		{"authorization_endpoint", "authorization endpoint"},
+		{"token_endpoint", "token endpoint"},
+		{"jwks_uri", "JWKS endpoint"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.field, func(t *testing.T) {
+			t.Parallel()
+			p := newFakeProvider(t)
+			p.discoveryOverrides = map[string]any{tc.field: "http://auth.example.com/" + tc.field}
+			_, err := New(context.Background(), Config{
+				Issuer:       p.issuer(),
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				PublicURL:    testPublicURL,
+				SecretKey:    []byte("k"),
+			}, &memorySessions{}, slog.New(slog.DiscardHandler))
+			if err == nil || !strings.Contains(err.Error(), tc.name) {
+				t.Errorf("New error = %v, want %s rejected", err, tc.name)
+			}
+		})
+	}
 }

@@ -43,7 +43,9 @@ make dev
 (which proxies `/api`, `/auth` and `/media` to `:8080`). Open
 http://localhost:5173. Configuration is environment-only and fails fast:
 every variable above is required, and secrets are read only from files named
-by `*_FILE` variables.
+by `*_FILE` variables. `MEALQUEST_PUBLIC_URL`, `MEALQUEST_OIDC_ISSUER` and the
+endpoints the issuer advertises must be `https://`; plain `http://` is
+accepted only for `localhost`, `127.0.0.1` and `[::1]`.
 
 ## Common commands
 

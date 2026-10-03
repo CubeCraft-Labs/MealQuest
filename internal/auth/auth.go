@@ -17,6 +17,8 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/oauth2"
+
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secureurl"
 )
 
 // Routes owned by this package.
@@ -85,12 +87,33 @@ func New(ctx context.Context, cfg Config, sessions SessionStarter, logger *slog.
 		return nil, errors.New("auth: session starter is required")
 	}
 
+	if err := checkEndpoint("issuer", cfg.Issuer); err != nil {
+		return nil, err
+	}
+
 	client := &http.Client{Timeout: providerTimeout}
 	provider, err := oidc.NewProvider(oidc.ClientContext(ctx, client), cfg.Issuer)
 	if err != nil {
 		return nil, fmt.Errorf("auth: OIDC discovery: %w", err)
 	}
 	endpoint := provider.Endpoint()
+	var discovered struct {
+		JWKSURI string `json:"jwks_uri"`
+	}
+	if err := provider.Claims(&discovered); err != nil {
+		return nil, fmt.Errorf("auth: OIDC discovery: %w", err)
+	}
+	// The token endpoint receives the client secret and the key set decides
+	// which tokens verify, so every endpoint used must pass the same rule.
+	for _, e := range []struct{ name, raw string }{
+		{"authorization endpoint", endpoint.AuthURL},
+		{"token endpoint", endpoint.TokenURL},
+		{"JWKS endpoint", discovered.JWKSURI},
+	} {
+		if err := checkEndpoint(e.name, e.raw); err != nil {
+			return nil, err
+		}
+	}
 	// client_secret_basic, the OIDC default; no auto-detection retries.
 	endpoint.AuthStyle = oauth2.AuthStyleInHeader
 
@@ -111,6 +134,19 @@ func New(ctx context.Context, cfg Config, sessions SessionStarter, logger *slog.
 		sessions: sessions,
 		logger:   logger,
 	}, nil
+}
+
+// checkEndpoint applies secureurl.Check to the provider URL raw, naming the
+// endpoint in the error.
+func checkEndpoint(name, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("auth: OIDC %s %q is not a valid URL", name, raw)
+	}
+	if err := secureurl.Check(u); err != nil {
+		return fmt.Errorf("auth: OIDC %s %q: %w", name, raw, err)
+	}
+	return nil
 }
 
 // Mount registers GET LoginPath and GET CallbackPath on r.
@@ -199,7 +235,7 @@ func (a *Auth) verify(ctx context.Context, code string, state loginState) (Claim
 	token, err := a.oauth.Exchange(context.WithValue(ctx, oauth2.HTTPClient, a.client), code,
 		oauth2.VerifierOption(state.Verifier))
 	if err != nil {
-		return Claims{}, fmt.Errorf("exchange code: %w", err)
+		return Claims{}, exchangeError(err)
 	}
 	raw, ok := token.Extra("id_token").(string)
 	if !ok || raw == "" {
@@ -220,4 +256,22 @@ func (a *Auth) verify(ctx context.Context, code string, state loginState) (Claim
 		return Claims{}, errors.New("ID token has no subject")
 	}
 	return claims, nil
+}
+
+// exchangeError reduces a failed code exchange to a fixed category and safe
+// metadata. The oauth2 error text can carry the token endpoint's response
+// body or error_description, which may echo credentials, so it is dropped.
+func exchangeError(err error) error {
+	var retrieve *oauth2.RetrieveError
+	var transport *url.Error
+	switch {
+	case errors.As(err, &retrieve):
+		return fmt.Errorf("exchange code: token endpoint rejected the request (HTTP %d)", retrieve.Response.StatusCode)
+	case errors.As(err, &transport):
+		// Request failures never carry the response; the URL is the token
+		// endpoint from discovery.
+		return fmt.Errorf("exchange code: token request failed: %w", transport)
+	default:
+		return errors.New("exchange code: token endpoint returned an unusable response")
+	}
 }

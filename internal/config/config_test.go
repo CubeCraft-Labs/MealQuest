@@ -151,6 +151,24 @@ func TestLoad(t *testing.T) {
 			badVars: []string{EnvPublicURL},
 		},
 		{
+			name:    "plain HTTP public URL on a remote host",
+			env:     with(map[string]string{EnvPublicURL: "http://meals.example.com"}),
+			badVars: []string{EnvPublicURL},
+		},
+		{
+			name:    "plain HTTP public URL on a non-loopback IP",
+			env:     with(map[string]string{EnvPublicURL: "http://192.168.1.20:8080"}),
+			badVars: []string{EnvPublicURL},
+		},
+		{
+			name: "plain HTTP public URL on 127.0.0.1",
+			env:  with(map[string]string{EnvPublicURL: "http://127.0.0.1:8080"}),
+		},
+		{
+			name: "plain HTTP public URL on [::1]",
+			env:  with(map[string]string{EnvPublicURL: "http://[::1]:8080"}),
+		},
+		{
 			name:    "relative public URL",
 			env:     with(map[string]string{EnvPublicURL: "meals.example.com"}),
 			badVars: []string{EnvPublicURL},
@@ -199,6 +217,15 @@ func TestLoad(t *testing.T) {
 			name:    "non-http OIDC issuer",
 			env:     with(map[string]string{EnvOIDCIssuer: "ftp://auth.example.com"}),
 			badVars: []string{EnvOIDCIssuer},
+		},
+		{
+			name:    "plain HTTP OIDC issuer on a remote host",
+			env:     with(map[string]string{EnvOIDCIssuer: "http://auth.example.com/application/o/mealquest/"}),
+			badVars: []string{EnvOIDCIssuer},
+		},
+		{
+			name: "plain HTTP OIDC issuer on localhost",
+			env:  with(map[string]string{EnvOIDCIssuer: "http://localhost:9000/application/o/mealquest/"}),
 		},
 		{
 			name: "several allowed groups",

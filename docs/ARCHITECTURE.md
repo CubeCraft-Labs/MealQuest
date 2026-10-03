@@ -34,9 +34,9 @@ Traefik terminates TLS. The service honours `X-Forwarded-For` and
 (comma-separated IPs/CIDRs; production lists `10.60.1.33`); from any other
 peer they are ignored. The client is the rightmost `X-Forwarded-For` address
 that is not a trusted proxy. The resolved client IP is added as `client_ip`
-to every log line written while handling a request, and the auth routes
-refuse requests whose resolved scheme differs from `MEALQUEST_PUBLIC_URL`'s. The OIDC redirect URI is always built
-from `MEALQUEST_PUBLIC_URL`, never from request headers.
+to every log line written while handling a request. The OIDC redirect URI
+and the Secure cookies are fixed by `MEALQUEST_PUBLIC_URL`, never by request
+headers, so sign-in works whichever peer the request arrives from.
 
 ## Repository layout
 

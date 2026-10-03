@@ -46,7 +46,7 @@ func TestRateLimitedError(t *testing.T) {
 }
 
 func TestProviderError(t *testing.T) {
-	err := fmt.Errorf("gemini: %w", NewProviderError(503, []byte(` {"error":"overloaded"} `)))
+	err := fmt.Errorf("gemini: %w", NewProviderError(503, []byte(` {"error":"overloaded"} `), []string{"sk-test"}))
 	if !errors.Is(err, ErrProvider) {
 		t.Fatal("errors.Is(err, ErrProvider) = false")
 	}
@@ -63,7 +63,7 @@ func TestProviderError(t *testing.T) {
 	if got := err.Error(); got != `gemini: llm: provider error: HTTP 503: {"error":"overloaded"}` {
 		t.Fatalf("Error() = %q", got)
 	}
-	if got := NewProviderError(500, nil).Error(); got != "llm: provider error: HTTP 500" {
+	if got := NewProviderError(500, nil, []string{"sk-test"}).Error(); got != "llm: provider error: HTTP 500" {
 		t.Fatalf("Error() without body = %q", got)
 	}
 }
@@ -71,7 +71,7 @@ func TestProviderError(t *testing.T) {
 func TestProviderErrorRedactsSecrets(t *testing.T) {
 	const key = "sk-live-0123456789abcdef"
 	body := []byte(`{"error":"invalid key sk-live-0123456789abcdef","echo":"Bearer sk-live-0123456789abcdef"}`)
-	pe := NewProviderError(400, body, key, "")
+	pe := NewProviderError(400, body, []string{key, ""})
 	for _, s := range []string{pe.Error(), pe.Body()} {
 		if strings.Contains(s, key) {
 			t.Fatalf("secret leaked: %q", s)
@@ -88,7 +88,7 @@ func TestProviderErrorRedactsBeforeTruncating(t *testing.T) {
 	// The key starts just before the excerpt limit, so truncating first
 	// would leave its prefix in the excerpt.
 	body := strings.Repeat("x", MaxBodyExcerpt-5) + key
-	pe := NewProviderError(500, []byte(body), key)
+	pe := NewProviderError(500, []byte(body), []string{key})
 	if strings.Contains(pe.Body(), "sk-se") {
 		t.Fatalf("secret prefix leaked: %q", pe.Body())
 	}
@@ -96,9 +96,26 @@ func TestProviderErrorRedactsBeforeTruncating(t *testing.T) {
 
 func TestProviderErrorTruncatesOnRuneBoundary(t *testing.T) {
 	body := strings.Repeat("a", MaxBodyExcerpt-1) + "é" + strings.Repeat("b", 100)
-	pe := NewProviderError(500, []byte(body))
+	pe := NewProviderError(500, []byte(body), []string{"sk-test"})
 	want := strings.Repeat("a", MaxBodyExcerpt-1) + "…"
 	if pe.Body() != want {
 		t.Fatalf("Body() has %d bytes, want %d", len(pe.Body()), len(want))
+	}
+}
+
+func TestProviderErrorOmitsBodyWithoutSecret(t *testing.T) {
+	const key = "sk-live-0123456789abcdef"
+	body := []byte(`{"error":"invalid key sk-live-0123456789abcdef"}`)
+	for _, secrets := range [][]string{nil, {}, {""}} {
+		pe := NewProviderError(401, body, secrets)
+		if pe.Body() != "" {
+			t.Fatalf("secrets %q: Body() = %q, want empty", secrets, pe.Body())
+		}
+		if got := pe.Error(); got != "llm: provider error: HTTP 401" {
+			t.Fatalf("secrets %q: Error() = %q", secrets, got)
+		}
+		if strings.Contains(pe.Error(), key) {
+			t.Fatalf("secrets %q: secret leaked: %q", secrets, pe.Error())
+		}
 	}
 }

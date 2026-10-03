@@ -56,16 +56,23 @@ type ProviderError struct {
 	body   string
 }
 
-// NewProviderError returns the error for an unexpected HTTP status. Every
-// occurrence of each non-empty secret (the API key, at least) in body is
-// replaced before the body is cut to MaxBodyExcerpt bytes, so no part of a
-// secret survives.
-func NewProviderError(status int, body []byte, secrets ...string) *ProviderError {
+// NewProviderError returns the error for an unexpected HTTP status.
+// secrets must hold the API key (and any other credential sent with the
+// request). Every occurrence of each non-empty secret in body is replaced
+// before the body is cut to MaxBodyExcerpt bytes, so no part of a secret
+// survives. If secrets holds no non-empty value the body cannot be
+// redacted, so no excerpt is kept at all.
+func NewProviderError(status int, body []byte, secrets []string) *ProviderError {
 	s := string(body)
+	redactedAny := false
 	for _, secret := range secrets {
 		if secret != "" {
 			s = strings.ReplaceAll(s, secret, redacted)
+			redactedAny = true
 		}
+	}
+	if !redactedAny {
+		return &ProviderError{status: status}
 	}
 	s = strings.TrimSpace(s)
 	if len(s) > MaxBodyExcerpt {
@@ -81,7 +88,8 @@ func NewProviderError(status int, body []byte, secrets ...string) *ProviderError
 // Status returns the HTTP status code.
 func (e *ProviderError) Status() int { return e.status }
 
-// Body returns the redacted, truncated response-body excerpt.
+// Body returns the redacted, truncated response-body excerpt; it is empty
+// when the vendor sent no body or no secret was given to redact it with.
 func (e *ProviderError) Body() string { return e.body }
 
 func (e *ProviderError) Error() string {

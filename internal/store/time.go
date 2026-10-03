@@ -41,7 +41,8 @@ func (t Timestamp) Value() (driver.Value, error) {
 	return t.String(), nil
 }
 
-// Scan implements sql.Scanner. It accepts only TEXT in the stored form.
+// Scan implements sql.Scanner. It accepts only TEXT in the stored form, and
+// rejects the zero instant, which Value refuses to write.
 func (t *Timestamp) Scan(src any) error {
 	s, ok := src.(string)
 	if !ok {
@@ -53,6 +54,9 @@ func (t *Timestamp) Scan(src any) error {
 	}
 	if parsed.Format(timestampLayout) != s {
 		return fmt.Errorf("store: scan Timestamp %q: want %s", s, timestampLayout)
+	}
+	if parsed.IsZero() {
+		return fmt.Errorf("store: scan Timestamp %q: zero Timestamp", s)
 	}
 	t.Time = parsed
 	return nil

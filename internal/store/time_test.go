@@ -72,6 +72,7 @@ func TestTimestampRejects(t *testing.T) {
 	for _, src := range []any{
 		nil, int64(0), []byte("2026-10-03T12:37:05.123Z"), "2026-10-03T12:37:05Z",
 		"2026-10-03T08:37:05.123-04:00", "2026-10-03T12:37:05,123Z", "garbage",
+		"0001-01-01T00:00:00.000Z",
 	} {
 		var ts Timestamp
 		if err := ts.Scan(src); err == nil {

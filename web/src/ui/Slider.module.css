@@ -1,0 +1,61 @@
+/* The input is the 44 px tall hit area; the track and knob are drawn by the
+   vendor pseudo-elements. --slider-fill is set inline from the value. */
+.slider {
+  appearance: none;
+  display: block;
+  width: 100%;
+  min-width: 44px;
+  height: 44px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.slider:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.slider::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(
+    to right,
+    var(--color-accent) var(--slider-fill),
+    var(--color-neutral-300) var(--slider-fill)
+  );
+}
+
+.slider::-webkit-slider-thumb {
+  appearance: none;
+  box-sizing: border-box;
+  width: 24px;
+  height: 24px;
+  margin-top: -8px;
+  border: 3px solid var(--color-accent);
+  border-radius: var(--radius-pill);
+  background: var(--color-bg);
+  box-shadow: var(--shadow-sm);
+}
+
+.slider::-moz-range-track {
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--color-neutral-300);
+}
+
+.slider::-moz-range-progress {
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+}
+
+.slider::-moz-range-thumb {
+  box-sizing: border-box;
+  width: 24px;
+  height: 24px;
+  border: 3px solid var(--color-accent);
+  border-radius: var(--radius-pill);
+  background: var(--color-bg);
+  box-shadow: var(--shadow-sm);
+}

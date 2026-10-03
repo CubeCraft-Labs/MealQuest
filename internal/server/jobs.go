@@ -17,8 +17,8 @@ import (
 // maxJobBody bounds a POST /jobs request body.
 const maxJobBody = 64 << 10
 
-// jobRequest is the POST /jobs body. Payload is optional; an omitted
-// payload is the empty object.
+// jobRequest is the POST /jobs body. Payload is required; a job kind that
+// takes no input is sent the empty object {}.
 type jobRequest struct {
 	Kind    string          `json:"kind"`
 	Payload json.RawMessage `json:"payload"`
@@ -55,8 +55,9 @@ func postJob(logger *slog.Logger, runner *jobs.Runner) http.HandlerFunc {
 	}
 }
 
-// decodeJobRequest reads a single JSON object with a non-empty kind,
-// refusing unknown fields, a null payload and trailing data.
+// decodeJobRequest reads a single JSON object with a non-empty kind and a
+// payload, refusing unknown fields, an omitted or null payload and trailing
+// data.
 func decodeJobRequest(body io.Reader) (jobRequest, error) {
 	data, err := io.ReadAll(body)
 	if err != nil {
@@ -70,7 +71,7 @@ func decodeJobRequest(body io.Reader) (jobRequest, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		return jobRequest{}, errors.New("request body must be a JSON object with kind and an optional payload")
+		return jobRequest{}, errors.New("request body must be a JSON object with kind and payload")
 	}
 	if _, err := dec.Token(); err != io.EOF {
 		return jobRequest{}, errors.New("request body must be a single JSON object")
@@ -78,10 +79,10 @@ func decodeJobRequest(body io.Reader) (jobRequest, error) {
 	if req.Kind == "" {
 		return jobRequest{}, errors.New("kind: required")
 	}
-	switch {
-	case req.Payload == nil:
-		req.Payload = json.RawMessage(`{}`)
-	case bytes.Equal(req.Payload, []byte("null")):
+	if req.Payload == nil {
+		return jobRequest{}, errors.New("payload: required")
+	}
+	if bytes.Equal(req.Payload, []byte("null")) {
 		return jobRequest{}, errors.New("payload: must not be null")
 	}
 	return req, nil

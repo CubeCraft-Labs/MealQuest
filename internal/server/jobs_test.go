@@ -183,24 +183,6 @@ func TestPostJobThenGetProgressAndResult(t *testing.T) {
 	}
 }
 
-func TestPostJobWithoutPayloadEnqueues(t *testing.T) {
-	t.Parallel()
-	release := make(chan struct{})
-	close(release)
-	runner, _ := startedRunner(t, release, nil)
-	router := newTestRouterWith(t, "dev", newTestSettings(t), runner)
-
-	rec, body := serve(t, router, signedIn(http.MethodPost, "/api/v1/jobs", strings.NewReader(`{"kind":"draft"}`)))
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202: %s", rec.Code, rec.Body)
-	}
-	id, _ := body["id"].(string)
-	done := pollJob(t, router, id, func(b map[string]any) bool { return b["status"] == "succeeded" })
-	if resultDays(done) != 7 {
-		t.Errorf("finished body = %v, want result {\"days\":7}", done)
-	}
-}
-
 func TestPostJobRefusesBadRequests(t *testing.T) {
 	t.Parallel()
 	runner, _ := startedRunner(t, nil, nil)
@@ -209,15 +191,16 @@ func TestPostJobRefusesBadRequests(t *testing.T) {
 	for _, tc := range []struct {
 		name, body, code, message string
 	}{
-		{"unknown kind", `{"kind":"no_such_kind"}`, "unknown_kind", "unknown job kind"},
+		{"unknown kind", `{"kind":"no_such_kind","payload":{}}`, "unknown_kind", "unknown job kind"},
 		{"payload for another type", `{"kind":"draft","payload":{"days":3}}`, "invalid_payload", "payload does not match the job kind"},
 		{"payload not an object", `{"kind":"draft","payload":[1]}`, "invalid_payload", "payload does not match the job kind"},
+		{"missing payload", `{"kind":"draft"}`, "invalid_request", "payload: required"},
 		{"null payload", `{"kind":"draft","payload":null}`, "invalid_request", "payload: must not be null"},
 		{"missing kind", `{"payload":{}}`, "invalid_request", "kind: required"},
-		{"empty body", ``, "invalid_request", "request body must be a JSON object with kind and an optional payload"},
-		{"not an object", `["draft"]`, "invalid_request", "request body must be a JSON object with kind and an optional payload"},
-		{"unknown field", `{"kind":"draft","extra":1}`, "invalid_request", "request body must be a JSON object with kind and an optional payload"},
-		{"trailing data", `{"kind":"draft"} {}`, "invalid_request", "request body must be a single JSON object"},
+		{"empty body", ``, "invalid_request", "request body must be a JSON object with kind and payload"},
+		{"not an object", `["draft"]`, "invalid_request", "request body must be a JSON object with kind and payload"},
+		{"unknown field", `{"kind":"draft","payload":{},"extra":1}`, "invalid_request", "request body must be a JSON object with kind and payload"},
+		{"trailing data", `{"kind":"draft","payload":{}} {}`, "invalid_request", "request body must be a single JSON object"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -240,7 +223,7 @@ func TestPostJobRefusesBadRequests(t *testing.T) {
 func TestPostJobNeedsSessionAndCSRF(t *testing.T) {
 	t.Parallel()
 	router := newTestRouter(t, "dev")
-	const body = `{"kind":"noop"}`
+	const body = `{"kind":"noop","payload":{}}`
 
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(body)))

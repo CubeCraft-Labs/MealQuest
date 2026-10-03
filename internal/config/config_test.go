@@ -247,6 +247,39 @@ func TestLoad(t *testing.T) {
 			badVars: []string{EnvOIDCClientID},
 		},
 		{
+			name: "session lifetimes set",
+			env:  with(map[string]string{EnvSessionIdle: "24h", EnvSessionMax: "48h"}),
+		},
+		{
+			name: "session max equal to idle",
+			env:  with(map[string]string{EnvSessionIdle: "24h", EnvSessionMax: "24h"}),
+		},
+		{
+			name:    "invalid session idle",
+			env:     with(map[string]string{EnvSessionIdle: "a month"}),
+			badVars: []string{EnvSessionIdle},
+		},
+		{
+			name:    "empty session idle",
+			env:     with(map[string]string{EnvSessionIdle: ""}),
+			badVars: []string{EnvSessionIdle},
+		},
+		{
+			name:    "non-positive session max",
+			env:     with(map[string]string{EnvSessionMax: "-1h"}),
+			badVars: []string{EnvSessionMax},
+		},
+		{
+			name:    "session max below idle",
+			env:     with(map[string]string{EnvSessionIdle: "48h", EnvSessionMax: "24h"}),
+			badVars: []string{EnvSessionMax},
+		},
+		{
+			name:    "session max below default idle",
+			env:     with(map[string]string{EnvSessionMax: "719h"}),
+			badVars: []string{EnvSessionMax},
+		},
+		{
 			name: "several invalid values are all named",
 			env: with(map[string]string{
 				EnvShutdownTimeout: "soon",
@@ -350,6 +383,19 @@ func TestLoadValues(t *testing.T) {
 	}
 	if want := []string{"mealquest-admin", "family"}; !slices.Equal(cfg.OIDCAllowedGroups, want) {
 		t.Errorf("OIDCAllowedGroups = %q, want %q", cfg.OIDCAllowedGroups, want)
+	}
+	if cfg.SessionIdle != 720*time.Hour || cfg.SessionMax != 4320*time.Hour {
+		t.Errorf("SessionIdle, SessionMax = %v, %v, want defaults 720h, 4320h", cfg.SessionIdle, cfg.SessionMax)
+	}
+
+	env[EnvSessionIdle] = "12h"
+	env[EnvSessionMax] = "36h"
+	cfg, err = load(func(k string) (string, bool) { v, ok := env[k]; return v, ok })
+	if err != nil {
+		t.Fatalf("load() error = %v", err)
+	}
+	if cfg.SessionIdle != 12*time.Hour || cfg.SessionMax != 36*time.Hour {
+		t.Errorf("SessionIdle, SessionMax = %v, %v, want 12h, 36h", cfg.SessionIdle, cfg.SessionMax)
 	}
 }
 

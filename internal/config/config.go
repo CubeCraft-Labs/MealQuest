@@ -27,6 +27,16 @@ const (
 	EnvOIDCClientID         = "MEALQUEST_OIDC_CLIENT_ID"
 	EnvOIDCClientSecretFile = "MEALQUEST_OIDC_CLIENT_SECRET_FILE"
 	EnvOIDCAllowedGroups    = "MEALQUEST_OIDC_ALLOWED_GROUPS"
+
+	EnvSessionIdle = "MEALQUEST_SESSION_IDLE"
+	EnvSessionMax  = "MEALQUEST_SESSION_MAX"
+)
+
+// Session lifetime defaults (D-004): long enough that the kitchen tablet
+// stays signed in.
+const (
+	DefaultSessionIdle = 720 * time.Hour  // 30 days
+	DefaultSessionMax  = 4320 * time.Hour // 180 days
 )
 
 // Config is the validated service configuration.
@@ -43,6 +53,11 @@ type Config struct {
 	OIDCClientSecret Secret
 	// OIDCAllowedGroups lists the groups whose members may sign in.
 	OIDCAllowedGroups []string
+
+	// SessionIdle ends a session left unused this long.
+	SessionIdle time.Duration
+	// SessionMax ends every session this long after sign-in, used or not.
+	SessionMax time.Duration
 }
 
 // PublicOrigin returns the scheme and host of PublicURL, the only parts of it
@@ -70,6 +85,12 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 		OIDCClientID:      r.str(EnvOIDCClientID),
 		OIDCClientSecret:  r.secretFile(EnvOIDCClientSecretFile),
 		OIDCAllowedGroups: r.list(EnvOIDCAllowedGroups),
+
+		SessionIdle: r.optionalDuration(EnvSessionIdle, DefaultSessionIdle),
+		SessionMax:  r.optionalDuration(EnvSessionMax, DefaultSessionMax),
+	}
+	if cfg.SessionIdle > 0 && cfg.SessionMax > 0 && cfg.SessionMax < cfg.SessionIdle {
+		r.fail(EnvSessionMax, "must be at least %s (%s)", EnvSessionIdle, cfg.SessionIdle)
 	}
 	if len(r.problems) > 0 {
 		return Config{}, &Error{Problems: r.problems}
@@ -243,6 +264,20 @@ func (r *reader) duration(name string) time.Duration {
 	if !ok {
 		return 0
 	}
+	return r.parseDuration(name, v)
+}
+
+// optionalDuration returns def when name is unset. A set value, even an empty
+// one, must be a valid positive duration.
+func (r *reader) optionalDuration(name string, def time.Duration) time.Duration {
+	v, ok := r.lookup(name)
+	if !ok {
+		return def
+	}
+	return r.parseDuration(name, v)
+}
+
+func (r *reader) parseDuration(name, v string) time.Duration {
 	d, err := time.ParseDuration(v)
 	if err != nil {
 		r.fail(name, "invalid duration %q (want e.g. 10s, 1m)", v)

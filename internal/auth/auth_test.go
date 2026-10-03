@@ -86,6 +86,7 @@ func (p *fakeProvider) discovery(w http.ResponseWriter, _ *http.Request) {
 		"authorization_endpoint":                p.issuer() + "/authorize",
 		"token_endpoint":                        p.issuer() + "/token",
 		"jwks_uri":                              p.issuer() + "/jwks",
+		"end_session_endpoint":                  p.issuer() + "/end-session/",
 		"response_types_supported":              []string{"code"},
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": []string{"RS256", "HS256"},
@@ -223,11 +224,12 @@ func writeJSON(w http.ResponseWriter, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-// memorySessions is an in-memory SessionStarter that records the claims it
-// was handed.
+// memorySessions is an in-memory Sessions that records the claims it was
+// handed and how many sessions were ended.
 type memorySessions struct {
 	mu     sync.Mutex
 	claims []Claims
+	ended  int
 	err    error
 }
 
@@ -239,6 +241,16 @@ func (m *memorySessions) StartSession(w http.ResponseWriter, _ *http.Request, cl
 	}
 	m.claims = append(m.claims, claims)
 	http.SetCookie(w, &http.Cookie{Name: "test_session", Value: claims.Subject})
+	return nil
+}
+
+func (m *memorySessions) EndSession(http.ResponseWriter, *http.Request) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return m.err
+	}
+	m.ended++
 	return nil
 }
 
@@ -780,6 +792,7 @@ func TestNewRejectsRemoteHTTPEndpoint(t *testing.T) {
 		{"authorization_endpoint", "authorization endpoint"},
 		{"token_endpoint", "token endpoint"},
 		{"jwks_uri", "JWKS endpoint"},
+		{"end_session_endpoint", "end session endpoint"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.field, func(t *testing.T) {

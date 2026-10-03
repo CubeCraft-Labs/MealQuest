@@ -36,14 +36,19 @@ export MEALQUEST_OIDC_ISSUER=https://auth.example.com/application/o/mealquest/
 export MEALQUEST_OIDC_CLIENT_ID=mealquest
 export MEALQUEST_OIDC_CLIENT_SECRET_FILE="$HOME/.mealquest-dev/oidc_client_secret"
 export MEALQUEST_OIDC_ALLOWED_GROUPS=mealquest-admin
+# Optional: sessions end after MEALQUEST_SESSION_IDLE unused (default 720h)
+# and always MEALQUEST_SESSION_MAX after sign-in (default 4320h).
+# export MEALQUEST_SESSION_IDLE=720h
+# export MEALQUEST_SESSION_MAX=4320h
 make dev
 ```
 
 `make dev` runs the Go server on `:8080` and the Vite dev server on `:5173`
 (which proxies `/api`, `/auth` and `/media` to `:8080`). Open
 http://localhost:5173. Configuration is environment-only and fails fast:
-every variable above is required, and secrets are read only from files named
-by `*_FILE` variables. `MEALQUEST_PUBLIC_URL`, `MEALQUEST_OIDC_ISSUER` and the
+every variable above is required except the commented-out session
+lifetimes (when set they must be positive, with MAX at least IDLE), and
+secrets are read only from files named by `*_FILE` variables. `MEALQUEST_PUBLIC_URL`, `MEALQUEST_OIDC_ISSUER` and the
 endpoints the issuer advertises must be `https://`; plain `http://` is
 accepted only for `localhost`, `127.0.0.1` and `[::1]`.
 

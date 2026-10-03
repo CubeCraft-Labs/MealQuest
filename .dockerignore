@@ -1,0 +1,20 @@
+# Keep the build context small and free of secrets and local state.
+.git
+.gitignore
+.dockerignore
+Dockerfile
+.remember/
+.claude/
+design/
+**/.DS_Store
+node_modules
+web/node_modules
+web/dist
+bin/
+*.db
+*.db-*
+.env*
+**/.env*
+deploy/secrets/
+*.pem
+*.key

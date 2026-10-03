@@ -13,7 +13,9 @@ single Go service with the React PWA embedded in the binary.
 
 ## Quick start
 
-Requirements: Go 1.25 and Node.js 22.
+Requirements: Go 1.25 and Node.js 22.22.2 or newer (or 24.15 or newer).
+Vite and Vitest need at least 22.12; jsdom in the committed lockfile needs
+22.22.2 on the 22 line.
 
 ```sh
 (cd web && npm ci)

@@ -46,12 +46,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 
 	errc := make(chan error, 1)
 	go func() {
-		logger.Info("listening",
-			"addr", cfg.HTTPAddr,
-			"public_url", cfg.PublicURL.String(),
-			"data_dir", cfg.DataDir,
-			"version", version,
-		)
+		logListening(logger, cfg)
 		errc <- srv.ListenAndServe()
 	}()
 
@@ -71,4 +66,15 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 	return nil
+}
+
+// logListening logs the startup line. Only the public URL's origin is logged
+// so no credential-bearing URL component can reach the log.
+func logListening(logger *slog.Logger, cfg config.Config) {
+	logger.Info("listening",
+		"addr", cfg.HTTPAddr,
+		"public_origin", cfg.PublicOrigin(),
+		"data_dir", cfg.DataDir,
+		"version", version,
+	)
 }

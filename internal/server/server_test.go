@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -47,5 +48,22 @@ func TestHealthRejectsOtherMethods(t *testing.T) {
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	var got struct {
+		Error map[string]any `json:"error"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{
+		"code":      "method_not_allowed",
+		"message":   "method not allowed",
+		"retryable": false,
+	}
+	if !maps.Equal(got.Error, want) {
+		t.Errorf("error body = %v, want %v", got.Error, want)
 	}
 }

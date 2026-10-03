@@ -8,17 +8,18 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // Environment variable names.
 const (
-	EnvHTTPAddr          = "MEALQUEST_HTTP_ADDR"
-	EnvPublicURL         = "MEALQUEST_PUBLIC_URL"
-	EnvDataDir           = "MEALQUEST_DATA_DIR"
-	EnvShutdownTimeout   = "MEALQUEST_SHUTDOWN_TIMEOUT"
-	EnvSessionSecretFile = "MEALQUEST_SESSION_SECRET_FILE"
+	EnvHTTPAddr        = "MEALQUEST_HTTP_ADDR"
+	EnvPublicURL       = "MEALQUEST_PUBLIC_URL"
+	EnvDataDir         = "MEALQUEST_DATA_DIR"
+	EnvShutdownTimeout = "MEALQUEST_SHUTDOWN_TIMEOUT"
+	EnvSecretKeyFile   = "MEALQUEST_SECRET_KEY_FILE"
 )
 
 // Config is the validated service configuration.
@@ -27,7 +28,13 @@ type Config struct {
 	PublicURL       *url.URL
 	DataDir         string
 	ShutdownTimeout time.Duration
-	SessionSecret   Secret
+	SecretKey       Secret
+}
+
+// PublicOrigin returns the scheme and host of PublicURL, the only parts of it
+// that are safe to log.
+func (c Config) PublicOrigin() string {
+	return c.PublicURL.Scheme + "://" + c.PublicURL.Host
 }
 
 // Load reads and validates configuration from the process environment.
@@ -43,7 +50,7 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 		PublicURL:       r.httpURL(EnvPublicURL),
 		DataDir:         r.dir(EnvDataDir),
 		ShutdownTimeout: r.duration(EnvShutdownTimeout),
-		SessionSecret:   r.secretFile(EnvSessionSecretFile),
+		SecretKey:       r.secretFile(EnvSecretKeyFile),
 	}
 	if len(r.problems) > 0 {
 		return Config{}, &Error{Problems: r.problems}
@@ -112,8 +119,13 @@ func (r *reader) listenAddr(name string) string {
 	if !ok {
 		return ""
 	}
-	if _, _, err := net.SplitHostPort(v); err != nil {
+	_, port, err := net.SplitHostPort(v)
+	if err != nil {
 		r.fail(name, "invalid listen address %q (want host:port or :port)", v)
+		return ""
+	}
+	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+		r.fail(name, "invalid port %q in listen address (want 0-65535)", port)
 		return ""
 	}
 	return v
@@ -124,9 +136,14 @@ func (r *reader) httpURL(name string) *url.URL {
 	if !ok {
 		return nil
 	}
+	// The value is never echoed: it may carry credentials.
 	u, err := url.Parse(v)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		r.fail(name, "invalid URL %q (want absolute http:// or https:// URL)", v)
+		r.fail(name, "invalid URL (want absolute http:// or https:// URL)")
+		return nil
+	}
+	if u.User != nil {
+		r.fail(name, "URL must not contain user credentials")
 		return nil
 	}
 	return u

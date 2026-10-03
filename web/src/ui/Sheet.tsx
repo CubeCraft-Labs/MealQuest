@@ -19,11 +19,35 @@ const focusableSelector = [
   'input:not([disabled])',
   'select:not([disabled])',
   'textarea:not([disabled])',
-  '[tabindex]:not([tabindex="-1"])',
+  '[tabindex]',
 ].join(',')
 
+// Whether an element can take keyboard focus: a negative tabIndex, a hidden,
+// aria-hidden or inert ancestor (or self), display: none on the way up to the
+// panel, or visibility: hidden all rule it out.
+function isKeyboardFocusable(element: HTMLElement, panel: HTMLElement): boolean {
+  if (element.tabIndex < 0) return false
+  if (element.closest('[hidden], [aria-hidden="true"], [inert]')) return false
+  if (getComputedStyle(element).visibility === 'hidden') return false
+  for (let node: HTMLElement | null = element; node && node !== panel; node = node.parentElement) {
+    if (getComputedStyle(node).display === 'none') return false
+  }
+  return true
+}
+
 function focusables(panel: HTMLElement): HTMLElement[] {
-  return Array.from(panel.querySelectorAll<HTMLElement>(focusableSelector))
+  return Array.from(panel.querySelectorAll<HTMLElement>(focusableSelector)).filter((element) =>
+    isKeyboardFocusable(element, panel),
+  )
+}
+
+// Focuses the first control that actually takes focus, or the panel if none does.
+function focusFirst(panel: HTMLElement) {
+  for (const element of focusables(panel)) {
+    element.focus()
+    if (document.activeElement === element) return
+  }
+  panel.focus()
 }
 
 // Modal bottom sheet. Portalled to <body> so everything else there can be made
@@ -43,7 +67,7 @@ export function Sheet({ open, onClose, children, ...name }: SheetProps) {
       (element) => element !== root && !element.hasAttribute('inert'),
     )
     for (const element of background) element.setAttribute('inert', '')
-    ;(focusables(panel)[0] ?? panel).focus()
+    focusFirst(panel)
 
     return () => {
       for (const element of background) element.removeAttribute('inert')

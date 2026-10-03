@@ -78,6 +78,65 @@ describe('Sheet', () => {
     expect(dialog).toHaveFocus()
   })
 
+  it('skips controls that cannot take keyboard focus when moving focus in', () => {
+    render(
+      <Sheet aria-label="Quest log" open onClose={() => {}}>
+        <button type="button" hidden>
+          Hidden
+        </button>
+        <button type="button" style={{ display: 'none' }}>
+          Not displayed
+        </button>
+        <button type="button" style={{ visibility: 'hidden' }}>
+          Invisible
+        </button>
+        <button type="button" tabIndex={-1}>
+          Not tabbable
+        </button>
+        <div aria-hidden="true">
+          <button type="button">Aria hidden</button>
+        </div>
+        <button type="button">Try it</button>
+      </Sheet>,
+    )
+    expect(screen.getByRole('button', { name: 'Try it' })).toHaveFocus()
+  })
+
+  it('focuses the dialog itself when every control is hidden', () => {
+    render(
+      <Sheet aria-label="Quest log" open onClose={() => {}}>
+        <button type="button" hidden>
+          Hidden
+        </button>
+      </Sheet>,
+    )
+    expect(screen.getByRole('dialog', { name: 'Quest log' })).toHaveFocus()
+  })
+
+  it('does not stop the Tab trap on a hidden control', () => {
+    render(
+      <Sheet aria-label="Quest log" open onClose={() => {}}>
+        <button type="button" hidden>
+          Hidden first
+        </button>
+        <button type="button">Try it</button>
+        <button type="button">Pass</button>
+        <button type="button" hidden>
+          Hidden last
+        </button>
+      </Sheet>,
+    )
+    const first = screen.getByRole('button', { name: 'Try it' })
+    const last = screen.getByRole('button', { name: 'Pass' })
+
+    last.focus()
+    fireEvent.keyDown(last, { key: 'Tab' })
+    expect(first).toHaveFocus()
+
+    fireEvent.keyDown(first, { key: 'Tab', shiftKey: true })
+    expect(last).toHaveFocus()
+  })
+
   it('wraps Tab and Shift+Tab inside the sheet', () => {
     render(<Harness />)
     openSheet()

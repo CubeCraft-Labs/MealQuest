@@ -15,6 +15,8 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/config"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/server"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/migrations"
 )
 
 // version is set at build time with -ldflags "-X main.version=<version>".
@@ -37,6 +39,19 @@ func main() {
 func run(cfg config.Config, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	db, err := store.Open(ctx, cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			logger.Error("close database", "error", err)
+		}
+	}()
+	if err := store.Migrate(ctx, db.Writer, migrations.FS); err != nil {
+		return err
+	}
 
 	router, err := server.NewRouter(logger, version, frontend.Assets())
 	if err != nil {

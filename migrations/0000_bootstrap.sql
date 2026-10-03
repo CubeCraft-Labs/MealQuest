@@ -1,0 +1,4 @@
+-- 0000_bootstrap: immutable no-op bootstrap migration. It lets the migrations
+-- embed compile and proves the runner end to end. Never edit or remove it:
+-- applied versions are recorded by filename and never re-run. The initial v1
+-- schema arrives as a new migration, 0001_init.sql (Feature 02 task 3).

@@ -47,6 +47,9 @@ func (t *Timestamp) Scan(src any) error {
 	if err != nil {
 		return fmt.Errorf("store: scan Timestamp %q: %w", s, err)
 	}
+	if parsed.Format(timestampLayout) != s {
+		return fmt.Errorf("store: scan Timestamp %q: want %s", s, timestampLayout)
+	}
 	t.Time = parsed
 	return nil
 }

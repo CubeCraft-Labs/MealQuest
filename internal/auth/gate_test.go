@@ -2,9 +2,11 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -19,7 +21,8 @@ func (h *harness) signInWith(t *testing.T, edit func(claims map[string]any)) *ht
 	return h.callback(l, l.query.Get("state"), h.provider.signRS256(c))
 }
 
-// assertRefused checks resp is the refused-sign-in page and sets no session.
+// assertRefused checks resp is the refused-sign-in page and starts no
+// session.
 func assertRefused(t *testing.T, resp *http.Response) {
 	t.Helper()
 	if resp.StatusCode != http.StatusForbidden {
@@ -42,7 +45,8 @@ func assertRefused(t *testing.T, resp *http.Response) {
 		}
 	}
 	for _, c := range resp.Cookies() {
-		if c.Name == SessionCookieName || c.Name == "test_session" {
+		// Clearing a session cookie (negative Max-Age) is expected.
+		if (c.Name == SessionCookieName || c.Name == "test_session") && c.MaxAge >= 0 {
 			t.Errorf("refused sign-in set session cookie %s", c.Name)
 		}
 	}
@@ -182,6 +186,48 @@ func TestGroupGateRemovedMemberRefusedAtNextLogin(t *testing.T) {
 	assertRefused(t, resp)
 	if n := len(h.rows(t)); n != 1 {
 		t.Errorf("sessions after refused login = %d, want still 1", n)
+	}
+}
+
+// A refused sign-in from a browser that still holds a session ends that
+// session and clears its cookie.
+func TestGroupGateRefusalEndsExistingSession(t *testing.T) {
+	t.Parallel()
+	h := newSessionHarness(t)
+	_, cookie := h.signIn(t)
+
+	l := h.login(t, LoginPath)
+	c := h.provider.claims(l.query.Get("nonce"))
+	c["groups"] = []string{"former-household"}
+	code := h.provider.authorize(l.query.Get("code_challenge"), h.provider.signRS256(c))
+	q := url.Values{"code": {code}, "state": {l.query.Get("state")}}
+	resp := h.get(CallbackPath+"?"+q.Encode(), l.cookie, cookie)
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("callback status = %d, want 403", resp.StatusCode)
+	}
+	if n := len(h.rows(t)); n != 0 {
+		t.Errorf("sessions after refused login = %d, want 0", n)
+	}
+	if _, err := h.use(cookie); !errors.Is(err, ErrNoSession) {
+		t.Errorf("old session lookup error = %v, want ErrNoSession", err)
+	}
+	cleared := false
+	for _, c := range resp.Cookies() {
+		cleared = cleared || (c.Name == SessionCookieName && c.MaxAge < 0)
+	}
+	if !cleared {
+		t.Error("refused sign-in did not clear the session cookie")
+	}
+}
+
+func TestGroupGateRefusalEndSessionError(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.sessions.err = errors.New("database down")
+	resp := h.signInWith(t, func(c map[string]any) { c["groups"] = []string{"guests"} })
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("callback status = %d, want 500", resp.StatusCode)
 	}
 }
 

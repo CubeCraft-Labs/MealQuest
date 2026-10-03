@@ -277,6 +277,13 @@ func (a *Auth) callback(w http.ResponseWriter, r *http.Request) {
 		} else {
 			a.logger.WarnContext(ctx, "sign-in refused: not in an allowed group", "subject", claims.Subject)
 		}
+		// A session this browser already holds ends too, so a refused
+		// sign-in never leaves it signed in.
+		if err := a.sessions.EndSession(w, r); err != nil {
+			a.logger.ErrorContext(ctx, "end session", "error", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
 		a.refuse(w, r)
 		return
 	}

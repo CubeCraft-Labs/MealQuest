@@ -74,15 +74,17 @@ var _ llm.Provider = (*Provider)(nil)
 
 // New validates cfg and returns a Provider.
 func New(cfg Config) (*Provider, error) {
+	// Base URL errors never echo the URL: a rejected one may carry a
+	// credential.
 	u, err := url.Parse(cfg.BaseURL)
 	if err != nil {
 		return nil, errors.New("openai: base URL does not parse")
 	}
 	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return nil, fmt.Errorf("openai: base URL %q must be an absolute http or https URL", u.Redacted())
+		return nil, errors.New("openai: base URL must be an absolute http or https URL")
 	}
 	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return nil, fmt.Errorf("openai: base URL %q must not carry credentials, a query or a fragment", u.Redacted())
+		return nil, errors.New("openai: base URL must not carry credentials, a query or a fragment")
 	}
 	switch cfg.StructuredOutput {
 	case JSONSchema, JSONObject, PromptOnly:
@@ -217,7 +219,7 @@ func (p *Provider) Generate(ctx context.Context, req llm.Request) (llm.Response,
 	}
 	if len(cr.Error) > 0 && string(cr.Error) != "null" {
 		// OpenRouter can report an upstream failure in a 2xx body.
-		return llm.Response{}, fmt.Errorf("openai: generate: %w", llm.NewProviderError(status, raw, p.secrets()))
+		return llm.Response{}, fmt.Errorf("openai: generate: %w", llm.NewProviderError(status, raw, p.apiKey))
 	}
 	if len(cr.Choices) == 0 {
 		return llm.Response{}, errors.New("openai: generate: response has no choices")
@@ -319,8 +321,6 @@ func (p *Provider) Verify(ctx context.Context) error {
 	return err
 }
 
-func (p *Provider) secrets() []string { return []string{p.apiKey} }
-
 // do sends one request and returns the body and status of a 2xx response.
 // Any other status becomes the matching llm typed error.
 func (p *Provider) do(ctx context.Context, method, path string, payload []byte) ([]byte, int, error) {
@@ -376,7 +376,7 @@ func (p *Provider) statusError(resp *http.Response, body []byte) error {
 	case http.StatusRequestTimeout:
 		return fmt.Errorf("HTTP %d: %w", resp.StatusCode, llm.ErrTimeout)
 	default:
-		return llm.NewProviderError(resp.StatusCode, body, p.secrets())
+		return llm.NewProviderError(resp.StatusCode, body, p.apiKey)
 	}
 }
 

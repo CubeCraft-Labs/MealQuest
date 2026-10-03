@@ -498,6 +498,64 @@ func TestTransportErrorHasNoSecret(t *testing.T) {
 	assertNoSecret(t, err)
 }
 
+// TestKeyedErrorsNeverLeakKey drives every error path of the keyed OpenAI
+// and OpenRouter shapes with vendor bodies that echo the key.
+func TestKeyedErrorsNeverLeakKey(t *testing.T) {
+	shapes := map[string]struct {
+		path    string
+		headers map[string]string
+	}{
+		"OpenAI":     {path: "/v1"},
+		"OpenRouter": {path: "/api/v1", headers: map[string]string{"HTTP-Referer": "https://mealquest.example", "X-Title": "MealQuest"}},
+	}
+	fixtures := []string{"openai_error_invalid_key.json", "openai_error_server.json", "openrouter_error_rate_limited.json"}
+	statuses := []int{400, 401, 403, 404, 408, 429, 500, 502, 503}
+	for name, shape := range shapes {
+		for _, fixture := range fixtures {
+			for _, status := range statuses {
+				vs := newVendorServer(t, reply{status: status, fixture: fixture})
+				p := newProvider(t, vs.URL+shape.path, JSONSchema, shape.headers)
+				_, genErr := p.Generate(context.Background(), schemaRequest())
+				_, listErr := p.ListModels(context.Background())
+				verifyErr := p.Verify(context.Background())
+				for _, err := range []error{genErr, listErr, verifyErr} {
+					if err == nil {
+						t.Fatalf("%s %s HTTP %d: nil error", name, fixture, status)
+					}
+					assertNoSecret(t, err)
+					var pe *llm.ProviderError
+					if errors.As(err, &pe) {
+						assertNoSecret(t, errors.New(pe.Body()))
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestKeylessOllamaErrorKeepsExcerpt(t *testing.T) {
+	vs := newVendorServer(t, reply{status: 404, fixture: "ollama_error_not_found.json"})
+	p, err := New(Config{BaseURL: vs.URL + "/v1", Model: "llama9", StructuredOutput: PromptOnly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Generate(context.Background(), schemaRequest())
+	var pe *llm.ProviderError
+	if !errors.As(err, &pe) || pe.Status() != 404 {
+		t.Fatalf("err = %v, want a 404 ProviderError", err)
+	}
+	if !strings.Contains(pe.Body(), `model \"llama9\" not found`) || len(pe.Body()) > llm.MaxBodyExcerpt {
+		t.Fatalf("Body() = %q, want the bounded not-found explanation", pe.Body())
+	}
+	if !strings.Contains(err.Error(), pe.Body()) {
+		t.Fatalf("Error() = %q, want it to carry the excerpt", err)
+	}
+	assertNoSecret(t, err)
+	if got := vs.only(t).header.Get("Authorization"); got != "" {
+		t.Fatalf("keyless request sent Authorization %q", got)
+	}
+}
+
 func TestGenerateRejectsInvalidRequests(t *testing.T) {
 	vs := newVendorServer(t, reply{status: 200, fixture: "ollama_chat_text.json"})
 	p := newProvider(t, vs.URL, JSONSchema, nil)
@@ -524,7 +582,11 @@ func TestNewRejectsBadConfig(t *testing.T) {
 		"relative base":      {BaseURL: "api.openai.com/v1", StructuredOutput: JSONSchema},
 		"ftp base":           {BaseURL: "ftp://example.com", StructuredOutput: JSONSchema},
 		"credentials in URL": {BaseURL: "https://user:" + testKey + "@example.com/v1", StructuredOutput: JSONSchema},
-		"query in URL":       {BaseURL: "https://example.com/v1?key=x", StructuredOutput: JSONSchema},
+		"key in query":       {BaseURL: "https://example.com/v1?key=" + testKey, StructuredOutput: JSONSchema},
+		"key in fragment":    {BaseURL: "https://example.com/v1#" + testKey, StructuredOutput: JSONSchema},
+		"key, relative base": {BaseURL: "example.com/v1?key=" + testKey, StructuredOutput: JSONSchema},
+		"key, ftp base":      {BaseURL: "ftp://example.com/v1?key=" + testKey, StructuredOutput: JSONSchema},
+		"key, unparseable":   {BaseURL: "https://example.com/%zz?key=" + testKey, StructuredOutput: JSONSchema},
 		"unknown mode":       {BaseURL: "https://example.com/v1", StructuredOutput: "json"},
 		"no mode":            {BaseURL: "https://example.com/v1"},
 		"authorization hdr":  {BaseURL: "https://example.com/v1", StructuredOutput: JSONSchema, Headers: map[string]string{"authorization": "Bearer x"}},

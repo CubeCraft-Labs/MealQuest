@@ -1119,3 +1119,26 @@ func TestGenerateWithAdapterNameKeyNeverLeaksKey(t *testing.T) {
 		assertChainNoExactKey(t, err, key)
 	})
 }
+
+// TestRedactedErrorsFormatWithoutKey formats every error type that holds the
+// key, or a cause holding it, with %v, %+v and %#v; %#v prints GoString.
+func TestRedactedErrorsFormatWithoutKey(t *testing.T) {
+	const key = "sk-distinctive-openai-format-7c1e"
+	single := redact(fmt.Errorf("openai %s: %w", key, llm.ErrBadOutput), key)
+	joined := redact(errors.Join(fmt.Errorf("decode %s: %w", key, llm.ErrAuth), llm.NewProviderError(500, []byte("down "+key), key)), key)
+	if _, ok := single.(*redactedError); !ok {
+		t.Fatalf("single = %T, want *redactedError", single)
+	}
+	if _, ok := joined.(*redactedJoin); !ok {
+		t.Fatalf("joined = %T, want *redactedJoin", joined)
+	}
+	p := &Provider{apiKey: key}
+	transport := p.transportError(fmt.Errorf("dial %s: %w", key, context.DeadlineExceeded))
+	for _, err := range []error{single, joined, transport} {
+		for _, verb := range []string{"%v", "%+v", "%#v"} {
+			if got := fmt.Sprintf(verb, err); strings.Contains(got, key) {
+				t.Fatalf("%s of %T leaks the key: %q", verb, err, got)
+			}
+		}
+	}
+}

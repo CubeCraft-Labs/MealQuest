@@ -530,6 +530,9 @@ type redactedError struct {
 
 func (e *redactedError) Error() string { return e.text }
 
+// GoString keeps %#v from printing the fields, which hold the key.
+func (e *redactedError) GoString() string { return e.text }
+
 func (e *redactedError) Unwrap() error { return redact(errors.Unwrap(e.err), e.key) }
 
 func (e *redactedError) Is(target error) bool { return errors.Is(e.err, target) }

@@ -337,7 +337,7 @@ func TestPresetTable(t *testing.T) {
 
 func TestConfigErrors(t *testing.T) {
 	sentinels := []error{
-		llm.ErrUnknownProvider, llm.ErrMissingKey, llm.ErrUnexpectedKey, llm.ErrMissingBaseURL,
+		llm.ErrUnknownProvider, llm.ErrMissingKey, llm.ErrUnexpectedKey, llm.ErrInvalidKey, llm.ErrMissingBaseURL,
 		llm.ErrMissingModel, llm.ErrMissingPublicURL, llm.ErrInvalidSetting,
 	}
 	cases := []struct {
@@ -351,6 +351,10 @@ func TestConfigErrors(t *testing.T) {
 		{"openai no key", llm.Settings{Provider: "openai", Model: "m"}, "", llm.ErrMissingKey},
 		{"openrouter no key", llm.Settings{Provider: "openrouter", Model: "m", PublicURL: "https://x.example"}, "", llm.ErrMissingKey},
 		{"ollama with key", llm.Settings{Provider: "ollama", BaseURL: "http://o:11434", Model: "m"}, testKey, llm.ErrUnexpectedKey},
+		{"anthropic key with newline", llm.Settings{Provider: "anthropic", Model: "m"}, testKey + "\n", llm.ErrInvalidKey},
+		{"openai key with newline", llm.Settings{Provider: "openai", Model: "m"}, testKey + "\n", llm.ErrInvalidKey},
+		{"openrouter key with CR LF", llm.Settings{Provider: "openrouter", Model: "m", PublicURL: "https://x.example"}, testKey + "\r\nX-Injected: 1", llm.ErrInvalidKey},
+		{"openai_compatible key with NUL", llm.Settings{Provider: "openai_compatible", BaseURL: "http://l/v1", Model: "m"}, "\x00" + testKey, llm.ErrInvalidKey},
 		{"ollama no base URL", llm.Settings{Provider: "ollama", Model: "m"}, "", llm.ErrMissingBaseURL},
 		{"openai_compatible no base URL", llm.Settings{Provider: "openai_compatible", Model: "m"}, "", llm.ErrMissingBaseURL},
 		{"anthropic no model", llm.Settings{Provider: "anthropic"}, testKey, llm.ErrMissingModel},
@@ -449,6 +453,8 @@ func TestConfigErrorsNeverLeakKey(t *testing.T) {
 		{"key as temperature", llm.Settings{Provider: "openai", Model: "m", Temperature: -0.1}, "-0.1", llm.ErrInvalidSetting},
 		{"key in bad base URL", llm.Settings{Provider: "openai_compatible", BaseURL: "ftp://k3y", Model: "m"}, "k3y", llm.ErrInvalidSetting},
 		{"ollama with key", llm.Settings{Provider: "ollama", BaseURL: "http://o:11434", Model: "m"}, "key", llm.ErrUnexpectedKey},
+		{"key with newline", llm.Settings{Provider: "openai", Model: "m"}, "sk-test\n", llm.ErrInvalidKey},
+		{"key with newline as text", llm.Settings{Provider: "openai", Model: "m"}, "header\n", llm.ErrInvalidKey},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

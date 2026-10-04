@@ -164,7 +164,7 @@ var all = map[string]Preset{
 
 // FromSettings returns the Provider s describes, using key as its API key.
 // It fails with a configuration error from package llm — ErrUnknownProvider,
-// ErrMissingKey, ErrUnexpectedKey, ErrMissingBaseURL, ErrMissingModel,
+// ErrMissingKey, ErrUnexpectedKey, ErrInvalidKey, ErrMissingBaseURL, ErrMissingModel,
 // ErrMissingPublicURL or ErrInvalidSetting — before contacting any vendor.
 //
 // The Provider sends s.Temperature with every request whose Temperature is
@@ -230,6 +230,8 @@ func check(p Preset, s llm.Settings, key string) error {
 		return llm.ErrMissingKey
 	case p.Key == KeyNone && key != "":
 		return llm.ErrUnexpectedKey
+	case !validHeaderValue(key):
+		return llm.ErrInvalidKey
 	}
 	switch {
 	case p.BaseURL == "" && s.BaseURL == "":
@@ -250,6 +252,17 @@ func check(p Preset, s llm.Settings, key string) error {
 		return fmt.Errorf("%w: temperature must be a non-negative number", llm.ErrInvalidSetting)
 	}
 	return nil
+}
+
+// validHeaderValue reports whether value has no control character other
+// than tab, so it can be sent as an HTTP header value.
+func validHeaderValue(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if c := value[i]; (c < 0x20 && c != '\t') || c == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // configured applies the household temperature and the preset's

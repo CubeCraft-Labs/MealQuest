@@ -628,6 +628,20 @@ func TestNewRejectsBadHeaderWithoutEchoingValue(t *testing.T) {
 	assertNoSecret(t, err)
 }
 
+func TestNewRejectsKeyWithControlCharacter(t *testing.T) {
+	for _, key := range []string{testKey + "\n", testKey + "\r\nX-Injected: 1", "\x00" + testKey, testKey + "\x7f"} {
+		_, err := New(Config{BaseURL: "https://example.com/v1", APIKey: key, StructuredOutput: JSONSchema})
+		if err == nil {
+			t.Errorf("New(%q) = nil error", key)
+			continue
+		}
+		assertNoSecret(t, err)
+		if strings.Contains(err.Error()+fmt.Sprintf("%#v", err), key) {
+			t.Errorf("error leaks the key: %v", err)
+		}
+	}
+}
+
 // TestNewConfigErrorsNeverLeakKey covers every New error that names
 // caller-supplied text, each with the API key embedded in that text.
 func TestNewConfigErrorsNeverLeakKey(t *testing.T) {

@@ -53,6 +53,7 @@ type Config struct {
 	BaseURL string
 	// APIKey is sent as "Authorization: Bearer <APIKey>". Empty sends no
 	// Authorization header, for endpoints such as Ollama that need none.
+	// It must not have a control character other than tab.
 	APIKey string
 	// Model is the model Generate requests. ListModels and Verify do not
 	// need it.
@@ -101,6 +102,9 @@ func newFromConfig(cfg Config) (*Provider, error) {
 	// endpoint path appended to it would land in the query or fragment.
 	if u.User != nil || strings.ContainsAny(cfg.BaseURL, "?#") {
 		return nil, errors.New("openai: base URL must not carry credentials, a query or a fragment")
+	}
+	if !validHeaderValue(cfg.APIKey) {
+		return nil, errors.New("openai: API key has a control character")
 	}
 	// No error from New quotes caller-supplied text or a name derived from
 	// it: any such text may equal or contain the API key, and redaction

@@ -50,6 +50,9 @@ var (
 	// ErrUnexpectedKey means an API key was given to a preset that sends
 	// none.
 	ErrUnexpectedKey = errors.New("llm: provider takes no API key")
+	// ErrInvalidKey means the API key is not a valid HTTP header value:
+	// it has a control character such as CR or LF.
+	ErrInvalidKey = errors.New("llm: API key is not a valid header value")
 	// ErrMissingBaseURL means the preset requires a base URL and none was
 	// given.
 	ErrMissingBaseURL = errors.New("llm: base URL is required")

@@ -1,0 +1,24 @@
+.shell {
+  position: relative;
+  height: 100dvh;
+  display: flex;
+  background: var(--color-bg);
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+/* The bottom bar overlays the last 94 px of the screen (plus the safe area),
+   so the scroll area reserves at least 100 px beneath its content. */
+.mobile .main {
+  padding: 0 20px;
+  padding-bottom: calc(100px + env(safe-area-inset-bottom));
+}
+
+.tablet .main,
+.desktop .main {
+  padding: 32px 36px;
+}

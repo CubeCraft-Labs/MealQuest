@@ -1,0 +1,74 @@
+/* The button is the hit box; .face is the visible circle. A 40 px face sits in
+   a 44 px hit box whose negative margin keeps the 40 px layout footprint. */
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.size40 {
+  width: 44px;
+  height: 44px;
+  margin: -2px;
+}
+
+.size62 {
+  width: 62px;
+  height: 62px;
+}
+
+.face {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-pill);
+  transition: transform 100ms var(--ease-out-soft);
+}
+
+.size40 .face {
+  width: 40px;
+  height: 40px;
+}
+
+.size62 .face {
+  width: 62px;
+  height: 62px;
+  box-shadow: var(--shadow-md);
+}
+
+.button:active:not(:disabled) .face {
+  transform: scale(0.97);
+}
+
+.surface {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.accent {
+  background: var(--color-accent);
+  color: var(--on-accent);
+}
+
+.teal {
+  background: var(--color-accent-2-600);
+  color: var(--on-accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .face {
+    transition: none;
+  }
+}

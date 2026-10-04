@@ -1,0 +1,63 @@
+.root {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 44px;
+  min-height: 44px;
+  cursor: pointer;
+}
+
+.input {
+  appearance: none;
+  display: grid;
+  place-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  border: 2px solid var(--color-neutral-400);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+}
+
+/* The check mark. */
+.input::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  background: var(--on-accent);
+  clip-path: polygon(14% 44%, 0 59%, 40% 100%, 100% 21%, 85% 7%, 39% 69%);
+  opacity: 0;
+  transform: scale(0.8);
+  transition: transform 160ms var(--ease-spring), opacity 160ms var(--ease-out-soft);
+}
+
+.input:checked {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+}
+
+.input:checked::before {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.input:disabled,
+.input:disabled + .label {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.label {
+  font-family: var(--font-body);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .input::before {
+    transition: none;
+  }
+}

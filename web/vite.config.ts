@@ -17,6 +17,8 @@ export default defineConfig({
       srcDir: 'src',
       filename: 'sw.ts',
       injectRegister: 'script',
+      // Precache the shell, JS, CSS and the self-hosted fonts.
+      injectManifest: { globPatterns: ['**/*.{html,js,css,woff2}'] },
       // The web manifest lives in manifest.json: its theme and background
       // colours are --color-accent and --color-bg from src/styles/tokens.css,
       // and hex colours may not be written in TypeScript.

@@ -95,6 +95,25 @@ describe('production build', () => {
     }
   })
 
+  it('precaches the shell, JS, CSS and every self-hosted font', async () => {
+    const sw = await (await get('/sw.js')).text()
+    const urls = [...sw.matchAll(/"url":"([^"]+)"/g)].map((match) => match[1])
+    // index.html keeps its URL across builds, so it carries a content
+    // revision; the other assets have content hashes in their names.
+    expect(sw).toMatch(/\{"revision":"[0-9a-f]{32}","url":"index\.html"\}/)
+    expect(urls.some((url) => url?.endsWith('.js'))).toBe(true)
+    expect(urls.some((url) => url?.endsWith('.css'))).toBe(true)
+    for (const font of [
+      'BagelFatOne-LatinExt',
+      'BagelFatOne-Latin',
+      'Figtree-Regular',
+      'Figtree-SemiBold',
+      'Figtree-Bold',
+    ]) {
+      expect(urls.some((url) => url?.startsWith(`assets/${font}`) && url.endsWith('.woff2'))).toBe(true)
+    }
+  })
+
   it('links the manifest, theme colour and apple-touch-icon from index.html', async () => {
     const html = await (await get('/')).text()
     expect(html.match(/<link rel="manifest" href="\/manifest\.webmanifest">/g)).toHaveLength(1)

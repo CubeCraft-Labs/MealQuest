@@ -3,7 +3,9 @@
 // POST {base}/chat/completions and GET {base}/models over plain net/http.
 //
 // The adapter never logs, and no error it returns contains the API key or
-// the Authorization header value.
+// the Authorization header value: errors do not quote caller- or
+// vendor-supplied text, and every exported method passes its error through
+// redact as a backstop.
 package openai
 
 import (
@@ -76,6 +78,14 @@ var _ llm.Provider = (*Provider)(nil)
 
 // New validates cfg and returns a Provider.
 func New(cfg Config) (*Provider, error) {
+	p, err := newFromConfig(cfg)
+	if err != nil {
+		return nil, redact(err, cfg.APIKey)
+	}
+	return p, nil
+}
+
+func newFromConfig(cfg Config) (*Provider, error) {
 	// Base URL errors never echo the URL: a rejected one may carry a
 	// credential.
 	u, err := url.Parse(cfg.BaseURL)
@@ -219,6 +229,11 @@ const schemaInstruction = "Reply with only a JSON object, and no other text, tha
 
 // Generate sends req to {base}/chat/completions.
 func (p *Provider) Generate(ctx context.Context, req llm.Request) (llm.Response, error) {
+	resp, err := p.generate(ctx, req)
+	return resp, redact(err, p.apiKey)
+}
+
+func (p *Provider) generate(ctx context.Context, req llm.Request) (llm.Response, error) {
 	if err := req.Validate(); err != nil {
 		return llm.Response{}, fmt.Errorf("openai: generate: %w", err)
 	}
@@ -298,7 +313,7 @@ func (p *Provider) Generate(ctx context.Context, req llm.Request) (llm.Response,
 		resp.JSON = json.RawMessage(text)
 	}
 	if resp.JSON == nil {
-		return resp, fmt.Errorf("openai: generate: reply (finish reason %q) holds no JSON object: %w", resp.FinishReason, llm.ErrBadOutput)
+		return resp, fmt.Errorf("openai: generate: reply holds no JSON object: %w", llm.ErrBadOutput)
 	}
 	return resp, nil
 }
@@ -343,6 +358,11 @@ type modelsResponse struct {
 
 // ListModels returns the models {base}/models lists.
 func (p *Provider) ListModels(ctx context.Context) ([]llm.Model, error) {
+	models, err := p.listModels(ctx)
+	return models, redact(err, p.apiKey)
+}
+
+func (p *Provider) listModels(ctx context.Context) ([]llm.Model, error) {
 	raw, _, err := p.do(ctx, http.MethodGet, "/models", nil)
 	if err != nil {
 		return nil, fmt.Errorf("openai: list models: %w", err)
@@ -370,8 +390,8 @@ func (p *Provider) ListModels(ctx context.Context) ([]llm.Model, error) {
 
 // Verify checks the credentials with an authenticated ListModels call.
 func (p *Provider) Verify(ctx context.Context) error {
-	_, err := p.ListModels(ctx)
-	return err
+	_, err := p.listModels(ctx)
+	return redact(err, p.apiKey)
 }
 
 // do sends one request and returns the body and status of a 2xx response.
@@ -493,10 +513,44 @@ func (p *Provider) transportError(err error) error {
 	return &transportFailure{detail: redactKey(err.Error(), p.apiKey), kind: kind}
 }
 
-// redactKey replaces every occurrence of a non-empty key in s.
+// redactKey replaces every occurrence of a non-empty key in s. Replacing
+// the key also replaces the "Bearer "+key header value that contains it.
 func redactKey(s, key string) string {
 	if key == "" {
 		return s
 	}
 	return strings.ReplaceAll(s, key, "[REDACTED]")
+}
+
+// withheldText replaces an error's text when redactKey cannot remove the
+// key, because the key is part of the replacement marker.
+const withheldText = "openai: error text withheld: it contains the API key"
+
+// redactedError is an error whose text had the API key removed. It unwraps
+// to the original error, so errors.Is and errors.As still see the chain.
+type redactedError struct {
+	text string
+	err  error
+}
+
+func (e *redactedError) Error() string { return e.text }
+
+func (e *redactedError) Unwrap() error { return e.err }
+
+// redact is the backstop every exported method applies to its error: when
+// err's text, wrapped errors included, holds a non-empty key, it returns err
+// with that text redacted. Any other err is returned unchanged.
+func redact(err error, key string) error {
+	if err == nil || key == "" {
+		return err
+	}
+	text := err.Error()
+	if !strings.Contains(text, key) {
+		return err
+	}
+	text = redactKey(text, key)
+	if strings.Contains(text, key) {
+		text = withheldText
+	}
+	return &redactedError{text: text, err: err}
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -783,5 +784,103 @@ func TestRetryAfter(t *testing.T) {
 		if got := retryAfter(in, now); got != want {
 			t.Errorf("retryAfter(%q) = %v, want %v", in, got, want)
 		}
+	}
+}
+
+// headerNameKey is an API key that is also a word callers and vendors put in
+// text: an error that quotes such text prints the key.
+const headerNameKey = "Authorization"
+
+// assertNoKey fails if err's text holds key or "Bearer "+key in any case.
+func assertNoKey(t *testing.T, err error, key string) {
+	t.Helper()
+	for _, secret := range []string{key, "Bearer " + key} {
+		if strings.Contains(err.Error(), secret) || strings.Contains(strings.ToLower(err.Error()), strings.ToLower(secret)) {
+			t.Fatalf("error leaks %q: %v", secret, err)
+		}
+	}
+}
+
+// keyServer replies to every request with status and body.
+func keyServer(t *testing.T, status int, body string) *Provider {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		io.WriteString(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	p, err := New(Config{BaseURL: srv.URL + "/v1", APIKey: headerNameKey, Model: "test-model", StructuredOutput: PromptOnly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestGenerateInvalidRoleNeverLeaksKey(t *testing.T) {
+	p := keyServer(t, 200, `{}`)
+	_, err := p.Generate(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.Role(headerNameKey), Content: "hi"}}})
+	if err == nil {
+		t.Fatal("Generate accepted an unknown role")
+	}
+	assertNoKey(t, err, headerNameKey)
+}
+
+func TestGenerateInvalidSchemaNeverLeaksKey(t *testing.T) {
+	p := keyServer(t, 200, `{}`)
+	req := schemaRequest()
+	req.Schema = &llm.JSONSchema{Name: headerNameKey, Schema: json.RawMessage(`[]`)}
+	_, err := p.Generate(context.Background(), req)
+	if err == nil {
+		t.Fatal("Generate accepted a schema that is not a JSON object")
+	}
+	assertNoKey(t, err, headerNameKey)
+}
+
+func TestGenerateBadOutputNeverLeaksKey(t *testing.T) {
+	p := keyServer(t, 200, `{"model":"m","choices":[{"message":{"content":"no JSON here"},"finish_reason":"`+headerNameKey+`"}]}`)
+	resp, err := p.Generate(context.Background(), schemaRequest())
+	if !errors.Is(err, llm.ErrBadOutput) {
+		t.Fatalf("err = %v, want ErrBadOutput", err)
+	}
+	assertNoKey(t, err, headerNameKey)
+	if resp.FinishReason != headerNameKey {
+		t.Fatalf("FinishReason = %q, want it kept on the response", resp.FinishReason)
+	}
+}
+
+func TestProviderErrorBodyNeverLeaksKey(t *testing.T) {
+	p := keyServer(t, 500, `{"error":{"message":"rejected `+headerNameKey+`: Bearer `+headerNameKey+`"}}`)
+	_, genErr := p.Generate(context.Background(), schemaRequest())
+	_, listErr := p.ListModels(context.Background())
+	verifyErr := p.Verify(context.Background())
+	for _, err := range []error{genErr, listErr, verifyErr} {
+		var pe *llm.ProviderError
+		if !errors.Is(err, llm.ErrProvider) || !errors.As(err, &pe) || pe.Status() != 500 {
+			t.Fatalf("err = %v, want a 500 ProviderError", err)
+		}
+		assertNoKey(t, err, headerNameKey)
+	}
+}
+
+// TestRedactKeepsChainAndHidesKey checks the backstop every exported method
+// applies: the key and its Bearer value leave the text, the chain stays.
+func TestRedactKeepsChainAndHidesKey(t *testing.T) {
+	inner := fmt.Errorf("decode: body %q: %w", "Bearer "+testKey, llm.ErrBadOutput)
+	err := redact(inner, testKey)
+	assertNoSecret(t, err)
+	if !errors.Is(err, llm.ErrBadOutput) || errors.Unwrap(err) != inner {
+		t.Fatalf("redact broke the chain of %v", err)
+	}
+	if redact(inner, "") != inner {
+		t.Fatal("redact changed an error for the empty key")
+	}
+	clean := errors.New("openai: generate: no model configured")
+	if redact(clean, testKey) != clean {
+		t.Fatal("redact wrapped an error that holds no key")
+	}
+	// A key inside the redaction marker would survive replacement.
+	if got := redact(errors.New("x E y"), "E").Error(); strings.Contains(got, "E") {
+		t.Fatalf("redact kept the key: %q", got)
 	}
 }

@@ -1,0 +1,11 @@
+{
+  "id": "chatcmpl-419",
+  "object": "chat.completion",
+  "created": 1741570340,
+  "model": "llama3.2",
+  "system_fingerprint": "fp_ollama",
+  "choices": [
+    {"index": 0, "message": {"role": "assistant", "content": "Try a lemon orzo bake tonight."}, "finish_reason": "stop"}
+  ],
+  "usage": {"prompt_tokens": 40, "completion_tokens": 9, "total_tokens": 49}
+}

@@ -184,3 +184,15 @@ func TestRateLimitedErrorWithFixedWordSecretNeverLeaksSecret(t *testing.T) {
 		}
 	}
 }
+
+func TestTypedErrorsDoNotKeepSecret(t *testing.T) {
+	const secret = "sk-live-0123456789abcdef"
+	for _, err := range []error{
+		NewProviderError(500, []byte("down "+secret), secret),
+		NewRateLimitedError(30*time.Second, secret),
+	} {
+		if got := fmt.Sprintf("%#v %+v", err, err); strings.Contains(got, secret) {
+			t.Fatalf("formatting %T leaks the secret: %q", err, got)
+		}
+	}
+}

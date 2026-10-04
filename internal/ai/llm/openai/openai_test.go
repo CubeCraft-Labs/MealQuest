@@ -779,6 +779,9 @@ func TestRetryAfter(t *testing.T) {
 		"soon":                          0,
 		"Sat, 03 Oct 2026 12:02:00 GMT": 2 * time.Minute,
 		"Sat, 03 Oct 2026 11:59:00 GMT": 0,
+		"9223372036854775807":           time.Duration(maxRetryAfterSeconds) * time.Second,
+		"99999999999999999999":          time.Duration(maxRetryAfterSeconds) * time.Second,
+		"-99999999999999999999":         0,
 	}
 	for in, want := range cases {
 		if got := retryAfter(in, now); got != want {
@@ -882,8 +885,8 @@ func TestRedactKeepsChainAndHidesKey(t *testing.T) {
 		t.Fatal("redact changed an error for the empty key")
 	}
 	clean := errors.New("openai: generate: no model configured")
-	if redact(clean, testKey) != clean {
-		t.Fatal("redact wrapped an error that holds no key")
+	if got := redact(clean, testKey); got.Error() != clean.Error() || !errors.Is(got, clean) {
+		t.Fatalf("redact(%v) = %v, want the same text and chain", clean, got)
 	}
 	// A key inside the redaction marker would survive replacement.
 	if got := redact(errors.New("x E y"), "E").Error(); strings.Contains(got, "E") {
@@ -938,7 +941,7 @@ func TestRedactMakesEveryUnwrappedLayerSafe(t *testing.T) {
 		fmt.Errorf("openai: generate: %w", inner),
 		fmt.Errorf("openai: generate: %w", hidden),
 		fmt.Errorf("openai: generate: %w", joined),
-		fmt.Errorf("openai: %w and %w", inner, &transportFailure{detail: "slow", kind: llm.ErrTimeout}),
+		fmt.Errorf("openai: %w and %w", inner, &transportFailure{text: "llm: request timed out: transport: slow", kind: llm.ErrTimeout}),
 	}
 	for _, c := range cases {
 		err := redact(c, testKey)
@@ -964,7 +967,7 @@ func TestRedactMakesEveryUnwrappedLayerSafe(t *testing.T) {
 	if !errors.Is(err, llm.ErrAuth) {
 		t.Fatalf("errors.Is lost ErrAuth in %v", err)
 	}
-	err = redact(fmt.Errorf("openai %s: %w", testKey, &transportFailure{detail: "slow", kind: llm.ErrTimeout}), testKey)
+	err = redact(fmt.Errorf("openai %s: %w", testKey, &transportFailure{text: "llm: request timed out: transport: slow", kind: llm.ErrTimeout}), testKey)
 	if !errors.Is(err, llm.ErrTimeout) {
 		t.Fatalf("errors.Is lost ErrTimeout in %v", err)
 	}
@@ -1118,4 +1121,135 @@ func TestGenerateWithAdapterNameKeyNeverLeaksKey(t *testing.T) {
 		assertLayersNoExactKey(t, err, key)
 		assertChainNoExactKey(t, err, key)
 	})
+}
+
+// TestRedactedErrorsFormatWithoutKey formats every error type that holds the
+// key, or a cause holding it, with %v, %+v and %#v; %#v prints GoString.
+func TestRedactedErrorsFormatWithoutKey(t *testing.T) {
+	const key = "sk-distinctive-openai-format-7c1e"
+	single := redact(fmt.Errorf("openai %s: %w", key, llm.ErrBadOutput), key)
+	joined := redact(errors.Join(fmt.Errorf("decode %s: %w", key, llm.ErrAuth), llm.NewProviderError(500, []byte("down "+key), key)), key)
+	if _, ok := single.(*redactedError); !ok {
+		t.Fatalf("single = %T, want *redactedError", single)
+	}
+	if _, ok := joined.(*redactedJoin); !ok {
+		t.Fatalf("joined = %T, want *redactedJoin", joined)
+	}
+	p := &Provider{apiKey: key}
+	transport := p.transportError(fmt.Errorf("dial %s: %w", key, context.DeadlineExceeded))
+	for _, err := range []error{single, joined, transport} {
+		for _, verb := range []string{"%v", "%+v", "%#v"} {
+			if got := fmt.Sprintf(verb, err); strings.Contains(got, key) {
+				t.Fatalf("%s of %T leaks the key: %q", verb, err, got)
+			}
+		}
+	}
+}
+
+func TestRateLimitedHugeRetryAfterIsCapped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "9223372036854775807")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(srv.Close)
+	p, err := New(Config{BaseURL: srv.URL + "/v1", APIKey: testKey, Model: "test-model", Headers: map[string]string{"X-Title": testKey}, StructuredOutput: PromptOnly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = p.Verify(context.Background())
+	var rl *llm.RateLimitedError
+	if !errors.Is(err, llm.ErrRateLimited) || !errors.As(err, &rl) || rl.RetryAfter != time.Duration(maxRetryAfterSeconds)*time.Second {
+		t.Fatalf("err = %v, want a RateLimitedError with RetryAfter capped to %v", err, time.Duration(maxRetryAfterSeconds)*time.Second)
+	}
+}
+
+func TestRedirectIsNotFollowed(t *testing.T) {
+	var mu sync.Mutex
+	var secondCalls int
+	var secondHeader http.Header
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		mu.Lock()
+		secondCalls++
+		secondHeader = req.Header.Clone()
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(second.Close)
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		http.Redirect(w, req, second.URL+req.URL.Path, http.StatusFound)
+	}))
+	t.Cleanup(first.Close)
+	p, err := New(Config{BaseURL: first.URL + "/v1", APIKey: testKey, Model: "test-model", Headers: map[string]string{"X-Title": testKey}, StructuredOutput: PromptOnly})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = p.Verify(context.Background())
+	var pe *llm.ProviderError
+	if !errors.Is(err, llm.ErrProvider) || !errors.As(err, &pe) || pe.Status() != http.StatusFound {
+		t.Fatalf("err = %v, want a ProviderError for HTTP 302", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if secondCalls != 0 {
+		for name, values := range secondHeader {
+			for _, v := range values {
+				if strings.Contains(v, testKey) {
+					t.Errorf("redirect target saw the key in %s", name)
+				}
+			}
+		}
+		t.Fatalf("redirect target got %d requests, want 0", secondCalls)
+	}
+}
+
+// assertGoStringNoKey checks that %#v of err, of every layer reached by
+// unwrapping and of the typed errors reached by errors.As holds no key.
+func assertGoStringNoKey(t *testing.T, err error, key string) {
+	t.Helper()
+	var walk func(error)
+	walk = func(e error) {
+		if e == nil {
+			return
+		}
+		if got := fmt.Sprintf("%#v", e); strings.Contains(got, key) {
+			t.Fatalf("%%#v of %T leaks %q: %q", e, key, got)
+		}
+		switch u := e.(type) {
+		case interface{ Unwrap() error }:
+			walk(u.Unwrap())
+		case interface{ Unwrap() []error }:
+			for _, c := range u.Unwrap() {
+				walk(c)
+			}
+		}
+	}
+	walk(err)
+	var pe *llm.ProviderError
+	if errors.As(err, &pe) {
+		walk(pe)
+	}
+	var rl *llm.RateLimitedError
+	if errors.As(err, &rl) {
+		walk(rl)
+	}
+}
+
+// TestFieldNameKeyNeverLeaksThroughGoString uses struct field names of the
+// returned error types as the API key; %#v must not print any of them.
+func TestFieldNameKeyNeverLeaksThroughGoString(t *testing.T) {
+	for _, key := range []string{"body", "status", "text", "RetryAfter", "msg", "err", "key", "kind"} {
+		_, err := keyServerWithKey(t, key, 500, "down").Generate(context.Background(), schemaRequest())
+		var pe *llm.ProviderError
+		if !errors.As(err, &pe) || pe.Status() != 500 {
+			t.Fatalf("key %q: err = %v, want a 500 ProviderError", key, err)
+		}
+		assertGoStringNoKey(t, err, key)
+		err = keyServerWithKey(t, key, 429, "slow").Verify(context.Background())
+		var rl *llm.RateLimitedError
+		if !errors.As(err, &rl) {
+			t.Fatalf("key %q: err = %v, want a RateLimitedError", key, err)
+		}
+		assertGoStringNoKey(t, err, key)
+	}
 }

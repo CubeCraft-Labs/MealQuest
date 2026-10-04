@@ -5,6 +5,21 @@ export const CSRF_HEADER = 'X-MealQuest-CSRF'
 
 export const ME_PATH = '/api/v1/me'
 
+// API_PREFIX is the only path apiFetch sends to.
+const API_PREFIX = '/api/v1/'
+
+// requireApiPath refuses any path that would not resolve to a same-origin URL
+// under /api/v1/, so the CSRF token is never sent anywhere else. Resolving
+// against a placeholder origin catches absolute and protocol-relative URLs
+// and dot segments that climb out of /api/v1/.
+function requireApiPath(method: string, path: string) {
+  const base = 'https://same-origin.invalid'
+  const url = new URL(path, base)
+  if (!path.startsWith('/') || url.origin !== base || !url.pathname.startsWith(API_PREFIX)) {
+    throw new Error(`${method} ${path}: not a same-origin ${API_PREFIX} path`)
+  }
+}
+
 // Me is the GET /api/v1/me response: the signed-in member, the household and
 // the session's CSRF token.
 export type Me = {
@@ -24,8 +39,9 @@ export type ApiRequest = {
 }
 
 export type ApiClient = {
-  // apiFetch sends a same-origin JSON request to path and resolves with the
-  // decoded response body, or rejects with an ApiError.
+  // apiFetch sends a same-origin JSON request to path, which must be under
+  // /api/v1/, and resolves with the decoded response body, or rejects with an
+  // ApiError.
   apiFetch<T>(path: string, request?: ApiRequest): Promise<T>
   // loadMe fetches GET /api/v1/me and caches its CSRF token.
   loadMe(): Promise<Me>
@@ -71,6 +87,7 @@ export function createApiClient(location: ApiLocation): ApiClient {
 
   async function apiFetch<T>(path: string, request: ApiRequest = {}): Promise<T> {
     const method = request.method ?? 'GET'
+    requireApiPath(method, path)
     let response = await send(method, path, request.body)
     if (response.status === 403) {
       const error = await parseForbidden(method, path, response)

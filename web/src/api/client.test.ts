@@ -34,6 +34,26 @@ describe('apiFetch', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  it.each([
+    'https://evil.example/api/v1/me',
+    '//evil.example/api/v1/me',
+    '/auth/logout',
+    '/api/v1/../auth/logout',
+    '/api/v1/%2e%2e/auth/logout',
+    'api/v1/me',
+  ])('refuses %s without sending it or the CSRF token', async (path) => {
+    const fetchMock = stubFetch(jsonResponse(200, ME))
+    const api = createApiClient(fakeLocation())
+    await api.loadMe()
+
+    await expect(api.apiFetch(path, { method: 'POST', body: {} })).rejects.toThrow(
+      `POST ${path}: not a same-origin /api/v1/ path`,
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(request(fetchMock, 0)).toMatchObject({ path: '/api/v1/me', method: 'GET' })
+    expect(request(fetchMock, 0).headers.has(CSRF_HEADER)).toBe(false)
+  })
+
   it('rejects with a typed ApiError from the error body', async () => {
     stubFetch(errorResponse(503, 'unavailable', true))
     const api = createApiClient(fakeLocation())

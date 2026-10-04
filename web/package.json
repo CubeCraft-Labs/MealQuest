@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build && npm run check:dist-fonts",
+    "build": "npm run lint:colors && tsc --noEmit && vite build && npm run check:dist-fonts",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "npm run lint:colors && vitest run",

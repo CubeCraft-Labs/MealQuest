@@ -505,16 +505,14 @@ func isTimeout(err error) bool {
 // with the request URL removed and the API key redacted, and unwraps only to
 // the cause's category: llm.ErrTimeout, context.Canceled or nothing.
 type transportFailure struct {
-	detail string
-	kind   error
+	text string
+	kind error
 }
 
-func (e *transportFailure) Error() string {
-	if e.kind == llm.ErrTimeout {
-		return fmt.Sprintf("%s: transport: %s", llm.ErrTimeout, e.detail)
-	}
-	return "transport: " + e.detail
-}
+func (e *transportFailure) Error() string { return e.text }
+
+// GoString keeps %#v to the redacted Error text instead of the fields.
+func (e *transportFailure) GoString() string { return e.text }
 
 func (e *transportFailure) Unwrap() error { return e.kind }
 
@@ -533,7 +531,11 @@ func (p *Provider) transportError(err error) error {
 	if errors.As(err, &ue) {
 		err = ue.Err
 	}
-	return &transportFailure{detail: llm.Redact(err.Error(), p.apiKey), kind: kind}
+	text := "transport: " + err.Error()
+	if kind == llm.ErrTimeout {
+		text = fmt.Sprintf("%s: %s", llm.ErrTimeout, text)
+	}
+	return &transportFailure{text: llm.Redact(text, p.apiKey), kind: kind}
 }
 
 // redactedError stands in for one layer of an error chain that holds the
@@ -542,8 +544,8 @@ func (p *Provider) transportError(err error) error {
 // unwrapping has text holding the key. Is consults the original layer and
 // its chain, so sentinels still match. As does too. The llm typed errors
 // remove the key from their own complete text, fixed words included, so
-// they always match; As refuses only a match from outside llm whose text
-// holds the key, so it never hands back an unredacted error.
+// they always match; As refuses a match whose text, or whose %#v form,
+// holds the key, so it never hands back an error that can print it.
 type redactedError struct {
 	text string
 	err  error
@@ -564,7 +566,8 @@ func (e *redactedError) As(target any) bool {
 		return false
 	}
 	found := reflect.ValueOf(target).Elem()
-	if matched, ok := found.Interface().(error); ok && holdsKey(matched, e.key) {
+	matched, isErr := found.Interface().(error)
+	if (isErr && holdsKey(matched, e.key)) || strings.Contains(fmt.Sprintf("%#v", found.Interface()), e.key) {
 		found.SetZero()
 		return false
 	}
@@ -586,12 +589,13 @@ func (e *redactedJoin) Unwrap() []error {
 	return safe
 }
 
-// redact is the backstop every exported method applies to its error: when
-// the text of err or of any error in its chain holds a non-empty key, it
-// returns a stand-in whose text, and the text of every error it unwraps
-// to, has the key redacted. Any other err is returned unchanged.
+// redact is the backstop every exported method applies to its error: with
+// a non-empty key, it returns a stand-in whose text, and the text of every
+// error it unwraps to, has the key redacted. Every non-nil err is wrapped,
+// even one whose text lacks the key, because %#v of an unwrapped error
+// prints its struct field names, and a key may spell one.
 func redact(err error, key string) error {
-	if err == nil || key == "" || !holdsKey(err, key) {
+	if err == nil || key == "" {
 		return err
 	}
 	re := redactedError{text: llm.Redact(err.Error(), key), err: err, key: key}

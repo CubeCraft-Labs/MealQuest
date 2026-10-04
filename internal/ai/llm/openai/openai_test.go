@@ -885,8 +885,8 @@ func TestRedactKeepsChainAndHidesKey(t *testing.T) {
 		t.Fatal("redact changed an error for the empty key")
 	}
 	clean := errors.New("openai: generate: no model configured")
-	if redact(clean, testKey) != clean {
-		t.Fatal("redact wrapped an error that holds no key")
+	if got := redact(clean, testKey); got.Error() != clean.Error() || !errors.Is(got, clean) {
+		t.Fatalf("redact(%v) = %v, want the same text and chain", clean, got)
 	}
 	// A key inside the redaction marker would survive replacement.
 	if got := redact(errors.New("x E y"), "E").Error(); strings.Contains(got, "E") {
@@ -941,7 +941,7 @@ func TestRedactMakesEveryUnwrappedLayerSafe(t *testing.T) {
 		fmt.Errorf("openai: generate: %w", inner),
 		fmt.Errorf("openai: generate: %w", hidden),
 		fmt.Errorf("openai: generate: %w", joined),
-		fmt.Errorf("openai: %w and %w", inner, &transportFailure{detail: "slow", kind: llm.ErrTimeout}),
+		fmt.Errorf("openai: %w and %w", inner, &transportFailure{text: "llm: request timed out: transport: slow", kind: llm.ErrTimeout}),
 	}
 	for _, c := range cases {
 		err := redact(c, testKey)
@@ -967,7 +967,7 @@ func TestRedactMakesEveryUnwrappedLayerSafe(t *testing.T) {
 	if !errors.Is(err, llm.ErrAuth) {
 		t.Fatalf("errors.Is lost ErrAuth in %v", err)
 	}
-	err = redact(fmt.Errorf("openai %s: %w", testKey, &transportFailure{detail: "slow", kind: llm.ErrTimeout}), testKey)
+	err = redact(fmt.Errorf("openai %s: %w", testKey, &transportFailure{text: "llm: request timed out: transport: slow", kind: llm.ErrTimeout}), testKey)
 	if !errors.Is(err, llm.ErrTimeout) {
 		t.Fatalf("errors.Is lost ErrTimeout in %v", err)
 	}
@@ -1200,5 +1200,56 @@ func TestRedirectIsNotFollowed(t *testing.T) {
 			}
 		}
 		t.Fatalf("redirect target got %d requests, want 0", secondCalls)
+	}
+}
+
+// assertGoStringNoKey checks that %#v of err, of every layer reached by
+// unwrapping and of the typed errors reached by errors.As holds no key.
+func assertGoStringNoKey(t *testing.T, err error, key string) {
+	t.Helper()
+	var walk func(error)
+	walk = func(e error) {
+		if e == nil {
+			return
+		}
+		if got := fmt.Sprintf("%#v", e); strings.Contains(got, key) {
+			t.Fatalf("%%#v of %T leaks %q: %q", e, key, got)
+		}
+		switch u := e.(type) {
+		case interface{ Unwrap() error }:
+			walk(u.Unwrap())
+		case interface{ Unwrap() []error }:
+			for _, c := range u.Unwrap() {
+				walk(c)
+			}
+		}
+	}
+	walk(err)
+	var pe *llm.ProviderError
+	if errors.As(err, &pe) {
+		walk(pe)
+	}
+	var rl *llm.RateLimitedError
+	if errors.As(err, &rl) {
+		walk(rl)
+	}
+}
+
+// TestFieldNameKeyNeverLeaksThroughGoString uses struct field names of the
+// returned error types as the API key; %#v must not print any of them.
+func TestFieldNameKeyNeverLeaksThroughGoString(t *testing.T) {
+	for _, key := range []string{"body", "status", "text", "RetryAfter", "msg", "err", "key", "kind"} {
+		_, err := keyServerWithKey(t, key, 500, "down").Generate(context.Background(), schemaRequest())
+		var pe *llm.ProviderError
+		if !errors.As(err, &pe) || pe.Status() != 500 {
+			t.Fatalf("key %q: err = %v, want a 500 ProviderError", key, err)
+		}
+		assertGoStringNoKey(t, err, key)
+		err = keyServerWithKey(t, key, 429, "slow").Verify(context.Background())
+		var rl *llm.RateLimitedError
+		if !errors.As(err, &rl) {
+			t.Fatalf("key %q: err = %v, want a RateLimitedError", key, err)
+		}
+		assertGoStringNoKey(t, err, key)
 	}
 }

@@ -58,6 +58,9 @@ func (e *RateLimitedError) Error() string {
 	return fmt.Sprintf("%s: retry after %v", ErrRateLimited, e.RetryAfter)
 }
 
+// GoString keeps %#v to the redacted Error text instead of the fields.
+func (e *RateLimitedError) GoString() string { return e.Error() }
+
 // Is reports whether target is ErrRateLimited.
 func (e *RateLimitedError) Is(target error) bool { return target == ErrRateLimited }
 
@@ -127,6 +130,10 @@ func (e *ProviderError) Status() int { return e.status }
 func (e *ProviderError) Body() string { return e.body }
 
 func (e *ProviderError) Error() string { return e.text }
+
+// GoString keeps %#v to the redacted Error text instead of the fields,
+// whose names could spell the credential.
+func (e *ProviderError) GoString() string { return e.text }
 
 // Is reports whether target is ErrProvider.
 func (e *ProviderError) Is(target error) bool { return target == ErrProvider }

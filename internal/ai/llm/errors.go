@@ -26,17 +26,28 @@ var (
 )
 
 // RateLimitedError is a throttled request. It matches ErrRateLimited.
+// Adapters build it with NewRateLimitedError so its text never holds their
+// credential.
 type RateLimitedError struct {
 	// RetryAfter is how long the vendor asked callers to wait; 0 means it
 	// did not say.
 	RetryAfter time.Duration
+	secret     string
+}
+
+// NewRateLimitedError returns the error for a throttled request. secret is
+// the credential sent with the request, or "" when the request sent none;
+// Error removes every occurrence of a non-empty secret, even where the
+// fixed text happens to spell it.
+func NewRateLimitedError(retryAfter time.Duration, secret string) *RateLimitedError {
+	return &RateLimitedError{RetryAfter: retryAfter, secret: secret}
 }
 
 func (e *RateLimitedError) Error() string {
 	if e.RetryAfter == 0 {
-		return ErrRateLimited.Error()
+		return Redact(ErrRateLimited.Error(), e.secret)
 	}
-	return fmt.Sprintf("%s: retry after %v", ErrRateLimited, e.RetryAfter)
+	return Redact(fmt.Sprintf("%s: retry after %v", ErrRateLimited, e.RetryAfter), e.secret)
 }
 
 // Is reports whether target is ErrRateLimited.
@@ -73,6 +84,7 @@ func Redact(s, secret string) string {
 type ProviderError struct {
 	status int
 	body   string
+	secret string
 }
 
 // NewProviderError returns the error for an unexpected HTTP status. It
@@ -80,7 +92,8 @@ type ProviderError struct {
 // credential sent with the request, or "" when the request sent none; every
 // occurrence of a non-empty secret in body is removed by Redact before the
 // body is cut, so no part of it survives, and again after the cut, so the
-// truncation mark cannot complete it.
+// truncation mark cannot complete it. Error removes it from the complete
+// text too, even where the fixed text happens to spell it.
 func NewProviderError(status int, body []byte, secret string) *ProviderError {
 	s := strings.TrimSpace(Redact(string(body), secret))
 	if len(s) > MaxBodyExcerpt {
@@ -90,7 +103,7 @@ func NewProviderError(status int, body []byte, secret string) *ProviderError {
 		}
 		s = Redact(s[:cut]+"…", secret)
 	}
-	return &ProviderError{status: status, body: s}
+	return &ProviderError{status: status, body: s, secret: secret}
 }
 
 // Status returns the HTTP status code.
@@ -102,9 +115,9 @@ func (e *ProviderError) Body() string { return e.body }
 
 func (e *ProviderError) Error() string {
 	if e.body == "" {
-		return fmt.Sprintf("%s: HTTP %d", ErrProvider, e.status)
+		return Redact(fmt.Sprintf("%s: HTTP %d", ErrProvider, e.status), e.secret)
 	}
-	return fmt.Sprintf("%s: HTTP %d: %s", ErrProvider, e.status, e.body)
+	return Redact(fmt.Sprintf("%s: HTTP %d: %s", ErrProvider, e.status, e.body), e.secret)
 }
 
 // Is reports whether target is ErrProvider.

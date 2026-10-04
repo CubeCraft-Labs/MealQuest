@@ -446,7 +446,7 @@ func (p *Provider) statusError(resp *http.Response, body []byte) error {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return fmt.Errorf("HTTP %d: %w", resp.StatusCode, llm.ErrAuth)
 	case http.StatusTooManyRequests:
-		return &llm.RateLimitedError{RetryAfter: retryAfter(resp.Header.Get("Retry-After"), time.Now())}
+		return llm.NewRateLimitedError(retryAfter(resp.Header.Get("Retry-After"), time.Now()), p.apiKey)
 	case http.StatusRequestTimeout:
 		return fmt.Errorf("HTTP %d: %w", resp.StatusCode, llm.ErrTimeout)
 	default:
@@ -518,8 +518,10 @@ func (p *Provider) transportError(err error) error {
 // API key. Its text is the layer's text with the key redacted, and Unwrap
 // returns the layer's causes passed through redact, so no error reached by
 // unwrapping has text holding the key. Is consults the original layer and
-// its chain, so sentinels still match. As does too, but refuses a match
-// whose text holds the key, so it never hands back an unredacted error.
+// its chain, so sentinels still match. As does too. The llm typed errors
+// remove the key from their own complete text, fixed words included, so
+// they always match; As refuses only a match from outside llm whose text
+// holds the key, so it never hands back an unredacted error.
 type redactedError struct {
 	text string
 	err  error

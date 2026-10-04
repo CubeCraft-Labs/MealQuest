@@ -159,3 +159,28 @@ func TestProviderErrorTruncationMarkCannotCompleteSecret(t *testing.T) {
 		t.Fatalf("secret leaked: %q", pe.Body())
 	}
 }
+
+func TestProviderErrorWithFixedWordSecretNeverLeaksSecret(t *testing.T) {
+	const secret = "HTTP"
+	pe := NewProviderError(500, []byte(`{"error":"HTTP down"}`), secret)
+	if strings.Contains(pe.Error(), secret) || strings.Contains(pe.Body(), secret) {
+		t.Fatalf("secret leaked: Error %q, Body %q", pe.Error(), pe.Body())
+	}
+	if got := NewProviderError(500, nil, secret).Error(); got != "llm: provider error: [REDACTED] 500" {
+		t.Fatalf("Error() without body = %q", got)
+	}
+}
+
+func TestRateLimitedErrorWithFixedWordSecretNeverLeaksSecret(t *testing.T) {
+	for _, secret := range []string{"rate", "retry after"} {
+		for _, wait := range []time.Duration{0, 30 * time.Second} {
+			rl := NewRateLimitedError(wait, secret)
+			if strings.Contains(rl.Error(), secret) {
+				t.Fatalf("secret %q leaked: %q", secret, rl.Error())
+			}
+			if rl.RetryAfter != wait || !errors.Is(rl, ErrRateLimited) {
+				t.Fatalf("NewRateLimitedError(%v) = %+v", wait, rl)
+			}
+		}
+	}
+}

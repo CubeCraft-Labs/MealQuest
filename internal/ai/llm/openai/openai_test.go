@@ -1042,3 +1042,80 @@ func TestGenerateMalformedJSONWithShortKeyNeverLeaksKey(t *testing.T) {
 		}
 	}
 }
+
+// assertLayersNoExactKey fails if the text of err or of any error reached
+// from it by errors.Unwrap holds key, matched case-sensitively.
+func assertLayersNoExactKey(t *testing.T, err error, key string) {
+	t.Helper()
+	for layer := err; layer != nil; layer = errors.Unwrap(layer) {
+		if strings.Contains(layer.Error(), key) {
+			t.Fatalf("layer leaks %q: %q", key, layer.Error())
+		}
+	}
+}
+
+// TestProviderErrorWithFixedWordKeyKeepsTypedMatch uses the fixed word
+// "HTTP" of ProviderError's text as the API key: the text must drop it and
+// errors.As must still reach the ProviderError.
+func TestProviderErrorWithFixedWordKeyKeepsTypedMatch(t *testing.T) {
+	const key = "HTTP"
+	p := keyServerWithKey(t, key, 500, `{"error":"down"}`)
+	_, err := p.Generate(context.Background(), schemaRequest())
+	var pe *llm.ProviderError
+	if !errors.Is(err, llm.ErrProvider) || !errors.As(err, &pe) || pe.Status() != 500 {
+		t.Fatalf("err = %v, want a 500 ProviderError", err)
+	}
+	if strings.Contains(pe.Error(), key) || strings.Contains(pe.Body(), key) {
+		t.Fatalf("ProviderError leaks the key: Error %q, Body %q", pe.Error(), pe.Body())
+	}
+	assertLayersNoExactKey(t, err, key)
+	assertChainNoExactKey(t, err, key)
+}
+
+// TestRateLimitedErrorWithFixedWordKeyKeepsTypedMatch uses the fixed word
+// "rate" of RateLimitedError's text as the API key.
+func TestRateLimitedErrorWithFixedWordKeyKeepsTypedMatch(t *testing.T) {
+	const key = "rate"
+	srv := newVendorServer(t, reply{status: 429, header: map[string]string{"Retry-After": "17"}})
+	p, err := New(Config{BaseURL: srv.URL + "/v1", APIKey: key, Model: "test-model", StructuredOutput: PromptOnly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Generate(context.Background(), schemaRequest())
+	var rl *llm.RateLimitedError
+	if !errors.Is(err, llm.ErrRateLimited) || !errors.As(err, &rl) || rl.RetryAfter != 17*time.Second {
+		t.Fatalf("err = %v, want a RateLimitedError with RetryAfter 17s", err)
+	}
+	if strings.Contains(rl.Error(), key) {
+		t.Fatalf("RateLimitedError leaks the key: %q", rl.Error())
+	}
+	assertLayersNoExactKey(t, err, key)
+	assertChainNoExactKey(t, err, key)
+}
+
+// TestGenerateWithAdapterNameKeyNeverLeaksKey uses the fixed prefix
+// "openai" of the adapter's errors as the API key.
+func TestGenerateWithAdapterNameKeyNeverLeaksKey(t *testing.T) {
+	const key = "openai"
+	t.Run("401", func(t *testing.T) {
+		p := keyServerWithKey(t, key, 401, `{"error":{"message":"bad key"}}`)
+		_, err := p.Generate(context.Background(), schemaRequest())
+		if !errors.Is(err, llm.ErrAuth) {
+			t.Fatalf("err = %v, want ErrAuth", err)
+		}
+		assertLayersNoExactKey(t, err, key)
+		assertChainNoExactKey(t, err, key)
+	})
+	t.Run("no model", func(t *testing.T) {
+		p, err := New(Config{BaseURL: "http://127.0.0.1:1/v1", APIKey: key, StructuredOutput: PromptOnly})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = p.Generate(context.Background(), schemaRequest())
+		if err == nil {
+			t.Fatal("Generate succeeded without a model")
+		}
+		assertLayersNoExactKey(t, err, key)
+		assertChainNoExactKey(t, err, key)
+	})
+}

@@ -42,7 +42,8 @@ export function request(fetchMock: Mock<typeof fetch>, n: number) {
   }
 }
 
-// fakeLocation stands in for window.location, recording navigations.
+// fakeLocation stands in for window.location on https://mealquest.test,
+// recording navigations.
 export function fakeLocation(pathname = '/', search = ''): ApiLocation & { assign: Mock<(url: string | URL) => void> } {
-  return { pathname, search, assign: vi.fn<(url: string | URL) => void>() }
+  return { origin: 'https://mealquest.test', pathname, search, assign: vi.fn<(url: string | URL) => void>() }
 }

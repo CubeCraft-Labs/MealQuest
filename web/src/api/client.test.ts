@@ -37,6 +37,10 @@ describe('apiFetch', () => {
   it.each([
     'https://evil.example/api/v1/me',
     '//evil.example/api/v1/me',
+    // The placeholder origin an earlier guard compared against.
+    '//same-origin.invalid/api/v1/me',
+    'https://same-origin.invalid/api/v1/me',
+    '/\\evil.example/api/v1/me',
     '/auth/logout',
     '/api/v1/../auth/logout',
     '/api/v1/%2e%2e/auth/logout',

@@ -6,12 +6,14 @@
 // FromSettings lives here rather than in package llm because it builds the
 // adapters, and every adapter imports llm.
 //
-// Nothing in this package logs, and no error it returns contains the API
-// key or quotes a setting's value.
+// Nothing in this package logs, and no error it returns or unwraps to
+// contains the API key, even where the key equals a setting's or request's
+// value or text the error spells anyway.
 package presets
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"regexp"
@@ -169,6 +171,14 @@ var all = map[string]Preset{
 // nil; a request that sets one keeps it. Neither is sent to a model the
 // preset's OmitTemperature matches.
 func FromSettings(s llm.Settings, key string) (llm.Provider, error) {
+	cp, err := fromSettings(s, key)
+	if err != nil {
+		return nil, redact(err, key)
+	}
+	return cp, nil
+}
+
+func fromSettings(s llm.Settings, key string) (*configured, error) {
 	p, ok := Lookup(s.Provider)
 	if !ok {
 		return nil, llm.ErrUnknownProvider
@@ -205,7 +215,7 @@ func FromSettings(s llm.Settings, key string) (llm.Provider, error) {
 		return nil, fmt.Errorf("%s: %w: %w", p.Name, llm.ErrInvalidSetting, err)
 	}
 
-	cp := &configured{Provider: inner}
+	cp := &configured{Provider: inner, key: key}
 	if !p.omitsTemperature(s.Model) {
 		t := s.Temperature
 		cp.temperature = &t
@@ -246,6 +256,9 @@ func check(p Preset, s llm.Settings, key string) error {
 // temperature quirk to every Generate.
 type configured struct {
 	llm.Provider
+	// key is the API key, redacted from validation errors; the adapter
+	// redacts its own.
+	key string
 	// temperature is sent when a request sets none; nil means the model
 	// rejects temperature, so none is ever sent.
 	temperature *float64
@@ -256,7 +269,7 @@ type configured struct {
 // hides an invalid one.
 func (c *configured) Generate(ctx context.Context, req llm.Request) (llm.Response, error) {
 	if err := req.Validate(); err != nil {
-		return llm.Response{}, fmt.Errorf("presets: generate: %w", err)
+		return llm.Response{}, redact(fmt.Errorf("presets: generate: %w", err), c.key)
 	}
 	if c.temperature == nil {
 		req.Temperature = nil
@@ -265,4 +278,29 @@ func (c *configured) Generate(ctx context.Context, req llm.Request) (llm.Respons
 		req.Temperature = &t
 	}
 	return c.Provider.Generate(ctx, req)
+}
+
+// redactedError is an error with the API key removed from its text. It
+// does not unwrap, because every layer below may hold the key; Is still
+// matches the sentinels the original error wraps.
+type redactedError struct {
+	text string
+	err  error
+}
+
+func (e *redactedError) Error() string { return e.text }
+
+// GoString keeps %#v to the redacted Error text instead of the fields.
+func (e *redactedError) GoString() string { return e.text }
+
+// Is reports whether the original error matches target.
+func (e *redactedError) Is(target error) bool { return errors.Is(e.err, target) }
+
+// redact returns err with key removed from its text; a nil err or an empty
+// key returns err unchanged.
+func redact(err error, key string) error {
+	if err == nil || key == "" {
+		return err
+	}
+	return &redactedError{text: llm.Redact(err.Error(), key), err: err}
 }

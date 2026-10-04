@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -397,5 +398,69 @@ func TestReadyProviderForEveryPreset(t *testing.T) {
 		if p, err := FromSettings(s.s, s.key); err != nil || p == nil {
 			t.Errorf("%s: FromSettings = %v, %v", s.s.Provider, p, err)
 		}
+	}
+}
+
+// A key that matches a value the request carries, or text the error spells
+// anyway, never appears in a validation error, and nothing is sent.
+func TestGenerateValidationErrorsNeverLeakKey(t *testing.T) {
+	rt := &recordingTransport{}
+	orig := http.DefaultTransport
+	http.DefaultTransport = rt
+	t.Cleanup(func() { http.DefaultTransport = orig })
+
+	for _, key := range []string{"-0.5", "temperature", "llm", "negative"} {
+		p, err := FromSettings(llm.Settings{Provider: "openai_compatible", BaseURL: "http://l/v1", Model: "m"}, key)
+		if err != nil {
+			t.Fatalf("%s: FromSettings: %v", key, err)
+		}
+		req := plainRequest()
+		req.Temperature = ptr(-0.5)
+		_, err = p.Generate(context.Background(), req)
+		if err == nil || errors.Is(err, errStop) {
+			t.Fatalf("%s: Generate = %v, want a validation error", key, err)
+		}
+		for e := error(err); e != nil; e = errors.Unwrap(e) {
+			if s := e.Error() + fmt.Sprintf("%#v", e); strings.Contains(s, key) {
+				t.Fatalf("%s: error leaks the key: %s", key, s)
+			}
+		}
+	}
+	if len(rt.reqs) != 0 {
+		t.Fatalf("sent %d requests, want 0", len(rt.reqs))
+	}
+}
+
+// A configuration error keeps its sentinel but never holds the key, even
+// when the key is also a setting's value or text the error spells anyway.
+func TestConfigErrorsNeverLeakKey(t *testing.T) {
+	cases := []struct {
+		name string
+		s    llm.Settings
+		key  string
+		want error
+	}{
+		{"unknown provider named by key", llm.Settings{Provider: "llm", Model: "m"}, "llm", llm.ErrUnknownProvider},
+		{"no base URL", llm.Settings{Provider: "openai_compatible", Model: "m"}, "base URL", llm.ErrMissingBaseURL},
+		{"no model", llm.Settings{Provider: "openai_compatible", BaseURL: "http://l/v1"}, "model", llm.ErrMissingModel},
+		{"key as model, no public URL", llm.Settings{Provider: "openrouter", Model: "missing"}, "missing", llm.ErrMissingPublicURL},
+		{"key as base URL", llm.Settings{Provider: "openai", BaseURL: "llm", Model: "m"}, "llm", llm.ErrInvalidSetting},
+		{"key as mode", llm.Settings{Provider: "openai_compatible", BaseURL: "http://l/v1", Model: "m", StructuredOutput: "xml"}, "xml", llm.ErrInvalidSetting},
+		{"key as temperature", llm.Settings{Provider: "openai", Model: "m", Temperature: -0.1}, "-0.1", llm.ErrInvalidSetting},
+		{"key in bad base URL", llm.Settings{Provider: "openai_compatible", BaseURL: "ftp://k3y", Model: "m"}, "k3y", llm.ErrInvalidSetting},
+		{"ollama with key", llm.Settings{Provider: "ollama", BaseURL: "http://o:11434", Model: "m"}, "key", llm.ErrUnexpectedKey},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p, err := FromSettings(c.s, c.key)
+			if p != nil || !errors.Is(err, c.want) {
+				t.Fatalf("FromSettings = %v, %v; want %v", p, err, c.want)
+			}
+			for e := error(err); e != nil; e = errors.Unwrap(e) {
+				if s := e.Error() + fmt.Sprintf("%#v", e); strings.Contains(s, c.key) {
+					t.Fatalf("error leaks the key: %s", s)
+				}
+			}
+		})
 	}
 }

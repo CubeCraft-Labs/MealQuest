@@ -1,3 +1,4 @@
+import type { NetworkStatus } from '../pwa/networkStatus.ts'
 import { ApiError, isRecord, parseApiError } from './errors.ts'
 
 // CSRF_HEADER carries the session's CSRF token on every non-GET request.
@@ -51,11 +52,14 @@ export type ApiClient = {
   // account is not in this household; subscribe is notified when it changes.
   forbidden(): boolean
   subscribe(listener: () => void): () => void
+  // network learns of every request that failed with a network error and of
+  // every request that got a response.
+  network: NetworkStatus
 }
 
 // createApiClient builds the app's API client. location is window.location in
 // the app: a 401 sends it to /auth/login with the current path to return to.
-export function createApiClient(location: ApiLocation): ApiClient {
+export function createApiClient(location: ApiLocation, network: NetworkStatus): ApiClient {
   let csrfToken: string | null = null
   let refreshing: Promise<Me> | null = null
   let forbidden = false
@@ -70,12 +74,22 @@ export function createApiClient(location: ApiLocation): ApiClient {
       }
       headers[CSRF_HEADER] = csrfToken
     }
-    return fetch(path, {
-      method,
-      headers,
-      credentials: 'same-origin',
-      body: body === undefined ? undefined : JSON.stringify(body),
-    })
+    let response: Response
+    try {
+      response = await fetch(path, {
+        method,
+        headers,
+        credentials: 'same-origin',
+        body: body === undefined ? undefined : JSON.stringify(body),
+      })
+    } catch (error) {
+      // fetch rejects with a TypeError when the network fails; an abort is a
+      // DOMException and says nothing about the network.
+      if (error instanceof TypeError) network.requestFailed()
+      throw error
+    }
+    network.requestSucceeded()
+    return response
   }
 
   // refreshMe shares one in-flight /me request between every request that
@@ -151,5 +165,6 @@ export function createApiClient(location: ApiLocation): ApiClient {
       listeners.add(listener)
       return () => listeners.delete(listener)
     },
+    network,
   }
 }

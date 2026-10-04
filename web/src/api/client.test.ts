@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { errorResponse, fakeLocation, jsonResponse, ME, request, stubFetch } from '../test/fetchStub.ts'
 import { ApiError, createApiClient, CSRF_HEADER } from './index.ts'
+import { createNetworkStatus } from '../pwa/networkStatus.ts'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -9,7 +10,7 @@ afterEach(() => {
 describe('apiFetch', () => {
   it('sends same-origin JSON and the cached CSRF token on non-GET requests only', async () => {
     const fetchMock = stubFetch(jsonResponse(200, ME), jsonResponse(200, { ok: 1 }), jsonResponse(200, { ok: 2 }))
-    const api = createApiClient(fakeLocation())
+    const api = createApiClient(fakeLocation(), createNetworkStatus(window))
     await api.loadMe()
 
     await expect(api.apiFetch('/api/v1/settings/household')).resolves.toEqual({ ok: 1 })
@@ -29,7 +30,7 @@ describe('apiFetch', () => {
 
   it('refuses a non-GET request before /me has loaded', async () => {
     const fetchMock = stubFetch()
-    const api = createApiClient(fakeLocation())
+    const api = createApiClient(fakeLocation(), createNetworkStatus(window))
     await expect(api.apiFetch('/api/v1/jobs', { method: 'POST', body: {} })).rejects.toThrow(/no CSRF token/)
     expect(fetchMock).not.toHaveBeenCalled()
   })
@@ -47,7 +48,7 @@ describe('apiFetch', () => {
     'api/v1/me',
   ])('refuses %s without sending it or the CSRF token', async (path) => {
     const fetchMock = stubFetch(jsonResponse(200, ME))
-    const api = createApiClient(fakeLocation())
+    const api = createApiClient(fakeLocation(), createNetworkStatus(window))
     await api.loadMe()
 
     await expect(api.apiFetch(path, { method: 'POST', body: {} })).rejects.toThrow(
@@ -60,7 +61,7 @@ describe('apiFetch', () => {
 
   it('rejects with a typed ApiError from the error body', async () => {
     stubFetch(errorResponse(503, 'unavailable', true))
-    const api = createApiClient(fakeLocation())
+    const api = createApiClient(fakeLocation(), createNetworkStatus(window))
     const error = await api.apiFetch('/api/v1/jobs/j1').catch((e: unknown) => e)
     expect(error).toBeInstanceOf(ApiError)
     expect(error).toMatchObject({ status: 503, code: 'unavailable', message: 'unavailable message', retryable: true })
@@ -68,14 +69,14 @@ describe('apiFetch', () => {
 
   it('rejects a response without the API error body', async () => {
     stubFetch(new Response('<html>bad gateway</html>', { status: 502 }))
-    const api = createApiClient(fakeLocation())
+    const api = createApiClient(fakeLocation(), createNetworkStatus(window))
     await expect(api.apiFetch('/api/v1/jobs/j1')).rejects.toThrow('GET /api/v1/jobs/j1: 502 response is not JSON')
   })
 
   it('on 401 navigates to sign-in with the current path and search to return to', async () => {
     stubFetch(errorResponse(401, 'unauthenticated'))
     const location = fakeLocation('/plan/shopping', '?week=2026-10-05')
-    const api = createApiClient(location)
+    const api = createApiClient(location, createNetworkStatus(window))
 
     await expect(api.apiFetch('/api/v1/settings/household')).rejects.toMatchObject({ status: 401 })
     expect(location.assign).toHaveBeenCalledExactlyOnceWith(
@@ -90,7 +91,7 @@ describe('apiFetch', () => {
       jsonResponse(200, { ...ME, csrfToken: 'token-2' }),
       jsonResponse(201, { id: 'j1' }),
     )
-    const api = createApiClient(fakeLocation())
+    const api = createApiClient(fakeLocation(), createNetworkStatus(window))
     await api.loadMe()
 
     await expect(api.apiFetch('/api/v1/jobs', { method: 'POST', body: { kind: 'noop' } })).resolves.toEqual({
@@ -111,7 +112,7 @@ describe('apiFetch', () => {
       jsonResponse(200, { ...ME, csrfToken: 'token-2' }),
       errorResponse(403, 'csrf'),
     )
-    const api = createApiClient(fakeLocation())
+    const api = createApiClient(fakeLocation(), createNetworkStatus(window))
     await api.loadMe()
 
     await expect(api.apiFetch('/api/v1/jobs', { method: 'POST', body: {} })).rejects.toMatchObject({
@@ -124,7 +125,7 @@ describe('apiFetch', () => {
 
   it('marks any other 403 as not in this household and notifies subscribers', async () => {
     const fetchMock = stubFetch(errorResponse(403, 'forbidden'))
-    const api = createApiClient(fakeLocation())
+    const api = createApiClient(fakeLocation(), createNetworkStatus(window))
     const listener = vi.fn()
     api.subscribe(listener)
 
@@ -136,14 +137,14 @@ describe('apiFetch', () => {
 
   it('does not take a 403 without the API error body as not in this household', async () => {
     stubFetch(new Response('<html>denied by proxy</html>', { status: 403 }))
-    const api = createApiClient(fakeLocation())
+    const api = createApiClient(fakeLocation(), createNetworkStatus(window))
     await expect(api.apiFetch('/api/v1/me')).rejects.toThrow('GET /api/v1/me: 403 response is not JSON')
     expect(api.forbidden()).toBe(false)
   })
 
   it('does not refresh /me for a csrf 403 on a GET, which carries no token', async () => {
     const fetchMock = stubFetch(errorResponse(403, 'csrf'))
-    const api = createApiClient(fakeLocation())
+    const api = createApiClient(fakeLocation(), createNetworkStatus(window))
     await expect(api.loadMe()).rejects.toMatchObject({ status: 403, code: 'csrf' })
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
@@ -152,7 +153,7 @@ describe('apiFetch', () => {
 describe('loadMe', () => {
   it('rejects a /me response without a CSRF token', async () => {
     stubFetch(jsonResponse(200, { ...ME, csrfToken: '' }))
-    const api = createApiClient(fakeLocation())
+    const api = createApiClient(fakeLocation(), createNetworkStatus(window))
     await expect(api.loadMe()).rejects.toThrow('response is not a member with a CSRF token')
   })
 })

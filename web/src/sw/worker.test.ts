@@ -21,4 +21,10 @@ describe('service worker source', () => {
     expect(fontRoute).toBeGreaterThanOrEqual(0)
     expect(precache).toBeGreaterThan(fontRoute)
   })
+
+  it('activates a waiting worker when the update prompt sends SKIP_WAITING', () => {
+    expect(source).toMatch(
+      /self\.addEventListener\('message', \(event\) => \{\s*if \(event\.data\?\.type === 'SKIP_WAITING'\) void self\.skipWaiting\(\)/,
+    )
+  })
 })

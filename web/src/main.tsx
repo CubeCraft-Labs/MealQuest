@@ -5,18 +5,19 @@ import './styles/tokens.css'
 import './styles/base.css'
 import App from './App.tsx'
 import { createApiClient } from './api/index.ts'
+import { createNetworkStatus } from './pwa/networkStatus.ts'
 
 const root = document.getElementById('root')
 if (!root) {
   throw new Error('MealQuest: #root element missing from index.html')
 }
 
-const api = createApiClient(window.location)
+const api = createApiClient(window.location, createNetworkStatus(window))
 
 createRoot(root).render(
   <StrictMode>
     <BrowserRouter>
-      <App api={api} />
+      <App api={api} serviceWorker={'serviceWorker' in navigator ? navigator.serviceWorker : undefined} />
     </BrowserRouter>
   </StrictMode>,
 )

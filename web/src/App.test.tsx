@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createApiClient } from './api/index.ts'
+import { createNetworkStatus } from './pwa/networkStatus.ts'
 import { mockViewport } from './test/matchMedia.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME, request, stubFetch } from './test/fetchStub.ts'
 import App, { routes } from './App.tsx'
@@ -14,7 +15,7 @@ afterEach(() => {
 function renderAt(path: string, location = fakeLocation(path)) {
   render(
     <MemoryRouter initialEntries={[path]}>
-      <App api={createApiClient(location)} />
+      <App api={createApiClient(location, createNetworkStatus(window))} serviceWorker={undefined} />
     </MemoryRouter>,
   )
   return location

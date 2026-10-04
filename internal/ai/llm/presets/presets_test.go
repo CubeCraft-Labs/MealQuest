@@ -22,10 +22,8 @@ type captured struct {
 	body   map[string]json.RawMessage
 }
 
-var errStop = errors.New("recorded")
-
-// recordingTransport records each request and fails it, so no request
-// leaves the process.
+// recordingTransport records each request and answers it 400, so no
+// request leaves the process and the Provider never retries it.
 type recordingTransport struct{ reqs []captured }
 
 func (rt *recordingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -40,7 +38,12 @@ func (rt *recordingTransport) RoundTrip(r *http.Request) (*http.Response, error)
 		}
 	}
 	rt.reqs = append(rt.reqs, c)
-	return nil, errStop
+	return &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"Content-Type": {"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{}`)),
+		Request:    r,
+	}, nil
 }
 
 // generate builds the provider s describes and returns the request its
@@ -327,7 +330,7 @@ func TestNegativeTemperatureRejectedForRejectingModels(t *testing.T) {
 		}
 		req := plainRequest()
 		req.Temperature = ptr(-0.5)
-		if _, err := p.Generate(context.Background(), req); err == nil || errors.Is(err, errStop) || !strings.Contains(err.Error(), "temperature") {
+		if _, err := p.Generate(context.Background(), req); err == nil || errors.Is(err, llm.ErrProvider) || !strings.Contains(err.Error(), "temperature") {
 			t.Errorf("%s: Generate = %v, want a temperature validation error", s.Model, err)
 		}
 	}
@@ -465,7 +468,7 @@ func TestGenerateValidationErrorsNeverLeakKey(t *testing.T) {
 		req := plainRequest()
 		req.Temperature = ptr(-0.5)
 		_, err = p.Generate(context.Background(), req)
-		if err == nil || errors.Is(err, errStop) {
+		if err == nil || errors.Is(err, llm.ErrProvider) {
 			t.Fatalf("%s: Generate = %v, want a validation error", key, err)
 		}
 		for e := error(err); e != nil; e = errors.Unwrap(e) {
@@ -516,5 +519,144 @@ func TestConfigErrorsNeverLeakKey(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// scriptedTransport answers each request with the next scripted status and
+// body, echoing the key in every failure body, and counts the requests. A
+// scripted status of 0 is a transport timeout instead of a response.
+type scriptedTransport struct {
+	statuses []int
+	key      string
+	sent     int
+}
+
+func (st *scriptedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if st.sent == len(st.statuses) {
+		return nil, fmt.Errorf("unscripted request %d", st.sent+1)
+	}
+	status := st.statuses[st.sent]
+	st.sent++
+	if status == 0 {
+		return nil, transportTimeout{}
+	}
+	header := http.Header{"Content-Type": {"application/json"}}
+	body := `{"error":{"message":"bad key ` + st.key + `"}}`
+	switch status {
+	case http.StatusOK:
+		body = `{"model":"m","choices":[{"message":{"content":"tacos"},"finish_reason":"stop"}]}`
+	case http.StatusTooManyRequests:
+		header.Set("Retry-After", "1")
+	}
+	return &http.Response{
+		StatusCode: status,
+		Header:     header,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    r,
+	}, nil
+}
+
+// transportTimeout is a net.Error that timed out.
+type transportTimeout struct{}
+
+func (transportTimeout) Error() string   { return "i/o timeout" }
+func (transportTimeout) Timeout() bool   { return true }
+func (transportTimeout) Temporary() bool { return true }
+
+// useTransport makes the adapters send through rt for the rest of the test.
+func useTransport(t *testing.T, rt http.RoundTripper) {
+	t.Helper()
+	orig := http.DefaultTransport
+	http.DefaultTransport = rt
+	t.Cleanup(func() { http.DefaultTransport = orig })
+}
+
+// The Provider FromSettings returns retries a rate-limited Generate.
+func TestFromSettingsRetriesRateLimited(t *testing.T) {
+	st := &scriptedTransport{statuses: []int{http.StatusTooManyRequests, http.StatusOK}, key: testKey}
+	useTransport(t, st)
+
+	p, err := FromSettings(llm.Settings{Provider: "openai", Model: "m"}, testKey)
+	if err != nil {
+		t.Fatalf("FromSettings: %v", err)
+	}
+	resp, err := p.Generate(context.Background(), plainRequest())
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if resp.Text != "tacos" {
+		t.Errorf("Text = %q, want %q", resp.Text, "tacos")
+	}
+	if st.sent != 2 {
+		t.Errorf("sent %d requests, want 2", st.sent)
+	}
+}
+
+// When every retry fails, the error FromSettings's Provider returns keeps
+// its sentinel and never holds the key the vendor echoed.
+func TestFromSettingsRetryErrorNeverLeaksKey(t *testing.T) {
+	st := &scriptedTransport{statuses: []int{http.StatusTooManyRequests, http.StatusTooManyRequests, http.StatusServiceUnavailable}, key: testKey}
+	useTransport(t, st)
+
+	p, err := FromSettings(llm.Settings{Provider: "openai", Model: "m"}, testKey)
+	if err != nil {
+		t.Fatalf("FromSettings: %v", err)
+	}
+	_, err = p.Generate(context.Background(), plainRequest())
+	if !errors.Is(err, llm.ErrProvider) {
+		t.Fatalf("Generate = %v, want %v", err, llm.ErrProvider)
+	}
+	if st.sent != llm.MaxRetries+1 {
+		t.Errorf("sent %d requests, want %d", st.sent, llm.MaxRetries+1)
+	}
+	for e := error(err); e != nil; e = errors.Unwrap(e) {
+		if s := e.Error() + fmt.Sprintf("%#v", e); strings.Contains(s, testKey) {
+			t.Fatalf("error leaks the key: %s", s)
+		}
+	}
+}
+
+// An HTTP 408 from the vendor is a 4xx answer and is not retried, though it
+// matches llm.ErrTimeout.
+func TestFromSettingsDoesNotRetryHTTP408(t *testing.T) {
+	for _, provider := range []string{"openai", "anthropic"} {
+		t.Run(provider, func(t *testing.T) {
+			st := &scriptedTransport{statuses: []int{http.StatusRequestTimeout}, key: testKey}
+			useTransport(t, st)
+
+			p, err := FromSettings(llm.Settings{Provider: provider, Model: "m"}, testKey)
+			if err != nil {
+				t.Fatalf("FromSettings: %v", err)
+			}
+			_, err = p.Generate(context.Background(), plainRequest())
+			var ts *llm.TimeoutStatusError
+			if !errors.Is(err, llm.ErrTimeout) || !errors.As(err, &ts) || ts.Status() != http.StatusRequestTimeout {
+				t.Fatalf("Generate = %v, want an HTTP 408 ErrTimeout", err)
+			}
+			if st.sent != 1 {
+				t.Errorf("sent %d requests, want 1", st.sent)
+			}
+		})
+	}
+}
+
+// A transport timeout carries no status and is retried.
+func TestFromSettingsRetriesTransportTimeout(t *testing.T) {
+	st := &scriptedTransport{statuses: []int{0, http.StatusOK}, key: testKey}
+	useTransport(t, st)
+
+	p, err := FromSettings(llm.Settings{Provider: "openai", Model: "m"}, testKey)
+	if err != nil {
+		t.Fatalf("FromSettings: %v", err)
+	}
+	resp, err := p.Generate(context.Background(), plainRequest())
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if resp.Text != "tacos" {
+		t.Errorf("Text = %q, want %q", resp.Text, "tacos")
+	}
+	if st.sent != 2 {
+		t.Errorf("sent %d requests, want 2", st.sent)
 	}
 }

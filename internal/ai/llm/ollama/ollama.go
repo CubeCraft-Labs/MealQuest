@@ -138,9 +138,9 @@ func (p *Provider) Generate(ctx context.Context, req llm.Request) (llm.Response,
 	raw, err := p.do(ctx, http.MethodPost, "/api/chat", payload)
 	if err != nil {
 		var pe *llm.ProviderError
-		if errors.As(err, &pe) && pe.Status() == http.StatusNotFound {
-			// Ollama answers 404 when the model is not pulled. The body is
-			// not quoted: the model name is all the caller needs.
+		if errors.As(err, &pe) && pe.Status() == http.StatusNotFound && p.modelNotFound(pe.Body()) {
+			// The body is not quoted: the model name is all the caller
+			// needs. Any other 404 keeps its body excerpt below.
 			return llm.Response{}, fmt.Errorf("ollama: generate: model %q not found: %w", p.model, llm.NewProviderError(pe.Status(), nil, ""))
 		}
 		return llm.Response{}, fmt.Errorf("ollama: generate: %w", err)
@@ -167,6 +167,21 @@ func (p *Provider) Generate(ctx context.Context, req llm.Request) (llm.Response,
 		return resp, nil
 	}
 	return resp, fmt.Errorf("ollama: generate: reply is not a JSON object: %w", llm.ErrBadOutput)
+}
+
+// modelNotFound reports whether body is Ollama's error for the configured
+// model not being pulled: {"error": "model \"name\" not found, ..."}, or
+// with the name in single quotes as newer servers send it. A 404 from
+// anything else, such as a proxy without /api/chat, is not.
+func (p *Provider) modelNotFound(body string) bool {
+	var e struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(body), &e); err != nil {
+		return false
+	}
+	return strings.HasPrefix(e.Error, fmt.Sprintf("model %q not found", p.model)) ||
+		strings.HasPrefix(e.Error, fmt.Sprintf("model '%s' not found", p.model))
 }
 
 // isJSONObject reports whether s is exactly one JSON object.

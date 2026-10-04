@@ -327,6 +327,49 @@ func TestGenerateModelMissing(t *testing.T) {
 	}
 }
 
+func TestGenerateNotFoundUnrelatedToModel(t *testing.T) {
+	for name, body := range map[string]string{
+		"proxy page":  "404 page not found",
+		"other error": `{"error":"no route for /api/chat"}`,
+		"other model": `{"error":"model \"llama3\" not found, try pulling it first"}`,
+		"empty":       "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newOllamaServer(t, reply{status: 404, body: body})
+			p, err := New(Config{BaseURL: s.URL, Model: "llama9"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = p.Generate(context.Background(), textRequest())
+			var pe *llm.ProviderError
+			if !errors.Is(err, llm.ErrProvider) || !errors.As(err, &pe) || pe.Status() != http.StatusNotFound {
+				t.Fatalf("err = %v, want a ProviderError for HTTP 404", err)
+			}
+			if strings.Contains(err.Error(), "not found") && !strings.Contains(body, "not found") {
+				t.Fatalf("Error() = %q claims something was not found", err)
+			}
+			if strings.Contains(err.Error(), "llama9") {
+				t.Fatalf("Error() = %q claims the model was not found", err)
+			}
+			if pe.Body() != strings.TrimSpace(body) {
+				t.Fatalf("Body() = %q, want the response body %q", pe.Body(), body)
+			}
+		})
+	}
+}
+
+func TestGenerateModelMissingSingleQuoted(t *testing.T) {
+	s := newOllamaServer(t, reply{status: 404, body: `{"error":"model 'llama9' not found"}`})
+	p, err := New(Config{BaseURL: s.URL, Model: "llama9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Generate(context.Background(), textRequest())
+	if want := `ollama: generate: model "llama9" not found: llm: provider error: HTTP 404`; err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}
+
 func TestListModels(t *testing.T) {
 	s := newOllamaServer(t, reply{status: 200, fixture: "tags.json"})
 	models, err := newProvider(t, s.URL).ListModels(context.Background())

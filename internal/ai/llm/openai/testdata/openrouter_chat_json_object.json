@@ -1,0 +1,22 @@
+{
+  "id": "gen-1741570300-xQmT9vWb4kR2nP7sL3aE",
+  "provider": "OpenAI",
+  "model": "openai/gpt-4o-mini",
+  "object": "chat.completion",
+  "created": 1741570300,
+  "choices": [
+    {
+      "logprobs": null,
+      "finish_reason": "stop",
+      "native_finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\n  \"dinners\": [{\"name\": \"Chicken tinga tacos\", \"why\": \"Close to your taco-night Regular.\"}]\n}",
+        "refusal": null,
+        "reasoning": null
+      }
+    }
+  ],
+  "usage": {"prompt_tokens": 842, "completion_tokens": 31, "total_tokens": 873}
+}

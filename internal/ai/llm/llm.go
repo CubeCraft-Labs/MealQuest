@@ -67,14 +67,15 @@ type Request struct {
 }
 
 // Validate reports whether r is well formed. Adapters call it before
-// contacting the vendor.
+// contacting the vendor. Its errors never quote the request's text, such as
+// a role or schema name: any of it may equal the API key.
 func (r Request) Validate() error {
 	if len(r.Messages) == 0 {
 		return errors.New("llm: request has no messages")
 	}
 	for i, m := range r.Messages {
 		if m.Role != RoleUser && m.Role != RoleAssistant {
-			return fmt.Errorf("llm: message %d has unknown role %q", i, m.Role)
+			return fmt.Errorf("llm: message %d has an unknown role", i)
 		}
 	}
 	if r.Temperature != nil && *r.Temperature < 0 {
@@ -92,7 +93,7 @@ func (r Request) Validate() error {
 		}
 		var obj map[string]json.RawMessage
 		if err := json.Unmarshal(r.Schema.Schema, &obj); err != nil || obj == nil {
-			return fmt.Errorf("llm: schema %q is not a JSON object", r.Schema.Name)
+			return errors.New("llm: schema is not a JSON object")
 		}
 	}
 	return nil

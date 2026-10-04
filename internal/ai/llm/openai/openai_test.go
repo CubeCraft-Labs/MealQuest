@@ -868,8 +868,8 @@ func TestProviderErrorBodyNeverLeaksKey(t *testing.T) {
 func TestRedactKeepsChainAndHidesKey(t *testing.T) {
 	inner := fmt.Errorf("decode: body %q: %w", "Bearer "+testKey, llm.ErrBadOutput)
 	err := redact(inner, testKey)
-	assertNoSecret(t, err)
-	if !errors.Is(err, llm.ErrBadOutput) || errors.Unwrap(err) != inner {
+	assertChainNoKey(t, err, testKey)
+	if !errors.Is(err, llm.ErrBadOutput) {
 		t.Fatalf("redact broke the chain of %v", err)
 	}
 	if redact(inner, "") != inner {
@@ -884,3 +884,89 @@ func TestRedactKeepsChainAndHidesKey(t *testing.T) {
 		t.Fatalf("redact kept the key: %q", got)
 	}
 }
+
+// assertChainNoKey fails if err, or any error reached from it by unwrapping,
+// has text holding key or "Bearer "+key.
+func assertChainNoKey(t *testing.T, err error, key string) {
+	t.Helper()
+	if err == nil {
+		return
+	}
+	assertNoKey(t, err, key)
+	switch u := err.(type) {
+	case interface{ Unwrap() error }:
+		assertChainNoKey(t, u.Unwrap(), key)
+	case interface{ Unwrap() []error }:
+		for _, c := range u.Unwrap() {
+			assertChainNoKey(t, c, key)
+		}
+	}
+}
+
+// TestGenerateInvalidJSONWithKeyNeverLeaksKeyByUnwrapping sends an invalid
+// JSON body holding the key and walks the returned chain with errors.Unwrap.
+func TestGenerateInvalidJSONWithKeyNeverLeaksKeyByUnwrapping(t *testing.T) {
+	p := keyServer(t, 200, `{"choices": Bearer `+headerNameKey+` `+headerNameKey+`}`)
+	_, err := p.Generate(context.Background(), schemaRequest())
+	if err == nil {
+		t.Fatal("Generate accepted an invalid JSON body")
+	}
+	var syntax *json.SyntaxError
+	if !errors.As(err, &syntax) {
+		t.Fatalf("err = %v, want a *json.SyntaxError in the chain", err)
+	}
+	for layer := err; layer != nil; layer = errors.Unwrap(layer) {
+		assertNoKey(t, layer, headerNameKey)
+	}
+}
+
+// TestRedactMakesEveryUnwrappedLayerSafe covers chains whose inner layers
+// hold the key, including a layer whose own text does not show it and a
+// layer with several causes, and checks Is and As still match.
+func TestRedactMakesEveryUnwrappedLayerSafe(t *testing.T) {
+	pe := llm.NewProviderError(500, []byte(`{"error":"down"}`), testKey)
+	hidden := &opaqueError{err: fmt.Errorf("body Bearer %s: %w", testKey, llm.ErrAuth)}
+	inner := fmt.Errorf("decode %s: %w", testKey, llm.ErrBadOutput)
+	joined := errors.Join(inner, pe, context.Canceled, fmt.Errorf("limit: %w", llm.ErrRateLimited))
+	cases := []error{
+		fmt.Errorf("openai: generate: %w", inner),
+		fmt.Errorf("openai: generate: %w", hidden),
+		fmt.Errorf("openai: generate: %w", joined),
+		fmt.Errorf("openai: %w and %w", inner, &transportFailure{detail: "slow", kind: llm.ErrTimeout}),
+	}
+	for _, c := range cases {
+		err := redact(c, testKey)
+		if err == c {
+			t.Fatalf("redact left %v unchanged", c)
+		}
+		assertChainNoKey(t, err, testKey)
+		for layer := err; layer != nil; layer = errors.Unwrap(layer) {
+			assertNoKey(t, layer, testKey)
+		}
+	}
+	err := redact(fmt.Errorf("openai: %w", joined), testKey)
+	var got *llm.ProviderError
+	if !errors.As(err, &got) || got != pe {
+		t.Fatalf("errors.As lost the ProviderError in %v", err)
+	}
+	for _, target := range []error{llm.ErrBadOutput, llm.ErrProvider, llm.ErrRateLimited, context.Canceled} {
+		if !errors.Is(err, target) {
+			t.Fatalf("errors.Is(%v, %v) = false", err, target)
+		}
+	}
+	err = redact(fmt.Errorf("openai: %w", hidden), testKey)
+	if !errors.Is(err, llm.ErrAuth) {
+		t.Fatalf("errors.Is lost ErrAuth in %v", err)
+	}
+	err = redact(fmt.Errorf("openai %s: %w", testKey, &transportFailure{detail: "slow", kind: llm.ErrTimeout}), testKey)
+	if !errors.Is(err, llm.ErrTimeout) {
+		t.Fatalf("errors.Is lost ErrTimeout in %v", err)
+	}
+}
+
+// opaqueError hides its cause's text but unwraps to it.
+type opaqueError struct{ err error }
+
+func (e *opaqueError) Error() string { return "opaque" }
+
+func (e *opaqueError) Unwrap() error { return e.err }

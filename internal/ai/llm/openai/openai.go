@@ -526,31 +526,77 @@ func redactKey(s, key string) string {
 // key, because the key is part of the replacement marker.
 const withheldText = "openai: error text withheld: it contains the API key"
 
-// redactedError is an error whose text had the API key removed. It unwraps
-// to the original error, so errors.Is and errors.As still see the chain.
+// redactedError stands in for one layer of an error chain that holds the
+// API key. Its text is the layer's text with the key redacted, and Unwrap
+// returns the layer's causes passed through redact, so no error reached by
+// unwrapping has text holding the key. Is and As consult the original
+// layer and its chain, so sentinels and typed errors still match.
 type redactedError struct {
 	text string
 	err  error
+	key  string
 }
 
 func (e *redactedError) Error() string { return e.text }
 
-func (e *redactedError) Unwrap() error { return e.err }
+func (e *redactedError) Unwrap() error { return redact(errors.Unwrap(e.err), e.key) }
+
+func (e *redactedError) Is(target error) bool { return errors.Is(e.err, target) }
+
+func (e *redactedError) As(target any) bool { return errors.As(e.err, target) }
+
+// redactedJoin is redactedError for a layer with several causes, such as
+// one built by errors.Join or by fmt.Errorf with more than one %w.
+type redactedJoin struct {
+	redactedError
+}
+
+func (e *redactedJoin) Unwrap() []error {
+	causes := e.err.(interface{ Unwrap() []error }).Unwrap()
+	safe := make([]error, len(causes))
+	for i, c := range causes {
+		safe[i] = redact(c, e.key)
+	}
+	return safe
+}
 
 // redact is the backstop every exported method applies to its error: when
-// err's text, wrapped errors included, holds a non-empty key, it returns err
-// with that text redacted. Any other err is returned unchanged.
+// the text of err or of any error in its chain holds a non-empty key, it
+// returns a stand-in whose text, and the text of every error it unwraps
+// to, has the key redacted. Any other err is returned unchanged.
 func redact(err error, key string) error {
-	if err == nil || key == "" {
+	if err == nil || key == "" || !holdsKey(err, key) {
 		return err
 	}
-	text := err.Error()
-	if !strings.Contains(text, key) {
-		return err
-	}
-	text = redactKey(text, key)
+	text := redactKey(err.Error(), key)
 	if strings.Contains(text, key) {
 		text = withheldText
 	}
-	return &redactedError{text: text, err: err}
+	re := redactedError{text: text, err: err, key: key}
+	if _, ok := err.(interface{ Unwrap() []error }); ok {
+		return &redactedJoin{re}
+	}
+	return &re
+}
+
+// holdsKey reports whether the text of err or of any error in its chain
+// contains key.
+func holdsKey(err error, key string) bool {
+	if err == nil {
+		return false
+	}
+	if strings.Contains(err.Error(), key) {
+		return true
+	}
+	switch u := err.(type) {
+	case interface{ Unwrap() error }:
+		return holdsKey(u.Unwrap(), key)
+	case interface{ Unwrap() []error }:
+		for _, c := range u.Unwrap() {
+			if holdsKey(c, key) {
+				return true
+			}
+		}
+	}
+	return false
 }

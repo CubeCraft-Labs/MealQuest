@@ -175,8 +175,8 @@ func TestMigrateEmbeddedMigrations(t *testing.T) {
 	if err := Migrate(context.Background(), s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai", got)
 	}
 }
 
@@ -196,8 +196,8 @@ func TestMigrateBootstrapThenEmbeddedInitApplies(t *testing.T) {
 	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai", got)
 	}
 	if !tableExists(t, s, "dinners") {
 		t.Error("table from 0001_init was not created")
@@ -389,6 +389,96 @@ func TestMigrateAIProviderPresetsKeepsRowsAndReferences(t *testing.T) {
 	}
 	if _, err := s.Writer.Exec(`UPDATE ai_runs SET provider = 'openai' WHERE id = 'run-1'`); err != nil {
 		t.Errorf("ai_runs.provider openai rejected: %v", err)
+	}
+	for _, table := range []string{"ai_settings_copy", "ai_runs_copy"} {
+		if tableExists(t, s, table) {
+			t.Errorf("%s left behind", table)
+		}
+	}
+}
+
+// TestMigrateAIProviderXAIKeepsRowsAndReferences upgrades a database at 0004
+// holding ai_settings and ai_runs rows with 0004's providers, with
+// suggestion_batches and week_plans referencing the run, and checks 0005
+// carries every row over, keeps the references enforced, accepts xai and
+// still rejects an unknown provider.
+func TestMigrateAIProviderXAIKeepsRowsAndReferences(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	before := fstest.MapFS{}
+	for _, name := range []string{"0000_bootstrap.sql", "0001_init.sql", "0002_household_settings_updated_by.sql", "0003_jobs_status.sql", "0004_ai_provider_presets.sql"} {
+		body, err := fs.ReadFile(migrations.FS, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[name] = &fstest.MapFile{Data: body}
+	}
+	if err := Migrate(ctx, s.Writer, before); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`INSERT INTO ai_settings (id, provider, base_url, model, temperature, system_prompt, api_key_ct, api_key_last4, key_verified_at, created_at, updated_at)
+			VALUES (1, 'openrouter', 'https://openrouter.ai/api/v1', 'openai/gpt-4o', 0.7, 'sp', x'0102', 'abcd', 'v', 'c', 'u')`,
+		`INSERT INTO ai_runs (id, skill, skill_version, provider, model, temperature, status, latency_ms, tokens_in, tokens_out, error, request_redacted, response_redacted, created_at, updated_at)
+			VALUES ('run-1', 'suggest', '1', 'openai', 'gpt-4o', 0.5, 'ok', 10, 20, 30, 'e', 'req', 'resp', 'c', 'u')`,
+		`INSERT INTO suggestion_batches (id, trigger, status, ai_run_id, created_at, updated_at)
+			VALUES ('batch-1', 'manual', 'done', 'run-1', 'c', 'u')`,
+		`INSERT INTO week_plans (id, week_start, status, ai_run_id, created_at, updated_at)
+			VALUES ('plan-1', '2026-10-04', 'draft', 'run-1', 'c', 'u')`,
+	} {
+		if _, err := s.Writer.Exec(stmt); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+
+	var provider, baseURL, model, systemPrompt, last4, verifiedAt, createdAt, updatedAt string
+	var temperature float64
+	var keyCT []byte
+	if err := s.Reader.QueryRow(`SELECT provider, base_url, model, temperature, system_prompt, api_key_ct, api_key_last4, key_verified_at, created_at, updated_at FROM ai_settings WHERE id = 1`).
+		Scan(&provider, &baseURL, &model, &temperature, &systemPrompt, &keyCT, &last4, &verifiedAt, &createdAt, &updatedAt); err != nil {
+		t.Fatalf("read ai_settings: %v", err)
+	}
+	settings := []any{provider, baseURL, model, temperature, systemPrompt, string(keyCT), last4, verifiedAt, createdAt, updatedAt}
+	if want := []any{"openrouter", "https://openrouter.ai/api/v1", "openai/gpt-4o", 0.7, "sp", "\x01\x02", "abcd", "v", "c", "u"}; !slices.Equal(settings, want) {
+		t.Errorf("ai_settings = %v, want %v", settings, want)
+	}
+
+	var skill, skillVersion, status, errText, request, response string
+	var latency, tokensIn, tokensOut int
+	if err := s.Reader.QueryRow(`SELECT skill, skill_version, provider, model, temperature, status, latency_ms, tokens_in, tokens_out, error, request_redacted, response_redacted, created_at, updated_at FROM ai_runs WHERE id = 'run-1'`).
+		Scan(&skill, &skillVersion, &provider, &model, &temperature, &status, &latency, &tokensIn, &tokensOut, &errText, &request, &response, &createdAt, &updatedAt); err != nil {
+		t.Fatalf("read ai_runs: %v", err)
+	}
+	run := []any{skill, skillVersion, provider, model, temperature, status, latency, tokensIn, tokensOut, errText, request, response, createdAt, updatedAt}
+	if want := []any{"suggest", "1", "openai", "gpt-4o", 0.5, "ok", 10, 20, 30, "e", "req", "resp", "c", "u"}; !slices.Equal(run, want) {
+		t.Errorf("ai_runs = %v, want %v", run, want)
+	}
+
+	rows, err := s.Reader.Query("PRAGMA foreign_key_check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows.Next() {
+		t.Error("foreign_key_check reported violations after 0005")
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Writer.Exec(`DELETE FROM ai_runs WHERE id = 'run-1'`); err == nil || !strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
+		t.Errorf("deleting a referenced ai_run: error %v, want FOREIGN KEY constraint failure", err)
+	}
+
+	for _, table := range []string{"ai_settings", "ai_runs"} {
+		if _, err := s.Writer.Exec(`UPDATE ` + table + ` SET provider = 'xai'`); err != nil {
+			t.Errorf("%s.provider xai rejected: %v", table, err)
+		}
+		if _, err := s.Writer.Exec(`UPDATE ` + table + ` SET provider = 'grok'`); err == nil || !strings.Contains(err.Error(), "CHECK constraint failed") {
+			t.Errorf("%s.provider grok: error %v, want CHECK constraint failure", table, err)
+		}
 	}
 	for _, table := range []string{"ai_settings_copy", "ai_runs_copy"} {
 		if tableExists(t, s, table) {

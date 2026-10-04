@@ -180,6 +180,43 @@ func TestOpenRouterFallbackModeIsJSONObject(t *testing.T) {
 	}
 }
 
+func TestXAIPreset(t *testing.T) {
+	c := generate(t, llm.Settings{Provider: "xai", Model: "grok-4", Temperature: 0.6}, testKey, schemaRequest())
+	if c.url != "https://api.x.ai/v1/chat/completions" {
+		t.Fatalf("URL = %q", c.url)
+	}
+	if got := c.header.Get("Authorization"); got != "Bearer "+testKey {
+		t.Fatalf("Authorization = %q", got)
+	}
+	for _, h := range []string{"X-Api-Key", "HTTP-Referer", "X-Title"} {
+		if got := c.header.Get(h); got != "" {
+			t.Fatalf("%s = %q, want none", h, got)
+		}
+	}
+	if got := responseFormatType(t, c); got != "json_schema" {
+		t.Fatalf("default response_format type = %q, want json_schema", got)
+	}
+	if got, ok := temperature(t, c); !ok || got != 0.6 {
+		t.Fatalf("temperature = %v, %v; want 0.6", got, ok)
+	}
+}
+
+func TestXAIFallbackModeIsJSONObject(t *testing.T) {
+	p, _ := Lookup("xai")
+	s := llm.Settings{Provider: "xai", Model: "grok-4", StructuredOutput: string(p.FallbackStructuredOutput)}
+	c := generate(t, s, testKey, schemaRequest())
+	if got := responseFormatType(t, c); got != "json_object" {
+		t.Fatalf("response_format type = %q, want json_object", got)
+	}
+}
+
+func TestXAIPresetAcceptsItsOwnBaseURL(t *testing.T) {
+	c := generate(t, llm.Settings{Provider: "xai", BaseURL: "https://api.x.ai/v1", Model: "grok-4"}, testKey, plainRequest())
+	if c.url != "https://api.x.ai/v1/chat/completions" {
+		t.Fatalf("URL = %q", c.url)
+	}
+}
+
 func TestOllamaPreset(t *testing.T) {
 	s := llm.Settings{Provider: "ollama", BaseURL: "http://ollama.lan:11434", Model: "llama3.2", Temperature: 0.5}
 	c := generate(t, s, "", plainRequest())
@@ -318,6 +355,7 @@ func TestPresetTable(t *testing.T) {
 		{"anthropic", AdapterAnthropic, "https://api.anthropic.com", KeyRequired},
 		{"openai", AdapterOpenAI, "https://api.openai.com/v1", KeyRequired},
 		{"openrouter", AdapterOpenAI, "https://openrouter.ai/api/v1", KeyRequired},
+		{"xai", AdapterOpenAI, "https://api.x.ai/v1", KeyRequired},
 		{"ollama", AdapterOllama, "", KeyNone},
 		{"openai_compatible", AdapterOpenAI, "", KeyOptional},
 	}
@@ -350,10 +388,12 @@ func TestConfigErrors(t *testing.T) {
 		{"anthropic no key", llm.Settings{Provider: "anthropic", Model: "m"}, "", llm.ErrMissingKey},
 		{"openai no key", llm.Settings{Provider: "openai", Model: "m"}, "", llm.ErrMissingKey},
 		{"openrouter no key", llm.Settings{Provider: "openrouter", Model: "m", PublicURL: "https://x.example"}, "", llm.ErrMissingKey},
+		{"xai no key", llm.Settings{Provider: "xai", Model: "grok-4"}, "", llm.ErrMissingKey},
 		{"ollama with key", llm.Settings{Provider: "ollama", BaseURL: "http://o:11434", Model: "m"}, testKey, llm.ErrUnexpectedKey},
 		{"anthropic key with newline", llm.Settings{Provider: "anthropic", Model: "m"}, testKey + "\n", llm.ErrInvalidKey},
 		{"openai key with newline", llm.Settings{Provider: "openai", Model: "m"}, testKey + "\n", llm.ErrInvalidKey},
 		{"openrouter key with CR LF", llm.Settings{Provider: "openrouter", Model: "m", PublicURL: "https://x.example"}, testKey + "\r\nX-Injected: 1", llm.ErrInvalidKey},
+		{"xai key with newline", llm.Settings{Provider: "xai", Model: "grok-4"}, testKey + "\n", llm.ErrInvalidKey},
 		{"openai_compatible key with NUL", llm.Settings{Provider: "openai_compatible", BaseURL: "http://l/v1", Model: "m"}, "\x00" + testKey, llm.ErrInvalidKey},
 		{"ollama no base URL", llm.Settings{Provider: "ollama", Model: "m"}, "", llm.ErrMissingBaseURL},
 		{"openai_compatible no base URL", llm.Settings{Provider: "openai_compatible", Model: "m"}, "", llm.ErrMissingBaseURL},
@@ -362,8 +402,11 @@ func TestConfigErrors(t *testing.T) {
 		{"openrouter no model", llm.Settings{Provider: "openrouter", PublicURL: "https://x.example"}, testKey, llm.ErrMissingModel},
 		{"ollama no model", llm.Settings{Provider: "ollama", BaseURL: "http://o:11434"}, "", llm.ErrMissingModel},
 		{"openai_compatible no model", llm.Settings{Provider: "openai_compatible", BaseURL: "http://l/v1"}, "", llm.ErrMissingModel},
+		{"xai no model", llm.Settings{Provider: "xai"}, testKey, llm.ErrMissingModel},
 		{"openrouter no public URL", llm.Settings{Provider: "openrouter", Model: "m"}, testKey, llm.ErrMissingPublicURL},
 		{"fixed base URL overridden", llm.Settings{Provider: "openai", BaseURL: "https://evil.example/v1", Model: "m"}, testKey, llm.ErrInvalidSetting},
+		{"xai base URL overridden", llm.Settings{Provider: "xai", BaseURL: "https://api.openai.com/v1", Model: "grok-4"}, testKey, llm.ErrInvalidSetting},
+		{"xai prompt_only", llm.Settings{Provider: "xai", Model: "grok-4", StructuredOutput: "prompt_only"}, testKey, llm.ErrInvalidSetting},
 		{"openai json_object", llm.Settings{Provider: "openai", Model: "m", StructuredOutput: "json_object"}, testKey, llm.ErrInvalidSetting},
 		{"anthropic mode", llm.Settings{Provider: "anthropic", Model: "m", StructuredOutput: "json_schema"}, testKey, llm.ErrInvalidSetting},
 		{"unknown mode", llm.Settings{Provider: "openai_compatible", BaseURL: "http://l/v1", Model: "m", StructuredOutput: "xml"}, "", llm.ErrInvalidSetting},
@@ -396,6 +439,7 @@ func TestReadyProviderForEveryPreset(t *testing.T) {
 		{llm.Settings{Provider: "anthropic", Model: "m"}, testKey},
 		{llm.Settings{Provider: "openai", Model: "m"}, testKey},
 		{llm.Settings{Provider: "openrouter", Model: "m", PublicURL: "https://x.example"}, testKey},
+		{llm.Settings{Provider: "xai", Model: "m"}, testKey},
 		{llm.Settings{Provider: "ollama", BaseURL: "http://o:11434", Model: "m"}, ""},
 		{llm.Settings{Provider: "openai_compatible", BaseURL: "http://l/v1", Model: "m"}, ""},
 	} {
@@ -454,6 +498,10 @@ func TestConfigErrorsNeverLeakKey(t *testing.T) {
 		{"key in bad base URL", llm.Settings{Provider: "openai_compatible", BaseURL: "ftp://k3y", Model: "m"}, "k3y", llm.ErrInvalidSetting},
 		{"ollama with key", llm.Settings{Provider: "ollama", BaseURL: "http://o:11434", Model: "m"}, "key", llm.ErrUnexpectedKey},
 		{"key with newline", llm.Settings{Provider: "openai", Model: "m"}, "sk-test\n", llm.ErrInvalidKey},
+		{"xai key as preset name", llm.Settings{Provider: "xai"}, "xai", llm.ErrMissingModel},
+		{"xai key as missing-model text", llm.Settings{Provider: "xai"}, "model is required", llm.ErrMissingModel},
+		{"xai key as fixed-URL text", llm.Settings{Provider: "xai", BaseURL: "https://x.example/v1", Model: "m"}, "fixed", llm.ErrInvalidSetting},
+		{"xai key as structured-output text", llm.Settings{Provider: "xai", Model: "m", StructuredOutput: "prompt_only"}, "structured output", llm.ErrInvalidSetting},
 		{"key with newline as text", llm.Settings{Provider: "openai", Model: "m"}, "header\n", llm.ErrInvalidKey},
 	}
 	for _, c := range cases {

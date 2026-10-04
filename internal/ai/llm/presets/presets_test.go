@@ -223,11 +223,19 @@ func TestOpenAICompatiblePreset(t *testing.T) {
 }
 
 func TestTemperatureOmittedForRejectingModels(t *testing.T) {
-	for _, provider := range []string{"openai", "openai_compatible"} {
-		for _, model := range []string{"o1", "o1-mini", "o3-mini"} {
-			s := llm.Settings{Provider: provider, BaseURL: "http://llm.lan/v1", Model: model, Temperature: 0.8}
-			if provider == "openai" {
-				s.BaseURL = ""
+	cases := map[string][]string{
+		"openai":            {"o1", "o1-mini", "o1-2024-12-17", "o3", "o3-mini"},
+		"openai_compatible": {"o1", "o1-mini", "o3-mini", "openai/o1"},
+		"openrouter":        {"openai/o1", "openai/o1-mini", "openai/o3", "openai/o3-mini", "openai/o1:online"},
+	}
+	for provider, models := range cases {
+		for _, model := range models {
+			s := llm.Settings{Provider: provider, Model: model, Temperature: 0.8}
+			switch provider {
+			case "openai_compatible":
+				s.BaseURL = "http://llm.lan/v1"
+			case "openrouter":
+				s.PublicURL = "https://mealquest.example"
 			}
 			for _, req := range []llm.Request{plainRequest(), func() llm.Request { r := plainRequest(); r.Temperature = ptr(0.2); return r }()} {
 				if got, ok := temperature(t, generate(t, s, testKey, req)); ok {
@@ -239,10 +247,19 @@ func TestTemperatureOmittedForRejectingModels(t *testing.T) {
 }
 
 func TestTemperatureSentForOtherModels(t *testing.T) {
-	for _, model := range []string{"gpt-4o", "gpt-4o-mini", "chatgpt-o1-like"} {
-		c := generate(t, llm.Settings{Provider: "openai", Model: model, Temperature: 0.8}, testKey, plainRequest())
-		if got, ok := temperature(t, c); !ok || got != 0.8 {
-			t.Errorf("%s: temperature = %v, %v; want 0.8", model, got, ok)
+	cases := map[string][]string{
+		"openai":     {"gpt-4o", "gpt-4o-mini", "chatgpt-o1-like", "o123", "o3custom", "o1mini", "openai/o1"},
+		"openrouter": {"openai/gpt-4o", "openai/o123", "openai/o3custom", "acme/o1", "o1-mini"},
+	}
+	for provider, models := range cases {
+		for _, model := range models {
+			s := llm.Settings{Provider: provider, Model: model, Temperature: 0.8}
+			if provider == "openrouter" {
+				s.PublicURL = "https://mealquest.example"
+			}
+			if got, ok := temperature(t, generate(t, s, testKey, plainRequest())); !ok || got != 0.8 {
+				t.Errorf("%s %s: temperature = %v, %v; want 0.8", provider, model, got, ok)
+			}
 		}
 	}
 	// A request's own temperature wins over the household's.
@@ -254,8 +271,35 @@ func TestTemperatureSentForOtherModels(t *testing.T) {
 	}
 }
 
+// A request is validated before the temperature quirk clears its
+// temperature, so a negative one is an error and nothing is sent.
+func TestNegativeTemperatureRejectedForRejectingModels(t *testing.T) {
+	rt := &recordingTransport{}
+	orig := http.DefaultTransport
+	http.DefaultTransport = rt
+	t.Cleanup(func() { http.DefaultTransport = orig })
+
+	for _, s := range []llm.Settings{
+		{Provider: "openai", Model: "o1"},
+		{Provider: "openrouter", Model: "openai/o1", PublicURL: "https://mealquest.example"},
+	} {
+		p, err := FromSettings(s, testKey)
+		if err != nil {
+			t.Fatalf("%s: FromSettings: %v", s.Model, err)
+		}
+		req := plainRequest()
+		req.Temperature = ptr(-0.5)
+		if _, err := p.Generate(context.Background(), req); err == nil || errors.Is(err, errStop) || !strings.Contains(err.Error(), "temperature") {
+			t.Errorf("%s: Generate = %v, want a temperature validation error", s.Model, err)
+		}
+	}
+	if len(rt.reqs) != 0 {
+		t.Fatalf("sent %d requests, want 0", len(rt.reqs))
+	}
+}
+
 func TestTemperatureQuirkPresets(t *testing.T) {
-	want := map[string]bool{"openai": true, "openai_compatible": true}
+	want := map[string]bool{"openai": true, "openrouter": true, "openai_compatible": true}
 	for name, p := range all {
 		if got := len(p.OmitTemperature) > 0; got != want[name] {
 			t.Errorf("%s: lists temperature quirk = %v, want %v", name, got, want[name])

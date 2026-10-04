@@ -46,14 +46,16 @@ const (
 	KeyNone
 )
 
-// TemperatureRejectingModels is the one list of model-id patterns that
-// reject the temperature field: OpenAI's o1 and o3 reasoning models. A
-// preset whose OmitTemperature holds it never sends a temperature to a
-// matching model.
-var TemperatureRejectingModels = []*regexp.Regexp{
-	regexp.MustCompile(`^o1`),
-	regexp.MustCompile(`^o3`),
-}
+// The reasoning models that reject the temperature field are OpenAI's o1
+// and o3 families: the bare family name or the name followed by a "-"
+// variant (o1, o1-mini, o3-2025-04-16), never a longer word such as o123.
+// OpenRouter names them with an "openai/" prefix and may add a ":" variant
+// (openai/o1:online). A preset whose OmitTemperature holds a pattern never
+// sends a temperature to a matching model.
+var (
+	openAIReasoningModels     = regexp.MustCompile(`^o[13](-.*)?$`)
+	openRouterReasoningModels = regexp.MustCompile(`^openai/o[13]([-:].*)?$`)
+)
 
 // Preset is one vendor's fixed configuration.
 type Preset struct {
@@ -127,7 +129,7 @@ var all = map[string]Preset{
 		Key:               KeyRequired,
 		StructuredOutput:  openai.JSONSchema,
 		StructuredOutputs: []openai.StructuredOutput{openai.JSONSchema},
-		OmitTemperature:   TemperatureRejectingModels,
+		OmitTemperature:   []*regexp.Regexp{openAIReasoningModels},
 	},
 	"openrouter": {
 		Name:                     "openrouter",
@@ -139,6 +141,7 @@ var all = map[string]Preset{
 		StructuredOutput:         openai.JSONSchema,
 		FallbackStructuredOutput: openai.JSONObject,
 		StructuredOutputs:        []openai.StructuredOutput{openai.JSONSchema, openai.JSONObject},
+		OmitTemperature:          []*regexp.Regexp{openRouterReasoningModels},
 	},
 	"ollama": {
 		Name:    "ollama",
@@ -151,7 +154,9 @@ var all = map[string]Preset{
 		Key:               KeyOptional,
 		StructuredOutput:  openai.JSONSchema,
 		StructuredOutputs: []openai.StructuredOutput{openai.JSONSchema, openai.JSONObject, openai.PromptOnly},
-		OmitTemperature:   TemperatureRejectingModels,
+		// The server may be OpenAI itself or a gateway that names models
+		// the OpenRouter way.
+		OmitTemperature: []*regexp.Regexp{openAIReasoningModels, openRouterReasoningModels},
 	},
 }
 
@@ -246,7 +251,13 @@ type configured struct {
 	temperature *float64
 }
 
+// Generate validates req as sent by the caller before changing its
+// temperature, so clearing it for a model that rejects temperature never
+// hides an invalid one.
 func (c *configured) Generate(ctx context.Context, req llm.Request) (llm.Response, error) {
+	if err := req.Validate(); err != nil {
+		return llm.Response{}, fmt.Errorf("presets: generate: %w", err)
+	}
 	if c.temperature == nil {
 		req.Temperature = nil
 	} else if req.Temperature == nil {

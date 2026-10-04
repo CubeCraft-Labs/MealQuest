@@ -196,3 +196,17 @@ func TestTypedErrorsDoNotKeepSecret(t *testing.T) {
 		}
 	}
 }
+
+func TestTimeoutStatusError(t *testing.T) {
+	err := fmt.Errorf("openai: %w", NewTimeoutStatusError(408, "HTTP"))
+	if !errors.Is(err, ErrTimeout) || errors.Is(err, ErrProvider) {
+		t.Fatalf("%v: want ErrTimeout only", err)
+	}
+	var ts *TimeoutStatusError
+	if !errors.As(err, &ts) || ts.Status() != 408 {
+		t.Fatalf("TimeoutStatusError from %v", err)
+	}
+	if s := ts.Error() + fmt.Sprintf("%#v", ts); strings.Contains(s, "HTTP") {
+		t.Fatalf("text holds the secret: %s", s)
+	}
+}

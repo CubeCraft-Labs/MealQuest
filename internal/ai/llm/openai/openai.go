@@ -453,7 +453,7 @@ func (p *Provider) statusError(resp *http.Response, body []byte) error {
 	case http.StatusTooManyRequests:
 		return llm.NewRateLimitedError(retryAfter(resp.Header.Get("Retry-After"), time.Now()), p.apiKey)
 	case http.StatusRequestTimeout:
-		return fmt.Errorf("HTTP %d: %w", resp.StatusCode, llm.ErrTimeout)
+		return llm.NewTimeoutStatusError(resp.StatusCode, p.apiKey)
 	default:
 		return llm.NewProviderError(resp.StatusCode, body, p.apiKey)
 	}

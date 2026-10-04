@@ -523,7 +523,8 @@ func TestConfigErrorsNeverLeakKey(t *testing.T) {
 }
 
 // scriptedTransport answers each request with the next scripted status and
-// body, echoing the key in every failure body, and counts the requests.
+// body, echoing the key in every failure body, and counts the requests. A
+// scripted status of 0 is a transport timeout instead of a response.
 type scriptedTransport struct {
 	statuses []int
 	key      string
@@ -536,6 +537,9 @@ func (st *scriptedTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 	}
 	status := st.statuses[st.sent]
 	st.sent++
+	if status == 0 {
+		return nil, transportTimeout{}
+	}
 	header := http.Header{"Content-Type": {"application/json"}}
 	body := `{"error":{"message":"bad key ` + st.key + `"}}`
 	switch status {
@@ -551,6 +555,13 @@ func (st *scriptedTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 		Request:    r,
 	}, nil
 }
+
+// transportTimeout is a net.Error that timed out.
+type transportTimeout struct{}
+
+func (transportTimeout) Error() string   { return "i/o timeout" }
+func (transportTimeout) Timeout() bool   { return true }
+func (transportTimeout) Temporary() bool { return true }
 
 // useTransport makes the adapters send through rt for the rest of the test.
 func useTransport(t *testing.T, rt http.RoundTripper) {
@@ -602,5 +613,50 @@ func TestFromSettingsRetryErrorNeverLeaksKey(t *testing.T) {
 		if s := e.Error() + fmt.Sprintf("%#v", e); strings.Contains(s, testKey) {
 			t.Fatalf("error leaks the key: %s", s)
 		}
+	}
+}
+
+// An HTTP 408 from the vendor is a 4xx answer and is not retried, though it
+// matches llm.ErrTimeout.
+func TestFromSettingsDoesNotRetryHTTP408(t *testing.T) {
+	for _, provider := range []string{"openai", "anthropic"} {
+		t.Run(provider, func(t *testing.T) {
+			st := &scriptedTransport{statuses: []int{http.StatusRequestTimeout}, key: testKey}
+			useTransport(t, st)
+
+			p, err := FromSettings(llm.Settings{Provider: provider, Model: "m"}, testKey)
+			if err != nil {
+				t.Fatalf("FromSettings: %v", err)
+			}
+			_, err = p.Generate(context.Background(), plainRequest())
+			var ts *llm.TimeoutStatusError
+			if !errors.Is(err, llm.ErrTimeout) || !errors.As(err, &ts) || ts.Status() != http.StatusRequestTimeout {
+				t.Fatalf("Generate = %v, want an HTTP 408 ErrTimeout", err)
+			}
+			if st.sent != 1 {
+				t.Errorf("sent %d requests, want 1", st.sent)
+			}
+		})
+	}
+}
+
+// A transport timeout carries no status and is retried.
+func TestFromSettingsRetriesTransportTimeout(t *testing.T) {
+	st := &scriptedTransport{statuses: []int{0, http.StatusOK}, key: testKey}
+	useTransport(t, st)
+
+	p, err := FromSettings(llm.Settings{Provider: "openai", Model: "m"}, testKey)
+	if err != nil {
+		t.Fatalf("FromSettings: %v", err)
+	}
+	resp, err := p.Generate(context.Background(), plainRequest())
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if resp.Text != "tacos" {
+		t.Errorf("Text = %q, want %q", resp.Text, "tacos")
+	}
+	if st.sent != 2 {
+		t.Errorf("sent %d requests, want 2", st.sent)
 	}
 }

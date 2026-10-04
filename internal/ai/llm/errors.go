@@ -137,3 +137,32 @@ func (e *ProviderError) GoString() string { return e.text }
 
 // Is reports whether target is ErrProvider.
 func (e *ProviderError) Is(target error) bool { return target == ErrProvider }
+
+// TimeoutStatusError is an HTTP status, such as 408, by which the vendor
+// said the request timed out. It matches ErrTimeout, and Status keeps it
+// apart from a transport timeout, so a caller can tell the vendor answered.
+// Build it with NewTimeoutStatusError, which redacts its text.
+type TimeoutStatusError struct {
+	status int
+	text   string
+}
+
+// NewTimeoutStatusError returns the error for a timeout HTTP status.
+// secret is the credential sent with the request, or "" when the request
+// sent none; every occurrence of a non-empty secret is removed from the
+// error text, and the secret itself is not kept.
+func NewTimeoutStatusError(status int, secret string) *TimeoutStatusError {
+	text := fmt.Sprintf("HTTP %d: %s", status, ErrTimeout)
+	return &TimeoutStatusError{status: status, text: Redact(text, secret)}
+}
+
+// Status returns the HTTP status code.
+func (e *TimeoutStatusError) Status() int { return e.status }
+
+func (e *TimeoutStatusError) Error() string { return e.text }
+
+// GoString keeps %#v to the redacted Error text instead of the fields.
+func (e *TimeoutStatusError) GoString() string { return e.text }
+
+// Unwrap returns ErrTimeout.
+func (e *TimeoutStatusError) Unwrap() error { return ErrTimeout }

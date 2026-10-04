@@ -77,7 +77,7 @@ func TestRetryingRateLimitedWaitIsCapped(t *testing.T) {
 	if _, err := r.Generate(context.Background(), retryReq); err != nil {
 		t.Fatal(err)
 	}
-	if want := []time.Duration{MaxRetryAfter}; !slices.Equal(c.sleeps, want) {
+	if want := []time.Duration{20 * time.Second}; !slices.Equal(c.sleeps, want) {
 		t.Errorf("sleeps = %v, want %v", c.sleeps, want)
 	}
 	assertConsumed(t, f, 2)
@@ -149,11 +149,13 @@ func TestRetrying5xxThreeTimesFails(t *testing.T) {
 
 func TestRetryingDoesNotRetryPermanentErrors(t *testing.T) {
 	for name, err := range map[string]error{
-		"401 auth":   ErrAuth,
-		"400":        NewProviderError(400, []byte("bad request"), ""),
-		"404":        NewProviderError(404, []byte("no such model"), ""),
-		"bad output": ErrBadOutput,
-		"other":      errors.New("llm: request has no messages"),
+		"401 auth":    ErrAuth,
+		"400":         NewProviderError(400, []byte("bad request"), ""),
+		"404":         NewProviderError(404, []byte("no such model"), ""),
+		"408":         NewTimeoutStatusError(408, ""),
+		"wrapped 408": fmt.Errorf("openai: generate: %w", NewTimeoutStatusError(408, "")),
+		"bad output":  ErrBadOutput,
+		"other":       errors.New("llm: request has no messages"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, f, c := newTestRetrying()
@@ -168,6 +170,18 @@ func TestRetryingDoesNotRetryPermanentErrors(t *testing.T) {
 			assertConsumed(t, f, 1)
 		})
 	}
+}
+
+// A transport timeout matches ErrTimeout like an HTTP 408, but carries no
+// status, so it is retried.
+func TestRetryingTransportTimeoutRetried(t *testing.T) {
+	r, f, _ := newTestRetrying()
+	f.QueueGenerate(fail(fmt.Errorf("openai: generate: %w", ErrTimeout)), ok("dinner"))
+
+	if _, err := r.Generate(context.Background(), retryReq); err != nil {
+		t.Fatal(err)
+	}
+	assertConsumed(t, f, 2)
 }
 
 func TestRetryingDeadlineShorterThanRetryAfter(t *testing.T) {
@@ -250,7 +264,7 @@ func TestRetryingTimeoutBoundsWholeCall(t *testing.T) {
 		timeout time.Duration
 		want    time.Duration
 	}{
-		{"default", 0, DefaultTimeout},
+		{"default", 0, 60 * time.Second},
 		{"custom", 10 * time.Second, 10 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

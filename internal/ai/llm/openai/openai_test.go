@@ -779,6 +779,9 @@ func TestRetryAfter(t *testing.T) {
 		"soon":                          0,
 		"Sat, 03 Oct 2026 12:02:00 GMT": 2 * time.Minute,
 		"Sat, 03 Oct 2026 11:59:00 GMT": 0,
+		"9223372036854775807":           time.Duration(maxRetryAfterSeconds) * time.Second,
+		"99999999999999999999":          time.Duration(maxRetryAfterSeconds) * time.Second,
+		"-99999999999999999999":         0,
 	}
 	for in, want := range cases {
 		if got := retryAfter(in, now); got != want {
@@ -1140,5 +1143,62 @@ func TestRedactedErrorsFormatWithoutKey(t *testing.T) {
 				t.Fatalf("%s of %T leaks the key: %q", verb, err, got)
 			}
 		}
+	}
+}
+
+func TestRateLimitedHugeRetryAfterIsCapped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "9223372036854775807")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(srv.Close)
+	p, err := New(Config{BaseURL: srv.URL + "/v1", APIKey: testKey, Model: "test-model", Headers: map[string]string{"X-Title": testKey}, StructuredOutput: PromptOnly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = p.Verify(context.Background())
+	var rl *llm.RateLimitedError
+	if !errors.Is(err, llm.ErrRateLimited) || !errors.As(err, &rl) || rl.RetryAfter != time.Duration(maxRetryAfterSeconds)*time.Second {
+		t.Fatalf("err = %v, want a RateLimitedError with RetryAfter capped to %v", err, time.Duration(maxRetryAfterSeconds)*time.Second)
+	}
+}
+
+func TestRedirectIsNotFollowed(t *testing.T) {
+	var mu sync.Mutex
+	var secondCalls int
+	var secondHeader http.Header
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		mu.Lock()
+		secondCalls++
+		secondHeader = req.Header.Clone()
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(second.Close)
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		http.Redirect(w, req, second.URL+req.URL.Path, http.StatusFound)
+	}))
+	t.Cleanup(first.Close)
+	p, err := New(Config{BaseURL: first.URL + "/v1", APIKey: testKey, Model: "test-model", Headers: map[string]string{"X-Title": testKey}, StructuredOutput: PromptOnly})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = p.Verify(context.Background())
+	var pe *llm.ProviderError
+	if !errors.Is(err, llm.ErrProvider) || !errors.As(err, &pe) || pe.Status() != http.StatusFound {
+		t.Fatalf("err = %v, want a ProviderError for HTTP 302", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if secondCalls != 0 {
+		for name, values := range secondHeader {
+			for _, v := range values {
+				if strings.Contains(v, testKey) {
+					t.Errorf("redirect target saw the key in %s", name)
+				}
+			}
+		}
+		t.Fatalf("redirect target got %d requests, want 0", secondCalls)
 	}
 }

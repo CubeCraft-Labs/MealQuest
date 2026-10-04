@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -94,7 +95,7 @@ func newFromConfig(cfg Config) (*Provider, error) {
 		apiKey:    cfg.APIKey,
 		model:     cfg.Model,
 		maxTokens: cfg.MaxTokens,
-		client:    &http.Client{},
+		client:    noRedirectClient(),
 	}, nil
 }
 
@@ -394,9 +395,14 @@ func retryAfter(value string, now time.Time) time.Duration {
 	if value == "" {
 		return 0
 	}
-	if secs, err := strconv.Atoi(value); err == nil {
+	if secs, err := strconv.ParseInt(value, 10, 64); err == nil || errors.Is(err, strconv.ErrRange) {
 		if secs < 0 {
 			return 0
+		}
+		// time.Duration counts nanoseconds in an int64; a larger wait is
+		// capped to the most whole seconds it holds instead of overflowing.
+		if secs > maxRetryAfterSeconds {
+			secs = maxRetryAfterSeconds
 		}
 		return time.Duration(secs) * time.Second
 	}
@@ -404,6 +410,22 @@ func retryAfter(value string, now time.Time) time.Duration {
 		return at.Sub(now).Round(time.Second)
 	}
 	return 0
+}
+
+// maxRetryAfterSeconds is the largest delay-seconds value retryAfter
+// returns unchanged: the most whole seconds a time.Duration holds.
+const maxRetryAfterSeconds = math.MaxInt64 / int64(time.Second)
+
+// noRedirectClient returns an HTTP client that never follows a redirect.
+// A followed redirect would resend the credential headers, which net/http
+// strips only for its own list of sensitive headers and only across hosts;
+// instead the 3xx response is returned and becomes a provider error.
+func noRedirectClient() *http.Client {
+	return &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 func isTimeout(err error) bool {

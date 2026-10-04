@@ -23,6 +23,14 @@ function token(name: string): string {
 
 // Width and height from a PNG's IHDR chunk, which follows the 8-byte
 // signature, the chunk length and the chunk type.
+// The precache list vite-plugin-pwa injects into sw.js: a JSON array of
+// { revision, url } entries.
+function precacheEntries(sw: string): Array<{ revision: string | null; url: string }> {
+  const start = sw.indexOf('[{"revision":')
+  expect(start, 'injected precache list').toBeGreaterThanOrEqual(0)
+  return JSON.parse(sw.slice(start, sw.indexOf('}]', start) + 2))
+}
+
 function pngSize(bytes: Uint8Array): { width: number; height: number } {
   const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
   expect(Array.from(bytes.subarray(0, 8))).toEqual(signature)
@@ -92,6 +100,25 @@ describe('production build', () => {
     expect(sw).toContain('"url":"index.html"')
     for (const { path } of icons.slice(0, 3)) {
       expect(sw).toContain(`"url":"${path.slice(1)}"`)
+    }
+  })
+
+  it('precaches the shell, JS, CSS and every self-hosted font', async () => {
+    const entries = precacheEntries(await (await get('/sw.js')).text())
+    const urls = entries.map((entry) => entry.url)
+    // index.html keeps its URL across builds, so it carries a content
+    // revision; the other assets have content hashes in their names.
+    expect(entries.find((entry) => entry.url === 'index.html')?.revision).toMatch(/^[0-9a-f]{32}$/)
+    expect(urls.some((url) => url.endsWith('.js'))).toBe(true)
+    expect(urls.some((url) => url.endsWith('.css'))).toBe(true)
+    for (const font of [
+      'BagelFatOne-LatinExt',
+      'BagelFatOne-Latin',
+      'Figtree-Regular',
+      'Figtree-SemiBold',
+      'Figtree-Bold',
+    ]) {
+      expect(urls.some((url) => url.startsWith(`assets/${font}`) && url.endsWith('.woff2'))).toBe(true)
     }
   })
 

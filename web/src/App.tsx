@@ -1,6 +1,8 @@
 import { useState } from 'react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { Route, Routes } from 'react-router'
+import { ApiProvider, createQueryClient, type ApiClient } from './api/index.ts'
+import { AuthBootstrap } from './AuthBootstrap.tsx'
 import { PlaceholderPage } from './pages/PlaceholderPage.tsx'
 import { AppShell } from './shell/AppShell.tsx'
 
@@ -23,19 +25,34 @@ export const routes = [
   { path: '/settings/calendar', title: 'Calendar' },
 ] as const
 
+// AppRoutes is the shell and its pages, shown once /api/v1/me has loaded.
+export function AppRoutes() {
+  return (
+    <Routes>
+      <Route element={<AppShell />}>
+        {routes.map(({ path, title }) => (
+          <Route key={path} path={path} element={<PlaceholderPage title={title} />} />
+        ))}
+      </Route>
+    </Routes>
+  )
+}
+
+export type AppProps = {
+  api: ApiClient
+}
+
 // App expects to be rendered inside a router (BrowserRouter in main.tsx,
 // MemoryRouter in tests).
-export default function App() {
-  const [queryClient] = useState(() => new QueryClient())
+export default function App({ api }: AppProps) {
+  const [queryClient] = useState(createQueryClient)
   return (
-    <QueryClientProvider client={queryClient}>
-      <Routes>
-        <Route element={<AppShell />}>
-          {routes.map(({ path, title }) => (
-            <Route key={path} path={path} element={<PlaceholderPage title={title} />} />
-          ))}
-        </Route>
-      </Routes>
-    </QueryClientProvider>
+    <ApiProvider client={api}>
+      <QueryClientProvider client={queryClient}>
+        <AuthBootstrap>
+          <AppRoutes />
+        </AuthBootstrap>
+      </QueryClientProvider>
+    </ApiProvider>
   )
 }

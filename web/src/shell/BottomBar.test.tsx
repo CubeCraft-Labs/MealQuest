@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
-import App from '../App.tsx'
+import { AppRoutes } from '../App.tsx'
 import { declaredStyle } from '../test/cssRules.ts'
 import { mockViewport } from '../test/matchMedia.ts'
 import styles from './BottomBar.module.css'
@@ -71,7 +71,7 @@ function renderAt(path: string, reducedMotion = false) {
   mockViewport(MOBILE, { reducedMotion })
   render(
     <MemoryRouter initialEntries={[path]}>
-      <App />
+      <AppRoutes />
     </MemoryRouter>,
   )
 }

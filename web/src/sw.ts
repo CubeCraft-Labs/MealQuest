@@ -1,11 +1,14 @@
 // MealQuest service worker. vite-plugin-pwa replaces self.__WB_MANIFEST with
 // the build's precache list (shell, JS, CSS and fonts, each with a revision).
 // Every other request goes through the route src/sw/routes.ts decides.
+// Fonts are precached too, but their route is registered ahead of the
+// precache route, so a font fetch goes through the expiring CacheFirst
+// strategy and falls back to the precached copy when the network fails.
 
 import { cacheNames as workboxCacheNames, setCacheNameDetails } from 'workbox-core'
 import type { RouteHandlerCallbackOptions } from 'workbox-core/types'
 import { ExpirationPlugin } from 'workbox-expiration'
-import { PrecacheFallbackPlugin, precacheAndRoute } from 'workbox-precaching'
+import { PrecacheFallbackPlugin, matchPrecache, precacheAndRoute } from 'workbox-precaching'
 import { registerRoute } from 'workbox-routing'
 import { CacheFirst, NetworkFirst, NetworkOnly, type Strategy } from 'workbox-strategies'
 import {
@@ -23,7 +26,6 @@ declare const self: ServiceWorkerGlobalScope & {
 
 // The precache becomes mealquest-precache-v1.
 setCacheNameDetails({ prefix: 'mealquest', precache: 'precache', suffix: cacheVersion })
-precacheAndRoute(self.__WB_MANIFEST)
 
 const day = 24 * 60 * 60
 
@@ -39,6 +41,8 @@ const strategies = {
     cacheName: cacheNames.fonts,
     plugins: [
       new ExpirationPlugin({ maxEntries: 20, maxAgeSeconds: 365 * day, purgeOnQuotaError: true }),
+      // Offline with no runtime copy yet: the font from the precache.
+      { handlerDidError: async ({ request }) => matchPrecache(request.url) },
     ],
   }),
 }
@@ -59,10 +63,23 @@ function strategyFor(route: Route): Strategy {
   }
 }
 
-function handle({ request, url, event }: RouteHandlerCallbackOptions): Promise<Response> {
-  const route = routeFor({ method: request.method, url, mode: request.mode }, self.location.origin)
-  return strategyFor(route).handle({ request, event })
+function routeOf({ request, url }: { request: Request; url: URL }): Route {
+  return routeFor({ method: request.method, url, mode: request.mode }, self.location.origin)
 }
+
+function handle({ request, url, event }: RouteHandlerCallbackOptions): Promise<Response> {
+  return strategyFor(routeOf({ request, url })).handle({ request, event })
+}
+
+function isFont(options: { request: Request; url: URL }): boolean {
+  const route = routeOf(options)
+  return route.strategy === 'cache-first' && route.cacheName === cacheNames.fonts
+}
+
+// Workbox uses the first route that matches, so the font route comes before
+// the precache route, which would otherwise answer every precached font.
+registerRoute(isFont, handle, 'GET')
+precacheAndRoute(self.__WB_MANIFEST)
 
 // Workbox routes are per method; every method goes through routeFor, which
 // sends every non-GET to the network only.

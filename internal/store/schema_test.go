@@ -364,7 +364,7 @@ func TestSchemaRotationReviewEventAllowed(t *testing.T) {
 // both ai_settings and ai_runs.
 func TestSchemaAIProvidersAllowed(t *testing.T) {
 	s := seededStore(t)
-	for _, provider := range []string{"openai_compatible", "anthropic", "ollama", "openai", "openrouter"} {
+	for _, provider := range []string{"openai_compatible", "anthropic", "ollama", "openai", "openrouter", "xai"} {
 		for _, table := range []string{"ai_settings", "ai_runs"} {
 			inRolledBackTx(t, s, func(tx *sql.Tx) {
 				row := testRow(table, 1)

@@ -145,6 +145,15 @@ var all = map[string]Preset{
 		StructuredOutputs:        []openai.StructuredOutput{openai.JSONSchema, openai.JSONObject},
 		OmitTemperature:          []*regexp.Regexp{openRouterReasoningModels},
 	},
+	"xai": {
+		Name:                     "xai",
+		Adapter:                  AdapterOpenAI,
+		BaseURL:                  "https://api.x.ai/v1",
+		Key:                      KeyRequired,
+		StructuredOutput:         openai.JSONSchema,
+		FallbackStructuredOutput: openai.JSONObject,
+		StructuredOutputs:        []openai.StructuredOutput{openai.JSONSchema, openai.JSONObject},
+	},
 	"ollama": {
 		Name:    "ollama",
 		Adapter: AdapterOllama,

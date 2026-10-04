@@ -18,7 +18,7 @@ import "errors"
 // to presets.FromSettings separately.
 type Settings struct {
 	// Provider names the preset: "anthropic", "openai", "openrouter",
-	// "ollama" or "openai_compatible".
+	// "xai", "ollama" or "openai_compatible".
 	Provider string
 	// BaseURL is the API root. It is required for ollama and
 	// openai_compatible; the other presets fix their own, and a non-empty

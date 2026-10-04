@@ -5,6 +5,22 @@ export const CSRF_HEADER = 'X-MealQuest-CSRF'
 
 export const ME_PATH = '/api/v1/me'
 
+// API_PREFIX is the only path apiFetch sends to.
+const API_PREFIX = '/api/v1/'
+
+// apiURL resolves path against the page origin and returns it as the
+// path-absolute URL to fetch. It refuses any path that would not resolve to a
+// same-origin URL under /api/v1/, so the CSRF token is never sent anywhere
+// else: absolute and protocol-relative URLs on another origin, and dot
+// segments that climb out of /api/v1/.
+function apiURL(origin: string, method: string, path: string): string {
+  const url = new URL(path, origin)
+  if (!path.startsWith('/') || url.origin !== origin || !url.pathname.startsWith(API_PREFIX)) {
+    throw new Error(`${method} ${path}: not a same-origin ${API_PREFIX} path`)
+  }
+  return url.pathname + url.search
+}
+
 // Me is the GET /api/v1/me response: the signed-in member, the household and
 // the session's CSRF token.
 export type Me = {
@@ -15,7 +31,8 @@ export type Me = {
 }
 
 // ApiLocation is the part of window.location the client reads and navigates.
-export type ApiLocation = Pick<Location, 'pathname' | 'search' | 'assign'>
+// origin is the page origin every request must stay on.
+export type ApiLocation = Pick<Location, 'origin' | 'pathname' | 'search' | 'assign'>
 
 export type ApiRequest = {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
@@ -24,8 +41,9 @@ export type ApiRequest = {
 }
 
 export type ApiClient = {
-  // apiFetch sends a same-origin JSON request to path and resolves with the
-  // decoded response body, or rejects with an ApiError.
+  // apiFetch sends a same-origin JSON request to path, which must be under
+  // /api/v1/, and resolves with the decoded response body, or rejects with an
+  // ApiError.
   apiFetch<T>(path: string, request?: ApiRequest): Promise<T>
   // loadMe fetches GET /api/v1/me and caches its CSRF token.
   loadMe(): Promise<Me>
@@ -71,14 +89,15 @@ export function createApiClient(location: ApiLocation): ApiClient {
 
   async function apiFetch<T>(path: string, request: ApiRequest = {}): Promise<T> {
     const method = request.method ?? 'GET'
-    let response = await send(method, path, request.body)
+    const url = apiURL(location.origin, method, path)
+    let response = await send(method, url, request.body)
     if (response.status === 403) {
       const error = await parseForbidden(method, path, response)
       // Only a non-GET carries the token, so only it can be refused for it.
       if (error.code !== 'csrf' || method === 'GET') throw error
       // The session's token changed: refresh it once and retry once.
       await refreshMe()
-      response = await send(method, path, request.body)
+      response = await send(method, url, request.body)
       if (response.status === 403) throw await parseForbidden(method, path, response)
     }
     return decode<T>(method, path, response)

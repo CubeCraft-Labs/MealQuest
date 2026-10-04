@@ -5,13 +5,16 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "npm run lint:colors && tsc --noEmit && vite build && npm run check:dist-fonts",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "npm run lint:colors && vitest run",
+    "lint:colors": "node scripts/lint-colors.mjs",
+    "check:dist-fonts": "node scripts/check-dist-fonts.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.104.1",
+    "lucide-react": "^1.51.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-router": "^7.18.4"

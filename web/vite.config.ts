@@ -14,6 +14,9 @@ export default defineConfig({
   },
   test: {
     environment: 'jsdom',
+    // Inject CSS Modules into jsdom so tests can assert the sizes the
+    // stylesheets actually declare (for example 44 px hit areas).
+    css: true,
     setupFiles: ['./src/test/setup.ts'],
   },
 })

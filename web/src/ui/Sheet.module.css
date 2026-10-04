@@ -1,0 +1,57 @@
+.root {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+}
+
+.scrim {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--color-neutral-900) 50%, transparent);
+  animation: fade 320ms var(--ease-out-soft);
+}
+
+.panel {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  max-height: 90dvh;
+  overflow-y: auto;
+  padding: var(--space-6) var(--space-4) calc(var(--space-6) + env(safe-area-inset-bottom));
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  box-shadow: var(--shadow-lg);
+  transform: translateY(0);
+  animation: rise 320ms var(--ease-out-soft);
+}
+
+.panel:focus {
+  outline: none;
+}
+
+@keyframes rise {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scrim,
+  .panel {
+    animation: none;
+  }
+}

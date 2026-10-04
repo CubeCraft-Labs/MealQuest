@@ -56,6 +56,34 @@ describe('routeFor', () => {
     },
   )
 
+  it.each([
+    '/%61uth/login',
+    '/auth%2Fcallback?code=x&state=y',
+    '/%61pi/v1/settings/household',
+    '/api/v1/%73ettings/ai',
+    '/api/v1/settings%2Fai',
+    '/%61pi/v1/jobs/01J9ZK',
+    '/api/v1/j%6Fbs',
+    '/api/v1/plans%2F..%2Fsettings',
+    '/plan%2F..%2Fauth%2Flogin',
+  ])('an encoded reserved path %s is network-only, navigated or not', (path) => {
+    expect(route(path)).toEqual(networkOnly)
+    expect(route(path, 'GET', 'navigate')).toEqual(networkOnly)
+  })
+
+  it.each(['/%E0%A4%A', '/auth%', '/plan/%zz', '/api/v1/plans/%C3'])(
+    'a malformed encoding in %s is network-only, navigated or not',
+    (path) => {
+      expect(route(path)).toEqual(networkOnly)
+      expect(route(path, 'GET', 'navigate')).toEqual(networkOnly)
+    },
+  )
+
+  it('classifies other API paths by their decoded form', () => {
+    expect(route('/%61pi/v1/plans/2026-W40')).toEqual(apiCache)
+    expect(route('/%61pi/v1/recipes', 'GET', 'navigate')).toEqual(networkOnly)
+  })
+
   it.each(['POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'])(
     '%s is network-only on every URL class',
     (method) => {

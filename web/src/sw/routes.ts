@@ -3,7 +3,10 @@
 // class without a worker; src/sw.ts maps each route to a Workbox strategy.
 //
 // Security rule: /auth/*, /api/v1/settings/*, /api/v1/jobs/* and every
-// non-GET request are network-only and never reach a cache.
+// non-GET request are network-only and never reach a cache. Paths are matched
+// as the server sees them — percent-decoded, before and after dot segments are
+// resolved — so /%61uth/login is /auth/login; a malformed encoding is
+// network-only.
 
 export type Route =
   // Network with a 3 s timeout, then the last cached response.
@@ -42,20 +45,46 @@ function under(path: string, prefix: string): boolean {
   return path === prefix || path.startsWith(`${prefix}/`)
 }
 
+// The pathname percent-decoded, as the server's router sees it, or undefined
+// when the encoding is malformed.
+function decodePath(pathname: string): string | undefined {
+  try {
+    return decodeURIComponent(pathname)
+  } catch {
+    return undefined
+  }
+}
+
+// Resolves "." and ".." segments the way the server's path.Clean does, so a
+// decoded %2F cannot carry a request out of a reserved prefix:
+// /api/v1/plans/../settings cleans to /api/v1/settings.
+function cleanPath(path: string): string {
+  const segments: string[] = []
+  for (const segment of path.split('/')) {
+    if (segment === '' || segment === '.') continue
+    if (segment === '..') segments.pop()
+    else segments.push(segment)
+  }
+  return `/${segments.join('/')}`
+}
+
 const networkOnly: Route = { strategy: 'network-only' }
 
 export function routeFor(request: RouteRequest, origin: string): Route {
   const { method, url, mode } = request
   if (method !== 'GET') return networkOnly
   if (url.origin !== origin) return networkOnly
-  const path = url.pathname
-  if (neverCached.some((prefix) => under(path, prefix))) return networkOnly
+  const path = decodePath(url.pathname)
+  if (path === undefined) return networkOnly
+  const cleaned = cleanPath(path)
+  const reserved = (prefix: string) => under(path, prefix) || under(cleaned, prefix)
+  if (neverCached.some(reserved)) return networkOnly
   if (networkFirst.some((prefix) => under(path, prefix))) {
     return { strategy: 'network-first', cacheName: cacheNames.api }
   }
   if (under(path, '/media')) return { strategy: 'cache-first', cacheName: cacheNames.media }
   if (path.endsWith('.woff2')) return { strategy: 'cache-first', cacheName: cacheNames.fonts }
-  if (under(path, '/api')) return networkOnly
+  if (reserved('/api')) return networkOnly
   if (mode === 'navigate') return { strategy: 'navigation-fallback' }
   return networkOnly
 }

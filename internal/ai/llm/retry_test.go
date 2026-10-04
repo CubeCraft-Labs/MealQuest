@@ -226,20 +226,94 @@ func TestRetryingStopsWhenContextDone(t *testing.T) {
 	assertConsumed(t, f, 1)
 }
 
-func TestRetryingDefaultTimeout(t *testing.T) {
-	r, f, _ := newTestRetrying()
-	f.QueueGenerate(ok("a"), ok("b"))
-	custom := retryReq
-	custom.Timeout = 5 * time.Second
+// slowProvider is a Provider whose every attempt takes d on clock c,
+// records the deadline of the context it received, and times out.
+type slowProvider struct {
+	Provider
+	c         *fakeClock
+	d         time.Duration
+	reqs      []Request
+	deadlines []time.Time
+}
 
-	for _, req := range []Request{retryReq, custom} {
-		if _, err := r.Generate(context.Background(), req); err != nil {
-			t.Fatal(err)
+func (p *slowProvider) Generate(ctx context.Context, req Request) (Response, error) {
+	p.reqs = append(p.reqs, req)
+	deadline, _ := ctx.Deadline()
+	p.deadlines = append(p.deadlines, deadline)
+	p.c.t = p.c.t.Add(p.d)
+	return Response{}, ErrTimeout
+}
+
+func TestRetryingTimeoutBoundsWholeCall(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		timeout time.Duration
+		want    time.Duration
+	}{
+		{"default", 0, DefaultTimeout},
+		{"custom", 10 * time.Second, 10 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _, c := newTestRetrying()
+			// Each attempt uses most of the one deadline, so a fresh full
+			// timeout per attempt would allow every retry; one deadline
+			// leaves room for exactly one.
+			p := &slowProvider{c: c, d: tc.want * 5 / 6}
+			r.Provider = p
+			start := c.t
+			req := retryReq
+			req.Timeout = tc.timeout
+
+			if _, err := r.Generate(context.Background(), req); !errors.Is(err, ErrTimeout) {
+				t.Fatalf("err = %v, want ErrTimeout", err)
+			}
+			if len(p.deadlines) != 2 {
+				t.Fatalf("made %d attempts, want 2", len(p.deadlines))
+			}
+			for i, d := range p.deadlines {
+				if !d.Equal(start.Add(tc.want)) {
+					t.Errorf("attempt %d deadline = start+%v, want start+%v", i, d.Sub(start), tc.want)
+				}
+				if p.reqs[i].Timeout != 0 {
+					t.Errorf("attempt %d Timeout = %v, want 0", i, p.reqs[i].Timeout)
+				}
+			}
+			if want := []time.Duration{time.Second - 1}; !slices.Equal(c.sleeps, want) {
+				t.Errorf("sleeps = %v, want %v", c.sleeps, want)
+			}
+		})
+	}
+}
+
+func TestRetryingCallerDeadlineShorterThanTimeout(t *testing.T) {
+	r, _, c := newTestRetrying()
+	p := &slowProvider{c: c, d: time.Second}
+	r.Provider = p
+	ctx, cancel := context.WithDeadline(context.Background(), c.t.Add(5*time.Second))
+	defer cancel()
+
+	if _, err := r.Generate(ctx, retryReq); !errors.Is(err, ErrTimeout) {
+		t.Fatalf("err = %v, want ErrTimeout", err)
+	}
+	for i, d := range p.deadlines {
+		if want, _ := ctx.Deadline(); !d.Equal(want) {
+			t.Errorf("attempt %d deadline = %v, want caller's %v", i, d, want)
 		}
 	}
-	got := f.Requests()
-	if got[0].Timeout != DefaultTimeout || got[1].Timeout != 5*time.Second {
-		t.Fatalf("timeouts = %v, %v; want %v, 5s", got[0].Timeout, got[1].Timeout, DefaultTimeout)
+}
+
+func TestRetryingRejectsNegativeTimeout(t *testing.T) {
+	r, f, _ := newTestRetrying()
+	f.QueueGenerate(fail(errors.New("llm: timeout is negative")))
+	req := retryReq
+	req.Timeout = -time.Second
+
+	if _, err := r.Generate(context.Background(), req); err == nil {
+		t.Fatal("Generate accepted a negative timeout")
+	}
+	assertConsumed(t, f, 1)
+	if got := f.Requests()[0].Timeout; got != -time.Second {
+		t.Errorf("wrapped Provider got Timeout %v, want -1s to reject", got)
 	}
 }
 

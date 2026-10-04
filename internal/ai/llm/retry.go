@@ -8,8 +8,8 @@ import (
 )
 
 const (
-	// DefaultTimeout bounds each Generate attempt whose Request sets no
-	// Timeout.
+	// DefaultTimeout bounds a whole Generate call, retries and waits
+	// included, whose Request sets no Timeout.
 	DefaultTimeout = 60 * time.Second
 	// MaxRetries is how many times a failed Generate is retried, so a call
 	// makes at most MaxRetries+1 attempts.
@@ -26,9 +26,11 @@ const (
 // ErrProvider at most MaxRetries times, and nothing else. A rate-limited
 // retry waits for the vendor's RetryAfter, capped at MaxRetryAfter; every
 // other retry, and a rate limit that names no wait, waits a jittered
-// exponential backoff. A retry whose wait would not end before the
-// caller's context deadline is not made: the last error is returned at
-// once. ListModels and Verify pass straight through.
+// exponential backoff. The Request's Timeout, or DefaultTimeout, is one
+// deadline for the whole call, retries and waits included; a caller's
+// earlier context deadline wins. A retry whose wait would not end before
+// that deadline is not made: the last error is returned at once.
+// ListModels and Verify pass straight through.
 type Retrying struct {
 	Provider
 	// now is the clock; tests replace it.
@@ -52,12 +54,22 @@ func NewRetrying(inner Provider) *Retrying {
 }
 
 // Generate sends req to the wrapped Provider, retrying transient failures.
-// A req.Timeout of 0 becomes DefaultTimeout; either bounds each attempt,
-// not the whole call, which ctx bounds.
+// req.Timeout, or DefaultTimeout when it is 0, sets one deadline for the
+// whole call, carried by the context each attempt receives; attempts get
+// req with Timeout 0 so none restarts the clock.
 func (r *Retrying) Generate(ctx context.Context, req Request) (Response, error) {
-	if req.Timeout == 0 {
-		req.Timeout = DefaultTimeout
+	timeout := req.Timeout
+	if timeout == 0 {
+		timeout = DefaultTimeout
 	}
+	if timeout > 0 {
+		// A negative Timeout stays on req for the wrapped Provider's
+		// Validate to reject, with its key redaction.
+		req.Timeout = 0
+	}
+	ctx, cancel := context.WithDeadline(ctx, r.now().Add(timeout))
+	defer cancel()
+	deadline, _ := ctx.Deadline()
 	for retry := 0; ; retry++ {
 		resp, err := r.Provider.Generate(ctx, req)
 		if err == nil || retry == MaxRetries || ctx.Err() != nil {
@@ -67,7 +79,7 @@ func (r *Retrying) Generate(ctx context.Context, req Request) (Response, error) 
 		if !ok {
 			return resp, err
 		}
-		if deadline, has := ctx.Deadline(); has && !r.now().Add(wait).Before(deadline) {
+		if !r.now().Add(wait).Before(deadline) {
 			return resp, err
 		}
 		if serr := r.sleep(ctx, wait); serr != nil {

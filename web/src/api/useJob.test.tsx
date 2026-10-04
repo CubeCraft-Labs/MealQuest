@@ -85,16 +85,54 @@ describe('useJob', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
-  it('exposes a failed poll as the error and stops', async () => {
-    const fetchMock = stubFetch(job('running', { dinners: ['Tacos'] }), errorResponse(404, 'not_found'))
+  it('exposes a failed poll as the error and keeps polling to the terminal status', async () => {
+    const fetchMock = stubFetch(
+      job('running', { dinners: ['Tacos'] }),
+      errorResponse(503, 'unavailable', true),
+      job('succeeded', { dinners: ['Tacos', 'Chili'] }),
+    )
     const { result } = renderJob('j1')
 
     await advance(0)
     await advance(500)
-    expect(result.current).toMatchObject({ status: 'running', result: { dinners: ['Tacos'] } })
-    expect(result.current.error).toMatchObject({ status: 404, code: 'not_found' })
-    expect(vi.getTimerCount()).toBe(0)
     expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(result.current).toMatchObject({ status: 'running', result: { dinners: ['Tacos'] } })
+    expect(result.current.error).toMatchObject({ status: 503, code: 'unavailable' })
+    expect(vi.getTimerCount()).toBe(1)
+
+    // The backoff carries on from the failed poll: the next one is 1 s later.
+    await advance(999)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    await advance(1)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(result.current).toEqual({ status: 'succeeded', result: { dinners: ['Tacos', 'Chili'] }, error: null })
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('stops polling on unmount after a failed poll', async () => {
+    const fetchMock = stubFetch(errorResponse(503, 'unavailable', true))
+    const { result, unmount } = renderJob('j1')
+
+    await advance(0)
+    expect(result.current).toMatchObject({ status: undefined, result: null })
+    expect(result.current.error).toMatchObject({ status: 503 })
+    expect(vi.getTimerCount()).toBe(1)
+    unmount()
+    expect(vi.getTimerCount()).toBe(0)
+    await advance(10_000)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops polling the old job when the job id changes', async () => {
+    const fetchMock = stubFetch(job('running', null), job('running', null))
+    const { result, rerender } = renderJob('j1')
+
+    await advance(0)
+    rerender({ id: 'j2' })
+    expect(result.current).toEqual({ status: undefined, result: null, error: null })
+    await advance(0)
+    expect(request(fetchMock, 1).path).toBe('/api/v1/jobs/j2')
+    expect(vi.getTimerCount()).toBe(1)
   })
 
   it('stops polling on unmount', async () => {

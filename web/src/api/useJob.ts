@@ -18,7 +18,8 @@ export type JobState<R> = {
   status: JobStatus | undefined
   // The latest result, partial while the job runs.
   result: R | null
-  // The job's failure, or the polling request's own failure.
+  // The job's failure, or the latest polling request's own failure (cleared
+  // by the next poll that answers).
   error: Error | null
 }
 
@@ -33,8 +34,9 @@ function isTerminal(status: JobStatus): boolean {
 }
 
 // useJob polls GET /api/v1/jobs/{jobId} until the job succeeds or fails,
-// backing off from 500 ms to 2 s. Polling stops at a terminal status, when a
-// poll fails and on unmount. A null jobId polls nothing.
+// backing off from 500 ms to 2 s. A failed poll is exposed as the error and
+// polling continues. Polling stops only at a terminal status, when jobId
+// changes and on unmount. A null jobId polls nothing.
 export function useJob<R>(jobId: string | null): JobState<R> {
   const { apiFetch } = useApi()
   const [state, setState] = useState<{ jobId: string | null; job: JobState<R> }>({ jobId, job: idle })
@@ -45,6 +47,11 @@ export function useJob<R>(jobId: string | null): JobState<R> {
     let timer: ReturnType<typeof setTimeout> | undefined
     let delay = FIRST_DELAY_MS
 
+    function next() {
+      timer = setTimeout(poll, delay)
+      delay = Math.min(delay * 2, MAX_DELAY_MS)
+    }
+
     async function poll() {
       try {
         const job = await apiFetch<Job<R>>(`/api/v1/jobs/${encodeURIComponent(jobId!)}`)
@@ -52,15 +59,16 @@ export function useJob<R>(jobId: string | null): JobState<R> {
         const error = job.status === 'failed' ? new Error(job.error ?? `job ${job.id} failed without an error message`) : null
         setState({ jobId, job: { status: job.status, result: job.result, error } })
         if (isTerminal(job.status)) return
-        timer = setTimeout(poll, delay)
-        delay = Math.min(delay * 2, MAX_DELAY_MS)
       } catch (error) {
         if (!active) return
+        // A failed poll is not the job's end: keep the last known status and
+        // result, expose the request's error, and poll again.
         setState((prev) => ({
           jobId,
           job: { ...(prev.jobId === jobId ? prev.job : idle), error: error instanceof Error ? error : new Error(String(error)) },
         }))
       }
+      next()
     }
 
     void poll()

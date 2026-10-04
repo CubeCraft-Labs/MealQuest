@@ -178,13 +178,14 @@ var all = map[string]Preset{
 //
 // The Provider sends s.Temperature with every request whose Temperature is
 // nil; a request that sets one keeps it. Neither is sent to a model the
-// preset's OmitTemperature matches.
+// preset's OmitTemperature matches. It is wrapped in llm.NewRetrying, so
+// Generate retries transient vendor failures and has the default timeout.
 func FromSettings(s llm.Settings, key string) (llm.Provider, error) {
 	cp, err := fromSettings(s, key)
 	if err != nil {
 		return nil, redact(err, key)
 	}
-	return cp, nil
+	return llm.NewRetrying(cp), nil
 }
 
 func fromSettings(s llm.Settings, key string) (*configured, error) {

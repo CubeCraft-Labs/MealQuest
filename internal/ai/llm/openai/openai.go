@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -510,27 +511,15 @@ func (p *Provider) transportError(err error) error {
 	if errors.As(err, &ue) {
 		err = ue.Err
 	}
-	return &transportFailure{detail: redactKey(err.Error(), p.apiKey), kind: kind}
+	return &transportFailure{detail: llm.Redact(err.Error(), p.apiKey), kind: kind}
 }
-
-// redactKey replaces every occurrence of a non-empty key in s. Replacing
-// the key also replaces the "Bearer "+key header value that contains it.
-func redactKey(s, key string) string {
-	if key == "" {
-		return s
-	}
-	return strings.ReplaceAll(s, key, "[REDACTED]")
-}
-
-// withheldText replaces an error's text when redactKey cannot remove the
-// key, because the key is part of the replacement marker.
-const withheldText = "openai: error text withheld: it contains the API key"
 
 // redactedError stands in for one layer of an error chain that holds the
 // API key. Its text is the layer's text with the key redacted, and Unwrap
 // returns the layer's causes passed through redact, so no error reached by
-// unwrapping has text holding the key. Is and As consult the original
-// layer and its chain, so sentinels and typed errors still match.
+// unwrapping has text holding the key. Is consults the original layer and
+// its chain, so sentinels still match. As does too, but refuses a match
+// whose text holds the key, so it never hands back an unredacted error.
 type redactedError struct {
 	text string
 	err  error
@@ -543,7 +532,17 @@ func (e *redactedError) Unwrap() error { return redact(errors.Unwrap(e.err), e.k
 
 func (e *redactedError) Is(target error) bool { return errors.Is(e.err, target) }
 
-func (e *redactedError) As(target any) bool { return errors.As(e.err, target) }
+func (e *redactedError) As(target any) bool {
+	if !errors.As(e.err, target) {
+		return false
+	}
+	found := reflect.ValueOf(target).Elem()
+	if matched, ok := found.Interface().(error); ok && holdsKey(matched, e.key) {
+		found.SetZero()
+		return false
+	}
+	return true
+}
 
 // redactedJoin is redactedError for a layer with several causes, such as
 // one built by errors.Join or by fmt.Errorf with more than one %w.
@@ -568,11 +567,7 @@ func redact(err error, key string) error {
 	if err == nil || key == "" || !holdsKey(err, key) {
 		return err
 	}
-	text := redactKey(err.Error(), key)
-	if strings.Contains(text, key) {
-		text = withheldText
-	}
-	re := redactedError{text: text, err: err, key: key}
+	re := redactedError{text: llm.Redact(err.Error(), key), err: err, key: key}
 	if _, ok := err.(interface{ Unwrap() []error }); ok {
 		return &redactedJoin{re}
 	}

@@ -804,13 +804,19 @@ func assertNoKey(t *testing.T, err error, key string) {
 // keyServer replies to every request with status and body.
 func keyServer(t *testing.T, status int, body string) *Provider {
 	t.Helper()
+	return keyServerWithKey(t, headerNameKey, status, body)
+}
+
+// keyServerWithKey is keyServer for a provider configured with key.
+func keyServerWithKey(t *testing.T, key string, status int, body string) *Provider {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		io.WriteString(w, body)
 	}))
 	t.Cleanup(srv.Close)
-	p, err := New(Config{BaseURL: srv.URL + "/v1", APIKey: headerNameKey, Model: "test-model", StructuredOutput: PromptOnly})
+	p, err := New(Config{BaseURL: srv.URL + "/v1", APIKey: key, Model: "test-model", StructuredOutput: PromptOnly})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -970,3 +976,69 @@ type opaqueError struct{ err error }
 func (e *opaqueError) Error() string { return "opaque" }
 
 func (e *opaqueError) Unwrap() error { return e.err }
+
+// assertChainNoExactKey fails if the text of err, of any error reached from
+// it by unwrapping, or of a *llm.ProviderError found by errors.As holds key.
+// It matches case-sensitively, so it suits keys too short for assertNoKey.
+func assertChainNoExactKey(t *testing.T, err error, key string) {
+	t.Helper()
+	var walk func(error)
+	walk = func(e error) {
+		if e == nil {
+			return
+		}
+		if strings.Contains(e.Error(), key) {
+			t.Fatalf("error leaks %q: %q", key, e.Error())
+		}
+		switch u := e.(type) {
+		case interface{ Unwrap() error }:
+			walk(u.Unwrap())
+		case interface{ Unwrap() []error }:
+			for _, c := range u.Unwrap() {
+				walk(c)
+			}
+		}
+	}
+	walk(err)
+	var pe *llm.ProviderError
+	if errors.As(err, &pe) && (strings.Contains(pe.Body(), key) || strings.Contains(pe.Error(), key)) {
+		t.Fatalf("ProviderError leaks %q: body %q", key, pe.Body())
+	}
+	var syntax *json.SyntaxError
+	if errors.As(err, &syntax) && strings.Contains(syntax.Error(), key) {
+		t.Fatalf("errors.As reached a *json.SyntaxError leaking %q: %q", key, syntax.Error())
+	}
+}
+
+// TestProviderErrorBodyWithMarkerKeyNeverLeaksKey uses the redaction marker
+// text as the API key, so replacing the key with the marker would keep it.
+func TestProviderErrorBodyWithMarkerKeyNeverLeaksKey(t *testing.T) {
+	const key = "REDACTED"
+	p := keyServerWithKey(t, key, 500, `{"error":{"message":"rejected `+key+`: Bearer `+key+`"}}`)
+	_, err := p.Generate(context.Background(), schemaRequest())
+	var pe *llm.ProviderError
+	if !errors.Is(err, llm.ErrProvider) || !errors.As(err, &pe) || pe.Status() != 500 {
+		t.Fatalf("err = %v, want a 500 ProviderError", err)
+	}
+	if strings.Contains(pe.Body(), key) || strings.Contains(pe.Error(), key) {
+		t.Fatalf("ProviderError leaks the key: %q", pe.Error())
+	}
+	assertChainNoExactKey(t, err, key)
+}
+
+// TestGenerateMalformedJSONWithShortKeyNeverLeaksKey uses a one-letter key
+// found in the redaction marker and in ordinary error prose.
+func TestGenerateMalformedJSONWithShortKeyNeverLeaksKey(t *testing.T) {
+	const key = "A"
+	p := keyServerWithKey(t, key, 200, `{"choices": A Bearer A}`)
+	_, err := p.Generate(context.Background(), schemaRequest())
+	if err == nil {
+		t.Fatal("Generate accepted a malformed JSON body")
+	}
+	assertChainNoExactKey(t, err, key)
+	for layer := err; layer != nil; layer = errors.Unwrap(layer) {
+		if strings.Contains(layer.Error(), key) {
+			t.Fatalf("layer leaks %q: %q", key, layer.Error())
+		}
+	}
+}

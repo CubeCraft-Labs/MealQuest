@@ -46,8 +46,27 @@ func (e *RateLimitedError) Is(target error) bool { return target == ErrRateLimit
 // ProviderError keeps.
 const MaxBodyExcerpt = 512
 
-// redacted replaces each secret in a ProviderError body.
-const redacted = "[REDACTED]"
+// redactionMarker replaces each secret in redacted text, unless the marker
+// would itself hold the secret.
+const redactionMarker = "[REDACTED]"
+
+// Redact returns s with every occurrence of a non-empty secret removed. Each
+// occurrence becomes "[REDACTED]" when the result then holds no secret;
+// otherwise, because the marker contains the secret or joins with its
+// neighbours to form it, occurrences are deleted until none remains. The
+// result never contains secret.
+func Redact(s, secret string) string {
+	if secret == "" {
+		return s
+	}
+	if out := strings.ReplaceAll(s, secret, redactionMarker); !strings.Contains(out, secret) {
+		return out
+	}
+	for strings.Contains(s, secret) {
+		s = strings.ReplaceAll(s, secret, "")
+	}
+	return s
+}
 
 // ProviderError is an unexpected HTTP status from the vendor. It matches
 // ErrProvider. Build it with NewProviderError, which redacts the body.
@@ -59,20 +78,17 @@ type ProviderError struct {
 // NewProviderError returns the error for an unexpected HTTP status. It
 // always keeps a body excerpt of at most MaxBodyExcerpt bytes. secret is the
 // credential sent with the request, or "" when the request sent none; every
-// occurrence of a non-empty secret in body is replaced before the body is
-// cut, so no part of it survives.
+// occurrence of a non-empty secret in body is removed by Redact before the
+// body is cut, so no part of it survives, and again after the cut, so the
+// truncation mark cannot complete it.
 func NewProviderError(status int, body []byte, secret string) *ProviderError {
-	s := string(body)
-	if secret != "" {
-		s = strings.ReplaceAll(s, secret, redacted)
-	}
-	s = strings.TrimSpace(s)
+	s := strings.TrimSpace(Redact(string(body), secret))
 	if len(s) > MaxBodyExcerpt {
 		cut := MaxBodyExcerpt
 		for cut > 0 && !utf8.RuneStart(s[cut]) {
 			cut--
 		}
-		s = s[:cut] + "…"
+		s = Redact(s[:cut]+"…", secret)
 	}
 	return &ProviderError{status: status, body: s}
 }

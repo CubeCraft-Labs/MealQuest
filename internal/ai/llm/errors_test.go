@@ -117,3 +117,45 @@ func TestProviderErrorKeepsBoundedBodyWithoutSecret(t *testing.T) {
 		t.Fatalf("Body() has %d bytes, want %d", len(long.Body()), len(want))
 	}
 }
+
+func TestRedactNeverLeavesSecret(t *testing.T) {
+	cases := []struct{ s, secret, want string }{
+		{"key sk-1 and Bearer sk-1", "sk-1", "key [REDACTED] and Bearer [REDACTED]"},
+		{"no secret here", "sk-1", "no secret here"},
+		{"x", "", "x"},
+		// The marker holds the secret, so occurrences are deleted.
+		{"rejected REDACTED", "REDACTED", "rejected "},
+		{"A then A", "A", " then "},
+		// The marker joins with a neighbour to form the secret.
+		{"]]aa", "]a", ""},
+		// The marker holds the secret and deleting once leaves a new one.
+		{"DDAA", "DA", ""},
+		{"aabb", "ab", "a[REDACTED]b"},
+	}
+	for _, c := range cases {
+		if got := Redact(c.s, c.secret); got != c.want {
+			t.Errorf("Redact(%q, %q) = %q, want %q", c.s, c.secret, got, c.want)
+		}
+	}
+}
+
+func TestProviderErrorWithMarkerSecretNeverLeaksSecret(t *testing.T) {
+	const key = "REDACTED"
+	pe := NewProviderError(500, []byte(`{"error":"bad key REDACTED","echo":"Bearer REDACTED"}`), key)
+	for _, s := range []string{pe.Error(), pe.Body()} {
+		if strings.Contains(s, key) {
+			t.Fatalf("secret leaked: %q", s)
+		}
+	}
+	if want := `{"error":"bad key ","echo":"Bearer "}`; pe.Body() != want {
+		t.Fatalf("Body() = %q, want %q", pe.Body(), want)
+	}
+}
+
+func TestProviderErrorTruncationMarkCannotCompleteSecret(t *testing.T) {
+	const key = "z…"
+	body := strings.Repeat("a", MaxBodyExcerpt-1) + "z" + strings.Repeat("b", 10)
+	if pe := NewProviderError(500, []byte(body), key); strings.Contains(pe.Body(), key) {
+		t.Fatalf("secret leaked: %q", pe.Body())
+	}
+}

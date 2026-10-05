@@ -15,11 +15,19 @@ type Querier interface {
 	// Marks the oldest queued job running and returns it. Returns sql.ErrNoRows
 	// when no job is queued.
 	ClaimNextJob(ctx context.Context, now sql.NullString) (Job, error)
+	// Drops references to the runs created before the cutoff, so the purge
+	// can delete them.
+	ClearSuggestionBatchAIRunsBefore(ctx context.Context, cutoff string) (int64, error)
+	// Drops references to the runs created before the cutoff, so the purge
+	// can delete them.
+	ClearWeekPlanAIRunsBefore(ctx context.Context, cutoff string) (int64, error)
+	CreateAIRun(ctx context.Context, arg CreateAIRunParams) error
 	CreateDinner(ctx context.Context, arg CreateDinnerParams) (Dinner, error)
 	CreateJob(ctx context.Context, arg CreateJobParams) error
 	CreatePhoto(ctx context.Context, arg CreatePhotoParams) (Photo, error)
 	CreateRecipeIngredient(ctx context.Context, arg CreateRecipeIngredientParams) error
 	CreateRecipeStep(ctx context.Context, arg CreateRecipeStepParams) error
+	DeleteAIRunsBefore(ctx context.Context, cutoff string) (int64, error)
 	DeleteRecipeIngredients(ctx context.Context, recipeID string) error
 	DeleteRecipeSteps(ctx context.Context, recipeID string) error
 	FailJob(ctx context.Context, arg FailJobParams) (int64, error)

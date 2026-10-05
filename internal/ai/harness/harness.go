@@ -4,7 +4,7 @@
 // for output matching the skill's schema, decodes and validates the reply,
 // and on failure sends exactly one repair turn quoting the problems. If the
 // repair fails too the run fails with llm.ErrBadOutput; there is no silent
-// fallback (D-007).
+// fallback (D-007). Every run is recorded in ai_runs (see Run and Purge).
 package harness
 
 import (
@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/llm"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 )
 
 // Skill is one versioned AI task with input In and structured output Out.
@@ -40,16 +41,43 @@ type Skill[In, Out any] interface {
 	PostProcess(out Out) (Out, error)
 }
 
+// NewProvider builds the provider a run sends its requests to from the
+// household's settings and decrypted API key. In production it is
+// presets.FromSettings.
+type NewProvider func(s llm.Settings, key string) (llm.Provider, error)
+
 // Config is what a run needs from the household's AI settings.
 type Config struct {
-	// Provider answers the requests.
-	Provider llm.Provider
+	// Settings is the household's AI configuration. Settings.Provider and
+	// Settings.Model are recorded in ai_runs and may not be empty;
+	// Settings.Temperature is sent with every request.
+	Settings llm.Settings
+	// APIKey is the decrypted API key, or "" for a provider that takes
+	// none. It reaches the provider only through NewProvider, and every
+	// occurrence of it is removed from the ai_runs row.
+	APIKey string
+	// NewProvider builds the run's provider from Settings and APIKey.
+	NewProvider NewProvider
 	// Persona is ai_settings.system_prompt, the first layer of every
 	// system prompt; empty means none.
 	Persona string
-	// Temperature is the household's sampling temperature, sent with
-	// every request.
-	Temperature float64
+	// Store receives the run's ai_runs row. It must not be nil.
+	Store *store.Store
+}
+
+// validate reports a Config missing what every run needs.
+func (c Config) validate() error {
+	switch {
+	case c.NewProvider == nil:
+		return errors.New("config has no provider constructor")
+	case c.Settings.Provider == "":
+		return errors.New("config has no provider name")
+	case c.Settings.Model == "":
+		return errors.New("config has no model")
+	case c.Store == nil:
+		return errors.New("config has no store")
+	}
+	return nil
 }
 
 // BadOutputError is a run whose reply and repair reply were both unusable.
@@ -74,48 +102,88 @@ func (e *BadOutputError) Unwrap() error { return llm.ErrBadOutput }
 // Run runs skill s on in with cfg and returns its validated, post-processed
 // output. A provider error other than llm.ErrBadOutput is returned
 // unchanged and never repaired.
+//
+// Every run with a valid Config writes one ai_runs row when it ends,
+// covering both turns, with its RunStatus and the request and response
+// bodies redacted (see redact). A render failure is recorded as
+// StatusBadOutput and a provider that cannot be built as
+// StatusProviderError, both with no turns. A Config error fails the run
+// before anything else, and writes no row since the row cannot be
+// written without one. When the row cannot be written the run fails with
+// that error too, even if its output was usable.
 func Run[In, Out any](ctx context.Context, cfg Config, s Skill[In, Out], in In) (Out, error) {
+	var zero Out
+	if err := cfg.validate(); err != nil {
+		return zero, fmt.Errorf("harness: skill %s v%d: %w", s.Name(), s.Version(), err)
+	}
+	log := &runLog{start: store.Now()}
+	out, status, err := execute(ctx, cfg, s, in, log)
+	if saveErr := log.save(ctx, cfg, s.Name(), s.Version(), status, err); saveErr != nil {
+		return zero, errors.Join(err, fmt.Errorf("harness: skill %s v%d: record ai_runs row: %w", s.Name(), s.Version(), saveErr))
+	}
+	if err != nil {
+		return zero, err
+	}
+	return out, nil
+}
+
+// execute renders the prompt, builds the provider and sends the turns,
+// recording them in log. It returns the run's status alongside its result.
+func execute[In, Out any](ctx context.Context, cfg Config, s Skill[In, Out], in In, log *runLog) (Out, RunStatus, error) {
 	var zero Out
 	prompt, err := Render(cfg.Persona, s, in)
 	if err != nil {
-		return zero, fmt.Errorf("harness: skill %s v%d: render: %w", s.Name(), s.Version(), err)
+		return zero, StatusBadOutput, fmt.Errorf("harness: skill %s v%d: render: %w", s.Name(), s.Version(), err)
+	}
+	provider, err := cfg.NewProvider(cfg.Settings, cfg.APIKey)
+	if err != nil {
+		return zero, StatusProviderError, fmt.Errorf("harness: skill %s v%d: provider: %w", s.Name(), s.Version(), err)
 	}
 	schema := s.Schema()
-	temperature := cfg.Temperature
+	temperature := cfg.Settings.Temperature
 	req := llm.Request{
 		System:      prompt.System,
 		Messages:    []llm.Message{{Role: llm.RoleUser, Content: prompt.User}},
 		Temperature: &temperature,
 		Schema:      &schema,
 	}
-
-	out, reply, first, err := attempt(ctx, cfg.Provider, s, req)
-	if err != nil {
-		return zero, err
-	}
-	if len(first) > 0 {
-		if reply != "" {
-			req.Messages = append(req.Messages, llm.Message{Role: llm.RoleAssistant, Content: reply})
-		}
-		req.Messages = append(req.Messages, llm.Message{Role: llm.RoleUser, Content: repairMessage(schema.Name, first)})
-		var second []string
-		out, _, second, err = attempt(ctx, cfg.Provider, s, req)
-		if err != nil {
-			return zero, err
-		}
-		if len(second) > 0 {
-			return zero, &BadOutputError{Skill: s.Name(), Version: s.Version(), First: first, Repair: second}
-		}
-	}
-	return out, nil
+	return turns(ctx, cfg.APIKey, provider, s, req, log)
 }
 
-// attempt sends req once, then decodes, validates, post-processes and
-// validates the reply again. It returns the reply for the repair turn and
-// the problems found; err is set only for a provider or post-process
-// failure, neither of which is repairable.
-func attempt[In, Out any](ctx context.Context, p llm.Provider, s Skill[In, Out], req llm.Request) (out Out, reply string, problems []string, err error) {
-	resp, err := p.Generate(ctx, req)
+// turns sends req and, when its reply is unusable, the repair turn,
+// recording both in log. It returns the run's status alongside its result.
+func turns[In, Out any](ctx context.Context, apiKey string, provider llm.Provider, s Skill[In, Out], req llm.Request, log *runLog) (Out, RunStatus, error) {
+	var zero Out
+	out, reply, first, status, err := attempt(ctx, apiKey, provider, s, req, log)
+	if err != nil {
+		return zero, status, err
+	}
+	if len(first) == 0 {
+		return out, StatusOK, nil
+	}
+	log.problems = first
+	if reply != "" {
+		req.Messages = append(req.Messages, llm.Message{Role: llm.RoleAssistant, Content: reply})
+	}
+	req.Messages = append(req.Messages, llm.Message{Role: llm.RoleUser, Content: repairMessage(req.Schema.Name, first)})
+	out, _, second, status, err := attempt(ctx, apiKey, provider, s, req, log)
+	if err != nil {
+		return zero, status, err
+	}
+	if len(second) > 0 {
+		return zero, StatusBadOutput, &BadOutputError{Skill: s.Name(), Version: s.Version(), First: first, Repair: second}
+	}
+	return out, StatusRepaired, nil
+}
+
+// attempt sends req to provider once, records the turn in log, then decodes,
+// validates, post-processes and validates the reply again. It returns the
+// reply for the repair turn and the problems found; err is set only for a
+// provider or post-process failure, neither of which is repairable, and
+// status then says which.
+func attempt[In, Out any](ctx context.Context, apiKey string, provider llm.Provider, s Skill[In, Out], req llm.Request, log *runLog) (out Out, reply string, problems []string, status RunStatus, err error) {
+	resp, err := provider.Generate(ctx, req)
+	log.add(apiKey, req, resp, err)
 	// The repair turn must quote what failed: the structured output when
 	// there is any, otherwise the text.
 	reply = string(resp.JSON)
@@ -124,21 +192,21 @@ func attempt[In, Out any](ctx context.Context, p llm.Provider, s Skill[In, Out],
 	}
 	if err != nil {
 		if errors.Is(err, llm.ErrBadOutput) {
-			return out, reply, []string{err.Error()}, nil
+			return out, reply, []string{err.Error()}, "", nil
 		}
-		return out, "", nil, err
+		return out, "", nil, StatusProviderError, err
 	}
 	if err := decode(resp.JSON, &out); err != nil {
-		return out, reply, []string{err.Error()}, nil
+		return out, reply, []string{err.Error()}, "", nil
 	}
 	if problems := s.Validate(out); len(problems) > 0 {
-		return out, reply, problems, nil
+		return out, reply, problems, "", nil
 	}
 	out, err = s.PostProcess(out)
 	if err != nil {
-		return out, "", nil, fmt.Errorf("harness: skill %s v%d: post-process: %w", s.Name(), s.Version(), err)
+		return out, "", nil, StatusBadOutput, fmt.Errorf("harness: skill %s v%d: post-process: %w", s.Name(), s.Version(), err)
 	}
-	return out, reply, s.Validate(out), nil
+	return out, reply, s.Validate(out), "", nil
 }
 
 // decode strictly decodes data into out: one JSON value, no unknown fields.

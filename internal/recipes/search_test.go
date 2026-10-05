@@ -3,6 +3,7 @@ package recipes
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"errors"
 	"net/http"
@@ -262,7 +263,7 @@ func TestNewSearchProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p, err := NewSearchProvider(db.RecipeSearchSetting{Provider: "brave", ApiKeyCt: ct}, box, "")
+	p, err := NewSearchProvider(db.RecipeSearchSetting{Provider: "brave", ApiKeyCt: ct}, box)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +271,7 @@ func TestNewSearchProvider(t *testing.T) {
 		t.Errorf("provider = %#v, want Brave with decrypted key", p)
 	}
 
-	p, err = NewSearchProvider(db.RecipeSearchSetting{Provider: "searxng"}, box, "http://searxng:8080")
+	p, err = NewSearchProvider(db.RecipeSearchSetting{Provider: "searxng", BaseUrl: sql.NullString{String: "http://searxng:8080", Valid: true}}, box)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,16 +279,13 @@ func TestNewSearchProvider(t *testing.T) {
 		t.Errorf("provider = %#v, want SearXNG at http://searxng:8080/search", p)
 	}
 
-	for name, tc := range map[string]struct {
-		s   db.RecipeSearchSetting
-		url string
-	}{
-		"brave without key":   {db.RecipeSearchSetting{Provider: "brave"}, ""},
-		"brave bad key":       {db.RecipeSearchSetting{Provider: "brave", ApiKeyCt: []byte("not a token at all, far too plain")}, ""},
-		"searxng without URL": {db.RecipeSearchSetting{Provider: "searxng"}, ""},
-		"unknown provider":    {db.RecipeSearchSetting{Provider: "google"}, ""},
+	for name, s := range map[string]db.RecipeSearchSetting{
+		"brave without key":   {Provider: "brave"},
+		"brave bad key":       {Provider: "brave", ApiKeyCt: []byte("not a token at all, far too plain")},
+		"searxng without URL": {Provider: "searxng"},
+		"unknown provider":    {Provider: "google"},
 	} {
-		if _, err := NewSearchProvider(tc.s, box, tc.url); err == nil {
+		if _, err := NewSearchProvider(s, box); err == nil {
 			t.Errorf("%s: succeeded, want error", name)
 		}
 	}

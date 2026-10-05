@@ -71,12 +71,12 @@ type SearchProvider interface {
 }
 
 // NewSearchProvider returns the provider s names. SearXNG is called at
-// searxngURL, the configured MEALQUEST_SEARXNG_URL; Brave is called with the
-// API key in s.ApiKeyCt, decrypted by box.
-func NewSearchProvider(s db.RecipeSearchSetting, box *secretbox.Box, searxngURL string) (SearchProvider, error) {
+// s.BaseUrl; Brave is called with the API key in s.ApiKeyCt, decrypted by
+// box.
+func NewSearchProvider(s db.RecipeSearchSetting, box *secretbox.Box) (SearchProvider, error) {
 	switch s.Provider {
 	case "searxng":
-		return NewSearXNG(searxngURL)
+		return NewSearXNG(s.BaseUrl.String)
 	case "brave":
 		if len(s.ApiKeyCt) == 0 {
 			return nil, errors.New("recipes: Brave search has no API key")

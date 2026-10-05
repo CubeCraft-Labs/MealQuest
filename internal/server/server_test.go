@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -17,6 +19,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secretbox"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/migrations"
 )
@@ -39,7 +42,7 @@ func newTestRouterWith(t *testing.T, version string, settings *household.Setting
 		"index.html":             {Data: []byte(fixtureIndex)},
 		"assets/index-AbC123.js": {Data: []byte(fixtureAsset)},
 	}
-	r, err := NewRouter(logger, version, nil, stubAuth{}, stubSessions{}, settings, runner, newTestPhotos(t), assets)
+	r, err := NewRouter(logger, version, nil, stubAuth{}, stubSessions{}, settings, newTestSearch(t), runner, newTestPhotos(t), assets)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,11 +127,37 @@ func newTestPhotos(t *testing.T) *recipes.PhotoCache {
 	return photos
 }
 
+// newTestSearch returns a recipe search settings service, with nothing
+// configured, over a migrated temp database and a random secret box.
+func newTestSearch(t *testing.T) *recipes.SearchSettingsService {
+	t.Helper()
+	key := make([]byte, secretbox.KeySize)
+	rand.Read(key)
+	box, err := secretbox.New(base64.StdEncoding.EncodeToString(key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	search, err := recipes.NewSearchSettingsService(newTestStore(t), box)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return search
+}
+
+func TestNewRouterRequiresSearchSettings(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), nil, newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
+		t.Fatal("NewRouter accepted a nil recipe search settings service")
+	}
+}
+
 func TestNewRouterRequiresPhotoFiles(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestRunner(t), nil, fstest.MapFS{"index.html": {}}); err == nil {
+	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestRunner(t), nil, fstest.MapFS{"index.html": {}}); err == nil {
 		t.Fatal("NewRouter accepted nil photo files")
 	}
 }
@@ -137,7 +166,7 @@ func TestNewRouterRequiresSettings(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, nil, newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
+	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, nil, newTestSearch(t), newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
 		t.Fatal("NewRouter accepted a nil settings service")
 	}
 }
@@ -146,7 +175,7 @@ func TestNewRouterRequiresJobRunner(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), nil, newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
+	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), nil, newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
 		t.Fatal("NewRouter accepted a nil job runner")
 	}
 }

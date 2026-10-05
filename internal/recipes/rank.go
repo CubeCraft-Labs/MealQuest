@@ -45,12 +45,13 @@ type Ranked struct {
 }
 
 // Rank fetches and extracts the first RankDepth candidates concurrently and
-// returns those whose recipe has ingredients and an image, highest Score
-// first; equal scores keep search order.
+// returns those whose recipe is usable — it has ingredients and an image,
+// and any total time it gives is positive — highest Score first; equal
+// scores keep search order.
 //
 // Every candidate that is not ranked — its fetch failed, its page holds no
-// valid recipe, or the recipe lacks ingredients or an image — is reported,
-// never dropped silently: when some are ranked the error is
+// valid recipe, or the recipe is not usable — is reported, never dropped
+// silently: when some are ranked the error is
 // ErrCandidatesUnranked, returned together with the ranked ones; when none
 // are it is ErrNoUsableRecipe with no results. Either is joined with each
 // unranked candidate's URL and reason. A cancelled ctx returns only its
@@ -108,13 +109,24 @@ func rankOne(ctx context.Context, f PageFetcher, dish string, c Candidate) (Rank
 	if err != nil {
 		return Ranked{}, err
 	}
-	if len(r.Ingredients) == 0 {
-		return Ranked{}, ErrNoIngredients
-	}
-	if r.ImageURL == "" {
-		return Ranked{}, ErrNoImage
+	if err := usable(r); err != nil {
+		return Ranked{}, err
 	}
 	return Ranked{Candidate: c, Recipe: r, Score: harness.Similarity(r.Title, dish) + completeness(r)}, nil
+}
+
+// usable says why r cannot ground a dish: it has no ingredients or no
+// image, or a total time that is not positive.
+func usable(r Recipe) error {
+	switch {
+	case len(r.Ingredients) == 0:
+		return ErrNoIngredients
+	case r.ImageURL == "":
+		return ErrNoImage
+	case r.TotalMinutes != nil && *r.TotalMinutes <= 0:
+		return ErrTotalTimeNotPositive
+	}
+	return nil
 }
 
 // completeness is a quarter for each of ingredients, image, steps and total

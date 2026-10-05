@@ -3,6 +3,7 @@ package recipes
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"image"
 	"image/color"
@@ -18,6 +19,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/migrations"
 )
@@ -70,6 +72,22 @@ func newTestPhotoCache(t *testing.T, files map[string]photoFile) (*PhotoCache, *
 		t.Fatal(err)
 	}
 	return cache, st, dataDir, srv
+}
+
+// cachePhoto downloads the image at rawURL and records it in its own
+// transaction, as a caller of DownloadPhoto and CachePhoto does.
+func cachePhoto(t *testing.T, cache *PhotoCache, rawURL string) (db.Photo, error) {
+	t.Helper()
+	p, err := cache.DownloadPhoto(t.Context(), rawURL)
+	if err != nil {
+		return db.Photo{}, err
+	}
+	var photo db.Photo
+	err = cache.store.WithTx(t.Context(), func(tx *sql.Tx) error {
+		photo, _, err = cache.CachePhoto(t.Context(), tx, p)
+		return err
+	})
+	return photo, err
 }
 
 // gradient is a w×h opaque image.
@@ -167,7 +185,7 @@ func TestCachePhotoFormatsAndSizes(t *testing.T) {
 		{"/square.png", 1500, 1500, map[int]image.Point{1200: {1200, 1200}, 400: {400, 400}}},
 	}
 	for _, tc := range tests {
-		photo, err := cache.CachePhoto(t.Context(), "https://example.com"+tc.path)
+		photo, err := cachePhoto(t, cache, "https://example.com"+tc.path)
 		if err != nil {
 			t.Fatalf("CachePhoto %s: %v", tc.path, err)
 		}
@@ -194,7 +212,7 @@ func TestCachePhotoGIFUsesFirstFrame(t *testing.T) {
 	cache, _, dataDir, _ := newTestPhotoCache(t, map[string]photoFile{
 		"/anim.gif": {"image/gif", twoFrameGIF(t, 400, 400)},
 	})
-	photo, err := cache.CachePhoto(t.Context(), "https://example.com/anim.gif")
+	photo, err := cachePhoto(t, cache, "https://example.com/anim.gif")
 	if err != nil {
 		t.Fatalf("CachePhoto: %v", err)
 	}
@@ -220,7 +238,7 @@ func TestCachePhotoRejectsSmallGIFFirstFrame(t *testing.T) {
 	cache, st, dataDir, _ := newTestPhotoCache(t, map[string]photoFile{
 		"/speck.gif": {"image/gif", b.Bytes()},
 	})
-	if _, err := cache.CachePhoto(t.Context(), "https://example.com/speck.gif"); !errors.Is(err, ErrPhotoTooSmall) {
+	if _, err := cachePhoto(t, cache, "https://example.com/speck.gif"); !errors.Is(err, ErrPhotoTooSmall) {
 		t.Errorf("CachePhoto error = %v, want ErrPhotoTooSmall", err)
 	}
 	if n := countPhotos(t, st); n != 0 {
@@ -236,7 +254,7 @@ func TestCachePhotoFillsTransparencyWhite(t *testing.T) {
 	cache, _, dataDir, _ := newTestPhotoCache(t, map[string]photoFile{
 		"/clear.png": {"image/png", encodePNG(t, image.NewNRGBA(image.Rect(0, 0, 400, 400)))},
 	})
-	photo, err := cache.CachePhoto(t.Context(), "https://example.com/clear.png")
+	photo, err := cachePhoto(t, cache, "https://example.com/clear.png")
 	if err != nil {
 		t.Fatalf("CachePhoto: %v", err)
 	}
@@ -276,7 +294,7 @@ func TestCachePhotoRejectsTooSmall(t *testing.T) {
 		"/edge.png":   {"image/png", encodePNG(t, gradient(300, 1000))},
 	})
 	for _, p := range []string{"/narrow.png", "/short.jpg"} {
-		if _, err := cache.CachePhoto(t.Context(), "https://example.com"+p); !errors.Is(err, ErrPhotoTooSmall) {
+		if _, err := cachePhoto(t, cache, "https://example.com"+p); !errors.Is(err, ErrPhotoTooSmall) {
 			t.Errorf("CachePhoto %s error = %v, want ErrPhotoTooSmall", p, err)
 		}
 	}
@@ -286,7 +304,7 @@ func TestCachePhotoRejectsTooSmall(t *testing.T) {
 	if names := photoFiles(t, dataDir); len(names) != 0 {
 		t.Errorf("files stored for refused images: %v", names)
 	}
-	if _, err := cache.CachePhoto(t.Context(), "https://example.com/edge.png"); err != nil {
+	if _, err := cachePhoto(t, cache, "https://example.com/edge.png"); err != nil {
 		t.Errorf("CachePhoto with a 300 px short side: %v", err)
 	}
 }
@@ -297,10 +315,10 @@ func TestCachePhotoRejectsNonImages(t *testing.T) {
 		"/page.html": {"text/html", encodePNG(t, gradient(400, 400))},
 		"/fake.jpg":  {"image/jpeg", []byte("<html>not a picture</html>")},
 	})
-	if _, err := cache.CachePhoto(t.Context(), "https://example.com/page.html"); !errors.Is(err, ErrNotImage) {
+	if _, err := cachePhoto(t, cache, "https://example.com/page.html"); !errors.Is(err, ErrNotImage) {
 		t.Errorf("text/html error = %v, want ErrNotImage", err)
 	}
-	if _, err := cache.CachePhoto(t.Context(), "https://example.com/fake.jpg"); !errors.Is(err, ErrPhotoFormat) {
+	if _, err := cachePhoto(t, cache, "https://example.com/fake.jpg"); !errors.Is(err, ErrPhotoFormat) {
 		t.Errorf("undecodable image error = %v, want ErrPhotoFormat", err)
 	}
 	if n := countPhotos(t, st); n != 0 {
@@ -316,11 +334,11 @@ func TestCachePhotoDeduplicatesBySHA256(t *testing.T) {
 		"/b.jpg":     {"image/jpeg", body},
 		"/other.jpg": {"image/jpeg", encodeJPEG(t, gradient(480, 640))},
 	})
-	first, err := cache.CachePhoto(t.Context(), "https://example.com/a.jpg")
+	first, err := cachePhoto(t, cache, "https://example.com/a.jpg")
 	if err != nil {
 		t.Fatalf("CachePhoto a: %v", err)
 	}
-	again, err := cache.CachePhoto(t.Context(), "https://example.com/b.jpg")
+	again, err := cachePhoto(t, cache, "https://example.com/b.jpg")
 	if err != nil {
 		t.Fatalf("CachePhoto b: %v", err)
 	}
@@ -330,7 +348,7 @@ func TestCachePhotoDeduplicatesBySHA256(t *testing.T) {
 	if n := srv.requests.Load(); n != 2 {
 		t.Errorf("%d downloads, want 2: each URL is fetched to hash it", n)
 	}
-	other, err := cache.CachePhoto(t.Context(), "https://example.com/other.jpg")
+	other, err := cachePhoto(t, cache, "https://example.com/other.jpg")
 	if err != nil {
 		t.Fatalf("CachePhoto other: %v", err)
 	}
@@ -350,7 +368,7 @@ func TestOpenPhoto(t *testing.T) {
 	cache, _, dataDir, _ := newTestPhotoCache(t, map[string]photoFile{
 		"/a.png": {"image/png", encodePNG(t, gradient(400, 300))},
 	})
-	photo, err := cache.CachePhoto(t.Context(), "https://example.com/a.png")
+	photo, err := cachePhoto(t, cache, "https://example.com/a.png")
 	if err != nil {
 		t.Fatalf("CachePhoto: %v", err)
 	}
@@ -434,5 +452,44 @@ func TestFetchImageContentTypes(t *testing.T) {
 	// Pages still fetch whatever the Content-Type.
 	if _, err := env.f.Fetch(t.Context(), typeURL("text/plain")); err != nil {
 		t.Errorf("Fetch: %v", err)
+	}
+}
+
+func TestCachePhotoRollsBackWithTransaction(t *testing.T) {
+	t.Parallel()
+	cache, st, dataDir, _ := newTestPhotoCache(t, map[string]photoFile{
+		"/a.jpg": {"image/jpeg", encodeJPEG(t, gradient(640, 480))},
+	})
+	p, err := cache.DownloadPhoto(t.Context(), "https://example.com/a.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	errAbort := errors.New("abort")
+	var photo db.Photo
+	var created bool
+	err = st.WithTx(t.Context(), func(tx *sql.Tx) error {
+		photo, created, err = cache.CachePhoto(t.Context(), tx, p)
+		if err != nil {
+			return err
+		}
+		return errAbort
+	})
+	if !errors.Is(err, errAbort) || !created {
+		t.Fatalf("WithTx error = %v, created = %v; want the abort after a new photo", err, created)
+	}
+	if n := countPhotos(t, st); n != 0 {
+		t.Errorf("%d photos rows after rollback", n)
+	}
+	if names := photoFiles(t, dataDir); len(names) != len(PhotoSizes) {
+		t.Errorf("files before removal = %v, want one per size", names)
+	}
+	if err := cache.RemovePhotoFiles(photo.ID); err != nil {
+		t.Fatal(err)
+	}
+	if names := photoFiles(t, dataDir); len(names) != 0 {
+		t.Errorf("files after RemovePhotoFiles = %v", names)
+	}
+	if err := cache.RemovePhotoFiles(photo.ID); err != nil {
+		t.Errorf("RemovePhotoFiles of absent files: %v", err)
 	}
 }

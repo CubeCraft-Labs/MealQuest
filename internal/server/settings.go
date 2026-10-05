@@ -13,7 +13,8 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 )
 
-// maxSettingsBody bounds a PATCH /settings/household request body.
+// maxSettingsBody bounds a PATCH /settings/household or
+// /settings/recipe-search request body.
 const maxSettingsBody = 16 << 10
 
 // settingsPatch is the PATCH /settings/household body. Every field is
@@ -52,7 +53,7 @@ func patchHouseholdSettings(logger *slog.Logger, svc *household.SettingsService)
 			writeError(w, r, logger, http.StatusInternalServerError, "internal", "internal error")
 			return
 		}
-		patch, err := decodeSettingsPatch(http.MaxBytesReader(w, r.Body, maxSettingsBody))
+		patch, err := decodePatch[settingsPatch](http.MaxBytesReader(w, r.Body, maxSettingsBody))
 		if err != nil {
 			writeError(w, r, logger, http.StatusBadRequest, "invalid_request", err.Error())
 			return
@@ -72,37 +73,37 @@ func patchHouseholdSettings(logger *slog.Logger, svc *household.SettingsService)
 	}
 }
 
-// decodeSettingsPatch reads a single JSON object, refusing unknown fields,
-// null values and trailing data.
-func decodeSettingsPatch(body io.Reader) (settingsPatch, error) {
+// decodePatch reads a single JSON object into a patch of type T, refusing
+// unknown fields, null values and trailing data.
+func decodePatch[T any](body io.Reader) (T, error) {
+	var patch T
 	data, err := io.ReadAll(body)
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
-			return settingsPatch{}, fmt.Errorf("request body exceeds %d bytes", tooLarge.Limit)
+			return patch, fmt.Errorf("request body exceeds %d bytes", tooLarge.Limit)
 		}
-		return settingsPatch{}, errors.New("cannot read request body")
+		return patch, errors.New("cannot read request body")
 	}
 
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
-		return settingsPatch{}, errors.New("request body must be a JSON object")
+		return patch, errors.New("request body must be a JSON object")
 	}
 	for name, raw := range fields {
 		if bytes.Equal(raw, []byte("null")) {
-			return settingsPatch{}, fmt.Errorf("%s: must not be null", name)
+			return patch, fmt.Errorf("%s: must not be null", name)
 		}
 	}
 
-	var patch settingsPatch
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&patch); err != nil {
 		var typeErr *json.UnmarshalTypeError
 		if errors.As(err, &typeErr) {
-			return settingsPatch{}, fmt.Errorf("%s: want a JSON %s", typeErr.Field, typeErr.Type)
+			return patch, fmt.Errorf("%s: want a JSON %s", typeErr.Field, typeErr.Type)
 		}
-		return settingsPatch{}, fmt.Errorf("invalid settings: %v", err)
+		return patch, fmt.Errorf("invalid settings: %v", err)
 	}
 	return patch, nil
 }

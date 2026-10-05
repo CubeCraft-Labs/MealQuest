@@ -181,6 +181,10 @@ type Recipe struct {
 	FetchedAt    string
 	CreatedAt    string
 	UpdatedAt    string
+	PhotoID      sql.NullString
+	Method       sql.NullString
+	Difficulty   sql.NullString
+	MinutesTotal sql.NullInt64
 }
 
 type RecipeIngredient struct {
@@ -197,12 +201,13 @@ type RecipeIngredient struct {
 }
 
 type RecipeSearchSetting struct {
-	ID        int64
-	Provider  string
-	BaseUrl   sql.NullString
-	ApiKeyCt  []byte
-	CreatedAt string
-	UpdatedAt string
+	ID          int64
+	Provider    string
+	BaseUrl     sql.NullString
+	ApiKeyCt    []byte
+	CreatedAt   string
+	UpdatedAt   string
+	ApiKeyLast4 sql.NullString
 }
 
 type RecipeStep struct {

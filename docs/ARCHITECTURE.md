@@ -260,6 +260,9 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
   hard-coded hex. Self-hosted Bagel Fat One and Figtree.
 - Tests: Vitest, Testing Library, jsdom.
 - Offline cache for the current plan, shopping list and recipes.
+- Logout (`POST /auth/logout`) answers with `Clear-Site-Data: "storage",
+  "cache"`, wiping the offline marker, the service worker and its caches; the
+  worker leaves that request to the browser, as it does every network-only one.
 
 | Route | Screen |
 | --- | --- |

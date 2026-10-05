@@ -1,0 +1,18 @@
+.hint {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.icon {
+  color: var(--color-accent);
+}
+
+.message {
+  flex: 1;
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+}

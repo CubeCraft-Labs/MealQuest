@@ -1,23 +1,28 @@
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createApiClient } from './api/index.ts'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createApiClient, createVerifiedSession } from './api/index.ts'
+import { createNetworkStatus } from './pwa/networkStatus.ts'
 import { mockViewport } from './test/matchMedia.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME, request, stubFetch } from './test/fetchStub.ts'
 import App, { routes } from './App.tsx'
 
 afterEach(() => {
   Reflect.deleteProperty(window, 'matchMedia')
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
 
 function renderAt(path: string, location = fakeLocation(path)) {
-  render(
+  return { location, ...renderAppAt(path, location) }
+}
+
+function renderAppAt(path: string, location = fakeLocation(path)) {
+  return render(
     <MemoryRouter initialEntries={[path]}>
-      <App api={createApiClient(location)} />
+      <App api={createApiClient(location, createNetworkStatus(window), createVerifiedSession(localStorage))} serviceWorker={undefined} />
     </MemoryRouter>,
   )
-  return location
 }
 
 describe('App routes', () => {
@@ -70,7 +75,7 @@ describe('App bootstrap', () => {
 
   it('sends a signed-out visitor to sign-in and never renders the routes', async () => {
     const fetchMock = stubFetch(errorResponse(401, 'unauthenticated'))
-    const location = renderAt('/discover', fakeLocation('/discover', '?swipe=1'))
+    const { location } = renderAt('/discover', fakeLocation('/discover', '?swipe=1'))
 
     await vi.waitFor(() => expect(location.assign).toHaveBeenCalledWith('/auth/login?return=%2Fdiscover%3Fswipe%3D1'))
     expect(fetchMock).toHaveBeenCalledTimes(1)
@@ -80,7 +85,7 @@ describe('App bootstrap', () => {
 
   it('shows the not-in-this-household screen on a 403', async () => {
     const fetchMock = stubFetch(errorResponse(403, 'forbidden'))
-    const location = renderAt('/')
+    const { location } = renderAt('/')
 
     expect(await screen.findByText(/not in this household/)).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Not in this household' })).toBeInTheDocument()
@@ -97,5 +102,95 @@ describe('App bootstrap', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('MealQuest could not load: internal message')
     screen.getByRole('button', { name: 'Retry' }).click()
     expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument()
+  })
+})
+
+describe('App offline bootstrap', () => {
+  let onLine: boolean
+
+  function goOffline() {
+    onLine = false
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockRejectedValue(new TypeError('Failed to fetch')))
+  }
+
+  // visitOnline is an earlier online visit on this device: /me answers with a
+  // member, then the app is closed.
+  async function visitOnline() {
+    stubFetch(jsonResponse(200, ME))
+    const { unmount } = renderAt('/')
+    expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument()
+    unmount()
+  }
+
+  beforeEach(() => {
+    mockViewport(390)
+    onLine = true
+    vi.spyOn(navigator, 'onLine', 'get').mockImplementation(() => onLine)
+  })
+
+  it.each([
+    ['/plan', 'Plan'],
+    ['/dinner/01J9ZK', 'Dinner'],
+  ])('an offline reload of %s after an online visit opens the saved page', async (path, title) => {
+    await visitOnline()
+    goOffline()
+    renderAt(path)
+
+    expect(await screen.findByRole('heading', { level: 1, name: title })).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'Primary' })).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Offline — showing saved data')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('opens the saved pages when the server is unreachable but the browser reports online', async () => {
+    await visitOnline()
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockRejectedValue(new TypeError('Failed to fetch')))
+    renderAt('/plan')
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'Plan' })).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Offline — showing saved data')
+  })
+
+  it('reports the failure offline when this device never verified a session', async () => {
+    goOffline()
+    renderAt('/plan')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('MealQuest could not load: Failed to fetch')
+    expect(screen.queryByRole('navigation', { name: 'Primary' })).not.toBeInTheDocument()
+  })
+
+  it('reports the failure offline after the session was refused', async () => {
+    await visitOnline()
+    stubFetch(errorResponse(401, 'unauthenticated'))
+    const { location, unmount } = renderAt('/plan')
+    await vi.waitFor(() => expect(location.assign).toHaveBeenCalled())
+    unmount()
+
+    goOffline()
+    renderAt('/plan')
+    expect(await screen.findByRole('alert')).toHaveTextContent('MealQuest could not load: Failed to fetch')
+    expect(screen.queryByRole('navigation', { name: 'Primary' })).not.toBeInTheDocument()
+  })
+
+  it('loads /me again on reconnect and refuses writes until it has', async () => {
+    await visitOnline()
+    goOffline()
+    const api = createApiClient(fakeLocation('/plan'), createNetworkStatus(window), createVerifiedSession(localStorage))
+    render(
+      <MemoryRouter initialEntries={['/plan']}>
+        <App api={api} serviceWorker={undefined} />
+      </MemoryRouter>,
+    )
+    expect(await screen.findByRole('heading', { level: 1, name: 'Plan' })).toBeInTheDocument()
+    await expect(api.apiFetch('/api/v1/plans', { method: 'POST', body: {} })).rejects.toThrow(/no CSRF token/)
+
+    const fetchMock = stubFetch(jsonResponse(200, ME))
+    onLine = true
+    act(() => {
+      window.dispatchEvent(new Event('online'))
+    })
+    await vi.waitFor(() => expect(request(fetchMock, 0)).toMatchObject({ path: '/api/v1/me', method: 'GET' }))
+    await vi.waitFor(() => expect(screen.queryByRole('status')).toBeNull())
+    expect(screen.getByRole('heading', { level: 1, name: 'Plan' })).toBeInTheDocument()
   })
 })

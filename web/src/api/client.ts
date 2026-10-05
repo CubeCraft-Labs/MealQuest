@@ -1,4 +1,7 @@
+import type { NetworkStatus } from '../pwa/networkStatus.ts'
+import { cacheFallbackHeader } from '../sw/routes.ts'
 import { ApiError, isRecord, parseApiError } from './errors.ts'
+import type { VerifiedSession } from './verifiedSession.ts'
 
 // CSRF_HEADER carries the session's CSRF token on every non-GET request.
 export const CSRF_HEADER = 'X-MealQuest-CSRF'
@@ -36,7 +39,7 @@ export type ApiLocation = Pick<Location, 'origin' | 'pathname' | 'search' | 'ass
 
 export type ApiRequest = {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
-  // Sent as JSON.
+  // Sent as JSON. A GET must not have one.
   body?: unknown
 }
 
@@ -51,11 +54,18 @@ export type ApiClient = {
   // account is not in this household; subscribe is notified when it changes.
   forbidden(): boolean
   subscribe(listener: () => void): () => void
+  // network learns of every request that failed with a network error or was
+  // answered from the service worker's cache, and of every request the
+  // server answered.
+  network: NetworkStatus
+  // session remembers, on this device, whether /me last answered with a
+  // member; offline, AuthBootstrap opens the saved pages only if it did.
+  session: VerifiedSession
 }
 
 // createApiClient builds the app's API client. location is window.location in
 // the app: a 401 sends it to /auth/login with the current path to return to.
-export function createApiClient(location: ApiLocation): ApiClient {
+export function createApiClient(location: ApiLocation, network: NetworkStatus, session: VerifiedSession): ApiClient {
   let csrfToken: string | null = null
   let refreshing: Promise<Me> | null = null
   let forbidden = false
@@ -70,12 +80,28 @@ export function createApiClient(location: ApiLocation): ApiClient {
       }
       headers[CSRF_HEADER] = csrfToken
     }
-    return fetch(path, {
-      method,
-      headers,
-      credentials: 'same-origin',
-      body: body === undefined ? undefined : JSON.stringify(body),
-    })
+    // Serialize before fetching so a body that cannot be sent is its own error
+    // and never counts as a network failure.
+    let json: string | undefined
+    try {
+      json = body === undefined ? undefined : JSON.stringify(body)
+    } catch (error) {
+      throw new Error(`${method} ${path}: request body is not serializable as JSON`, { cause: error })
+    }
+    let response: Response
+    try {
+      response = await fetch(path, { method, headers, credentials: 'same-origin', body: json })
+    } catch (error) {
+      // fetch rejects with a TypeError when the network fails; an abort is a
+      // DOMException and says nothing about the network.
+      if (error instanceof TypeError) network.requestFailed()
+      throw error
+    }
+    // The service worker marks a response it answered from its cache because
+    // the server could not be reached in time.
+    if (response.headers.has(cacheFallbackHeader)) network.requestFailed()
+    else network.requestSucceeded()
+    return response
   }
 
   // refreshMe shares one in-flight /me request between every request that
@@ -90,6 +116,11 @@ export function createApiClient(location: ApiLocation): ApiClient {
   async function apiFetch<T>(path: string, request: ApiRequest = {}): Promise<T> {
     const method = request.method ?? 'GET'
     const url = apiURL(location.origin, method, path)
+    // fetch refuses a GET with a body by rejecting with a TypeError, the same
+    // error as a network failure, so refuse it here before anything is sent.
+    if (method === 'GET' && request.body !== undefined) {
+      throw new Error(`GET ${path}: a GET request cannot carry a body`)
+    }
     let response = await send(method, url, request.body)
     if (response.status === 403) {
       const error = await parseForbidden(method, path, response)
@@ -113,12 +144,14 @@ export function createApiClient(location: ApiLocation): ApiClient {
 
   function markForbidden() {
     if (forbidden) return
+    session.forget()
     forbidden = true
     listeners.forEach((listener) => listener())
   }
 
   async function decode<T>(method: string, path: string, response: Response): Promise<T> {
     if (response.status === 401) {
+      session.forget()
       location.assign(`/auth/login?return=${encodeURIComponent(location.pathname + location.search)}`)
     }
     if (!response.ok) throw await parseApiError(method, path, response)
@@ -140,6 +173,7 @@ export function createApiClient(location: ApiLocation): ApiClient {
       throw new Error(`GET ${ME_PATH}: response is not a member with a CSRF token`)
     }
     csrfToken = me.csrfToken
+    session.remember()
     return me as Me
   }
 
@@ -151,5 +185,7 @@ export function createApiClient(location: ApiLocation): ApiClient {
       listeners.add(listener)
       return () => listeners.delete(listener)
     },
+    network,
+    session,
   }
 }

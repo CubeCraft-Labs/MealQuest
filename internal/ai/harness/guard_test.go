@@ -29,6 +29,17 @@ func (s slowSkill) PostProcess(out echoOutput) (echoOutput, error) {
 	return s.timeoutSkill.PostProcess(out)
 }
 
+// slowFailingSkill is timeoutSkill whose PostProcess fails only after its
+// timeout has passed.
+type slowFailingSkill struct {
+	timeoutSkill
+}
+
+func (s slowFailingSkill) PostProcess(echoOutput) (echoOutput, error) {
+	time.Sleep(3 * s.timeout)
+	return echoOutput{}, errors.New("cannot finish")
+}
+
 // blocked is one scripted Generate call that blocks until released.
 type blocked struct {
 	started chan struct{}
@@ -293,6 +304,25 @@ func TestRunTimeout(t *testing.T) {
 		rows := runRows(t, cfg.Store)
 		if len(rows) != 1 || rows[0].Status != string(StatusProviderError) || !strings.Contains(rows[0].Error.String, llm.ErrTimeout.Error()) {
 			t.Fatalf("rows = %+v, want one provider_error row naming the timeout", rows)
+		}
+	})
+	t.Run("work that fails late", func(t *testing.T) {
+		var f llm.Fake
+		cfg := testConfig(t, &f)
+		f.QueueGenerate(reply(`{"echo":"taco"}`))
+		s := slowFailingSkill{timeoutSkill{timeout: 20 * time.Millisecond}}
+		_, err := Run(context.Background(), cfg, s, "week-1", echoInput{Word: "taco"})
+		if !errors.Is(err, llm.ErrTimeout) || !strings.Contains(err.Error(), "cannot finish") {
+			t.Fatalf("err = %v, want ErrTimeout and the post-process failure", err)
+		}
+		assertCalls(t, &f, 1)
+		// The row records the timeout the caller received, not the
+		// bad_output a post-process failure in time would be, and keeps
+		// the underlying error.
+		rows := runRows(t, cfg.Store)
+		if len(rows) != 1 || rows[0].Status != string(StatusProviderError) ||
+			!strings.Contains(rows[0].Error.String, llm.ErrTimeout.Error()) || !strings.Contains(rows[0].Error.String, "cannot finish") {
+			t.Fatalf("rows = %+v, want one provider_error row naming the timeout and the post-process failure", rows)
 		}
 	})
 	t.Run("row saved late", func(t *testing.T) {

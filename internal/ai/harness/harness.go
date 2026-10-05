@@ -124,7 +124,8 @@ func (e *BadOutputError) Unwrap() error { return llm.ErrBadOutput }
 // cfg.Guard's slots while it runs.
 //
 // A run that has not ended within s.Timeout() fails with an error matching
-// llm.ErrTimeout. When ctx is done first, Run returns ctx.Err(); the run
+// llm.ErrTimeout, wrapping the error its work returned if any, and its row
+// records StatusProviderError whatever that work's outcome. When ctx is done first, Run returns ctx.Err(); the run
 // goes on for the callers still waiting for it, and is cancelled when none
 // is left.
 //
@@ -180,14 +181,16 @@ func runOnce[In, Out any](ctx context.Context, cfg Config, s Skill[In, Out], tim
 	log := &runLog{id: store.NewID(), start: store.Now()}
 	out, status, err := execute(ctx, cfg, s, in, log)
 	// Work that only ends after the deadline, such as a slow PostProcess,
-	// may return no error; it is still a timeout, not a success. The clock
+	// is a timeout whatever it returned, so its row says provider_error
+	// like the caller's error, which keeps any underlying error. The clock
 	// is checked as well as ctx because ctx's timer may not have fired yet.
 	if context.Cause(ctx) == expired || !time.Now().Before(deadline) {
 		if err == nil {
-			err, status = expired, StatusProviderError
+			err = expired
 		} else {
 			err = fmt.Errorf("%w: %w", expired, err)
 		}
+		status = StatusProviderError
 	}
 	// The saves ignore the callers' cancellation, so a cancelled run is
 	// recorded too, but each is bounded. Work that ended in time must also

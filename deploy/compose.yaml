@@ -46,6 +46,40 @@ services:
     cap_drop:
       - ALL
 
+  # Litestream streams the database to the Synology NAS over SFTP
+  # (config: deploy/litestream.yml). The SFTP private key
+  # deploy/secrets/litestream_key is a dedicated keypair, owned by
+  # 10001:10001 with mode 0600 like the other secrets.
+  #
+  # The data volume is mounted read-write on purpose: Litestream writes its
+  # tracking tables into the database and checkpoints the WAL. It runs as
+  # the app's own user (owner of the volume) with a read-only root
+  # filesystem, no privilege escalation and no Linux capabilities.
+  #
+  # Restore: follow "Restore the database" in deploy/RUNBOOK.md (stop the
+  # stack, move the database with its -wal and -shm aside, restore, check).
+  litestream:
+    image: litestream/litestream:0.5.17
+    user: "10001:10001"
+    restart: unless-stopped
+    command: ["replicate", "-config", "/etc/litestream.yml"]
+    depends_on:
+      mealquest:
+        condition: service_healthy
+    volumes:
+      - mealquest-data:/data
+      - ./litestream.yml:/etc/litestream.yml:ro
+      - ./secrets/litestream_key:/etc/litestream/sftp_key:ro
+    networks:
+      - mealquest
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
 secrets:
   secret_key:
     file: ./secrets/secret_key

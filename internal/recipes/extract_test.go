@@ -278,6 +278,61 @@ func TestExtractShapes(t *testing.T) {
 			},
 		},
 		{
+			name: "image and publisher resolved by @id within @graph",
+			html: page(`<meta property="og:site_name" content="Not this">`, `{"@context":"https://schema.org","@graph":[
+				{"@type":"Recipe","name":"Stew",
+					"image":{"@id":"https://www.example.com/#primaryimage"},
+					"publisher":{"@id":"https://www.example.com/#organization"}},
+				{"@type":"ImageObject","@id":"https://www.example.com/#primaryimage","url":"/img/stew.jpg","width":1200,"height":800},
+				{"@type":"Organization","@id":"https://www.example.com/#organization","name":"Our Kitchen"}]}`),
+			check: func(t *testing.T, r Recipe) {
+				if r.ImageURL != "https://www.example.com/img/stew.jpg" {
+					t.Errorf("ImageURL = %q", r.ImageURL)
+				}
+				if r.SiteName != "Our Kitchen" {
+					t.Errorf("SiteName = %q", r.SiteName)
+				}
+			},
+		},
+		{
+			name: "image @id resolved from another script",
+			html: page("", `{"@type":"Recipe","name":"Stew","image":[{"@id":"#img"}]}`,
+				`{"@type":"ImageObject","@id":"#img","contentUrl":"stew.jpg"}`),
+			check: func(t *testing.T, r Recipe) {
+				if r.ImageURL != "https://www.example.com/recipes/stew/stew.jpg" {
+					t.Errorf("ImageURL = %q", r.ImageURL)
+				}
+			},
+		},
+		{
+			name: "absolute schema.org type IRIs",
+			html: page("", `{"@type":"https://schema.org/Recipe","name":"Stew","recipeInstructions":[
+				{"@type":"http://schema.org/HowToStep","text":"one"}]}`),
+			check: func(t *testing.T, r Recipe) {
+				if r.Title != "Stew" || strings.Join(r.Steps, "|") != "one" {
+					t.Errorf("Title = %q, Steps = %q", r.Title, r.Steps)
+				}
+			},
+		},
+		{
+			name: "absolute type IRI in a type array",
+			html: page("", `{"@type":["NewsArticle","http://schema.org/Recipe"],"name":"Stew"}`),
+			check: func(t *testing.T, r Recipe) {
+				if r.Title != "Stew" {
+					t.Errorf("Title = %q", r.Title)
+				}
+			},
+		},
+		{
+			name: "null duration is absent",
+			html: page("", `{"@type":"Recipe","name":"Stew","prepTime":null,"cookTime":"PT10M"}`),
+			check: func(t *testing.T, r Recipe) {
+				if r.PrepMinutes != nil || r.TotalMinutes != nil || fmtMinutes(r.CookMinutes) != "10" {
+					t.Errorf("prep %s, cook %s, total %s", fmtMinutes(r.PrepMinutes), fmtMinutes(r.CookMinutes), fmtMinutes(r.TotalMinutes))
+				}
+			},
+		},
+		{
 			name: "JSON-LD text inside comments and other scripts is ignored",
 			html: []byte(`<html><head><!-- <script type="application/ld+json">{"@type":"Recipe","name":"Old"}</script> -->` +
 				`<script>var s = '<script type="application/ld+json">';</script>` +
@@ -313,6 +368,12 @@ func TestExtractErrors(t *testing.T) {
 		{"bad step type", page("", `{"@type":"Recipe","name":"A","recipeInstructions":[{"@type":"Thing"}]}`), "https://example.com/", ErrMalformedRecipe},
 		{"step without text", page("", `{"@type":"Recipe","name":"A","recipeInstructions":[{"@type":"HowToStep","name":"x"}]}`), "https://example.com/", ErrMalformedRecipe},
 		{"bad image width", page("", `{"@type":"Recipe","name":"A","image":{"url":"a.jpg","width":"wide"}}`), "https://example.com/", ErrMalformedRecipe},
+		{"empty prepTime", page("", `{"@type":"Recipe","name":"A","prepTime":""}`), "https://example.com/", ErrMalformedRecipe},
+		{"blank cookTime", page("", `{"@type":"Recipe","name":"A","cookTime":"  "}`), "https://example.com/", ErrMalformedRecipe},
+		{"empty totalTime", page("", `{"@type":"Recipe","name":"A","totalTime":""}`), "https://example.com/", ErrMalformedRecipe},
+		{"image @id not on page", page("", `{"@type":"Recipe","name":"A","image":{"@id":"#missing"}}`), "https://example.com/", ErrMalformedRecipe},
+		{"image @id on two nodes", page("", `{"@type":"Recipe","name":"A","image":{"@id":"#img"}}`,
+			`{"@id":"#img","url":"a.jpg"}`, `{"@id":"#img","url":"b.jpg"}`), "https://example.com/", ErrMalformedRecipe},
 		{"non-text ingredient", page("", `{"@type":"Recipe","name":"A","recipeIngredient":[{"name":"salt"}]}`), "https://example.com/", ErrMalformedRecipe},
 	}
 	for _, tt := range tests {

@@ -50,22 +50,25 @@ type Recipe struct {
 
 // Extract finds the schema.org Recipe in a page's application/ld+json
 // scripts. Recipe nodes are found at the top level of a script, in a
-// top-level array, or in an @graph. pageURL is the page's own absolute URL;
-// relative image URLs resolve against it.
+// top-level array, or in an @graph. An image or publisher given as an
+// {"@id": ...} reference resolves to the node with that @id found in the
+// same places, in any of the page's scripts. pageURL is the page's own
+// absolute URL; relative image URLs resolve against it.
 func Extract(page []byte, pageURL string) (Recipe, error) {
 	base, err := url.Parse(pageURL)
 	if err != nil || !base.IsAbs() || base.Host == "" {
 		return Recipe{}, fmt.Errorf("recipes: page URL %q is not absolute", pageURL)
 	}
 	doc := scanHTML(string(page))
-	var nodes []map[string]any
+	g := graph{ids: map[string][]map[string]any{}}
 	for i, script := range doc.jsonLD {
 		v, err := decodeJSON(script)
 		if err != nil {
 			return Recipe{}, fmt.Errorf("%w: JSON-LD script %d: %v", ErrMalformedRecipe, i+1, err)
 		}
-		collectRecipes(v, &nodes)
+		g.collect(v)
 	}
+	nodes := g.recipes
 	switch len(nodes) {
 	case 0:
 		return Recipe{}, ErrNoRecipe
@@ -73,7 +76,7 @@ func Extract(page []byte, pageURL string) (Recipe, error) {
 	default:
 		return Recipe{}, fmt.Errorf("%w: found %d", ErrManyRecipes, len(nodes))
 	}
-	r, err := recipeFrom(nodes[0], base, doc.ogSiteName)
+	r, err := recipeFrom(nodes[0], g, base, doc.ogSiteName)
 	if err != nil {
 		return Recipe{}, fmt.Errorf("%w: %v", ErrMalformedRecipe, err)
 	}
@@ -93,33 +96,65 @@ func decodeJSON(s string) (any, error) {
 	return v, nil
 }
 
-// collectRecipes appends every Recipe node in v: v itself, the elements of
-// an array, and the members of an @graph.
-func collectRecipes(v any, out *[]map[string]any) {
+// graph holds the page's JSON-LD nodes: the Recipe nodes, and every node
+// with an @id by that @id.
+type graph struct {
+	recipes []map[string]any
+	ids     map[string][]map[string]any
+}
+
+// collect gathers the nodes in v: v itself, the elements of an array, and
+// the members of an @graph. A bare {"@id": ...} reference is not a node.
+func (g *graph) collect(v any) {
 	switch n := v.(type) {
 	case []any:
 		for _, e := range n {
-			collectRecipes(e, out)
+			g.collect(e)
 		}
 	case map[string]any:
 		if hasType(n, "Recipe") {
-			*out = append(*out, n)
+			g.recipes = append(g.recipes, n)
 		}
-		if g, ok := n["@graph"]; ok {
-			collectRecipes(g, out)
+		if id, ok := n["@id"].(string); ok && len(n) > 1 {
+			g.ids[id] = append(g.ids[id], n)
+		}
+		if members, ok := n["@graph"]; ok {
+			g.collect(members)
 		}
 	}
 }
 
+// resolve returns the node a bare {"@id": ...} reference names, and v
+// itself when v is not a reference. found is false for a reference to no
+// node; a reference to more than one node is an error.
+func (g graph) resolve(v any) (node any, found bool, err error) {
+	m, ok := v.(map[string]any)
+	if !ok || len(m) != 1 {
+		return v, true, nil
+	}
+	id, ok := m["@id"].(string)
+	if !ok {
+		return v, true, nil
+	}
+	switch nodes := g.ids[id]; len(nodes) {
+	case 0:
+		return v, false, nil
+	case 1:
+		return nodes[0], true, nil
+	default:
+		return nil, false, fmt.Errorf("@id %q names %d nodes", id, len(nodes))
+	}
+}
+
 // hasType reports whether node's @type, a string or an array of strings,
-// names typ.
+// names the schema.org type typ, as a term or an absolute schema.org IRI.
 func hasType(node map[string]any, typ string) bool {
 	switch t := node["@type"].(type) {
 	case string:
-		return t == typ
+		return isSchemaType(t, typ)
 	case []any:
 		for _, e := range t {
-			if s, ok := e.(string); ok && s == typ {
+			if s, ok := e.(string); ok && isSchemaType(s, typ) {
 				return true
 			}
 		}
@@ -127,15 +162,21 @@ func hasType(node map[string]any, typ string) bool {
 	return false
 }
 
-func recipeFrom(n map[string]any, base *url.URL, ogSiteName string) (Recipe, error) {
+func isSchemaType(s, typ string) bool {
+	return s == typ || s == "https://schema.org/"+typ || s == "http://schema.org/"+typ
+}
+
+func recipeFrom(n map[string]any, g graph, base *url.URL, ogSiteName string) (Recipe, error) {
 	var r Recipe
 	var err error
 	name, ok := n["name"].(string)
 	if r.Title = cleanText(name); !ok || r.Title == "" {
 		return Recipe{}, errors.New("name is missing")
 	}
-	r.SiteName = siteName(n["publisher"], ogSiteName, base)
-	if r.ImageURL, err = imageURL(n["image"], base); err != nil {
+	if r.SiteName, err = siteName(n["publisher"], g, ogSiteName, base); err != nil {
+		return Recipe{}, err
+	}
+	if r.ImageURL, err = imageURL(n["image"], g, base); err != nil {
 		return Recipe{}, err
 	}
 	if r.Ingredients, err = ingredients(n["recipeIngredient"]); err != nil {
@@ -172,28 +213,32 @@ func cleanText(s string) string {
 	return strings.TrimSpace(html.UnescapeString(s))
 }
 
-func siteName(publisher any, ogSiteName string, base *url.URL) string {
+func siteName(publisher any, g graph, ogSiteName string, base *url.URL) (string, error) {
 	pubs, ok := publisher.([]any)
 	if !ok {
 		pubs = []any{publisher}
 	}
 	for _, p := range pubs {
+		p, _, err := g.resolve(p)
+		if err != nil {
+			return "", fmt.Errorf("publisher: %w", err)
+		}
 		if m, ok := p.(map[string]any); ok {
 			if name, ok := m["name"].(string); ok && cleanText(name) != "" {
-				return cleanText(name)
+				return cleanText(name), nil
 			}
 		}
 	}
 	if ogSiteName != "" {
-		return ogSiteName
+		return ogSiteName, nil
 	}
-	return strings.TrimPrefix(base.Hostname(), "www.")
+	return strings.TrimPrefix(base.Hostname(), "www."), nil
 }
 
 // imageURL picks the largest of the recipe's images by width × height;
 // images without both dimensions count as size zero, and the first wins a
 // tie, so a list of bare URLs gives its first.
-func imageURL(v any, base *url.URL) (string, error) {
+func imageURL(v any, g graph, base *url.URL) (string, error) {
 	items, ok := v.([]any)
 	if !ok {
 		if v == nil {
@@ -203,6 +248,13 @@ func imageURL(v any, base *url.URL) (string, error) {
 	}
 	best, bestArea := "", int64(-1)
 	for _, item := range items {
+		item, found, err := g.resolve(item)
+		if err != nil {
+			return "", fmt.Errorf("image: %w", err)
+		}
+		if !found {
+			return "", fmt.Errorf("image references @id %v, which no node on the page has", item.(map[string]any)["@id"])
+		}
 		var u string
 		var area int64
 		switch img := item.(type) {
@@ -345,6 +397,8 @@ func stepList(items []any) ([]string, error) {
 	return out, nil
 }
 
+// minutes reads a duration field: nil when absent or null; any string
+// present, empty included, must be an ISO-8601 duration.
 func minutes(n map[string]any, field string) (*int, error) {
 	v, ok := n[field]
 	if !ok || v == nil {
@@ -353,9 +407,6 @@ func minutes(n map[string]any, field string) (*int, error) {
 	s, ok := v.(string)
 	if !ok {
 		return nil, fmt.Errorf("%s is a %T, not an ISO-8601 duration", field, v)
-	}
-	if strings.TrimSpace(s) == "" {
-		return nil, nil
 	}
 	m, err := isoMinutes(s)
 	if err != nil {

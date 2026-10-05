@@ -15,10 +15,15 @@ func reply(js string) llm.GenerateResult {
 	return llm.GenerateResult{Response: llm.Response{Text: js, JSON: json.RawMessage(js)}}
 }
 
-// testConfig returns a Config for f recording into a fresh migrated store.
+// testConfig returns a Config whose provider is f, recording into a fresh
+// migrated store.
 func testConfig(t *testing.T, f *llm.Fake) Config {
 	t.Helper()
-	return Config{Provider: f, Temperature: 0.7, ProviderName: "anthropic", Model: "claude-test", Store: emptyHousehold(t)}
+	return Config{
+		Settings:    llm.Settings{Provider: "anthropic", Model: "claude-test", Temperature: 0.7},
+		NewProvider: func(llm.Settings, string) (llm.Provider, error) { return f, nil },
+		Store:       emptyHousehold(t),
+	}
 }
 
 func run(t *testing.T, f *llm.Fake) (echoOutput, error) {
@@ -215,8 +220,29 @@ func TestRunRenderError(t *testing.T) {
 		t.Fatalf("err = %v, want a render error", err)
 	}
 	assertCalls(t, &f, 0)
-	if rows := runRows(t, cfg.Store); len(rows) != 0 {
-		t.Fatalf("render error wrote %d ai_runs rows, want none", len(rows))
+	rows := runRows(t, cfg.Store)
+	if len(rows) != 1 {
+		t.Fatalf("render error wrote %d ai_runs rows, want 1", len(rows))
+	}
+	r := rows[0]
+	if r.Status != string(StatusBadOutput) || r.Error.String != err.Error() ||
+		r.Request != "[]" || r.Response.String != "[]" || r.TokensIn.Valid || r.TokensOut.Valid {
+		t.Fatalf("row = %+v, want bad_output with the render error and no turns", r)
+	}
+}
+
+func TestRunProviderBuildError(t *testing.T) {
+	var f llm.Fake
+	cfg := testConfig(t, &f)
+	cfg.NewProvider = func(llm.Settings, string) (llm.Provider, error) { return nil, llm.ErrMissingKey }
+	_, err := Run(context.Background(), cfg, echoSkill{}, echoInput{Word: "taco"})
+	if !errors.Is(err, llm.ErrMissingKey) {
+		t.Fatalf("err = %v, want ErrMissingKey", err)
+	}
+	rows := runRows(t, cfg.Store)
+	if len(rows) != 1 || rows[0].Status != string(StatusProviderError) ||
+		rows[0].Error.String != err.Error() || rows[0].Request != "[]" {
+		t.Fatalf("rows = %+v, want one provider_error row with no turns", rows)
 	}
 }
 
@@ -224,10 +250,10 @@ func TestRunConfigError(t *testing.T) {
 	var f llm.Fake
 	full := testConfig(t, &f)
 	for name, edit := range map[string]func(*Config){
-		"provider":      func(c *Config) { c.Provider = nil },
-		"provider name": func(c *Config) { c.ProviderName = "" },
-		"model":         func(c *Config) { c.Model = "" },
-		"store":         func(c *Config) { c.Store = nil },
+		"provider constructor": func(c *Config) { c.NewProvider = nil },
+		"provider name":        func(c *Config) { c.Settings.Provider = "" },
+		"model":                func(c *Config) { c.Settings.Model = "" },
+		"store":                func(c *Config) { c.Store = nil },
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg := full

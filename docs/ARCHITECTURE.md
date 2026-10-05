@@ -150,9 +150,13 @@ automatic** (D-021).
   Anthropic and Ollama endpoints, called over plain HTTP — no vendor SDKs.
 - **Skill harness** (`ai/harness`): prompt layering, validation of the
   structured output, and **one repair retry**; if the repair also fails the
-  run fails — no silent fallback. Every run that reaches the provider writes
-  one `ai_runs` row when it ends, covering the repair turn too, with status
-  `ok`, `repaired`, `bad_output` or `provider_error`. Request and response
+  run fails — no silent fallback. Every run writes one `ai_runs` row when it
+  ends, covering the repair turn too, with status `ok`, `repaired`,
+  `bad_output` or `provider_error`; a prompt that cannot be rendered is
+  `bad_output` and a provider that cannot be built is `provider_error`, both
+  with no turns. The harness builds the provider itself from the settings
+  and the decrypted API key (`presets.FromSettings`), so the key it redacts
+  is always the key the provider sends. Request and response
   bodies are redacted before they are stored: the decrypted API key,
   Authorization and API-key header values, Google Chat webhook URLs and URLs
   with key-like query parameters are removed, inside JSON strings too.

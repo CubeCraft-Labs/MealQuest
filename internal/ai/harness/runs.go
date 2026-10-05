@@ -26,10 +26,11 @@ const (
 	// StatusRepaired means the first reply was not usable and the reply to
 	// the repair turn was.
 	StatusRepaired RunStatus = "repaired"
-	// StatusBadOutput means neither reply was usable, or post-processing
-	// a valid reply failed.
+	// StatusBadOutput means neither reply was usable, post-processing a
+	// valid reply failed, or the skill's prompt could not be rendered.
 	StatusBadOutput RunStatus = "bad_output"
-	// StatusProviderError means the provider failed on either turn.
+	// StatusProviderError means the provider could not be built or failed
+	// on either turn.
 	StatusProviderError RunStatus = "provider_error"
 )
 
@@ -140,11 +141,12 @@ func (l *runLog) add(apiKey string, req llm.Request, resp llm.Response, err erro
 // save writes the run's ai_runs row. It is written even when ctx is done,
 // so a cancelled run is recorded too.
 func (l *runLog) save(ctx context.Context, cfg Config, skill string, version int, status RunStatus, runErr error) error {
-	request, err := marshalRedacted(l.requests, cfg.APIKey)
+	// A run that failed before its first turn stores an empty list.
+	request, err := marshalRedacted(nonNil(l.requests), cfg.APIKey)
 	if err != nil {
 		return err
 	}
-	response, err := marshalRedacted(l.responses, cfg.APIKey)
+	response, err := marshalRedacted(nonNil(l.responses), cfg.APIKey)
 	if err != nil {
 		return err
 	}
@@ -160,9 +162,9 @@ func (l *runLog) save(ctx context.Context, cfg Config, skill string, version int
 		ID:               store.NewID(),
 		Skill:            skill,
 		SkillVersion:     strconv.Itoa(version),
-		Provider:         cfg.ProviderName,
-		Model:            cfg.Model,
-		Temperature:      cfg.Temperature,
+		Provider:         cfg.Settings.Provider,
+		Model:            cfg.Settings.Model,
+		Temperature:      cfg.Settings.Temperature,
 		Status:           string(status),
 		LatencyMs:        sql.NullInt64{Int64: now.Sub(l.start.Time).Milliseconds(), Valid: true},
 		TokensIn:         reported(l.tokensIn),
@@ -173,6 +175,14 @@ func (l *runLog) save(ctx context.Context, cfg Config, skill string, version int
 		CreatedAt:        l.start.String(),
 		UpdatedAt:        now.String(),
 	})
+}
+
+// nonNil is s, or an empty slice when s is nil, so it encodes as [].
+func nonNil[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
 }
 
 // reported is n as a column value, NULL when no turn reported a count.

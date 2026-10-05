@@ -4,8 +4,7 @@
 // for output matching the skill's schema, decodes and validates the reply,
 // and on failure sends exactly one repair turn quoting the problems. If the
 // repair fails too the run fails with llm.ErrBadOutput; there is no silent
-// fallback (D-007). Every run that reaches the provider is recorded in
-// ai_runs (see Run and Purge).
+// fallback (D-007). Every run is recorded in ai_runs (see Run and Purge).
 package harness
 
 import (
@@ -42,23 +41,26 @@ type Skill[In, Out any] interface {
 	PostProcess(out Out) (Out, error)
 }
 
+// NewProvider builds the provider a run sends its requests to from the
+// household's settings and decrypted API key. In production it is
+// presets.FromSettings.
+type NewProvider func(s llm.Settings, key string) (llm.Provider, error)
+
 // Config is what a run needs from the household's AI settings.
 type Config struct {
-	// Provider answers the requests.
-	Provider llm.Provider
+	// Settings is the household's AI configuration. Settings.Provider and
+	// Settings.Model are recorded in ai_runs and may not be empty;
+	// Settings.Temperature is sent with every request.
+	Settings llm.Settings
+	// APIKey is the decrypted API key, or "" for a provider that takes
+	// none. It reaches the provider only through NewProvider, and every
+	// occurrence of it is removed from the ai_runs row.
+	APIKey string
+	// NewProvider builds the run's provider from Settings and APIKey.
+	NewProvider NewProvider
 	// Persona is ai_settings.system_prompt, the first layer of every
 	// system prompt; empty means none.
 	Persona string
-	// Temperature is the household's sampling temperature, sent with
-	// every request.
-	Temperature float64
-	// ProviderName is ai_settings.provider and Model is ai_settings.model,
-	// both recorded in ai_runs. Neither may be empty.
-	ProviderName string
-	Model        string
-	// APIKey is the decrypted API key Provider sends, or "" when it sends
-	// none. It is used only to remove the key from the ai_runs row.
-	APIKey string
 	// Store receives the run's ai_runs row. It must not be nil.
 	Store *store.Store
 }
@@ -66,11 +68,11 @@ type Config struct {
 // validate reports a Config missing what every run needs.
 func (c Config) validate() error {
 	switch {
-	case c.Provider == nil:
-		return errors.New("config has no provider")
-	case c.ProviderName == "":
+	case c.NewProvider == nil:
+		return errors.New("config has no provider constructor")
+	case c.Settings.Provider == "":
 		return errors.New("config has no provider name")
-	case c.Model == "":
+	case c.Settings.Model == "":
 		return errors.New("config has no model")
 	case c.Store == nil:
 		return errors.New("config has no store")
@@ -101,31 +103,21 @@ func (e *BadOutputError) Unwrap() error { return llm.ErrBadOutput }
 // output. A provider error other than llm.ErrBadOutput is returned
 // unchanged and never repaired.
 //
-// Every run that sends a request writes one ai_runs row when it ends,
+// Every run with a valid Config writes one ai_runs row when it ends,
 // covering both turns, with its RunStatus and the request and response
-// bodies redacted (see redact). A Config or render error fails the run
-// before any request, and writes no row. When the row cannot be written
-// the run fails with that error too, even if its output was usable.
+// bodies redacted (see redact). A render failure is recorded as
+// StatusBadOutput and a provider that cannot be built as
+// StatusProviderError, both with no turns. A Config error fails the run
+// before anything else, and writes no row since the row cannot be
+// written without one. When the row cannot be written the run fails with
+// that error too, even if its output was usable.
 func Run[In, Out any](ctx context.Context, cfg Config, s Skill[In, Out], in In) (Out, error) {
 	var zero Out
 	if err := cfg.validate(); err != nil {
 		return zero, fmt.Errorf("harness: skill %s v%d: %w", s.Name(), s.Version(), err)
 	}
-	prompt, err := Render(cfg.Persona, s, in)
-	if err != nil {
-		return zero, fmt.Errorf("harness: skill %s v%d: render: %w", s.Name(), s.Version(), err)
-	}
-	schema := s.Schema()
-	temperature := cfg.Temperature
-	req := llm.Request{
-		System:      prompt.System,
-		Messages:    []llm.Message{{Role: llm.RoleUser, Content: prompt.User}},
-		Temperature: &temperature,
-		Schema:      &schema,
-	}
-
 	log := &runLog{start: store.Now()}
-	out, status, err := turns(ctx, cfg, s, req, log)
+	out, status, err := execute(ctx, cfg, s, in, log)
 	if saveErr := log.save(ctx, cfg, s.Name(), s.Version(), status, err); saveErr != nil {
 		return zero, errors.Join(err, fmt.Errorf("harness: skill %s v%d: record ai_runs row: %w", s.Name(), s.Version(), saveErr))
 	}
@@ -135,11 +127,34 @@ func Run[In, Out any](ctx context.Context, cfg Config, s Skill[In, Out], in In) 
 	return out, nil
 }
 
+// execute renders the prompt, builds the provider and sends the turns,
+// recording them in log. It returns the run's status alongside its result.
+func execute[In, Out any](ctx context.Context, cfg Config, s Skill[In, Out], in In, log *runLog) (Out, RunStatus, error) {
+	var zero Out
+	prompt, err := Render(cfg.Persona, s, in)
+	if err != nil {
+		return zero, StatusBadOutput, fmt.Errorf("harness: skill %s v%d: render: %w", s.Name(), s.Version(), err)
+	}
+	provider, err := cfg.NewProvider(cfg.Settings, cfg.APIKey)
+	if err != nil {
+		return zero, StatusProviderError, fmt.Errorf("harness: skill %s v%d: provider: %w", s.Name(), s.Version(), err)
+	}
+	schema := s.Schema()
+	temperature := cfg.Settings.Temperature
+	req := llm.Request{
+		System:      prompt.System,
+		Messages:    []llm.Message{{Role: llm.RoleUser, Content: prompt.User}},
+		Temperature: &temperature,
+		Schema:      &schema,
+	}
+	return turns(ctx, cfg.APIKey, provider, s, req, log)
+}
+
 // turns sends req and, when its reply is unusable, the repair turn,
 // recording both in log. It returns the run's status alongside its result.
-func turns[In, Out any](ctx context.Context, cfg Config, s Skill[In, Out], req llm.Request, log *runLog) (Out, RunStatus, error) {
+func turns[In, Out any](ctx context.Context, apiKey string, provider llm.Provider, s Skill[In, Out], req llm.Request, log *runLog) (Out, RunStatus, error) {
 	var zero Out
-	out, reply, first, status, err := attempt(ctx, cfg, s, req, log)
+	out, reply, first, status, err := attempt(ctx, apiKey, provider, s, req, log)
 	if err != nil {
 		return zero, status, err
 	}
@@ -151,7 +166,7 @@ func turns[In, Out any](ctx context.Context, cfg Config, s Skill[In, Out], req l
 		req.Messages = append(req.Messages, llm.Message{Role: llm.RoleAssistant, Content: reply})
 	}
 	req.Messages = append(req.Messages, llm.Message{Role: llm.RoleUser, Content: repairMessage(req.Schema.Name, first)})
-	out, _, second, status, err := attempt(ctx, cfg, s, req, log)
+	out, _, second, status, err := attempt(ctx, apiKey, provider, s, req, log)
 	if err != nil {
 		return zero, status, err
 	}
@@ -161,14 +176,14 @@ func turns[In, Out any](ctx context.Context, cfg Config, s Skill[In, Out], req l
 	return out, StatusRepaired, nil
 }
 
-// attempt sends req once, records the turn in log, then decodes,
+// attempt sends req to provider once, records the turn in log, then decodes,
 // validates, post-processes and validates the reply again. It returns the
 // reply for the repair turn and the problems found; err is set only for a
 // provider or post-process failure, neither of which is repairable, and
 // status then says which.
-func attempt[In, Out any](ctx context.Context, cfg Config, s Skill[In, Out], req llm.Request, log *runLog) (out Out, reply string, problems []string, status RunStatus, err error) {
-	resp, err := cfg.Provider.Generate(ctx, req)
-	log.add(cfg.APIKey, req, resp, err)
+func attempt[In, Out any](ctx context.Context, apiKey string, provider llm.Provider, s Skill[In, Out], req llm.Request, log *runLog) (out Out, reply string, problems []string, status RunStatus, err error) {
+	resp, err := provider.Generate(ctx, req)
+	log.add(apiKey, req, resp, err)
 	// The repair turn must quote what failed: the structured output when
 	// there is any, otherwise the text.
 	reply = string(resp.JSON)

@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/llm"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/llm/presets"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 )
@@ -212,7 +215,7 @@ func TestRunRecordsCancelledRun(t *testing.T) {
 func TestRunFailsWhenRowCannotBeWritten(t *testing.T) {
 	var f llm.Fake
 	cfg := testConfig(t, &f)
-	cfg.ProviderName = "gemini" // refused by the provider CHECK
+	cfg.Settings.Provider = "gemini" // refused by the provider CHECK
 	f.QueueGenerate(reply(`{"echo":"taco"}`))
 	_, err := Run(context.Background(), cfg, echoSkill{}, echoInput{Word: "taco"})
 	if err == nil || !strings.Contains(err.Error(), "record ai_runs row") {
@@ -266,6 +269,12 @@ func TestRunRowsHoldNoSecrets(t *testing.T) {
 			f.QueueGenerate(script...)
 			cfg := testConfig(t, &f)
 			cfg.APIKey = seededKey
+			cfg.NewProvider = func(_ llm.Settings, key string) (llm.Provider, error) {
+				if key != seededKey {
+					t.Errorf("provider built with key %q, want the seeded key", key)
+				}
+				return &f, nil
+			}
 			cfg.Persona = "Our kitchen. " + leaky
 			_, _ = Run(context.Background(), cfg, echoSkill{}, echoInput{Word: "tacos " + seededWebhook})
 			assertCalls(t, &f, len(script))
@@ -286,6 +295,63 @@ func TestRunRowsHoldNoSecrets(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRunRowsHoldNoProviderKey builds the provider the production way,
+// presets.FromSettings, against a server that quotes the bearer key it
+// receives with no Authorization label: in the reply text, the reply JSON
+// and the model name. The repair turn then sends the quoted key back.
+func TestRunRowsHoldNoProviderKey(t *testing.T) {
+	turn := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok || key == "" {
+			t.Errorf("Authorization = %q, want a bearer key", r.Header.Get("Authorization"))
+		}
+		turn++
+		echo := key // lower case, so usable
+		if turn == 1 {
+			echo = "Your key is " + key // upper case, so repaired
+		}
+		content, err := json.Marshal(map[string]string{"echo": echo})
+		if err != nil {
+			t.Error(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"model":   "model-" + key,
+			"choices": []any{map[string]any{"finish_reason": "stop", "message": map[string]any{"role": "assistant", "content": string(content)}}},
+			"usage":   map[string]int{"prompt_tokens": 10, "completion_tokens": 5},
+		}); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := Config{
+		Settings:    llm.Settings{Provider: "openai_compatible", BaseURL: srv.URL, Model: "local-test", Temperature: 0.7},
+		APIKey:      seededKey,
+		NewProvider: presets.FromSettings,
+		Store:       emptyHousehold(t),
+	}
+	out, err := Run(context.Background(), cfg, echoSkill{}, echoInput{Word: "taco"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Echo != seededKey || turn != 2 {
+		t.Fatalf("Echo = %q after %d turns, want the provider's key after 2", out.Echo, turn)
+	}
+	rows := runRows(t, cfg.Store)
+	if len(rows) != 1 || rows[0].Status != string(StatusRepaired) {
+		t.Fatalf("rows = %+v, want one repaired row", rows)
+	}
+	text := rows[0].text()
+	if strings.Contains(text, seededKey) {
+		t.Fatalf("stored row holds the provider's key:\n%s", text)
+	}
+	if !strings.Contains(text, "Your key is "+redactionMarker) || !strings.Contains(text, "model-"+redactionMarker) {
+		t.Fatalf("stored row lacks the redacted quotes:\n%s", text)
 	}
 }
 

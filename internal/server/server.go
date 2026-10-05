@@ -30,15 +30,19 @@ type RouteMounter interface {
 // only from a peer in trusted (see resolveOrigin). version is reported by
 // GET /health; auth mounts the /auth routes; sessions guards /api/v1 and
 // /media; settings serves /api/v1/settings/household; runner serves
-// POST /api/v1/jobs and GET /api/v1/jobs/{id}; assets is the web build
+// POST /api/v1/jobs and GET /api/v1/jobs/{id}; photos serves
+// GET /media/photos/{id}-{size}.jpg; assets is the web build
 // served for every other GET. /health, /auth and the web build are public.
 // Requests to /api/v1 other than GET also need the session's CSRF token in CSRFHeader.
-func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, settings *household.SettingsService, runner *jobs.Runner, assets fs.FS) (http.Handler, error) {
+func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, settings *household.SettingsService, runner *jobs.Runner, photos PhotoFiles, assets fs.FS) (http.Handler, error) {
 	if settings == nil {
 		return nil, errors.New("server: nil household settings service")
 	}
 	if runner == nil {
 		return nil, errors.New("server: nil job runner")
+	}
+	if photos == nil {
+		return nil, errors.New("server: nil photo files")
 	}
 	notFound := apiErrorHandler(logger, http.StatusNotFound, "not_found", "not found")
 	methodNotAllowed := apiErrorHandler(logger, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
@@ -70,6 +74,7 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Patch("/settings/household", patchHouseholdSettings(logger, settings))
 	apiV1.Post("/jobs", postJob(logger, runner))
 	apiV1.Get("/jobs/{id}", getJob(logger, runner))
+	media.Get("/photos/{name}", getPhoto(logger, photos))
 	r.Route("/api", func(r chi.Router) {
 		r.MethodNotAllowed(methodNotAllowed)
 		r.NotFound(notFound)

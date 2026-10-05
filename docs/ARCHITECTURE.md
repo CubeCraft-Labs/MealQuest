@@ -140,7 +140,10 @@ automatic** (D-021).
   It requires the session cookie and, for non-GET requests, the
   `X-MealQuest-CSRF` header.
 - `/auth/*` — the OIDC flow.
-- `/media/*` — cached photos.
+- `/media/*` — cached photos, behind the session cookie.
+  `GET /media/photos/{id}-{400|1200}.jpg` serves a stored size with
+  `Cache-Control: private, max-age=31536000, immutable`; anything else is
+  404.
 - `/health` — liveness.
 - Everything else serves the embedded PWA with SPA fallback.
 
@@ -264,7 +267,13 @@ automatic** (D-021).
   and reason (fetch failure, no valid recipe, missing ingredients or
   image), so the caller decides per item what a failure means.
 - Photos are cached locally (`photos`) and processed with
-  `golang.org/x/image`.
+  `golang.org/x/image`. `recipes.PhotoCache.CachePhoto` downloads through
+  the Fetcher's `FetchImage` (JPEG, PNG, WebP or GIF content types, 8 MB
+  cap, not cached), decodes the image (a GIF's first frame), refuses one
+  under 300 px on its short side, scales it so its long side is 1200 px and
+  400 px, and stores each as JPEG quality 82 at
+  `$MEALQUEST_DATA_DIR/media/photos/{id}-{size}.jpg`. Images are
+  deduplicated by the SHA-256 of the downloaded bytes.
 
 ## Scheduler
 

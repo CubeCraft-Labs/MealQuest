@@ -16,6 +16,7 @@ import (
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/migrations"
 )
@@ -38,7 +39,7 @@ func newTestRouterWith(t *testing.T, version string, settings *household.Setting
 		"index.html":             {Data: []byte(fixtureIndex)},
 		"assets/index-AbC123.js": {Data: []byte(fixtureAsset)},
 	}
-	r, err := NewRouter(logger, version, nil, stubAuth{}, stubSessions{}, settings, runner, assets)
+	r, err := NewRouter(logger, version, nil, stubAuth{}, stubSessions{}, settings, runner, newTestPhotos(t), assets)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,11 +113,31 @@ func newTestRunner(t *testing.T) *jobs.Runner {
 	return runner
 }
 
+// newTestPhotos returns a photo cache over a migrated temp database and an
+// empty temp data directory.
+func newTestPhotos(t *testing.T) *recipes.PhotoCache {
+	t.Helper()
+	photos, err := recipes.NewPhotoCache(recipes.NewFetcher(), newTestStore(t), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return photos
+}
+
+func TestNewRouterRequiresPhotoFiles(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestRunner(t), nil, fstest.MapFS{"index.html": {}}); err == nil {
+		t.Fatal("NewRouter accepted nil photo files")
+	}
+}
+
 func TestNewRouterRequiresSettings(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, nil, newTestRunner(t), fstest.MapFS{"index.html": {}}); err == nil {
+	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, nil, newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
 		t.Fatal("NewRouter accepted a nil settings service")
 	}
 }
@@ -125,7 +146,7 @@ func TestNewRouterRequiresJobRunner(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), nil, fstest.MapFS{"index.html": {}}); err == nil {
+	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), nil, newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
 		t.Fatal("NewRouter accepted a nil job runner")
 	}
 }

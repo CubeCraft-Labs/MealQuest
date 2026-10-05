@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +25,8 @@ const (
 	// MaxBodyBytes caps a fetched body. A larger page is an error, never
 	// silently truncated: a cut-off recipe page would parse as a wrong one.
 	MaxBodyBytes = 2 << 20
+	// MaxImageBytes caps a fetched image body, as MaxBodyBytes caps a page.
+	MaxImageBytes = 8 << 20
 	// MaxRedirects is how many redirects a fetch follows; each hop is
 	// re-checked for scheme and address.
 	MaxRedirects = 3
@@ -51,6 +55,25 @@ var (
 	ErrTooLarge = errors.New("recipes: body exceeds size cap")
 	// ErrTimeout is returned when a fetch runs past Timeout.
 	ErrTimeout = errors.New("recipes: fetch timed out")
+	// ErrNotImage is returned by FetchImage for a response whose
+	// Content-Type is not one of ImageContentTypes.
+	ErrNotImage = errors.New("recipes: response is not a supported image")
+)
+
+// ImageContentTypes are the media types FetchImage accepts.
+var ImageContentTypes = []string{"image/jpeg", "image/png", "image/webp", "image/gif"}
+
+// fetchKind is what a request asks for: its Accept header, the body cap and
+// the media types allowed, where nil allows any.
+type fetchKind struct {
+	accept       string
+	maxBytes     int64
+	contentTypes []string
+}
+
+var (
+	pageKind  = fetchKind{accept: "text/html,application/xhtml+xml", maxBytes: MaxBodyBytes}
+	imageKind = fetchKind{accept: strings.Join(ImageContentTypes, ","), maxBytes: MaxImageBytes, contentTypes: ImageContentTypes}
 )
 
 // StatusError is returned for a final response whose status is not 2xx.
@@ -163,27 +186,49 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (Page, error) {
 	if page, ok := f.cached(key); ok {
 		return page, nil
 	}
-
-	fetchCtx, cancel := context.WithTimeout(ctx, f.timeout)
-	defer cancel()
-	page, err := f.get(fetchCtx, key)
+	page, err := f.fetch(ctx, key, pageKind)
 	if err != nil {
-		if ctx.Err() == nil && errors.Is(fetchCtx.Err(), context.DeadlineExceeded) {
-			return Page{}, fmt.Errorf("%w after %s: %s", ErrTimeout, f.timeout, key)
-		}
 		return Page{}, err
 	}
 	f.store(key, page)
 	return page, nil
 }
 
-func (f *Fetcher) get(ctx context.Context, rawURL string) (Page, error) {
+// FetchImage returns the image at rawURL under the same safeguards as
+// Fetch, but with a body cap of MaxImageBytes, and only for a response
+// whose Content-Type is one of ImageContentTypes. Images are not cached.
+func (f *Fetcher) FetchImage(ctx context.Context, rawURL string) (Page, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return Page{}, fmt.Errorf("recipes: parse URL: %w", err)
+	}
+	if err := checkURL(u); err != nil {
+		return Page{}, err
+	}
+	return f.fetch(ctx, u.String(), imageKind)
+}
+
+// fetch gets rawURL as kind within the Fetcher's timeout.
+func (f *Fetcher) fetch(ctx context.Context, rawURL string, kind fetchKind) (Page, error) {
+	fetchCtx, cancel := context.WithTimeout(ctx, f.timeout)
+	defer cancel()
+	page, err := f.get(fetchCtx, rawURL, kind)
+	if err != nil {
+		if ctx.Err() == nil && errors.Is(fetchCtx.Err(), context.DeadlineExceeded) {
+			return Page{}, fmt.Errorf("%w after %s: %s", ErrTimeout, f.timeout, rawURL)
+		}
+		return Page{}, err
+	}
+	return page, nil
+}
+
+func (f *Fetcher) get(ctx context.Context, rawURL string, kind fetchKind) (Page, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return Page{}, fmt.Errorf("recipes: build request: %w", err)
 	}
 	req.Header.Set("User-Agent", UserAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("Accept", kind.accept)
 	resp, err := f.client.Do(req)
 	if err != nil {
 		return Page{}, err
@@ -193,17 +238,24 @@ func (f *Fetcher) get(ctx context.Context, rawURL string) (Page, error) {
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return Page{}, &StatusError{URL: final, Status: resp.StatusCode}
 	}
-	if resp.ContentLength > MaxBodyBytes {
+	contentType := resp.Header.Get("Content-Type")
+	if kind.contentTypes != nil {
+		mediaType, _, err := mime.ParseMediaType(contentType)
+		if err != nil || !slices.Contains(kind.contentTypes, mediaType) {
+			return Page{}, fmt.Errorf("%w: %s has Content-Type %q", ErrNotImage, final, contentType)
+		}
+	}
+	if resp.ContentLength > kind.maxBytes {
 		return Page{}, fmt.Errorf("%w: %s declares %d bytes", ErrTooLarge, final, resp.ContentLength)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxBodyBytes+1))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, kind.maxBytes+1))
 	if err != nil {
 		return Page{}, fmt.Errorf("recipes: read %s: %w", final, err)
 	}
-	if len(body) > MaxBodyBytes {
-		return Page{}, fmt.Errorf("%w: %s is over %d bytes", ErrTooLarge, final, MaxBodyBytes)
+	if int64(len(body)) > kind.maxBytes {
+		return Page{}, fmt.Errorf("%w: %s is over %d bytes", ErrTooLarge, final, kind.maxBytes)
 	}
-	return Page{URL: final, ContentType: resp.Header.Get("Content-Type"), Body: body}, nil
+	return Page{URL: final, ContentType: contentType, Body: body}, nil
 }
 
 // cached returns the page cached under key if it is younger than CacheTTL.

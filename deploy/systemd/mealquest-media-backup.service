@@ -1,0 +1,13 @@
+# Runs the nightly MealQuest media backup (/usr/local/sbin/mealquest-media-backup).
+# Triggered by mealquest-media-backup.timer; run by hand with
+#   systemctl start mealquest-media-backup
+# and read the result with
+#   journalctl -u mealquest-media-backup
+[Unit]
+Description=Back up MealQuest media to the Synology NAS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mealquest-media-backup

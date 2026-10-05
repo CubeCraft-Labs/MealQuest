@@ -2,6 +2,7 @@
 package recipes
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -97,8 +98,10 @@ type Fetcher struct {
 	// sleep waits d or until ctx is done; tests replace it.
 	sleep func(ctx context.Context, d time.Duration) error
 
-	mu       sync.Mutex
-	nextSlot map[string]time.Time
+	mu sync.Mutex
+	// lastSent is when each host's latest request was let through; only
+	// requests actually sent advance it.
+	lastSent map[string]time.Time
 	cache    map[string]cacheEntry
 }
 
@@ -121,7 +124,7 @@ func newFetcher(resolver Resolver, dial dialFunc, tlsConfig *tls.Config) *Fetche
 		timeout:  Timeout,
 		now:      time.Now,
 		sleep:    sleep,
-		nextSlot: map[string]time.Time{},
+		lastSent: map[string]time.Time{},
 		cache:    map[string]cacheEntry{},
 	}
 	transport := &http.Transport{
@@ -140,7 +143,8 @@ func newFetcher(resolver Resolver, dial dialFunc, tlsConfig *tls.Config) *Fetche
 }
 
 // Fetch returns the page at rawURL, from the cache when it was fetched
-// within CacheTTL. Only 2xx responses are returned and cached.
+// within CacheTTL. Only 2xx responses are returned and cached. The
+// returned Body is the caller's own copy.
 func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (Page, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -208,11 +212,15 @@ func (f *Fetcher) cached(key string) (Page, bool) {
 		delete(f.cache, key)
 		return Page{}, false
 	}
-	return e.page, true
+	page := e.page
+	page.Body = bytes.Clone(page.Body)
+	return page, true
 }
 
-// store caches page under key, evicting the oldest entry when full.
+// store caches a copy of page under key, evicting the oldest entry when
+// full.
 func (f *Fetcher) store(key string, page Page) {
+	page.Body = bytes.Clone(page.Body)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, ok := f.cache[key]; !ok && len(f.cache) >= CacheSize {
@@ -228,21 +236,26 @@ func (f *Fetcher) store(key string, page Page) {
 	f.cache[key] = cacheEntry{page: page, fetched: f.now()}
 }
 
-// waitTurn blocks until host's next request slot, keeping requests to one
-// host at least HostInterval apart.
+// waitTurn blocks until a request to host may be sent, keeping requests to
+// one host at least HostInterval apart. A wait holds no reservation: the
+// host's slot advances only when a request is let through, so a wait that
+// ends with ctx does not delay later requests.
 func (f *Fetcher) waitTurn(ctx context.Context, host string) error {
-	f.mu.Lock()
-	now := f.now()
-	slot := f.nextSlot[host]
-	if slot.Before(now) {
-		slot = now
+	for {
+		f.mu.Lock()
+		now := f.now()
+		last, sent := f.lastSent[host]
+		wait := last.Add(HostInterval).Sub(now)
+		if !sent || wait <= 0 {
+			f.lastSent[host] = now
+			f.mu.Unlock()
+			return nil
+		}
+		f.mu.Unlock()
+		if err := f.sleep(ctx, wait); err != nil {
+			return err
+		}
 	}
-	f.nextSlot[host] = slot.Add(HostInterval)
-	f.mu.Unlock()
-	if wait := slot.Sub(now); wait > 0 {
-		return f.sleep(ctx, wait)
-	}
-	return nil
 }
 
 // dialPublic resolves address's host once, refuses unless every answer is
@@ -321,38 +334,58 @@ func checkRedirect(req *http.Request, via []*http.Request) error {
 	return checkURL(req.URL)
 }
 
-// blockedPrefixes are the non-public ranges. IPv4-mapped IPv6 addresses
-// are unmapped before the check, so the IPv4 entries cover them too.
-var blockedPrefixes = []netip.Prefix{
-	netip.MustParsePrefix("0.0.0.0/8"),       // unspecified, "this network"
+// blockedIPv4 are the IPv4 special-purpose ranges that are not globally
+// reachable (IANA IPv4 Special-Purpose Address Registry). IPv4-mapped IPv6
+// addresses are unmapped before the check, so these cover them too.
+var blockedIPv4 = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),       // "this network"
 	netip.MustParsePrefix("10.0.0.0/8"),      // RFC 1918
 	netip.MustParsePrefix("100.64.0.0/10"),   // carrier-grade NAT
 	netip.MustParsePrefix("127.0.0.0/8"),     // loopback
 	netip.MustParsePrefix("169.254.0.0/16"),  // link-local
 	netip.MustParsePrefix("172.16.0.0/12"),   // RFC 1918
+	netip.MustParsePrefix("192.0.0.0/24"),    // IETF protocol assignments
+	netip.MustParsePrefix("192.0.2.0/24"),    // documentation, TEST-NET-1
+	netip.MustParsePrefix("192.88.99.0/24"),  // 6to4 relay anycast (deprecated)
 	netip.MustParsePrefix("192.168.0.0/16"),  // RFC 1918
+	netip.MustParsePrefix("198.18.0.0/15"),   // benchmarking
+	netip.MustParsePrefix("198.51.100.0/24"), // documentation, TEST-NET-2
+	netip.MustParsePrefix("203.0.113.0/24"),  // documentation, TEST-NET-3
 	netip.MustParsePrefix("224.0.0.0/4"),     // multicast
 	netip.MustParsePrefix("240.0.0.0/4"),     // reserved, broadcast
-	netip.MustParsePrefix("::/96"),           // unspecified, loopback, IPv4-compatible
-	netip.MustParsePrefix("fc00::/7"),        // unique local
-	netip.MustParsePrefix("fe80::/10"),       // link-local
-	netip.MustParsePrefix("fec0::/10"),       // site-local (deprecated)
-	netip.MustParsePrefix("ff00::/8"),        // multicast
-	netip.MustParsePrefix("64:ff9b::/96"),    // NAT64, embeds any IPv4
-	netip.MustParsePrefix("64:ff9b:1::/48"),  // local-use NAT64
-	netip.MustParsePrefix("2002::/16"),       // 6to4, embeds any IPv4
-	netip.MustParsePrefix("2001::/32"),       // Teredo, embeds any IPv4
-	netip.MustParsePrefix("::ffff:0:0:0/96"), // IPv4-translated
+}
+
+// globalIPv6 is the only IPv6 range dialed: global unicast. Everything
+// outside it is refused, including ::, ::1, IPv4-compatible and
+// IPv4-translated forms, NAT64 (64:ff9b::/96), discard-only (100::/64),
+// unique local (fc00::/7), link-local (fe80::/10) and multicast (ff00::/8).
+var globalIPv6 = netip.MustParsePrefix("2000::/3")
+
+// blockedIPv6 are the special-purpose ranges inside global unicast that are
+// not public or embed an arbitrary IPv4 address.
+var blockedIPv6 = []netip.Prefix{
+	netip.MustParsePrefix("2001::/23"),     // IETF protocol assignments, Teredo, benchmarking
+	netip.MustParsePrefix("2001:db8::/32"), // documentation
+	netip.MustParsePrefix("2002::/16"),     // 6to4, embeds any IPv4
+	netip.MustParsePrefix("3fff::/20"),     // documentation
 }
 
 // IsPublic reports whether ip is a public unicast address the Fetcher may
-// dial.
+// dial. IPv4 addresses are public unless in a special-purpose range; IPv6
+// addresses must be global unicast and outside its special-purpose ranges.
 func IsPublic(ip netip.Addr) bool {
 	if !ip.IsValid() {
 		return false
 	}
 	ip = ip.Unmap().WithZone("")
-	for _, p := range blockedPrefixes {
+	blocked := blockedIPv4
+	if ip.Is6() {
+		if !globalIPv6.Contains(ip) {
+			return false
+		}
+		blocked = blockedIPv6
+	}
+	for _, p := range blocked {
 		if p.Contains(ip) {
 			return false
 		}

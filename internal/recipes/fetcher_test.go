@@ -60,8 +60,13 @@ type testEnv struct {
 	dialed []string
 }
 
-// publicIP is a documentation address the tests treat as a public host.
-const publicIP = "203.0.113.10"
+// publicIP, publicIP2 and publicIPv6 are public addresses; the test dialer
+// routes them to the test server and never reaches the real hosts.
+const (
+	publicIP   = "93.184.215.14"
+	publicIP2  = "93.184.215.20"
+	publicIPv6 = "2606:2800:21f::10"
+)
 
 func newTestEnv(t *testing.T, handler http.Handler, answers map[string][][]string) *testEnv {
 	t.Helper()
@@ -81,7 +86,7 @@ func newTestEnv(t *testing.T, handler http.Handler, answers map[string][][]strin
 		if err != nil {
 			return nil, err
 		}
-		if strings.HasPrefix(host, "203.0.113.") {
+		if host == publicIP || host == publicIP2 || host == publicIPv6 {
 			var d net.Dialer
 			return d.DialContext(ctx, network, server.Listener.Addr().String())
 		}
@@ -128,6 +133,19 @@ func TestFetchReturnsPage(t *testing.T) {
 	}
 }
 
+func TestFetchDialsPublicIPv6(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "ok")
+	}), map[string][][]string{"example.com": {{publicIPv6}}})
+	if _, err := env.f.Fetch(t.Context(), "https://example.com/"); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if got := env.dials(); len(got) != 1 || got[0] != "["+publicIPv6+"]:443" {
+		t.Errorf("dialed %v, want [[%s]:443]", got, publicIPv6)
+	}
+}
+
 func TestFetchRejectsNonHTTPS(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t, http.NotFoundHandler(), publicAnswers())
@@ -159,8 +177,15 @@ var blockedIPs = []string{
 	"224.0.0.1", "239.255.255.250", "ff02::1", "::ffff:224.0.0.251", // multicast
 	"0.0.0.0", "0.1.2.3", "::", "::ffff:0.0.0.0", // unspecified
 	"fc00::1", "fd12:3456:789a::1", // unique local
-	"255.255.255.255", "240.0.0.1", "fec0::1",
-	"64:ff9b::a00:1", "2002:a00:1::1", "2001:0:a00:1::1", "::a00:1",
+	"255.255.255.255", "240.0.0.1", "fec0::1", // reserved, site-local
+	"192.0.0.1", "192.0.0.255", // IETF protocol assignments
+	"192.0.2.1", "198.51.100.7", "203.0.113.10", "::ffff:203.0.113.10", // documentation
+	"192.88.99.1",                                       // 6to4 relay anycast
+	"198.18.0.1", "198.19.255.255", "::ffff:198.18.0.1", // benchmarking
+	"2001:db8::1", "3fff::1", // IPv6 documentation
+	"2001:2::1", "100::1", // IPv6 benchmarking, discard-only
+	"::ffff:0:a00:1", // IPv4-translated
+	"64:ff9b::a00:1", "64:ff9b:1::a00:1", "2002:a00:1::1", "2001:0:a00:1::1", "::a00:1",
 }
 
 func TestIsPublic(t *testing.T) {
@@ -170,7 +195,12 @@ func TestIsPublic(t *testing.T) {
 			t.Errorf("IsPublic(%s) = true, want false", s)
 		}
 	}
-	for _, s := range []string{"8.8.8.8", "203.0.113.10", "100.63.255.255", "100.128.0.1", "172.32.0.1", "2606:4700::1111", "::ffff:8.8.8.8"} {
+	for _, s := range []string{
+		"8.8.8.8", publicIP, "::ffff:8.8.8.8", "100.63.255.255", "100.128.0.1", "172.32.0.1",
+		"192.0.1.255", "192.0.3.1", "192.88.98.255", "198.17.255.255", "198.20.0.1",
+		"198.51.99.255", "203.0.112.255", "203.0.114.1", "223.255.255.254",
+		"2606:4700::1111", publicIPv6, "2001:4860:4860::8888", "2a00:1450::1",
+	} {
 		if !IsPublic(netip.MustParseAddr(s)) {
 			t.Errorf("IsPublic(%s) = false, want true", s)
 		}
@@ -269,7 +299,7 @@ func TestFetchFollowsAtMostThreeRedirects(t *testing.T) {
 	t.Parallel()
 	answers := map[string][][]string{
 		"example.com":         {{publicIP}},
-		"recipes.example.com": {{"203.0.113.20"}},
+		"recipes.example.com": {{publicIP2}},
 	}
 	env := newTestEnv(t, chainHandler, answers)
 	page, err := env.f.Fetch(t.Context(), "https://example.com/hop/3")
@@ -280,7 +310,7 @@ func TestFetchFollowsAtMostThreeRedirects(t *testing.T) {
 		t.Errorf("page = %+v", page)
 	}
 	// Every hop is dialed, so every hop's address is checked.
-	if got := env.dials(); len(got) != 4 || got[0] != publicIP+":443" || got[3] != "203.0.113.20:443" {
+	if got := env.dials(); len(got) != 4 || got[0] != publicIP+":443" || got[3] != publicIP2+":443" {
 		t.Errorf("dialed %v, want 4 checked hops", got)
 	}
 
@@ -494,7 +524,7 @@ func TestFetchRateLimitsPerHost(t *testing.T) {
 	t.Parallel()
 	answers := map[string][][]string{
 		"example.com":         {{publicIP}},
-		"recipes.example.com": {{"203.0.113.20"}},
+		"recipes.example.com": {{publicIP2}},
 	}
 	env := newTestEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "ok")
@@ -511,5 +541,54 @@ func TestFetchRateLimitsPerHost(t *testing.T) {
 	got := clock.waits()
 	if len(got) != 2 || got[0] != HostInterval || got[1] != HostInterval {
 		t.Errorf("waits = %v, want [%s %s]", got, HostInterval, HostInterval)
+	}
+}
+
+func TestFetchCacheIsNotSharedWithCallers(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "tacos")
+	}), publicAnswers())
+
+	for range 2 {
+		page, err := env.f.Fetch(t.Context(), "https://example.com/tacos")
+		if err != nil {
+			t.Fatalf("Fetch: %v", err)
+		}
+		if string(page.Body) != "tacos" {
+			t.Fatalf("body = %q, want the cached page unchanged", page.Body)
+		}
+		// Overwrite the returned body: neither the fetched nor the cached
+		// copy may reach the cache.
+		copy(page.Body, "XXXXX")
+	}
+}
+
+// TestFetchCanceledWaitHoldsNoSlot covers a burst of fetches whose
+// rate-limit waits end with their context: they must not push back the
+// next request that is allowed through.
+func TestFetchCanceledWaitHoldsNoSlot(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "ok")
+	}), publicAnswers())
+	clock := installClock(env.f)
+
+	if _, err := env.f.Fetch(t.Context(), "https://example.com/first"); err != nil {
+		t.Fatalf("first Fetch: %v", err)
+	}
+	env.f.sleep = func(context.Context, time.Duration) error { return context.DeadlineExceeded }
+	for i := range 5 {
+		if _, err := env.f.Fetch(t.Context(), fmt.Sprintf("https://example.com/burst/%d", i)); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("burst Fetch %d error = %v, want context.DeadlineExceeded", i, err)
+		}
+	}
+	env.f.sleep = clock.sleep
+	clock.advance(HostInterval)
+	if _, err := env.f.Fetch(t.Context(), "https://example.com/after"); err != nil {
+		t.Fatalf("Fetch after the burst: %v", err)
+	}
+	if got := clock.waits(); len(got) != 0 {
+		t.Errorf("waits = %v, want none: canceled waits held slots", got)
 	}
 }

@@ -210,15 +210,19 @@ automatic** (D-021).
   (`searxng` or `brave`, per `recipe_search_settings`).
 - Fetching is **SSRF-safe** (`recipes.Fetcher`): https:// only, at every
   redirect hop. Its dialer resolves the host once and refuses unless every
-  answer is public — loopback, RFC 1918, link-local, carrier-grade NAT
-  (100.64/10), multicast, unspecified, reserved, IPv6 unique-local,
-  link-local and multicast, and IPv4-mapped or IPv4-embedding (NAT64, 6to4,
-  Teredo) forms are refused — then dials the address it checked, so a
+  answer is public — every non-globally-reachable IPv4 special-purpose
+  range (loopback, RFC 1918, link-local, carrier-grade NAT, documentation
+  TEST-NETs, benchmarking 198.18/15, multicast, reserved and more) is
+  refused, IPv4-mapped forms included, and IPv6 must be global unicast
+  (2000::/3) outside documentation, 6to4, Teredo and other special ranges —
+  then dials the address it checked, so a
   rebinding DNS answer cannot swap in a private one. Keep-alives and
   environment proxies are off, so every request dials and checks afresh. At
   most 3 redirects; a body over 2 MB is an error, never truncated; 10 s for
   the whole fetch; a descriptive `User-Agent`; requests to one host at least
-  1 s apart; 2xx pages cached by URL for an hour (64 pages, oldest evicted).
+  1 s apart, counted from requests actually sent (an abandoned wait holds no
+  slot); 2xx pages cached by URL for an hour (64 pages, oldest evicted), and
+  callers get their own copy of a cached body.
 - Recipe data is parsed from schema.org `Recipe` JSON-LD.
 - Photos are cached locally (`photos`) and processed with
   `golang.org/x/image`.

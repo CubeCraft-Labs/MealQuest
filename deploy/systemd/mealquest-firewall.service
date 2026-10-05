@@ -1,0 +1,12 @@
+[Unit]
+Description=Restrict MealQuest port 8090 to Traefik (DOCKER-USER)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/mealquest-firewall
+
+[Install]
+WantedBy=multi-user.target

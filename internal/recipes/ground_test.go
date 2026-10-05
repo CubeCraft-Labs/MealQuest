@@ -328,10 +328,15 @@ func TestGroundReusesStoredRecipe(t *testing.T) {
 		again.Difficulty != first.Difficulty || *again.MinutesTotal != *first.MinutesTotal || again.SiteName != first.SiteName {
 		t.Errorf("reused grounding = %+v, want %+v", again, first)
 	}
-	if env.pages.fetchCount() != pages || env.images.requests.Load() != images || len(env.llm.Requests()) != calls {
-		t.Errorf("reuse fetched pages %d→%d, images %d→%d, model calls %d→%d; want none",
-			pages, env.pages.fetchCount(), images, env.images.requests.Load(), calls, len(env.llm.Requests()))
+	if env.images.requests.Load() != images || len(env.llm.Requests()) != calls {
+		t.Errorf("reuse fetched images %d→%d, model calls %d→%d; want none",
+			images, env.images.requests.Load(), calls, len(env.llm.Requests()))
 	}
+	// Ranking fetches both candidates' pages; only the stored one ranks.
+	if n := env.pages.fetchCount() - pages; n != 2 {
+		t.Errorf("reuse fetched %d pages, want the 2 candidates ranked", n)
+	}
+	pages = env.pages.fetchCount()
 
 	byURL, err := env.g.GroundURL(t.Context(), "https://b.example/curry")
 	if err != nil || byURL.RecipeID != first.RecipeID {
@@ -342,6 +347,44 @@ func TestGroundReusesStoredRecipe(t *testing.T) {
 	}
 	if n := countRows(t, env.st, "recipes"); n != 1 {
 		t.Errorf("%d recipes rows, want 1", n)
+	}
+}
+
+func TestGroundStoredRecipeDoesNotOutrankRelevantOne(t *testing.T) {
+	t.Parallel()
+	search := &fakeSearch{results: map[string][]Candidate{
+		"brownies":      {{URL: "https://b.example/brownies"}},
+		"chicken curry": {{URL: "https://a.example/curry"}, {URL: "https://b.example/brownies"}},
+	}}
+	env := newGroundEnv(t,
+		map[string][]byte{
+			"https://a.example/curry":    groundPage("Chicken Curry", "/img/curry.jpg"),
+			"https://b.example/brownies": groundPage("Fudgy Brownies", "/img/brownies.jpg"),
+		},
+		map[string]photoFile{
+			"/img/curry.jpg":    jpegFile(t, 640, 480),
+			"/img/brownies.jpg": jpegFile(t, 640, 480),
+		},
+		search)
+	env.llm.QueueGenerate(normalizedReply(), normalizedReply())
+
+	brownies, err := env.g.Ground(t.Context(), "Brownies", "brownies")
+	if err != nil {
+		t.Fatalf("Ground brownies: %v", err)
+	}
+
+	// Search lists the relevant new recipe first and the unrelated stored
+	// one second: the relevant one is grounded.
+	curry, err := env.g.Ground(t.Context(), "Chicken Curry", "chicken curry")
+	if err != nil {
+		t.Fatalf("Ground chicken curry: %v", err)
+	}
+	if curry.SourceURL != "https://a.example/curry" || curry.RecipeID == brownies.RecipeID {
+		t.Errorf("grounded Chicken Curry in %s (recipe %s), want https://a.example/curry, not the stored brownies %s",
+			curry.SourceURL, curry.RecipeID, brownies.RecipeID)
+	}
+	if n := countRows(t, env.st, "recipes"); n != 2 {
+		t.Errorf("%d recipes rows, want 2", n)
 	}
 }
 

@@ -102,11 +102,11 @@ func NewGrounder(st *store.Store, search SearchSource, pages PageFetcher, photos
 }
 
 // Ground searches for query and grounds dishName in the best recipe found.
-// When one of the top RankDepth candidates is already stored, the first
-// such is returned without fetching anything. Otherwise the candidates are
-// ranked (see Rank) and tried best first: the first whose photo can be
-// cached and whose ingredients normalize is stored — the recipe, its
-// ingredients, steps and photo in one transaction — and returned.
+// The candidates are ranked (see Rank) and tried best first: a candidate
+// already stored is returned as it is, and otherwise the first whose photo
+// can be cached and whose ingredients normalize is stored — the recipe, its
+// ingredients, steps and photo in one transaction — and returned. A stored
+// recipe is reused only when it ranks above every candidate that grounds.
 //
 // When no candidate grounds the dish the error is an *ErrUngroundable with
 // each reason. A failure that is not the candidates' — the search, the
@@ -126,12 +126,6 @@ func (g *Grounder) Ground(ctx context.Context, dishName, query string) (Grounded
 	if len(cands) == 0 {
 		return Grounded{}, &ErrUngroundable{Target: dishName, Reasons: []error{ErrNoCandidates}}
 	}
-	for _, c := range cands {
-		if gr, ok, err := g.stored(ctx, c.URL); err != nil || ok {
-			return gr, err
-		}
-	}
-
 	ranked, rankErr := Rank(ctx, g.pages, dishName, cands)
 	if err := ctx.Err(); err != nil {
 		return Grounded{}, err
@@ -141,6 +135,9 @@ func (g *Grounder) Ground(ctx context.Context, dishName, query string) (Grounded
 		reasons = append(reasons, rankErr)
 	}
 	for _, r := range ranked {
+		if gr, ok, err := g.stored(ctx, r.Candidate.URL); err != nil || ok {
+			return gr, err
+		}
 		gr, reason, err := g.ground(ctx, r.Candidate.URL, r.Recipe)
 		if err != nil {
 			return Grounded{}, fmt.Errorf("recipes: ground %q: %w", dishName, err)

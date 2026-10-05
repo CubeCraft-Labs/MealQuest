@@ -1,6 +1,9 @@
 package harness
 
-import "testing"
+import (
+	"testing"
+	"unicode"
+)
 
 func TestNormalize(t *testing.T) {
 	tests := []struct {
@@ -48,6 +51,8 @@ func TestNormalizeCanonicalEquivalence(t *testing.T) {
 		{"Cơm Tấm", "Co\u031bm Ta\u0302\u0301m", "com tam"},
 		{"Ẓaʿtar Ȟash", "Z\u0323aʿtar H\u030cash", "zaʿtar hash"},
 		{"Smǫrrebrød", "Smo\u0328rrebrød", "smorrebrod"},
+		{"Smǿrrebrǿd", "Smø\u0301rrebrø\u0301d", "smorrebrod"}, // ǿ folds through ø
+		{"Ǽbleskiver", "Æ\u0301bleskiver", "aebleskiver"},      // ǽ folds through æ
 	}
 	for _, tt := range tests {
 		c, d := Normalize(tt.composed), Normalize(tt.decomposed)
@@ -57,6 +62,24 @@ func TestNormalizeCanonicalEquivalence(t *testing.T) {
 		}
 		if !Similar(tt.composed, tt.decomposed) {
 			t.Errorf("Similar(%q, %+q) = false, want true", tt.composed, tt.decomposed)
+		}
+		dedupe := NewDeduper(DedupeSources{Regulars: []string{tt.decomposed}})
+		if !dedupe.IsDuplicate(tt.composed) {
+			t.Errorf("IsDuplicate(%q) over %+q = false, want true", tt.composed, tt.decomposed)
+		}
+	}
+}
+
+// TestLetterFoldsFullyReduced checks that every fold result is final:
+// Normalize writes a result without folding it again, so a result that
+// still holds a foldable letter, a combining mark or an upper-case letter
+// would split canonically equivalent spellings (ǿ -> ø instead of o).
+func TestLetterFoldsFullyReduced(t *testing.T) {
+	for r, folded := range letterFolds {
+		for _, c := range folded {
+			if letterFolds[c] != "" || unicode.Is(unicode.Mn, c) || unicode.ToLower(c) != c {
+				t.Errorf("letterFolds[%U] = %q holds %U, which Normalize would change", r, folded, c)
+			}
 		}
 	}
 }

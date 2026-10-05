@@ -43,6 +43,12 @@ type Querier interface {
 	// Returns sql.ErrNoRows until the row exists.
 	GetRecipeSearchSettings(ctx context.Context) (RecipeSearchSetting, error)
 	ListDinnersByStatus(ctx context.Context, status string) ([]Dinner, error)
+	// The planned dinners dated from from_date up to but not including
+	// to_date, oldest first. Days with no dinner are left out.
+	ListPlannedDinners(ctx context.Context, arg ListPlannedDinnersParams) ([]ListPlannedDinnersRow, error)
+	// Reads for the AI household context block (internal/ai/harness).
+	// The names of the most recently declined suggestions, newest first.
+	ListRecentDeclinedNames(ctx context.Context, limit int64) ([]string, error)
 	ListRecipeIngredients(ctx context.Context, recipeID string) ([]RecipeIngredient, error)
 	ListRecipeSteps(ctx context.Context, recipeID string) ([]RecipeStep, error)
 	// Stores a partial result of a running job.

@@ -165,12 +165,20 @@ func Run[In, Out any](ctx context.Context, cfg Config, s Skill[In, Out], scope s
 func runOnce[In, Out any](ctx context.Context, cfg Config, s Skill[In, Out], timeout time.Duration, in In) (Out, error) {
 	var zero Out
 	expired := fmt.Errorf("harness: skill %s v%d: %w: no result within %v", s.Name(), s.Version(), llm.ErrTimeout, timeout)
-	ctx, cancel := context.WithTimeoutCause(ctx, timeout, expired)
+	deadline := time.Now().Add(timeout)
+	ctx, cancel := context.WithDeadlineCause(ctx, deadline, expired)
 	defer cancel()
 	log := &runLog{start: store.Now()}
 	out, status, err := execute(ctx, cfg, s, in, log)
-	if err != nil && context.Cause(ctx) == expired {
-		err = fmt.Errorf("%w: %w", expired, err)
+	// Work that only ends after the deadline, such as a slow PostProcess,
+	// may return no error; it is still a timeout, not a success. The clock
+	// is checked as well as ctx because ctx's timer may not have fired yet.
+	if context.Cause(ctx) == expired || !time.Now().Before(deadline) {
+		if err == nil {
+			err, status = expired, StatusProviderError
+		} else {
+			err = fmt.Errorf("%w: %w", expired, err)
+		}
 	}
 	if saveErr := log.save(ctx, cfg, s.Name(), s.Version(), status, err); saveErr != nil {
 		return zero, errors.Join(err, fmt.Errorf("harness: skill %s v%d: record ai_runs row: %w", s.Name(), s.Version(), saveErr))

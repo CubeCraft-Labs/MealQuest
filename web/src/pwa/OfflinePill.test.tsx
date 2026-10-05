@@ -1,7 +1,8 @@
 import { act, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ApiProvider, createApiClient, type ApiClient } from '../api/index.ts'
+import { ApiProvider, createApiClient, createVerifiedSession, type ApiClient } from '../api/index.ts'
 import { fakeLocation, jsonResponse, ME, stubFetch } from '../test/fetchStub.ts'
+import { cacheFallbackHeader } from '../sw/routes.ts'
 import { createNetworkStatus } from './networkStatus.ts'
 import { OfflinePill } from './OfflinePill.tsx'
 
@@ -30,7 +31,7 @@ function goOnline() {
 }
 
 function renderPill(): ApiClient {
-  const api = createApiClient(fakeLocation(), createNetworkStatus(window))
+  const api = createApiClient(fakeLocation(), createNetworkStatus(window), createVerifiedSession(localStorage))
   render(
     <ApiProvider client={api}>
       <OfflinePill />
@@ -80,6 +81,21 @@ describe('OfflinePill', () => {
     expect(screen.queryByRole('status')).toBeNull()
   })
 
+  it('shows while online when the service worker answers from its cache', async () => {
+    const api = renderPill()
+    const cached = jsonResponse(200, { id: '01J9ZR' })
+    cached.headers.set(cacheFallbackHeader, '1')
+    stubFetch(cached, jsonResponse(200, { id: '01J9ZR' }))
+
+    await act(() => api.apiFetch('/api/v1/recipes/01J9ZR'))
+    expect(navigator.onLine).toBe(true)
+    expect(screen.getByRole('status')).toHaveTextContent(copy)
+
+    // The server answers again.
+    await act(() => api.apiFetch('/api/v1/recipes/01J9ZR'))
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
   it('ignores a request body that cannot be serialized', async () => {
     const api = renderPill()
     const fetchMock = stubFetch(jsonResponse(200, ME))
@@ -119,7 +135,7 @@ describe('OfflinePill', () => {
   it('removes its online and offline listeners on unmount', () => {
     const add = vi.spyOn(window, 'addEventListener')
     const remove = vi.spyOn(window, 'removeEventListener')
-    const api = createApiClient(fakeLocation(), createNetworkStatus(window))
+    const api = createApiClient(fakeLocation(), createNetworkStatus(window), createVerifiedSession(localStorage))
     const { unmount } = render(
       <ApiProvider client={api}>
         <OfflinePill />

@@ -4,14 +4,15 @@ export type NetworkWindow = Pick<Window, 'navigator' | 'addEventListener' | 'rem
 
 export type NetworkStatus = {
   // offline reports whether the browser says it is offline or the last API
-  // request failed with a network error.
+  // request failed with a network error or was answered from the cache.
   offline(): boolean
   // subscribe is notified when offline may have changed. It listens for the
   // window's online/offline events until the returned function is called.
   subscribe(listener: () => void): () => void
-  // requestFailed records a fetch that rejected with a network error.
+  // requestFailed records a fetch that rejected with a network error or that
+  // the service worker answered from its cache.
   requestFailed(): void
-  // requestSucceeded records a fetch that got a response.
+  // requestSucceeded records a fetch the server answered.
   requestSucceeded(): void
 }
 

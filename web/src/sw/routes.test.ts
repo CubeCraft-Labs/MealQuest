@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cacheNames, routeFor, staleCaches, type Route } from './routes'
+import { cacheFallbackHeader, cacheNames, markCacheFallback, routeFor, staleCaches, type Route } from './routes'
 
 const origin = 'https://mealquest.test'
 
@@ -17,6 +17,8 @@ describe('routeFor', () => {
     '/api/v1/shopping/current',
     '/api/v1/dinners',
     '/api/v1/dinners/01J9ZK?include=recipe',
+    '/api/v1/recipes',
+    '/api/v1/recipes/01J9ZR',
     '/api/v1/home',
   ])('GET %s is network-first in the API cache', (path) => {
     expect(route(path)).toEqual(apiCache)
@@ -65,6 +67,8 @@ describe('routeFor', () => {
     '/%61pi/v1/jobs/01J9ZK',
     '/api/v1/j%6Fbs',
     '/api/v1/plans%2F..%2Fsettings',
+    '/api/v1/recipes%2F..%2Fsettings%2Fai',
+    '/api/v1/recipes/..%2F..%2F..%2Fauth%2Flogin',
     '/plan%2F..%2Fauth%2Flogin',
   ])('an encoded reserved path %s is network-only, navigated or not', (path) => {
     expect(route(path)).toEqual(networkOnly)
@@ -81,7 +85,8 @@ describe('routeFor', () => {
 
   it('classifies other API paths by their decoded form', () => {
     expect(route('/%61pi/v1/plans/2026-W40')).toEqual(apiCache)
-    expect(route('/%61pi/v1/recipes', 'GET', 'navigate')).toEqual(networkOnly)
+    expect(route('/%61pi/v1/recipes/01J9ZR')).toEqual(apiCache)
+    expect(route('/%61pi/v1/ideas', 'GET', 'navigate')).toEqual(networkOnly)
   })
 
   it.each(['POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'])(
@@ -91,6 +96,7 @@ describe('routeFor', () => {
         '/api/v1/plans/2026-W40',
         '/api/v1/shopping/current',
         '/api/v1/dinners/01J9ZK',
+        '/api/v1/recipes/01J9ZR',
         '/api/v1/home',
         '/media/photos/abc.jpg',
         '/assets/Figtree-Bold-a1b2c3.woff2',
@@ -106,13 +112,14 @@ describe('routeFor', () => {
   it('matches whole path segments only', () => {
     expect(route('/api/v1/plansx')).toEqual(networkOnly)
     expect(route('/api/v1/homepage')).toEqual(networkOnly)
+    expect(route('/api/v1/recipesx')).toEqual(networkOnly)
     expect(route('/mediax/a.jpg')).toEqual(networkOnly)
     expect(route('/authors')).toEqual(networkOnly)
     expect(route('/api/v1/settingsx')).toEqual(networkOnly)
   })
 
   it('leaves other API calls network-only', () => {
-    expect(route('/api/v1/recipes')).toEqual(networkOnly)
+    expect(route('/api/v1/me')).toEqual(networkOnly)
     expect(route('/api/v1/ideas', 'GET', 'navigate')).toEqual(networkOnly)
   })
 
@@ -153,5 +160,21 @@ describe('staleCaches', () => {
       'my-mealquest-cache',
     ]
     expect(staleCaches(names, current)).toEqual(['mealquest-precache', 'mealquest-api-v0'])
+  })
+})
+
+describe('markCacheFallback', () => {
+  it('copies the cached response with the cache fallback header set', async () => {
+    const cached = new Response('{"id":"01J9ZR"}', {
+      status: 200,
+      statusText: 'OK',
+      headers: { 'Content-Type': 'application/json' },
+    })
+    const marked = markCacheFallback(cached)
+    expect(marked.status).toBe(200)
+    expect(marked.statusText).toBe('OK')
+    expect(marked.headers.get('Content-Type')).toBe('application/json')
+    expect(marked.headers.get(cacheFallbackHeader)).toBe('1')
+    expect(await marked.json()).toEqual({ id: '01J9ZR' })
   })
 })

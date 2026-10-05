@@ -10,11 +10,11 @@ import type { RouteHandlerCallbackOptions } from 'workbox-core/types'
 import { ExpirationPlugin } from 'workbox-expiration'
 import { PrecacheFallbackPlugin, matchPrecache, precacheAndRoute } from 'workbox-precaching'
 import { registerRoute } from 'workbox-routing'
-import { CacheFirst, NetworkFirst, NetworkOnly, type Strategy } from 'workbox-strategies'
+import { CacheFirst, NetworkOnly, type Strategy } from 'workbox-strategies'
+import { createApiStrategy } from './sw/apiStrategy'
 import {
   cacheNames,
   cacheVersion,
-  networkTimeoutSeconds,
   routeFor,
   staleCaches,
   type Route,
@@ -30,7 +30,7 @@ setCacheNameDetails({ prefix: 'mealquest', precache: 'precache', suffix: cacheVe
 const day = 24 * 60 * 60
 
 const strategies = {
-  [cacheNames.api]: new NetworkFirst({ cacheName: cacheNames.api, networkTimeoutSeconds }),
+  [cacheNames.api]: createApiStrategy(),
   [cacheNames.media]: new CacheFirst({
     cacheName: cacheNames.media,
     plugins: [

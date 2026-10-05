@@ -2,7 +2,7 @@ import { act, renderHook } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { errorResponse, fakeLocation, jsonResponse, request, stubFetch } from '../test/fetchStub.ts'
-import { ApiProvider, createApiClient, useJob } from './index.ts'
+import { ApiProvider, createApiClient, createVerifiedSession, useJob } from './index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
 
 type Draft = { dinners: string[] }
@@ -12,7 +12,7 @@ function job(status: string, result: Draft | null, error: string | null = null) 
 }
 
 function renderJob(jobId: string | null) {
-  const api = createApiClient(fakeLocation(), createNetworkStatus(window))
+  const api = createApiClient(fakeLocation(), createNetworkStatus(window), createVerifiedSession(localStorage))
   const wrapper = ({ children }: { children: ReactNode }) => <ApiProvider client={api}>{children}</ApiProvider>
   return renderHook(({ id }) => useJob<Draft>(id), { wrapper, initialProps: { id: jobId } })
 }

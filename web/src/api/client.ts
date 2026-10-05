@@ -1,5 +1,7 @@
 import type { NetworkStatus } from '../pwa/networkStatus.ts'
+import { cacheFallbackHeader } from '../sw/routes.ts'
 import { ApiError, isRecord, parseApiError } from './errors.ts'
+import type { VerifiedSession } from './verifiedSession.ts'
 
 // CSRF_HEADER carries the session's CSRF token on every non-GET request.
 export const CSRF_HEADER = 'X-MealQuest-CSRF'
@@ -52,14 +54,18 @@ export type ApiClient = {
   // account is not in this household; subscribe is notified when it changes.
   forbidden(): boolean
   subscribe(listener: () => void): () => void
-  // network learns of every request that failed with a network error and of
-  // every request that got a response.
+  // network learns of every request that failed with a network error or was
+  // answered from the service worker's cache, and of every request the
+  // server answered.
   network: NetworkStatus
+  // session remembers, on this device, whether /me last answered with a
+  // member; offline, AuthBootstrap opens the saved pages only if it did.
+  session: VerifiedSession
 }
 
 // createApiClient builds the app's API client. location is window.location in
 // the app: a 401 sends it to /auth/login with the current path to return to.
-export function createApiClient(location: ApiLocation, network: NetworkStatus): ApiClient {
+export function createApiClient(location: ApiLocation, network: NetworkStatus, session: VerifiedSession): ApiClient {
   let csrfToken: string | null = null
   let refreshing: Promise<Me> | null = null
   let forbidden = false
@@ -91,7 +97,10 @@ export function createApiClient(location: ApiLocation, network: NetworkStatus): 
       if (error instanceof TypeError) network.requestFailed()
       throw error
     }
-    network.requestSucceeded()
+    // The service worker marks a response it answered from its cache because
+    // the server could not be reached in time.
+    if (response.headers.has(cacheFallbackHeader)) network.requestFailed()
+    else network.requestSucceeded()
     return response
   }
 
@@ -135,12 +144,14 @@ export function createApiClient(location: ApiLocation, network: NetworkStatus): 
 
   function markForbidden() {
     if (forbidden) return
+    session.forget()
     forbidden = true
     listeners.forEach((listener) => listener())
   }
 
   async function decode<T>(method: string, path: string, response: Response): Promise<T> {
     if (response.status === 401) {
+      session.forget()
       location.assign(`/auth/login?return=${encodeURIComponent(location.pathname + location.search)}`)
     }
     if (!response.ok) throw await parseApiError(method, path, response)
@@ -162,6 +173,7 @@ export function createApiClient(location: ApiLocation, network: NetworkStatus): 
       throw new Error(`GET ${ME_PATH}: response is not a member with a CSRF token`)
     }
     csrfToken = me.csrfToken
+    session.remember()
     return me as Me
   }
 
@@ -174,5 +186,6 @@ export function createApiClient(location: ApiLocation, network: NetworkStatus): 
       return () => listeners.delete(listener)
     },
     network,
+    session,
   }
 }

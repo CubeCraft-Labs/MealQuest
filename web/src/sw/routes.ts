@@ -36,8 +36,20 @@ export const cacheNames = {
 
 export const networkTimeoutSeconds = 3
 
+// cacheFallbackHeader marks a network-first response answered from the cache
+// because the server could not be reached in time, so the app can show the
+// offline indicator even while the browser reports that it is online.
+export const cacheFallbackHeader = 'X-MealQuest-Cache-Fallback'
+
+// markCacheFallback copies a cached response with cacheFallbackHeader set.
+export function markCacheFallback(cached: Response): Response {
+  const headers = new Headers(cached.headers)
+  headers.set(cacheFallbackHeader, '1')
+  return new Response(cached.body, { status: cached.status, statusText: cached.statusText, headers })
+}
+
 const neverCached = ['/auth', '/api/v1/settings', '/api/v1/jobs']
-const networkFirst = ['/api/v1/plans', '/api/v1/shopping', '/api/v1/dinners', '/api/v1/home']
+const networkFirst = ['/api/v1/plans', '/api/v1/shopping', '/api/v1/dinners', '/api/v1/recipes', '/api/v1/home']
 
 // True when path is prefix itself or a path below it: /api/v1/plans matches
 // /api/v1/plans and /api/v1/plans/2026-W40, never /api/v1/plansx.

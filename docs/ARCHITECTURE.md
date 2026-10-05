@@ -164,6 +164,13 @@ automatic** (D-021).
   last 60 passed Side quests and the plans of the last four ISO weeks. A
   character budget trims the oldest plans first, then the oldest passes;
   Regulars and the Quest log are never trimmed.
+- **Name dedupe** (`harness.Normalize`, `harness.Similar`, `harness.Deduper`):
+  a dinner name is normalized by lowercasing, folding accents, stripping
+  punctuation, dropping filler words (easy, best, homemade, quick, simple,
+  the, a, recipe, classic) and collapsing whitespace. Two names are the same
+  dinner when the token-set (Jaccard) similarity of their words is at least
+  0.85. A `Deduper` over the Regulars, Quest log, pending suggestions and
+  passed names rejects a suggestion that repeats any of them.
 
 ## Recipe grounding
 

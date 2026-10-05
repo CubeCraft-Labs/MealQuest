@@ -204,6 +204,33 @@ func TestCachePhotoGIFUsesFirstFrame(t *testing.T) {
 	}
 }
 
+func TestCachePhotoRejectsSmallGIFFirstFrame(t *testing.T) {
+	t.Parallel()
+	// A 400x400 screen whose first frame is 1x1: the frame is what would be
+	// stored, so it is what must measure PhotoMinShortSide.
+	var b bytes.Buffer
+	anim := &gif.GIF{
+		Image:  []*image.Paletted{image.NewPaletted(image.Rect(0, 0, 1, 1), color.Palette{color.Black})},
+		Delay:  []int{10},
+		Config: image.Config{ColorModel: color.Palette{color.Black}, Width: 400, Height: 400},
+	}
+	if err := gif.EncodeAll(&b, anim); err != nil {
+		t.Fatal(err)
+	}
+	cache, st, dataDir, _ := newTestPhotoCache(t, map[string]photoFile{
+		"/speck.gif": {"image/gif", b.Bytes()},
+	})
+	if _, err := cache.CachePhoto(t.Context(), "https://example.com/speck.gif"); !errors.Is(err, ErrPhotoTooSmall) {
+		t.Errorf("CachePhoto error = %v, want ErrPhotoTooSmall", err)
+	}
+	if n := countPhotos(t, st); n != 0 {
+		t.Errorf("%d photos recorded for a refused image", n)
+	}
+	if names := photoFiles(t, dataDir); len(names) != 0 {
+		t.Errorf("files stored for a refused image: %v", names)
+	}
+}
+
 func TestCachePhotoFillsTransparencyWhite(t *testing.T) {
 	t.Parallel()
 	cache, _, dataDir, _ := newTestPhotoCache(t, map[string]photoFile{
@@ -320,7 +347,7 @@ func TestCachePhotoDeduplicatesBySHA256(t *testing.T) {
 
 func TestOpenPhoto(t *testing.T) {
 	t.Parallel()
-	cache, _, _, _ := newTestPhotoCache(t, map[string]photoFile{
+	cache, _, dataDir, _ := newTestPhotoCache(t, map[string]photoFile{
 		"/a.png": {"image/png", encodePNG(t, gradient(400, 300))},
 	})
 	photo, err := cache.CachePhoto(t.Context(), "https://example.com/a.png")
@@ -328,11 +355,16 @@ func TestOpenPhoto(t *testing.T) {
 		t.Fatalf("CachePhoto: %v", err)
 	}
 	for _, size := range PhotoSizes {
-		f, err := cache.OpenPhoto(photo.ID, size)
+		f, err := cache.OpenPhoto(t.Context(), photo.ID, size)
 		if err != nil {
 			t.Fatalf("OpenPhoto %d: %v", size, err)
 		}
 		f.Close()
+	}
+	// A file with no photos row is not a stored photo.
+	orphan := store.NewID()
+	if err := os.WriteFile(filepath.Join(dataDir, "media", "photos", orphan+"-400.jpg"), []byte("jpeg"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	for _, tc := range []struct {
 		id   string
@@ -340,11 +372,12 @@ func TestOpenPhoto(t *testing.T) {
 	}{
 		{photo.ID, 800},
 		{store.NewID(), 400},
+		{orphan, 400},
 		{strings.ToLower(photo.ID), 400},
 		{"../" + photo.ID, 400},
 		{"", 400},
 	} {
-		if _, err := cache.OpenPhoto(tc.id, tc.size); !errors.Is(err, fs.ErrNotExist) {
+		if _, err := cache.OpenPhoto(t.Context(), tc.id, tc.size); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("OpenPhoto(%q, %d) error = %v, want fs.ErrNotExist", tc.id, tc.size, err)
 		}
 	}

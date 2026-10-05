@@ -165,12 +165,17 @@ func (c *PhotoCache) CachePhoto(ctx context.Context, rawURL string) (db.Photo, e
 }
 
 // OpenPhoto opens the stored file of photo id at size. An id that is not a
-// canonical ULID, a size not in PhotoSizes, or a photo that is not stored
-// is an error matching fs.ErrNotExist.
-func (c *PhotoCache) OpenPhoto(id string, size int) (*os.File, error) {
+// canonical ULID, a size not in PhotoSizes, an id with no photos row, or a
+// photo whose file is not stored is an error matching fs.ErrNotExist.
+func (c *PhotoCache) OpenPhoto(ctx context.Context, id string, size int) (*os.File, error) {
 	parsed, err := ulid.ParseStrict(id)
 	if err != nil || parsed.String() != id || !slices.Contains(PhotoSizes, size) {
 		return nil, fmt.Errorf("recipes: photo %q at size %d: %w", id, size, fs.ErrNotExist)
+	}
+	if _, err := db.New(c.store.Reader).GetPhoto(ctx, id); errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("recipes: photo %q: %w", id, fs.ErrNotExist)
+	} else if err != nil {
+		return nil, fmt.Errorf("recipes: look up photo %q: %w", id, err)
 	}
 	return os.Open(c.path(id, size))
 }
@@ -183,8 +188,9 @@ func photoFileName(id string, size int) string {
 	return id + "-" + strconv.Itoa(size) + ".jpg"
 }
 
-// decodePhoto decodes a JPEG, PNG, WebP or GIF image, checking its size
-// from the header before decoding the pixels.
+// decodePhoto decodes a JPEG, PNG, WebP or GIF image, checking its pixel
+// count from the header before decoding the pixels, and the shorter side of
+// the decoded image: a GIF's first frame may be smaller than its screen.
 func decodePhoto(b []byte) (image.Image, error) {
 	cfg, format, err := image.DecodeConfig(bytes.NewReader(b))
 	if err != nil {
@@ -197,12 +203,12 @@ func decodePhoto(b []byte) (image.Image, error) {
 	if int64(cfg.Width)*int64(cfg.Height) > PhotoMaxPixels {
 		return nil, fmt.Errorf("%w: %dx%d", ErrPhotoTooLarge, cfg.Width, cfg.Height)
 	}
-	if min(cfg.Width, cfg.Height) < PhotoMinShortSide {
-		return nil, fmt.Errorf("%w: %dx%d, shorter side under %d px", ErrPhotoTooSmall, cfg.Width, cfg.Height, PhotoMinShortSide)
-	}
 	img, err := decode(b)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrPhotoFormat, err)
+	}
+	if size := img.Bounds().Size(); min(size.X, size.Y) < PhotoMinShortSide {
+		return nil, fmt.Errorf("%w: %dx%d, shorter side under %d px", ErrPhotoTooSmall, size.X, size.Y, PhotoMinShortSide)
 	}
 	return img, nil
 }

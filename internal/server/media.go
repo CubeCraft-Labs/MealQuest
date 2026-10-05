@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"log/slog"
@@ -20,7 +21,7 @@ const photoCacheControl = "private, max-age=31536000, immutable"
 // PhotoFiles opens a cached photo's file at one of its stored sizes. An
 // unknown photo or size is an error matching fs.ErrNotExist.
 type PhotoFiles interface {
-	OpenPhoto(id string, size int) (*os.File, error)
+	OpenPhoto(ctx context.Context, id string, size int) (*os.File, error)
 }
 
 // getPhoto answers GET /media/photos/{id}-{size}.jpg with the stored JPEG.
@@ -32,7 +33,7 @@ func getPhoto(logger *slog.Logger, photos PhotoFiles) http.HandlerFunc {
 			notFound(w, r)
 			return
 		}
-		f, err := photos.OpenPhoto(id, size)
+		f, err := photos.OpenPhoto(r.Context(), id, size)
 		if errors.Is(err, fs.ErrNotExist) {
 			notFound(w, r)
 			return

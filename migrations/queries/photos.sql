@@ -15,3 +15,7 @@ SELECT * FROM photos
 WHERE sha256 = ?
 ORDER BY id
 LIMIT 1;
+
+-- name: GetPhoto :one
+SELECT * FROM photos
+WHERE id = ?;

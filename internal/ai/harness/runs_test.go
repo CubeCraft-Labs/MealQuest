@@ -276,6 +276,9 @@ func TestRunRowsHoldNoSecrets(t *testing.T) {
 				return &f, nil
 			}
 			cfg.Persona = "Our kitchen. " + leaky
+			// A model value can hold a credential too: every stored
+			// column is redacted, not only the bodies.
+			cfg.Settings.Model = "model-" + seededKey + " " + seededWebhook
 			_, _ = Run(context.Background(), cfg, echoSkill{}, "week-1", echoInput{Word: "tacos " + seededWebhook})
 			assertCalls(t, &f, len(script))
 
@@ -288,6 +291,9 @@ func TestRunRowsHoldNoSecrets(t *testing.T) {
 				if strings.Contains(text, s) {
 					t.Errorf("stored row holds %q:\n%s", s, text)
 				}
+			}
+			if want := "model-" + redactionMarker + " " + redactionMarker; rows[0].Model != want {
+				t.Errorf("stored model = %q, want %q", rows[0].Model, want)
 			}
 			for _, kept := range []string{"Our kitchen.", "Repeat: tacos", redactionMarker} {
 				if !strings.Contains(text, kept) {

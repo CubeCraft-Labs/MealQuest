@@ -159,9 +159,18 @@ automatic** (D-021).
   is always the key the provider sends. Request and response
   bodies are redacted before they are stored: the decrypted API key,
   Authorization and API-key header values, Google Chat webhook URLs and URLs
-  with key-like query parameters are removed, inside JSON strings too.
+  with key-like query parameters are removed, inside JSON strings too; the
+  skill, provider and model columns are redacted the same way. Writing the
+  row is bounded: a run whose work ended in time must write its row before
+  the skill's deadline or it fails with `llm.ErrTimeout` and its row records
+  the timeout; a failed run's row has a further fixed bound, and if even
+  that write fails the run returns the write error with its own and no row
+  is stored. A stored row's status therefore always matches what the caller
+  received.
   `harness.Purge` deletes rows older than `harness.RunRetention` (30 days),
-  clearing the `suggestion_batches` and `week_plans` references first.
+  clearing the `suggestion_batches` and `week_plans` references first. The
+  harness does not call it: the scheduler's daily `ai_runs` purge
+  (Feature 20) must call `harness.Purge` with `now - RunRetention`.
 - **Concurrency guards** (`harness.Guard`, one per process): `harness.Run`
   takes a scope key, and concurrent runs of one skill with one scope share a
   single in-flight run and its result, error included (single-flight); runs
@@ -221,7 +230,7 @@ purge are fixed and not configurable.
 | `day_of_reminder` | Daily 16:30 | Tonight's dinner reminder. |
 | `rotation_check` | Daily 09:00 | Asks "Keep it in rotation?" for tried dinners. |
 | `week_rollover` | Monday 00:05 (fixed) | Freezes last week's Supply run into the Supply archive. |
-| `ai_runs` purge | Daily (fixed) | Deletes `ai_runs` rows past 30-day retention. |
+| `ai_runs` purge | Daily (fixed) | Calls `harness.Purge` to delete `ai_runs` rows past 30-day retention (Feature 20). |
 
 Runs are recorded in `schedule_runs` and executed through `jobs`.
 

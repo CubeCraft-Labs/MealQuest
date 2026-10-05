@@ -38,9 +38,17 @@ const (
 // Purge with time.Now().Add(-RunRetention).
 const RunRetention = 30 * 24 * time.Hour
 
+// runSaveTimeout bounds writing the ai_runs row of a run that has failed,
+// timed out or been cancelled, so a blocked writer cannot hold Run up
+// indefinitely. A variable so tests can shorten it.
+var runSaveTimeout = 5 * time.Second
+
 // Purge deletes the ai_runs rows created before olderThan and returns how
 // many it deleted. The suggestion_batches and week_plans references to
 // those rows are cleared first, in the same transaction.
+//
+// Nothing in this package calls Purge: the scheduler's daily ai_runs purge
+// (Feature 20) must call it with time.Now().Add(-RunRetention).
 func Purge(ctx context.Context, st *store.Store, olderThan time.Time) (int64, error) {
 	if olderThan.IsZero() {
 		return 0, errors.New("harness: purge ai_runs: zero cutoff")
@@ -67,6 +75,9 @@ func Purge(ctx context.Context, st *store.Store, olderThan time.Time) (int64, er
 
 // runLog collects one run's turns for its ai_runs row.
 type runLog struct {
+	// id is the row's ID, fixed for the run so that a second save attempt
+	// can never add a second row.
+	id        string
 	start     store.Timestamp
 	requests  []loggedRequest
 	responses []loggedResponse
@@ -138,8 +149,8 @@ func (l *runLog) add(apiKey string, req llm.Request, resp llm.Response, err erro
 	l.tokensOut += int64(resp.Usage.OutputTokens)
 }
 
-// save writes the run's ai_runs row. It is written even when ctx is done,
-// so a cancelled run is recorded too.
+// save writes the run's ai_runs row within ctx, which the caller bounds.
+// Every stored string is redacted.
 func (l *runLog) save(ctx context.Context, cfg Config, skill string, version int, status RunStatus, runErr error) error {
 	// A run that failed before its first turn stores an empty list.
 	request, err := marshalRedacted(nonNil(l.requests), cfg.APIKey)
@@ -158,12 +169,12 @@ func (l *runLog) save(ctx context.Context, cfg Config, skill string, version int
 		errText = sql.NullString{String: redact("first reply: "+strings.Join(l.problems, "; "), cfg.APIKey), Valid: true}
 	}
 	now := store.Now()
-	return db.New(cfg.Store.Writer).CreateAIRun(context.WithoutCancel(ctx), db.CreateAIRunParams{
-		ID:               store.NewID(),
-		Skill:            skill,
+	return db.New(cfg.Store.Writer).CreateAIRun(ctx, db.CreateAIRunParams{
+		ID:               l.id,
+		Skill:            redact(skill, cfg.APIKey),
 		SkillVersion:     strconv.Itoa(version),
-		Provider:         cfg.Settings.Provider,
-		Model:            cfg.Settings.Model,
+		Provider:         redact(cfg.Settings.Provider, cfg.APIKey),
+		Model:            redact(cfg.Settings.Model, cfg.APIKey),
 		Temperature:      cfg.Settings.Temperature,
 		Status:           string(status),
 		LatencyMs:        sql.NullInt64{Int64: now.Sub(l.start.Time).Milliseconds(), Valid: true},

@@ -42,8 +42,8 @@ type Skill[In, Out any] interface {
 	// is validated again; problems found then are repaired like any other.
 	// Its error fails the run without a repair turn.
 	PostProcess(out Out) (Out, error)
-	// Timeout bounds a whole run, waiting for LLM call slots and the
-	// repair turn included. It is DefaultTimeout unless the skill needs
+	// Timeout bounds a whole run, waiting for LLM call slots, the repair
+	// turn and writing a successful run's ai_runs row included (see Run). It is DefaultTimeout unless the skill needs
 	// another, and must be positive.
 	Timeout() time.Duration
 }
@@ -136,6 +136,15 @@ func (e *BadOutputError) Unwrap() error { return llm.ErrBadOutput }
 // before anything else, and writes no row since the row cannot be
 // written without one. When the row cannot be written the run fails with
 // that error too, even if its output was usable.
+//
+// Writing the row is bounded too. A run whose work ended in time must
+// write its row before s.Timeout() as well; if the store's writer is not
+// free by then, the run fails with llm.ErrTimeout and its row records the
+// timeout instead. The row of a run that failed is written within a
+// further fixed bound (runSaveTimeout); if it cannot be, the run fails with
+// the write error alongside its own, and no row is stored. So Run returns
+// at most that bound after s.Timeout(), and a stored row's status always
+// matches what the caller received.
 func Run[In, Out any](ctx context.Context, cfg Config, s Skill[In, Out], scope string, in In) (Out, error) {
 	var zero Out
 	if err := cfg.validate(); err != nil {
@@ -168,7 +177,7 @@ func runOnce[In, Out any](ctx context.Context, cfg Config, s Skill[In, Out], tim
 	deadline := time.Now().Add(timeout)
 	ctx, cancel := context.WithDeadlineCause(ctx, deadline, expired)
 	defer cancel()
-	log := &runLog{start: store.Now()}
+	log := &runLog{id: store.NewID(), start: store.Now()}
 	out, status, err := execute(ctx, cfg, s, in, log)
 	// Work that only ends after the deadline, such as a slow PostProcess,
 	// may return no error; it is still a timeout, not a success. The clock
@@ -180,19 +189,34 @@ func runOnce[In, Out any](ctx context.Context, cfg Config, s Skill[In, Out], tim
 			err = fmt.Errorf("%w: %w", expired, err)
 		}
 	}
-	if saveErr := log.save(ctx, cfg, s.Name(), s.Version(), status, err); saveErr != nil {
+	// The saves ignore the callers' cancellation, so a cancelled run is
+	// recorded too, but each is bounded. Work that ended in time must also
+	// be recorded in time: its row is written within the deadline or not at
+	// all, so a stored ok or repaired row always means the caller got the
+	// output.
+	if err == nil {
+		sctx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
+		saveErr := log.save(sctx, cfg, s.Name(), s.Version(), status, nil)
+		late := sctx.Err() != nil
+		cancel()
+		if saveErr == nil {
+			return out, nil
+		}
+		if !late {
+			return zero, fmt.Errorf("harness: skill %s v%d: record ai_runs row: %w", s.Name(), s.Version(), saveErr)
+		}
+		// The store's writer was not free before the deadline, so the run
+		// has not ended in time.
+		err, status = expired, StatusProviderError
+	}
+	// A run that failed is recorded within runSaveTimeout; when it cannot
+	// be, the run fails with both errors.
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), runSaveTimeout)
+	defer cancel()
+	if saveErr := log.save(sctx, cfg, s.Name(), s.Version(), status, err); saveErr != nil {
 		return zero, errors.Join(err, fmt.Errorf("harness: skill %s v%d: record ai_runs row: %w", s.Name(), s.Version(), saveErr))
 	}
-	if err != nil {
-		return zero, err
-	}
-	// The save may wait past the deadline for the store's single writer.
-	// The run has then not ended in time, so it fails, though its row
-	// records the work's outcome as it stood before the save.
-	if !time.Now().Before(deadline) {
-		return zero, expired
-	}
-	return out, nil
+	return zero, err
 }
 
 // execute renders the prompt, builds the provider and sends the turns,

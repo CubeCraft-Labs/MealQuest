@@ -300,8 +300,9 @@ func TestRunTimeout(t *testing.T) {
 		cfg := testConfig(t, &f)
 		f.QueueGenerate(reply(`{"echo":"taco"}`))
 		timeout := 100 * time.Millisecond
-		// Holding the store's only writer connection makes the save wait
-		// past the deadline, after the work itself has ended in time.
+		// Holding the store's only writer connection past the deadline
+		// keeps the ok row from being written in time, after the work
+		// itself has ended in time.
 		conn, err := cfg.Store.Writer.Conn(context.Background())
 		if err != nil {
 			t.Fatal(err)
@@ -316,11 +317,39 @@ func TestRunTimeout(t *testing.T) {
 			t.Fatalf("out = %+v, want no output", out)
 		}
 		assertCalls(t, &f, 1)
-		// An ok row with no error proves the work ended in time and only
-		// the save ran past the deadline.
+		// The row records the timeout the caller received, not the ok
+		// outcome the work had.
 		rows := runRows(t, cfg.Store)
-		if len(rows) != 1 || rows[0].Status != string(StatusOK) || rows[0].Error.Valid {
-			t.Fatalf("rows = %+v, want one ok row with no error", rows)
+		if len(rows) != 1 || rows[0].Status != string(StatusProviderError) || !strings.Contains(rows[0].Error.String, llm.ErrTimeout.Error()) {
+			t.Fatalf("rows = %+v, want one provider_error row naming the timeout", rows)
+		}
+	})
+	t.Run("writer blocked", func(t *testing.T) {
+		var f llm.Fake
+		cfg := testConfig(t, &f)
+		f.QueueGenerate(reply(`{"echo":"taco"}`))
+		timeout := 50 * time.Millisecond
+		saveTimeout := runSaveTimeout
+		runSaveTimeout = 100 * time.Millisecond
+		defer func() { runSaveTimeout = saveTimeout }()
+		// The writer stays held until Run has returned, so neither save
+		// can be written.
+		conn, err := cfg.Store.Writer.Conn(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		started := time.Now()
+		_, err = Run(context.Background(), cfg, timeoutSkill{timeout: timeout}, "week-1", echoInput{Word: "taco"})
+		elapsed := time.Since(started)
+		conn.Close()
+		if !errors.Is(err, llm.ErrTimeout) || !strings.Contains(err.Error(), "record ai_runs row") {
+			t.Fatalf("err = %v, want ErrTimeout and the row write failure", err)
+		}
+		if bound := timeout + runSaveTimeout + time.Second; elapsed > bound {
+			t.Fatalf("Run took %v with the writer blocked, want at most %v", elapsed, bound)
+		}
+		if rows := runRows(t, cfg.Store); len(rows) != 0 {
+			t.Fatalf("rows = %+v, want none", rows)
 		}
 	})
 	t.Run("waiting for a slot", func(t *testing.T) {

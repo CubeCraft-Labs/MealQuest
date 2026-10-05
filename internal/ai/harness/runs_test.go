@@ -128,7 +128,7 @@ func TestRunWritesOneRowWithStatus(t *testing.T) {
 			f.QueueGenerate(tc.script...)
 			cfg := testConfig(t, &f)
 			before := store.Now()
-			_, runErr := Run(context.Background(), cfg, tc.skill, echoInput{Word: "taco"})
+			_, runErr := Run(context.Background(), cfg, tc.skill, "week-1", echoInput{Word: "taco"})
 			if (runErr == nil) != (tc.status == StatusOK || tc.status == StatusRepaired) {
 				t.Fatalf("Run err = %v for status %s", runErr, tc.status)
 			}
@@ -186,7 +186,7 @@ func TestRunRowPerRun(t *testing.T) {
 	cfg := testConfig(t, &f)
 	f.QueueGenerate(reply(`{"echo":"taco"}`), reply(`{"echo":"TACO"}`), reply(`{"echo":"taco"}`), llm.GenerateResult{Err: llm.ErrAuth})
 	for range 3 {
-		_, _ = Run(context.Background(), cfg, echoSkill{}, echoInput{Word: "taco"})
+		_, _ = Run(context.Background(), cfg, echoSkill{}, "week-1", echoInput{Word: "taco"})
 	}
 	assertCalls(t, &f, 4)
 	var got []string
@@ -204,7 +204,7 @@ func TestRunRecordsCancelledRun(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	f.QueueGenerate(llm.GenerateResult{Err: context.Canceled})
-	if _, err := Run(ctx, cfg, echoSkill{}, echoInput{Word: "taco"}); !errors.Is(err, context.Canceled) {
+	if _, err := Run(ctx, cfg, echoSkill{}, "week-1", echoInput{Word: "taco"}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 	if rows := runRows(t, cfg.Store); len(rows) != 1 || rows[0].Status != string(StatusProviderError) {
@@ -217,7 +217,7 @@ func TestRunFailsWhenRowCannotBeWritten(t *testing.T) {
 	cfg := testConfig(t, &f)
 	cfg.Settings.Provider = "gemini" // refused by the provider CHECK
 	f.QueueGenerate(reply(`{"echo":"taco"}`))
-	_, err := Run(context.Background(), cfg, echoSkill{}, echoInput{Word: "taco"})
+	_, err := Run(context.Background(), cfg, echoSkill{}, "week-1", echoInput{Word: "taco"})
 	if err == nil || !strings.Contains(err.Error(), "record ai_runs row") {
 		t.Fatalf("err = %v, want the row write failure", err)
 	}
@@ -276,7 +276,7 @@ func TestRunRowsHoldNoSecrets(t *testing.T) {
 				return &f, nil
 			}
 			cfg.Persona = "Our kitchen. " + leaky
-			_, _ = Run(context.Background(), cfg, echoSkill{}, echoInput{Word: "tacos " + seededWebhook})
+			_, _ = Run(context.Background(), cfg, echoSkill{}, "week-1", echoInput{Word: "tacos " + seededWebhook})
 			assertCalls(t, &f, len(script))
 
 			rows := runRows(t, cfg.Store)
@@ -334,8 +334,9 @@ func TestRunRowsHoldNoProviderKey(t *testing.T) {
 		APIKey:      seededKey,
 		NewProvider: presets.FromSettings,
 		Store:       emptyHousehold(t),
+		Guard:       testGuard(t, DefaultMaxCalls),
 	}
-	out, err := Run(context.Background(), cfg, echoSkill{}, echoInput{Word: "taco"})
+	out, err := Run(context.Background(), cfg, echoSkill{}, "week-1", echoInput{Word: "taco"})
 	if err != nil {
 		t.Fatal(err)
 	}

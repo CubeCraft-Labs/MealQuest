@@ -162,6 +162,16 @@ automatic** (D-021).
   with key-like query parameters are removed, inside JSON strings too.
   `harness.Purge` deletes rows older than `harness.RunRetention` (30 days),
   clearing the `suggestion_batches` and `week_plans` references first.
+- **Concurrency guards** (`harness.Guard`, one per process): `harness.Run`
+  takes a scope key, and concurrent runs of one skill with one scope share a
+  single in-flight run and its result, error included (single-flight); runs
+  with different scopes are independent. A semaphore lets at most
+  `harness.DefaultMaxCalls` (2, set by `NewGuard`) LLM calls run at once;
+  waiting for a slot honours the context. Each skill declares a timeout
+  (`harness.DefaultTimeout`, 60 s, unless it needs another) bounding the
+  whole run, slot waits and repair turn included; a run past it fails with
+  `llm.ErrTimeout`. A caller whose context ends gets the context error; the
+  shared run is cancelled, freeing its slot, once no caller waits for it.
 - **Prompt layering** (D-007): each skill version's prompt is a
   `text/template` file embedded from `ai/skills/prompts/`
   (`<skill>.v<version>.tmpl`). The system prompt is always, in order:

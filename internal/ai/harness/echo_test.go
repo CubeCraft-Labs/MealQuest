@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/llm"
 )
@@ -53,3 +54,5 @@ func (echoSkill) PostProcess(out echoOutput) (echoOutput, error) {
 	out.Echo = strings.TrimSpace(out.Echo)
 	return out, nil
 }
+
+func (echoSkill) Timeout() time.Duration { return DefaultTimeout }

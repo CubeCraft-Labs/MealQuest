@@ -11,7 +11,9 @@ import (
 // Fake is a scripted Provider for tests. Each method returns its queued
 // results in order, one per call, and records every Request Generate
 // receives. A call with nothing left in its queue fails, so an unexpected
-// call is never silently answered. It is safe for concurrent use.
+// call is never silently answered. A Generate result can block until the
+// test releases it, so tests can hold calls in flight. It is safe for
+// concurrent use.
 type Fake struct {
 	mu       sync.Mutex
 	generate []GenerateResult
@@ -26,6 +28,13 @@ var _ Provider = (*Fake)(nil)
 type GenerateResult struct {
 	Response Response
 	Err      error
+	// Started, when set, is closed once the call has taken this result and
+	// recorded its Request, before it blocks on Release.
+	Started chan struct{}
+	// Release, when set, makes the call block until it is closed. When
+	// the call's context is done first, the call returns ctx.Err() instead
+	// of Response and Err, as a real provider does.
+	Release <-chan struct{}
 }
 
 // ListModelsResult is one scripted ListModels outcome.
@@ -55,16 +64,29 @@ func (f *Fake) QueueVerify(results ...error) {
 	f.verify = append(f.verify, results...)
 }
 
-// Generate records req and returns the next scripted result.
-func (f *Fake) Generate(_ context.Context, req Request) (Response, error) {
+// Generate records req and returns the next scripted result, blocking
+// first when the result has a Release channel.
+func (f *Fake) Generate(ctx context.Context, req Request) (Response, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.requests = append(f.requests, cloneRequest(req))
 	if len(f.generate) == 0 {
-		return Response{}, fmt.Errorf("llm: fake: unscripted Generate call %d", len(f.requests))
+		n := len(f.requests)
+		f.mu.Unlock()
+		return Response{}, fmt.Errorf("llm: fake: unscripted Generate call %d", n)
 	}
 	r := f.generate[0]
 	f.generate = f.generate[1:]
+	f.mu.Unlock()
+	if r.Started != nil {
+		close(r.Started)
+	}
+	if r.Release != nil {
+		select {
+		case <-r.Release:
+		case <-ctx.Done():
+			return Response{}, ctx.Err()
+		}
+	}
 	return r.Response, r.Err
 }
 

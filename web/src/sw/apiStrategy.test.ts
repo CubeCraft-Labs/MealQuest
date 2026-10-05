@@ -2,6 +2,9 @@
 // storage: jsdom has none, and the worker itself needs service worker globals.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RouteHandlerCallbackOptions } from 'workbox-core/types'
+import { createApiClient, createVerifiedSession } from '../api/index.ts'
+import { createNetworkStatus } from '../pwa/networkStatus.ts'
+import { fakeLocation, jsonResponse } from '../test/fetchStub.ts'
 import { createApiStrategy } from './apiStrategy'
 import { cacheFallbackHeader, cacheNames, routeFor } from './routes'
 
@@ -52,8 +55,11 @@ afterEach(() => {
 // handle sends a GET through the API strategy, as src/sw.ts does for a
 // network-first route.
 async function handle(path: string): Promise<Response> {
-  const request = new Request(new URL(path, origin))
-  expect(routeFor({ method: 'GET', url: new URL(request.url), mode: 'cors' }, origin)).toEqual({
+  return answer(new Request(new URL(path, origin)))
+}
+
+async function answer(request: Request): Promise<Response> {
+  expect(routeFor({ method: request.method, url: new URL(request.url), mode: 'cors' }, origin)).toEqual({
     strategy: 'network-first',
     cacheName: cacheNames.api,
   })
@@ -92,5 +98,68 @@ describe('API strategy', () => {
   it('fails offline for a recipe never viewed', async () => {
     vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockRejectedValue(new TypeError('Failed to fetch')))
     await expect(handle('/api/v1/recipes/01J9ZS')).rejects.toThrow()
+  })
+})
+
+describe('previously viewed plan and recipe reads', () => {
+  const plan = { week: '2026-W40', days: [{ date: '2026-10-05', dinner: 'Chicken tikka masala' }] }
+  const recipe = { id: '01J9ZR', name: 'Chicken tikka masala', steps: ['Marinate', 'Simmer'] }
+  const server: Record<string, unknown> = { '/api/v1/plans/2026-W40': plan, '/api/v1/recipes/01J9ZR': recipe }
+  let reachable: boolean
+
+  // The page's fetch goes through the worker's API strategy; the strategy's
+  // own fetch (always a Request) is the network. The API client fetches a
+  // path string, so the two are told apart by the argument's type. As in a
+  // browser, a worker that cannot answer is a network error to the page.
+  beforeEach(() => {
+    reachable = true
+    vi.spyOn(navigator, 'onLine', 'get').mockImplementation(() => reachable)
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (!(input instanceof Request)) {
+        return answer(new Request(new URL(String(input), origin), init)).catch((error: unknown) => {
+          throw new TypeError('Failed to fetch', { cause: error })
+        })
+      }
+      if (!reachable) throw new TypeError('Failed to fetch')
+      const body = server[new URL(input.url).pathname]
+      if (body === undefined) throw new Error(`unexpected network fetch: ${input.url}`)
+      return jsonResponse(200, body)
+    })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  function client() {
+    return createApiClient(fakeLocation('/plan'), createNetworkStatus(window), createVerifiedSession(localStorage))
+  }
+
+  it('serves the plan and recipe fetched online once the network is gone', async () => {
+    const online = client()
+    expect(await online.apiFetch('/api/v1/plans/2026-W40')).toEqual(plan)
+    expect(await online.apiFetch('/api/v1/recipes/01J9ZR')).toEqual(recipe)
+    expect(online.network.offline()).toBe(false)
+
+    reachable = false
+    const offline = client()
+    expect(await offline.apiFetch('/api/v1/plans/2026-W40')).toEqual(plan)
+    expect(await offline.apiFetch('/api/v1/recipes/01J9ZR')).toEqual(recipe)
+    expect(offline.network.offline()).toBe(true)
+  })
+
+  it('shows the offline indicator when the cached copy answers while the browser reports online', async () => {
+    await client().apiFetch('/api/v1/plans/2026-W40')
+
+    vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(true)
+    reachable = false
+    const api = client()
+    expect(await api.apiFetch('/api/v1/plans/2026-W40')).toEqual(plan)
+    expect(api.network.offline()).toBe(true)
+  })
+
+  it('fails offline for a plan never fetched', async () => {
+    reachable = false
+    await expect(client().apiFetch('/api/v1/plans/2026-W41')).rejects.toThrow(TypeError)
   })
 })

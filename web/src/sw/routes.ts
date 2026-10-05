@@ -13,7 +13,7 @@ export type Route =
   | { strategy: 'network-first'; cacheName: typeof cacheNames.api }
   // Cached response when there is one, else the network; entries expire.
   | { strategy: 'cache-first'; cacheName: typeof cacheNames.media | typeof cacheNames.fonts }
-  // Network only, nothing cached.
+  // Network only, nothing cached: the worker leaves the request to the browser.
   | { strategy: 'network-only' }
   // Network only, nothing cached; offline, the precached index.html.
   | { strategy: 'navigation-fallback' }

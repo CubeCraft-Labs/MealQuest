@@ -19,7 +19,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
-	"sync"
 
 	"github.com/oklog/ulid/v2"
 	"golang.org/x/image/draw"
@@ -69,16 +68,12 @@ var photoDecoders = map[string]func([]byte) (image.Image, error){
 // PhotoCache downloads photos through a Fetcher and stores each at every
 // PhotoSizes length as {id}-{size}.jpg under PhotoDir, with a photos row.
 // Photos are deduplicated by the SHA-256 of the downloaded bytes. A
-// PhotoCache is safe for concurrent use; photos are processed one at a time.
+// PhotoCache is safe for concurrent use.
 type PhotoCache struct {
 	fetcher *Fetcher
 	store   *store.Store
 	// dir is the absolute photo directory.
 	dir string
-
-	// mu serialises the dedupe lookup, processing and insert, so one image
-	// is never stored twice.
-	mu sync.Mutex
 }
 
 // NewPhotoCache returns a PhotoCache storing photos under dataDir, creating
@@ -100,68 +95,88 @@ func NewPhotoCache(fetcher *Fetcher, st *store.Store, dataDir string) (*PhotoCac
 	return &PhotoCache{fetcher: fetcher, store: st, dir: dir}, nil
 }
 
-// CachePhoto downloads the image at rawURL and returns its photos row. An
-// image whose bytes are already cached returns the existing row. Otherwise
-// it is decoded, refused if its shorter side is under PhotoMinShortSide,
-// scaled so its long side is each of PhotoSizes, encoded as JPEG and
-// recorded. The row's width and height are the original image's, and its
-// local_path is the largest size's file relative to the data directory.
-func (c *PhotoCache) CachePhoto(ctx context.Context, rawURL string) (db.Photo, error) {
+// DownloadedPhoto is an image DownloadPhoto has downloaded and decoded,
+// ready for CachePhoto.
+type DownloadedPhoto struct {
+	// url is the image's final URL, after redirects.
+	url    string
+	sha256 string
+	img    image.Image
+}
+
+// DownloadPhoto downloads the image at rawURL and decodes it, refusing one
+// whose shorter side is under PhotoMinShortSide. It records nothing, so a
+// caller can try another image before opening a transaction.
+func (c *PhotoCache) DownloadPhoto(ctx context.Context, rawURL string) (DownloadedPhoto, error) {
 	page, err := c.fetcher.FetchImage(ctx, rawURL)
 	if err != nil {
-		return db.Photo{}, err
+		return DownloadedPhoto{}, err
 	}
-	digest := sha256.Sum256(page.Body)
-	sum := hex.EncodeToString(digest[:])
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	existing, err := db.New(c.store.Reader).GetPhotoBySHA256(ctx, sum)
-	if err == nil {
-		return existing, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return db.Photo{}, fmt.Errorf("recipes: look up photo: %w", err)
-	}
-
 	img, err := decodePhoto(page.Body)
 	if err != nil {
-		return db.Photo{}, fmt.Errorf("%w: %s", err, page.URL)
+		return DownloadedPhoto{}, fmt.Errorf("%w: %s", err, page.URL)
 	}
+	digest := sha256.Sum256(page.Body)
+	return DownloadedPhoto{url: page.URL, sha256: hex.EncodeToString(digest[:]), img: img}, nil
+}
+
+// CachePhoto records p in tx, the caller's transaction, so its photos row
+// commits or rolls back with the rows that refer to it. An image whose
+// bytes are already recorded returns that row and created false. Otherwise
+// p is scaled so its long side is each of PhotoSizes, encoded as JPEG and
+// recorded, and created is true: if tx then does not commit, the caller
+// removes the files with RemovePhotoFiles. The row's width and height are
+// the original image's, and its local_path is the largest size's file
+// relative to the data directory.
+//
+// The store's writer has one connection, so transactions run one at a
+// time and an image is never recorded twice.
+func (c *PhotoCache) CachePhoto(ctx context.Context, tx *sql.Tx, p DownloadedPhoto) (photo db.Photo, created bool, err error) {
+	q := db.New(tx)
+	existing, err := q.GetPhotoBySHA256(ctx, p.sha256)
+	if err == nil {
+		return existing, false, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return db.Photo{}, false, fmt.Errorf("recipes: look up photo: %w", err)
+	}
+
 	id := store.NewID()
-	var written []string
-	removeWritten := func() error {
-		var errs []error
-		for _, p := range written {
-			errs = append(errs, os.Remove(p))
-		}
-		return errors.Join(errs...)
-	}
 	for _, size := range PhotoSizes {
-		p := c.path(id, size)
-		if err := writeJPEG(p, scaleLongSide(img, size)); err != nil {
-			return db.Photo{}, errors.Join(err, removeWritten())
+		if err := writeJPEG(c.path(id, size), scaleLongSide(p.img, size)); err != nil {
+			return db.Photo{}, false, errors.Join(err, c.RemovePhotoFiles(id))
 		}
-		written = append(written, p)
 	}
 
 	now := store.Now().String()
-	bounds := img.Bounds()
-	photo, err := db.New(c.store.Writer).CreatePhoto(ctx, db.CreatePhotoParams{
+	bounds := p.img.Bounds()
+	photo, err = q.CreatePhoto(ctx, db.CreatePhotoParams{
 		ID:        id,
-		SourceUrl: page.URL,
+		SourceUrl: p.url,
 		LocalPath: path.Join(PhotoDir, photoFileName(id, PhotoSizes[0])),
 		Width:     int64(bounds.Dx()),
 		Height:    int64(bounds.Dy()),
-		Sha256:    sum,
+		Sha256:    p.sha256,
 		FetchedAt: now,
 		CreatedAt: now,
 		UpdatedAt: now,
 	})
 	if err != nil {
-		return db.Photo{}, errors.Join(fmt.Errorf("recipes: record photo: %w", err), removeWritten())
+		return db.Photo{}, false, errors.Join(fmt.Errorf("recipes: record photo: %w", err), c.RemovePhotoFiles(id))
 	}
-	return photo, nil
+	return photo, true, nil
+}
+
+// RemovePhotoFiles removes the files of photo id at every PhotoSizes
+// length; a file already absent is not an error.
+func (c *PhotoCache) RemovePhotoFiles(id string) error {
+	var errs []error
+	for _, size := range PhotoSizes {
+		if err := os.Remove(c.path(id, size)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // OpenPhoto opens the stored file of photo id at size. An id that is not a

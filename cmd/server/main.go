@@ -50,7 +50,8 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if _, err := openSecretBox(cfg.SecretKey); err != nil {
+	box, err := openSecretBox(cfg.SecretKey)
+	if err != nil {
 		return err
 	}
 
@@ -77,6 +78,10 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	search, err := recipes.NewSearchSettingsService(db, box)
+	if err != nil {
+		return err
+	}
 
 	sessions, err := auth.NewSessionManager(db, cfg.SessionIdle, cfg.SessionMax)
 	if err != nil {
@@ -94,7 +99,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, runner, photos, frontend.Assets())
+	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, search, runner, photos, frontend.Assets())
 	if err != nil {
 		return err
 	}

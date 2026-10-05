@@ -175,8 +175,8 @@ func TestMigrateEmbeddedMigrations(t *testing.T) {
 	if err := Migrate(context.Background(), s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status", got)
 	}
 }
 
@@ -196,8 +196,8 @@ func TestMigrateBootstrapThenEmbeddedInitApplies(t *testing.T) {
 	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status", got)
 	}
 	if !tableExists(t, s, "dinners") {
 		t.Error("table from 0001_init was not created")
@@ -484,5 +484,76 @@ func TestMigrateAIProviderXAIKeepsRowsAndReferences(t *testing.T) {
 		if tableExists(t, s, table) {
 			t.Errorf("%s left behind", table)
 		}
+	}
+}
+
+// TestMigrateAIRunsStatus upgrades a database at 0005 and checks 0006
+// keeps an ok run and its references, accepts every harness outcome, and
+// stops on a run with a pre-harness status rather than guess its outcome.
+func TestMigrateAIRunsStatus(t *testing.T) {
+	ctx := context.Background()
+	before := fstest.MapFS{}
+	for _, name := range []string{"0000_bootstrap.sql", "0001_init.sql", "0002_household_settings_updated_by.sql", "0003_jobs_status.sql", "0004_ai_provider_presets.sql", "0005_ai_provider_xai.sql"} {
+		body, err := fs.ReadFile(migrations.FS, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[name] = &fstest.MapFile{Data: body}
+	}
+	seedRun := func(t *testing.T, s *Store, status string) {
+		t.Helper()
+		if err := Migrate(ctx, s.Writer, before); err != nil {
+			t.Fatal(err)
+		}
+		for _, stmt := range []string{
+			`INSERT INTO ai_runs (id, skill, skill_version, provider, model, temperature, status, latency_ms, tokens_in, tokens_out, error, request_redacted, response_redacted, created_at, updated_at)
+				VALUES ('run-1', 'suggest', '1', 'xai', 'grok', 0.5, '` + status + `', 10, 20, 30, 'e', 'req', 'resp', 'c', 'u')`,
+			`INSERT INTO suggestion_batches (id, trigger, status, ai_run_id, created_at, updated_at)
+				VALUES ('batch-1', 'manual', 'done', 'run-1', 'c', 'u')`,
+		} {
+			if _, err := s.Writer.Exec(stmt); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+		}
+	}
+
+	t.Run("ok row kept", func(t *testing.T) {
+		s := openTestStore(t)
+		seedRun(t, s, "ok")
+		if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
+			t.Fatal(err)
+		}
+		var status, request string
+		if err := s.Reader.QueryRow(`SELECT status, request_redacted FROM ai_runs WHERE id = 'run-1'`).Scan(&status, &request); err != nil {
+			t.Fatal(err)
+		}
+		if status != "ok" || request != "req" {
+			t.Errorf("ai_runs row = %s, %s; want ok, req", status, request)
+		}
+		if _, err := s.Writer.Exec(`DELETE FROM ai_runs WHERE id = 'run-1'`); err == nil || !strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
+			t.Errorf("deleting a referenced ai_run: error %v, want FOREIGN KEY constraint failure", err)
+		}
+		for _, status := range []string{"repaired", "bad_output", "provider_error", "ok"} {
+			if _, err := s.Writer.Exec(`UPDATE ai_runs SET status = ? WHERE id = 'run-1'`, status); err != nil {
+				t.Errorf("ai_runs.status %s rejected: %v", status, err)
+			}
+		}
+		if tableExists(t, s, "ai_runs_copy") {
+			t.Error("ai_runs_copy left behind")
+		}
+	})
+
+	for _, legacy := range []string{"running", "error"} {
+		t.Run(legacy+" row stops the migration", func(t *testing.T) {
+			s := openTestStore(t)
+			seedRun(t, s, legacy)
+			if err := Migrate(ctx, s.Writer, migrations.FS); err == nil || !strings.Contains(err.Error(), "CHECK constraint failed") {
+				t.Fatalf("Migrate error = %v, want a CHECK constraint failure", err)
+			}
+			var status string
+			if err := s.Reader.QueryRow(`SELECT status FROM ai_runs WHERE id = 'run-1'`).Scan(&status); err != nil || status != legacy {
+				t.Errorf("after the failed migration status = %q, %v; want %q kept", status, err, legacy)
+			}
+		})
 	}
 }

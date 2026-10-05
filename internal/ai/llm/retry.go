@@ -30,7 +30,8 @@ const (
 // rate limit that names no wait, waits a jittered exponential backoff. The Request's Timeout, or DefaultTimeout, is one
 // deadline for the whole call, retries and waits included; a caller's
 // earlier context deadline wins. A retry whose wait would not end before
-// that deadline is not made: the last error is returned at once.
+// that deadline is not made: the last error is returned at once. A wait
+// cut short by cancellation or the deadline returns the context's error.
 // ListModels and Verify pass straight through.
 type Retrying struct {
 	Provider
@@ -83,8 +84,8 @@ func (r *Retrying) Generate(ctx context.Context, req Request) (Response, error) 
 		if !r.now().Add(wait).Before(deadline) {
 			return resp, err
 		}
-		if serr := r.sleep(ctx, wait); serr != nil {
-			return resp, err
+		if err := r.sleep(ctx, wait); err != nil {
+			return Response{}, err
 		}
 	}
 }

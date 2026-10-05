@@ -246,6 +246,99 @@ func TestNormalizeRecipeUnrepairedFails(t *testing.T) {
 	}
 }
 
+// stirFry has two ingredient lines that share the word "oil".
+var stirFry = RecipeText{
+	Title:       "Vegetable Stir Fry",
+	Ingredients: []string{"2 tbsp olive oil", "1 tbsp sesame oil"},
+	Steps:       []string{"Stir-fry the vegetables in the olive oil, then finish with the sesame oil."},
+}
+
+const stirFryReply = `{"ingredients":[
+	{"name":"olive oil","qty":"2","unit":"tbsp","note":""},
+	{"name":"sesame oil","qty":"1","unit":"tbsp","note":""}],
+	"method":"stovetop","difficulty":"easy","minutes_total":15}`
+
+func TestNormalizeRecipeSwapSharingAWordRepaired(t *testing.T) {
+	swapped := `{"ingredients":[
+		{"name":"sesame oil","qty":"1","unit":"tbsp","note":""},
+		{"name":"olive oil","qty":"2","unit":"tbsp","note":""}],
+		"method":"stovetop","difficulty":"easy","minutes_total":15}`
+	var f llm.Fake
+	f.QueueGenerate(reply(swapped), reply(stirFryReply))
+	out, reqs, err := normalize(t, &f, stirFry, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertOutput(t, out, NormalizedRecipe{
+		Ingredients: []Ingredient{
+			{Name: "olive oil", Qty: "2", Unit: "tbsp"},
+			{Name: "sesame oil", Qty: "1", Unit: "tbsp"},
+		},
+		Method:       "stovetop",
+		Difficulty:   "easy",
+		MinutesTotal: minutes(15),
+	})
+	for _, want := range []string{
+		`ingredient 1 "sesame oil" matches line 2 "1 tbsp sesame oil", not line 1 "2 tbsp olive oil"; keep the ingredients in line order`,
+		`ingredient 2 "olive oil" matches line 1 "2 tbsp olive oil", not line 2 "1 tbsp sesame oil"; keep the ingredients in line order`,
+	} {
+		if repair := reqs[1].Messages[2].Content; !strings.Contains(repair, want) {
+			t.Fatalf("repair message = %q, want it to contain %q", repair, want)
+		}
+	}
+}
+
+func TestNormalizeRecipeOmittedFieldRepaired(t *testing.T) {
+	for name, tc := range map[string]struct{ first, want string }{
+		"omitted qty": {
+			strings.Replace(stirFryReply, `"qty":"1",`, ``, 1),
+			`ingredient has no "qty" field; give every field the schema requires`,
+		},
+		"null note": {
+			strings.Replace(stirFryReply, `"tbsp","note":""}]`, `"tbsp","note":null}]`, 1),
+			`ingredient field "note" is null, which the schema does not allow`,
+		},
+		"omitted unit": {
+			strings.Replace(stirFryReply, `"unit":"tbsp",`, ``, 1),
+			`ingredient has no "unit" field; give every field the schema requires`,
+		},
+		"omitted minutes_total": {
+			strings.Replace(stirFryReply, `,"minutes_total":15`, ``, 1),
+			`output has no "minutes_total" field; give every field the schema requires`,
+		},
+		"unknown field": {
+			strings.Replace(stirFryReply, `"note":""}]`, `"note":"","brand":"x"}]`, 1),
+			`ingredient has unknown field "brand"`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if tc.first == stirFryReply {
+				t.Fatal("replacement did not change the reply")
+			}
+			var f llm.Fake
+			f.QueueGenerate(reply(tc.first), reply(stirFryReply))
+			_, reqs, err := normalize(t, &f, stirFry, 2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if repair := reqs[1].Messages[2].Content; !strings.Contains(repair, tc.want) {
+				t.Fatalf("repair message = %q, want it to contain %q", repair, tc.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeRecipeZeroTotalRejected(t *testing.T) {
+	in := garlicPasta
+	in.TotalMinutes = minutes(0)
+	var f llm.Fake
+	_, _, err := normalize(t, &f, in, 0)
+	want := "recipe total time is 0 minutes; a given total must be positive"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %v, want it to contain %q", err, want)
+	}
+}
+
 func TestValidate(t *testing.T) {
 	s := normalizeRecipe{in: RecipeText{
 		Title:       "Tomato soup",
@@ -272,6 +365,13 @@ func TestValidate(t *testing.T) {
 			[]string{
 				`ingredient 1 "onion" matches line 2 "1 onion, diced", not line 1 "4 ripe tomatoes"; keep the ingredients in line order`,
 				`ingredient 2 "tomatoes" matches line 1 "4 ripe tomatoes", not line 2 "1 onion, diced"; keep the ingredients in line order`,
+			},
+		},
+		"swapped sharing a word": {
+			NormalizedRecipe{Ingredients: []Ingredient{{Name: "diced onion"}, {Name: "ripe tomato"}}, Method: "oven"},
+			[]string{
+				`ingredient 1 "diced onion" matches line 2 "1 onion, diced", not line 1 "4 ripe tomatoes"; keep the ingredients in line order`,
+				`ingredient 2 "ripe tomato" matches line 1 "4 ripe tomatoes", not line 2 "1 onion, diced"; keep the ingredients in line order`,
 			},
 		},
 		"too many and bad enums": {
@@ -305,6 +405,7 @@ func TestPromptInputRejects(t *testing.T) {
 	}{
 		"no title":       {RecipeText{Title: " ", Ingredients: []string{"1 egg"}}, "recipe has no title"},
 		"no ingredients": {RecipeText{Title: "Egg"}, "recipe has no ingredient lines"},
+		"negative total": {RecipeText{Title: "Egg", Ingredients: []string{"1 egg"}, TotalMinutes: minutes(-5)}, "recipe total time is -5 minutes; a given total must be positive"},
 		"blank line":     {RecipeText{Title: "Egg", Ingredients: []string{"1 egg", "\t"}}, "ingredient line 2 is blank"},
 		"blank step":     {RecipeText{Title: "Egg", Ingredients: []string{"1 egg"}, Steps: []string{""}}, "step 1 is blank"},
 	} {

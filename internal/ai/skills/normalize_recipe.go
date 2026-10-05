@@ -3,6 +3,7 @@
 package skills
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -27,14 +28,17 @@ type RecipeText struct {
 	// Steps are the instructions, in order; there may be none.
 	Steps []string
 	// PrepMinutes, CookMinutes and TotalMinutes are the JSON-LD times,
-	// nil when the page gives none.
+	// nil when the page gives none. A TotalMinutes that is present must be
+	// positive: a recipe cannot take no time, so NormalizeRecipe rejects a
+	// zero total rather than guess one.
 	PrepMinutes  *int
 	CookMinutes  *int
 	TotalMinutes *int
 }
 
 // Ingredient is one normalized ingredient line. Qty, Unit and Note are
-// empty when the line gives none.
+// empty when the line gives none; the model must still give all four, so a
+// reply leaving one out or null does not decode.
 type Ingredient struct {
 	Name string `json:"name"`
 	Qty  string `json:"qty"`
@@ -60,8 +64,8 @@ type NormalizedRecipe struct {
 // same page must normalize the same way every time. scope names the recipe,
 // e.g. its source URL (see harness.Run).
 //
-// Values the code can derive win over the model's: a positive JSON-LD
-// TotalMinutes is minutes_total; a title or step mentioning a slow cooker
+// Values the code can derive win over the model's: the JSON-LD
+// TotalMinutes, when given, is minutes_total; a title or step mentioning a slow cooker
 // or crock pot makes the method crockpot; and a difficulty the model left
 // out is derived from the step count and minutes.
 func NormalizeRecipe(ctx context.Context, cfg harness.Config, scope string, in RecipeText) (NormalizedRecipe, error) {
@@ -99,6 +103,9 @@ func (normalizeRecipe) PromptInput(in RecipeText) (harness.PromptInput, error) {
 	}
 	if len(in.Ingredients) == 0 {
 		return harness.PromptInput{}, errors.New("recipe has no ingredient lines")
+	}
+	if in.TotalMinutes != nil && *in.TotalMinutes <= 0 {
+		return harness.PromptInput{}, fmt.Errorf("recipe total time is %d minutes; a given total must be positive", *in.TotalMinutes)
 	}
 	p := recipePrompt{Title: title}
 	for i, line := range in.Ingredients {
@@ -161,6 +168,54 @@ func (normalizeRecipe) Schema() llm.JSONSchema {
 	}`)}
 }
 
+// UnmarshalJSON decodes an ingredient, requiring each of its four fields
+// as the schema does: encoding/json would otherwise read a missing or null
+// one as empty.
+func (ing *Ingredient) UnmarshalJSON(data []byte) error {
+	if err := requireFields(data, nil, "name", "qty", "unit", "note"); err != nil {
+		return fmt.Errorf("ingredient %s", err)
+	}
+	type plain Ingredient
+	return json.Unmarshal(data, (*plain)(ing))
+}
+
+// UnmarshalJSON decodes the output, requiring each of its fields as the
+// schema does. Only difficulty and minutes_total may be null.
+func (r *NormalizedRecipe) UnmarshalJSON(data []byte) error {
+	if err := requireFields(data, []string{"difficulty", "minutes_total"}, "ingredients", "method", "difficulty", "minutes_total"); err != nil {
+		return fmt.Errorf("output %s", err)
+	}
+	type plain NormalizedRecipe
+	return json.Unmarshal(data, (*plain)(r))
+}
+
+// requireFields checks that the JSON object data has exactly the fields
+// named, none of them null unless listed in nullable.
+func requireFields(data []byte, nullable []string, fields ...string) error {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return err
+	}
+	if obj == nil {
+		return errors.New("is null, not an object")
+	}
+	for _, f := range fields {
+		v, ok := obj[f]
+		if !ok {
+			return fmt.Errorf("has no %q field; give every field the schema requires", f)
+		}
+		if bytes.Equal(bytes.TrimSpace(v), []byte("null")) && !slices.Contains(nullable, f) {
+			return fmt.Errorf("field %q is null, which the schema does not allow", f)
+		}
+	}
+	for f := range obj {
+		if !slices.Contains(fields, f) {
+			return fmt.Errorf("has unknown field %q", f)
+		}
+	}
+	return nil
+}
+
 var (
 	methods      = []string{"stovetop", "oven", "crockpot", "grill", "other"}
 	difficulties = []string{"easy", "medium", "hard"}
@@ -194,21 +249,25 @@ func (s normalizeRecipe) Validate(out NormalizedRecipe) []string {
 }
 
 // orderProblems finds ingredients out of input order: an ingredient whose
-// name shares no word with its own line but does with another line.
-// Ingredients that match no line at all, e.g. a renamed one, are accepted.
+// name has more of its words in another line than in its own. Sharing a
+// word is not enough: "sesame oil" on the line "2 tbsp olive oil" has one
+// of its two words there but both in "1 tbsp sesame oil", so it is out of
+// order. Ingredients that match no line at all, e.g. a renamed one, are
+// accepted, as are ties, e.g. a repeated line.
 func orderProblems(ings []Ingredient, lines []string) []string {
 	var problems []string
 	for i, ing := range ings {
 		name := words(ing.Name)
-		if len(name) == 0 || sharesWord(name, words(lines[i])) {
-			continue
-		}
+		own := matchedWords(name, words(lines[i]))
+		best, bestLine := own, i
 		for j, line := range lines {
-			if j != i && sharesWord(name, words(line)) {
-				problems = append(problems, fmt.Sprintf("ingredient %d %q matches line %d %q, not line %d %q; keep the ingredients in line order",
-					i+1, ing.Name, j+1, line, i+1, lines[i]))
-				break
+			if n := matchedWords(name, words(line)); n > best {
+				best, bestLine = n, j
 			}
+		}
+		if bestLine != i {
+			problems = append(problems, fmt.Sprintf("ingredient %d %q matches line %d %q, not line %d %q; keep the ingredients in line order",
+				i+1, ing.Name, bestLine+1, lines[bestLine], i+1, lines[i]))
 		}
 	}
 	return problems
@@ -225,17 +284,16 @@ func words(s string) []string {
 	return out
 }
 
-// sharesWord reports whether a word of a and a word of b are the same up
-// to a suffix, as "tomato" and "tomatoes" are.
-func sharesWord(a, b []string) bool {
-	for _, x := range a {
-		for _, y := range b {
-			if strings.HasPrefix(x, y) || strings.HasPrefix(y, x) {
-				return true
-			}
+// matchedWords counts the words of name that are in line, up to a suffix,
+// as "tomato" and "tomatoes" are the same word.
+func matchedWords(name, line []string) int {
+	n := 0
+	for _, x := range name {
+		if slices.ContainsFunc(line, func(y string) bool { return strings.HasPrefix(x, y) || strings.HasPrefix(y, x) }) {
+			n++
 		}
 	}
-	return false
+	return n
 }
 
 // slowCooker matches a mention of a slow cooker or crock pot.
@@ -269,9 +327,10 @@ func (s normalizeRecipe) PostProcess(out NormalizedRecipe) (NormalizedRecipe, er
 }
 
 // jsonLDMinutes returns a copy of the JSON-LD total time, or nil when the
-// page gives no positive one.
+// page gives none. PromptInput has already rejected a total that is not
+// positive.
 func jsonLDMinutes(in RecipeText) *int {
-	if in.TotalMinutes == nil || *in.TotalMinutes <= 0 {
+	if in.TotalMinutes == nil {
 		return nil
 	}
 	m := *in.TotalMinutes

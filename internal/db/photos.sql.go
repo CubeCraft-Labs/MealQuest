@@ -59,6 +59,28 @@ func (q *Queries) CreatePhoto(ctx context.Context, arg CreatePhotoParams) (Photo
 	return i, err
 }
 
+const getPhoto = `-- name: GetPhoto :one
+SELECT id, source_url, local_path, width, height, sha256, fetched_at, created_at, updated_at FROM photos
+WHERE id = ?
+`
+
+func (q *Queries) GetPhoto(ctx context.Context, id string) (Photo, error) {
+	row := q.db.QueryRowContext(ctx, getPhoto, id)
+	var i Photo
+	err := row.Scan(
+		&i.ID,
+		&i.SourceUrl,
+		&i.LocalPath,
+		&i.Width,
+		&i.Height,
+		&i.Sha256,
+		&i.FetchedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getPhotoBySHA256 = `-- name: GetPhotoBySHA256 :one
 SELECT id, source_url, local_path, width, height, sha256, fetched_at, created_at, updated_at FROM photos
 WHERE sha256 = ?

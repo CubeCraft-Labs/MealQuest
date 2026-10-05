@@ -1,0 +1,1 @@
+{"error": {"code": 429, "message": "Rate limit exceeded: free-models-per-min. Key {{KEY}}", "metadata": {"headers": {"X-RateLimit-Limit": "20", "X-RateLimit-Remaining": "0"}}}}

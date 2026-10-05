@@ -175,8 +175,8 @@ func TestMigrateEmbeddedMigrations(t *testing.T) {
 	if err := Migrate(context.Background(), s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status", got)
 	}
 }
 
@@ -196,8 +196,8 @@ func TestMigrateBootstrapThenEmbeddedInitApplies(t *testing.T) {
 	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status", got)
 	}
 	if !tableExists(t, s, "dinners") {
 		t.Error("table from 0001_init was not created")
@@ -307,5 +307,253 @@ func TestMigrateJobsStatusMapsLegacyRows(t *testing.T) {
 	}
 	if tableExists(t, s, "jobs_new") {
 		t.Error("jobs_new left behind")
+	}
+}
+
+// TestMigrateAIProviderPresetsKeepsRowsAndReferences upgrades a database
+// holding ai_settings and ai_runs rows, with suggestion_batches and
+// week_plans referencing the run, and checks 0004 carries every row over,
+// keeps the references enforced and accepts the new providers.
+func TestMigrateAIProviderPresetsKeepsRowsAndReferences(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	before := fstest.MapFS{}
+	for _, name := range []string{"0000_bootstrap.sql", "0001_init.sql", "0002_household_settings_updated_by.sql", "0003_jobs_status.sql"} {
+		body, err := fs.ReadFile(migrations.FS, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[name] = &fstest.MapFile{Data: body}
+	}
+	if err := Migrate(ctx, s.Writer, before); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`INSERT INTO ai_settings (id, provider, base_url, model, temperature, system_prompt, api_key_ct, api_key_last4, key_verified_at, created_at, updated_at)
+			VALUES (1, 'anthropic', 'https://api.anthropic.com', 'claude', 0.7, 'sp', x'0102', 'abcd', 'v', 'c', 'u')`,
+		`INSERT INTO ai_runs (id, skill, skill_version, provider, model, temperature, status, latency_ms, tokens_in, tokens_out, error, request_redacted, response_redacted, created_at, updated_at)
+			VALUES ('run-1', 'suggest', '1', 'ollama', 'llama', 0.5, 'ok', 10, 20, 30, 'e', 'req', 'resp', 'c', 'u')`,
+		`INSERT INTO suggestion_batches (id, trigger, status, ai_run_id, created_at, updated_at)
+			VALUES ('batch-1', 'manual', 'done', 'run-1', 'c', 'u')`,
+		`INSERT INTO week_plans (id, week_start, status, ai_run_id, created_at, updated_at)
+			VALUES ('plan-1', '2026-10-04', 'draft', 'run-1', 'c', 'u')`,
+	} {
+		if _, err := s.Writer.Exec(stmt); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+
+	var provider, baseURL, model, systemPrompt, last4, verifiedAt, createdAt, updatedAt string
+	var temperature float64
+	var keyCT []byte
+	if err := s.Reader.QueryRow(`SELECT provider, base_url, model, temperature, system_prompt, api_key_ct, api_key_last4, key_verified_at, created_at, updated_at FROM ai_settings WHERE id = 1`).
+		Scan(&provider, &baseURL, &model, &temperature, &systemPrompt, &keyCT, &last4, &verifiedAt, &createdAt, &updatedAt); err != nil {
+		t.Fatalf("read ai_settings: %v", err)
+	}
+	settings := []any{provider, baseURL, model, temperature, systemPrompt, string(keyCT), last4, verifiedAt, createdAt, updatedAt}
+	if want := []any{"anthropic", "https://api.anthropic.com", "claude", 0.7, "sp", "\x01\x02", "abcd", "v", "c", "u"}; !slices.Equal(settings, want) {
+		t.Errorf("ai_settings = %v, want %v", settings, want)
+	}
+
+	var skill, skillVersion, status, errText, request, response string
+	var latency, tokensIn, tokensOut int
+	if err := s.Reader.QueryRow(`SELECT skill, skill_version, provider, model, temperature, status, latency_ms, tokens_in, tokens_out, error, request_redacted, response_redacted, created_at, updated_at FROM ai_runs WHERE id = 'run-1'`).
+		Scan(&skill, &skillVersion, &provider, &model, &temperature, &status, &latency, &tokensIn, &tokensOut, &errText, &request, &response, &createdAt, &updatedAt); err != nil {
+		t.Fatalf("read ai_runs: %v", err)
+	}
+	run := []any{skill, skillVersion, provider, model, temperature, status, latency, tokensIn, tokensOut, errText, request, response, createdAt, updatedAt}
+	if want := []any{"suggest", "1", "ollama", "llama", 0.5, "ok", 10, 20, 30, "e", "req", "resp", "c", "u"}; !slices.Equal(run, want) {
+		t.Errorf("ai_runs = %v, want %v", run, want)
+	}
+
+	rows, err := s.Reader.Query("PRAGMA foreign_key_check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows.Next() {
+		t.Error("foreign_key_check reported violations after 0004")
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Writer.Exec(`DELETE FROM ai_runs WHERE id = 'run-1'`); err == nil || !strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
+		t.Errorf("deleting a referenced ai_run: error %v, want FOREIGN KEY constraint failure", err)
+	}
+
+	if _, err := s.Writer.Exec(`UPDATE ai_settings SET provider = 'openrouter' WHERE id = 1`); err != nil {
+		t.Errorf("ai_settings.provider openrouter rejected: %v", err)
+	}
+	if _, err := s.Writer.Exec(`UPDATE ai_runs SET provider = 'openai' WHERE id = 'run-1'`); err != nil {
+		t.Errorf("ai_runs.provider openai rejected: %v", err)
+	}
+	for _, table := range []string{"ai_settings_copy", "ai_runs_copy"} {
+		if tableExists(t, s, table) {
+			t.Errorf("%s left behind", table)
+		}
+	}
+}
+
+// TestMigrateAIProviderXAIKeepsRowsAndReferences upgrades a database at 0004
+// holding ai_settings and ai_runs rows with 0004's providers, with
+// suggestion_batches and week_plans referencing the run, and checks 0005
+// carries every row over, keeps the references enforced, accepts xai and
+// still rejects an unknown provider.
+func TestMigrateAIProviderXAIKeepsRowsAndReferences(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	before := fstest.MapFS{}
+	for _, name := range []string{"0000_bootstrap.sql", "0001_init.sql", "0002_household_settings_updated_by.sql", "0003_jobs_status.sql", "0004_ai_provider_presets.sql"} {
+		body, err := fs.ReadFile(migrations.FS, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[name] = &fstest.MapFile{Data: body}
+	}
+	if err := Migrate(ctx, s.Writer, before); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`INSERT INTO ai_settings (id, provider, base_url, model, temperature, system_prompt, api_key_ct, api_key_last4, key_verified_at, created_at, updated_at)
+			VALUES (1, 'openrouter', 'https://openrouter.ai/api/v1', 'openai/gpt-4o', 0.7, 'sp', x'0102', 'abcd', 'v', 'c', 'u')`,
+		`INSERT INTO ai_runs (id, skill, skill_version, provider, model, temperature, status, latency_ms, tokens_in, tokens_out, error, request_redacted, response_redacted, created_at, updated_at)
+			VALUES ('run-1', 'suggest', '1', 'openai', 'gpt-4o', 0.5, 'ok', 10, 20, 30, 'e', 'req', 'resp', 'c', 'u')`,
+		`INSERT INTO suggestion_batches (id, trigger, status, ai_run_id, created_at, updated_at)
+			VALUES ('batch-1', 'manual', 'done', 'run-1', 'c', 'u')`,
+		`INSERT INTO week_plans (id, week_start, status, ai_run_id, created_at, updated_at)
+			VALUES ('plan-1', '2026-10-04', 'draft', 'run-1', 'c', 'u')`,
+	} {
+		if _, err := s.Writer.Exec(stmt); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+
+	var provider, baseURL, model, systemPrompt, last4, verifiedAt, createdAt, updatedAt string
+	var temperature float64
+	var keyCT []byte
+	if err := s.Reader.QueryRow(`SELECT provider, base_url, model, temperature, system_prompt, api_key_ct, api_key_last4, key_verified_at, created_at, updated_at FROM ai_settings WHERE id = 1`).
+		Scan(&provider, &baseURL, &model, &temperature, &systemPrompt, &keyCT, &last4, &verifiedAt, &createdAt, &updatedAt); err != nil {
+		t.Fatalf("read ai_settings: %v", err)
+	}
+	settings := []any{provider, baseURL, model, temperature, systemPrompt, string(keyCT), last4, verifiedAt, createdAt, updatedAt}
+	if want := []any{"openrouter", "https://openrouter.ai/api/v1", "openai/gpt-4o", 0.7, "sp", "\x01\x02", "abcd", "v", "c", "u"}; !slices.Equal(settings, want) {
+		t.Errorf("ai_settings = %v, want %v", settings, want)
+	}
+
+	var skill, skillVersion, status, errText, request, response string
+	var latency, tokensIn, tokensOut int
+	if err := s.Reader.QueryRow(`SELECT skill, skill_version, provider, model, temperature, status, latency_ms, tokens_in, tokens_out, error, request_redacted, response_redacted, created_at, updated_at FROM ai_runs WHERE id = 'run-1'`).
+		Scan(&skill, &skillVersion, &provider, &model, &temperature, &status, &latency, &tokensIn, &tokensOut, &errText, &request, &response, &createdAt, &updatedAt); err != nil {
+		t.Fatalf("read ai_runs: %v", err)
+	}
+	run := []any{skill, skillVersion, provider, model, temperature, status, latency, tokensIn, tokensOut, errText, request, response, createdAt, updatedAt}
+	if want := []any{"suggest", "1", "openai", "gpt-4o", 0.5, "ok", 10, 20, 30, "e", "req", "resp", "c", "u"}; !slices.Equal(run, want) {
+		t.Errorf("ai_runs = %v, want %v", run, want)
+	}
+
+	rows, err := s.Reader.Query("PRAGMA foreign_key_check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows.Next() {
+		t.Error("foreign_key_check reported violations after 0005")
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Writer.Exec(`DELETE FROM ai_runs WHERE id = 'run-1'`); err == nil || !strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
+		t.Errorf("deleting a referenced ai_run: error %v, want FOREIGN KEY constraint failure", err)
+	}
+
+	for _, table := range []string{"ai_settings", "ai_runs"} {
+		if _, err := s.Writer.Exec(`UPDATE ` + table + ` SET provider = 'xai'`); err != nil {
+			t.Errorf("%s.provider xai rejected: %v", table, err)
+		}
+		if _, err := s.Writer.Exec(`UPDATE ` + table + ` SET provider = 'grok'`); err == nil || !strings.Contains(err.Error(), "CHECK constraint failed") {
+			t.Errorf("%s.provider grok: error %v, want CHECK constraint failure", table, err)
+		}
+	}
+	for _, table := range []string{"ai_settings_copy", "ai_runs_copy"} {
+		if tableExists(t, s, table) {
+			t.Errorf("%s left behind", table)
+		}
+	}
+}
+
+// TestMigrateAIRunsStatus upgrades a database at 0005 and checks 0006
+// keeps an ok run and its references, accepts every harness outcome, and
+// stops on a run with a pre-harness status rather than guess its outcome.
+func TestMigrateAIRunsStatus(t *testing.T) {
+	ctx := context.Background()
+	before := fstest.MapFS{}
+	for _, name := range []string{"0000_bootstrap.sql", "0001_init.sql", "0002_household_settings_updated_by.sql", "0003_jobs_status.sql", "0004_ai_provider_presets.sql", "0005_ai_provider_xai.sql"} {
+		body, err := fs.ReadFile(migrations.FS, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[name] = &fstest.MapFile{Data: body}
+	}
+	seedRun := func(t *testing.T, s *Store, status string) {
+		t.Helper()
+		if err := Migrate(ctx, s.Writer, before); err != nil {
+			t.Fatal(err)
+		}
+		for _, stmt := range []string{
+			`INSERT INTO ai_runs (id, skill, skill_version, provider, model, temperature, status, latency_ms, tokens_in, tokens_out, error, request_redacted, response_redacted, created_at, updated_at)
+				VALUES ('run-1', 'suggest', '1', 'xai', 'grok', 0.5, '` + status + `', 10, 20, 30, 'e', 'req', 'resp', 'c', 'u')`,
+			`INSERT INTO suggestion_batches (id, trigger, status, ai_run_id, created_at, updated_at)
+				VALUES ('batch-1', 'manual', 'done', 'run-1', 'c', 'u')`,
+		} {
+			if _, err := s.Writer.Exec(stmt); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+		}
+	}
+
+	t.Run("ok row kept", func(t *testing.T) {
+		s := openTestStore(t)
+		seedRun(t, s, "ok")
+		if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
+			t.Fatal(err)
+		}
+		var status, request string
+		if err := s.Reader.QueryRow(`SELECT status, request_redacted FROM ai_runs WHERE id = 'run-1'`).Scan(&status, &request); err != nil {
+			t.Fatal(err)
+		}
+		if status != "ok" || request != "req" {
+			t.Errorf("ai_runs row = %s, %s; want ok, req", status, request)
+		}
+		if _, err := s.Writer.Exec(`DELETE FROM ai_runs WHERE id = 'run-1'`); err == nil || !strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
+			t.Errorf("deleting a referenced ai_run: error %v, want FOREIGN KEY constraint failure", err)
+		}
+		for _, status := range []string{"repaired", "bad_output", "provider_error", "ok"} {
+			if _, err := s.Writer.Exec(`UPDATE ai_runs SET status = ? WHERE id = 'run-1'`, status); err != nil {
+				t.Errorf("ai_runs.status %s rejected: %v", status, err)
+			}
+		}
+		if tableExists(t, s, "ai_runs_copy") {
+			t.Error("ai_runs_copy left behind")
+		}
+	})
+
+	for _, legacy := range []string{"running", "error"} {
+		t.Run(legacy+" row stops the migration", func(t *testing.T) {
+			s := openTestStore(t)
+			seedRun(t, s, legacy)
+			if err := Migrate(ctx, s.Writer, migrations.FS); err == nil || !strings.Contains(err.Error(), "CHECK constraint failed") {
+				t.Fatalf("Migrate error = %v, want a CHECK constraint failure", err)
+			}
+			var status string
+			if err := s.Reader.QueryRow(`SELECT status FROM ai_runs WHERE id = 'run-1'`).Scan(&status); err != nil || status != legacy {
+				t.Errorf("after the failed migration status = %q, %v; want %q kept", status, err, legacy)
+			}
+		})
 	}
 }

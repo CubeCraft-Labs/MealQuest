@@ -305,8 +305,10 @@ func TestSchemaEnumChecksRejectInvalidValues(t *testing.T) {
 		{"household_settings", "plan_draft_dow", 5.5},
 		{"household_settings", "suggestions_dow", 0.5},
 		{"household_settings", "chat_autosend_dow", 3.5},
-		{"ai_runs", "provider", "openai"},
+		{"ai_runs", "provider", "gemini"},
 		{"ai_runs", "status", "done"},
+		{"ai_runs", "status", "running"},
+		{"ai_runs", "status", "error"},
 		{"dinners", "status", "deck"},
 		{"dinners", "origin", "ai"},
 		{"dinners", "method", "microwave"},
@@ -322,7 +324,7 @@ func TestSchemaEnumChecksRejectInvalidValues(t *testing.T) {
 		{"rotation_reviews", "decision", "promote"},
 		{"shopping_lists", "status", "frozen"},
 		{"shopping_items", "needed", 2},
-		{"ai_settings", "provider", "openai"},
+		{"ai_settings", "provider", "gemini"},
 		{"recipe_search_settings", "provider", "google"},
 		{"chat_settings", "last_test_status", "pending"},
 		{"notification_prefs", "event", "weekly_digest"},
@@ -357,6 +359,23 @@ func TestSchemaRotationReviewEventAllowed(t *testing.T) {
 	s := migratedStore(t)
 	if err := insertSchemaRow(s.Writer, "notification_prefs", testRow("notification_prefs", 4)); err != nil {
 		t.Fatalf("rotation_review event rejected: %v", err)
+	}
+}
+
+// TestSchemaAIProvidersAllowed checks every provider preset can be stored in
+// both ai_settings and ai_runs.
+func TestSchemaAIProvidersAllowed(t *testing.T) {
+	s := seededStore(t)
+	for _, provider := range []string{"openai_compatible", "anthropic", "ollama", "openai", "openrouter", "xai"} {
+		for _, table := range []string{"ai_settings", "ai_runs"} {
+			inRolledBackTx(t, s, func(tx *sql.Tx) {
+				row := testRow(table, 1)
+				row["provider"] = provider
+				if err := insertSchemaRow(tx, table, row); err != nil {
+					t.Errorf("%s.provider %s rejected: %v", table, provider, err)
+				}
+			})
+		}
 	}
 }
 

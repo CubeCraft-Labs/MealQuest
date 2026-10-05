@@ -1,0 +1,5 @@
+{
+  "id": "gen-1741570311-aB3dE5fG7hJ9kL1mN2pQ",
+  "error": {"code": 502, "message": "Upstream error from provider", "metadata": {"provider_name": "Lambda", "raw": "upstream returned 502"}},
+  "user_id": "user_2abcDEF"
+}

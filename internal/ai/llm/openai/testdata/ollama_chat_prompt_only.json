@@ -1,0 +1,18 @@
+{
+  "id": "chatcmpl-417",
+  "object": "chat.completion",
+  "created": 1741570322,
+  "model": "llama3.2",
+  "system_fingerprint": "fp_ollama",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Sure! Here is a dinner {idea} for you:\n```json\n{\"dinners\": [{\"name\": \"Crock pot chili\", \"why\": \"A Quick dinner like your {Regular} stew.\"}]}\n```\nEnjoy {\"not\": \"this one\"}!"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {"prompt_tokens": 512, "completion_tokens": 58, "total_tokens": 570}
+}

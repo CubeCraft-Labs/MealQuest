@@ -53,7 +53,14 @@ func Normalize(name string) string {
 // similarity of their normalized forms is at least SimilarThreshold. A name
 // with no words left after normalizing is similar to nothing.
 func Similar(a, b string) bool {
-	return similarity(tokenSet(a), tokenSet(b)) >= SimilarThreshold
+	return Similarity(a, b) >= SimilarThreshold
+}
+
+// Similarity is the token-set (Jaccard) similarity of a's and b's normalized
+// forms, from 0 (no shared word) to 1 (the same words). A name with no words
+// left after normalizing scores 0 against everything.
+func Similarity(a, b string) float64 {
+	return similarity(tokenSet(a), tokenSet(b))
 }
 
 // tokenSet returns the distinct words of name's normalized form.

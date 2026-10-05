@@ -239,6 +239,30 @@ automatic** (D-021).
   with two is `ErrManyRecipes`; a shape schema.org does not allow — such as
   a non-ISO-8601 duration like "20 minutes" or an empty one, or an image
   `@id` no node has — is `ErrMalformedRecipe`, never guessed at.
+- Recipe search (`recipes.SearchProvider`: `Search(ctx, query, n)` →
+  `[]Candidate{URL, Title, Snippet}`, n 1–20) appends " recipe" to a query
+  without that word. SearXNG is called at
+  `{MEALQUEST_SEARXNG_URL}/search?q=…&format=json&categories=general` —
+  directly, not through the Fetcher, since this configured endpoint may be
+  on the internal network; Brave calls the Brave Web Search API with the
+  key decrypted from `recipe_search_settings.api_key_ct`
+  (`recipes.NewSearchProvider`). Redirects are not followed; 401/403 is
+  `ErrSearchRefused`, 429 `ErrSearchRateLimited`, other non-2xx a
+  `SearchStatusError`, and a body that is not the provider's JSON (SearXNG
+  without a `results` array; Brave without `"type": "search"` or with a
+  `web` object lacking `results` — Brave omits `web` when nothing matched),
+  over 1 MB or with a result lacking an absolute http(s) URL
+  `ErrSearchResponse`.
+- Ranking (`recipes.Rank`) fetches and extracts the top 5 candidates
+  concurrently, rejects any whose recipe lacks ingredients or an image, and
+  orders the rest by the token similarity of the recipe's title to the dish
+  name (`harness.Similarity`, 0–1) plus a quarter for each of ingredients,
+  image, steps and total minutes; ties keep search order. No unranked
+  candidate is dropped silently: when some are ranked, they are returned
+  with `ErrCandidatesUnranked`; when none are, the error is
+  `ErrNoUsableRecipe`. Either is joined with each unranked candidate's URL
+  and reason (fetch failure, no valid recipe, missing ingredients or
+  image), so the caller decides per item what a failure means.
 - Photos are cached locally (`photos`) and processed with
   `golang.org/x/image`.
 

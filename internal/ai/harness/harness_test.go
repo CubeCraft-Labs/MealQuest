@@ -79,6 +79,53 @@ func TestRunInvalidThenValid(t *testing.T) {
 	}
 }
 
+func TestRunPostProcessedOutputIsValidated(t *testing.T) {
+	var f llm.Fake
+	f.QueueGenerate(reply(`{"echo":"   "}`), reply(`{"echo":"taco"}`))
+	out, err := run(t, &f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Echo != "taco" {
+		t.Fatalf("Echo = %q", out.Echo)
+	}
+	msgs := assertCalls(t, &f, 2)[1].Messages
+	if len(msgs) != 3 || msgs[1] != (llm.Message{Role: llm.RoleAssistant, Content: `{"echo":"   "}`}) ||
+		!strings.Contains(msgs[2].Content, "echo must not be empty") {
+		t.Fatalf("repair messages = %+v", msgs)
+	}
+}
+
+func TestRunWhitespaceTwiceIsBadOutput(t *testing.T) {
+	var f llm.Fake
+	f.QueueGenerate(reply(`{"echo":"   "}`), reply(`{"echo":" "}`))
+	_, err := run(t, &f)
+	var bad *BadOutputError
+	if !errors.Is(err, llm.ErrBadOutput) || !errors.As(err, &bad) {
+		t.Fatalf("err = %v, want *BadOutputError", err)
+	}
+	if !slices.Equal(bad.First, []string{"echo must not be empty"}) ||
+		!slices.Equal(bad.Repair, []string{"echo must not be empty"}) {
+		t.Fatalf("BadOutputError = %+v", bad)
+	}
+	assertCalls(t, &f, 2)
+}
+
+func TestRunRepairQuotesJSONOverText(t *testing.T) {
+	var f llm.Fake
+	f.QueueGenerate(
+		llm.GenerateResult{Response: llm.Response{Text: "Here you go!", JSON: json.RawMessage(`{"echo":"TACO"}`)}},
+		reply(`{"echo":"taco"}`),
+	)
+	if out, err := run(t, &f); err != nil || out.Echo != "taco" {
+		t.Fatalf("Run = %+v, %v", out, err)
+	}
+	msgs := assertCalls(t, &f, 2)[1].Messages
+	if len(msgs) != 3 || msgs[1] != (llm.Message{Role: llm.RoleAssistant, Content: `{"echo":"TACO"}`}) {
+		t.Fatalf("repair messages = %+v, want the failed JSON as the assistant reply", msgs)
+	}
+}
+
 func TestRunDecodeFailureIsRepaired(t *testing.T) {
 	for name, first := range map[string]llm.GenerateResult{
 		"unknown field":  reply(`{"echo":"taco","extra":1}`),

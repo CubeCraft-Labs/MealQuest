@@ -40,8 +40,9 @@ type Skill[In, Out any] interface {
 	// The problems are sent to the model in the repair turn, so each must
 	// say what to fix.
 	Validate(out Out) []string
-	// PostProcess finishes a valid out, e.g. normalising names. Its error
-	// fails the run without a repair turn.
+	// PostProcess finishes a valid out, e.g. normalising names. Its result
+	// is validated again; problems found then are repaired like any other.
+	// Its error fails the run without a repair turn.
 	PostProcess(out Out) (Out, error)
 }
 
@@ -112,22 +113,20 @@ func Run[In, Out any](ctx context.Context, cfg Config, s Skill[In, Out], in In) 
 			return zero, &BadOutputError{Skill: s.Name(), Version: s.Version(), First: first, Repair: second}
 		}
 	}
-
-	out, err = s.PostProcess(out)
-	if err != nil {
-		return zero, fmt.Errorf("harness: skill %s v%d: post-process: %w", s.Name(), s.Version(), err)
-	}
 	return out, nil
 }
 
-// attempt sends req once and decodes and validates the reply. It returns
-// the reply text for the repair turn and the problems found; err is set
-// only for a provider failure, which is not repairable.
+// attempt sends req once, then decodes, validates, post-processes and
+// validates the reply again. It returns the reply for the repair turn and
+// the problems found; err is set only for a provider or post-process
+// failure, neither of which is repairable.
 func attempt[In, Out any](ctx context.Context, p llm.Provider, s Skill[In, Out], req llm.Request) (out Out, reply string, problems []string, err error) {
 	resp, err := p.Generate(ctx, req)
-	reply = resp.Text
+	// The repair turn must quote what failed: the structured output when
+	// there is any, otherwise the text.
+	reply = string(resp.JSON)
 	if reply == "" {
-		reply = string(resp.JSON)
+		reply = resp.Text
 	}
 	if err != nil {
 		if errors.Is(err, llm.ErrBadOutput) {
@@ -137,6 +136,13 @@ func attempt[In, Out any](ctx context.Context, p llm.Provider, s Skill[In, Out],
 	}
 	if err := decode(resp.JSON, &out); err != nil {
 		return out, reply, []string{err.Error()}, nil
+	}
+	if problems := s.Validate(out); len(problems) > 0 {
+		return out, reply, problems, nil
+	}
+	out, err = s.PostProcess(out)
+	if err != nil {
+		return out, "", nil, fmt.Errorf("harness: skill %s v%d: post-process: %w", s.Name(), s.Version(), err)
 	}
 	return out, reply, s.Validate(out), nil
 }

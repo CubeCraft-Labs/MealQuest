@@ -23,12 +23,22 @@ func testConfig(t *testing.T, f *llm.Fake) Config {
 		Settings:    llm.Settings{Provider: "anthropic", Model: "claude-test", Temperature: 0.7},
 		NewProvider: func(llm.Settings, string) (llm.Provider, error) { return f, nil },
 		Store:       emptyHousehold(t),
+		Guard:       testGuard(t, DefaultMaxCalls),
 	}
+}
+
+func testGuard(t *testing.T, maxCalls int) *Guard {
+	t.Helper()
+	g, err := NewGuard(maxCalls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return g
 }
 
 func run(t *testing.T, f *llm.Fake) (echoOutput, error) {
 	t.Helper()
-	return Run(context.Background(), testConfig(t, f), echoSkill{}, echoInput{Word: "taco"})
+	return Run(context.Background(), testConfig(t, f), echoSkill{}, "week-1", echoInput{Word: "taco"})
 }
 
 func assertCalls(t *testing.T, f *llm.Fake, want int) []llm.Request {
@@ -215,7 +225,7 @@ func TestRunProviderErrorOnRepairPassesThrough(t *testing.T) {
 func TestRunRenderError(t *testing.T) {
 	var f llm.Fake
 	cfg := testConfig(t, &f)
-	_, err := Run(context.Background(), cfg, echoSkill{}, echoInput{})
+	_, err := Run(context.Background(), cfg, echoSkill{}, "week-1", echoInput{})
 	if err == nil || !strings.Contains(err.Error(), "render") {
 		t.Fatalf("err = %v, want a render error", err)
 	}
@@ -235,7 +245,7 @@ func TestRunProviderBuildError(t *testing.T) {
 	var f llm.Fake
 	cfg := testConfig(t, &f)
 	cfg.NewProvider = func(llm.Settings, string) (llm.Provider, error) { return nil, llm.ErrMissingKey }
-	_, err := Run(context.Background(), cfg, echoSkill{}, echoInput{Word: "taco"})
+	_, err := Run(context.Background(), cfg, echoSkill{}, "week-1", echoInput{Word: "taco"})
 	if !errors.Is(err, llm.ErrMissingKey) {
 		t.Fatalf("err = %v, want ErrMissingKey", err)
 	}
@@ -254,11 +264,12 @@ func TestRunConfigError(t *testing.T) {
 		"provider name":        func(c *Config) { c.Settings.Provider = "" },
 		"model":                func(c *Config) { c.Settings.Model = "" },
 		"store":                func(c *Config) { c.Store = nil },
+		"guard":                func(c *Config) { c.Guard = nil },
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg := full
 			edit(&cfg)
-			_, err := Run(context.Background(), cfg, echoSkill{}, echoInput{Word: "taco"})
+			_, err := Run(context.Background(), cfg, echoSkill{}, "week-1", echoInput{Word: "taco"})
 			if err == nil || !strings.Contains(err.Error(), "config has no "+name) {
 				t.Fatalf("err = %v, want missing %s", err, name)
 			}

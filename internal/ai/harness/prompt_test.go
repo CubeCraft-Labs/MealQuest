@@ -119,7 +119,7 @@ func TestRunSendsLayeredPrompt(t *testing.T) {
 	in := echoInput{Word: "Taco", Context: tacoContext}
 	cfg := testConfig(t, &f)
 	cfg.Persona = persona
-	if _, err := Run(context.Background(), cfg, echoSkill{}, in); err != nil {
+	if _, err := Run(context.Background(), cfg, echoSkill{}, "week-1", in); err != nil {
 		t.Fatal(err)
 	}
 	req := assertCalls(t, &f, 1)[0]

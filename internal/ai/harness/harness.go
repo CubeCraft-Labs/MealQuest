@@ -5,6 +5,8 @@
 // and on failure sends exactly one repair turn quoting the problems. If the
 // repair fails too the run fails with llm.ErrBadOutput; there is no silent
 // fallback (D-007). Every run is recorded in ai_runs (see Run and Purge).
+// A Guard shares in-flight runs of one skill and scope, bounds concurrent
+// LLM calls, and each run ends at its skill's timeout.
 package harness
 
 import (
@@ -15,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/llm"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
@@ -39,6 +42,10 @@ type Skill[In, Out any] interface {
 	// is validated again; problems found then are repaired like any other.
 	// Its error fails the run without a repair turn.
 	PostProcess(out Out) (Out, error)
+	// Timeout bounds a whole run, waiting for LLM call slots and the
+	// repair turn included. It is DefaultTimeout unless the skill needs
+	// another, and must be positive.
+	Timeout() time.Duration
 }
 
 // NewProvider builds the provider a run sends its requests to from the
@@ -63,6 +70,9 @@ type Config struct {
 	Persona string
 	// Store receives the run's ai_runs row. It must not be nil.
 	Store *store.Store
+	// Guard is the process's Guard, shared by every run. It must not be
+	// nil.
+	Guard *Guard
 }
 
 // validate reports a Config missing what every run needs.
@@ -76,6 +86,8 @@ func (c Config) validate() error {
 		return errors.New("config has no model")
 	case c.Store == nil:
 		return errors.New("config has no store")
+	case c.Guard == nil:
+		return errors.New("config has no guard")
 	}
 	return nil
 }
@@ -103,6 +115,19 @@ func (e *BadOutputError) Unwrap() error { return llm.ErrBadOutput }
 // output. A provider error other than llm.ErrBadOutput is returned
 // unchanged and never repaired.
 //
+// scope names what the run is for, e.g. a week, and must not be empty.
+// While a run of s with scope is in flight on cfg.Guard, another Run of s
+// with the same scope does not start a run of its own: it waits for that
+// run and returns its output or error, whatever its own in and cfg. So a
+// scope must identify the input. Runs with different scopes, or of
+// different skills, run independently. Every Generate call holds one of
+// cfg.Guard's slots while it runs.
+//
+// A run that has not ended within s.Timeout() fails with an error matching
+// llm.ErrTimeout. When ctx is done first, Run returns ctx.Err(); the run
+// goes on for the callers still waiting for it, and is cancelled when none
+// is left.
+//
 // Every run with a valid Config writes one ai_runs row when it ends,
 // covering both turns, with its RunStatus and the request and response
 // bodies redacted (see redact). A render failure is recorded as
@@ -111,13 +136,42 @@ func (e *BadOutputError) Unwrap() error { return llm.ErrBadOutput }
 // before anything else, and writes no row since the row cannot be
 // written without one. When the row cannot be written the run fails with
 // that error too, even if its output was usable.
-func Run[In, Out any](ctx context.Context, cfg Config, s Skill[In, Out], in In) (Out, error) {
+func Run[In, Out any](ctx context.Context, cfg Config, s Skill[In, Out], scope string, in In) (Out, error) {
 	var zero Out
 	if err := cfg.validate(); err != nil {
 		return zero, fmt.Errorf("harness: skill %s v%d: %w", s.Name(), s.Version(), err)
 	}
+	if scope == "" {
+		return zero, fmt.Errorf("harness: skill %s v%d: no scope", s.Name(), s.Version())
+	}
+	timeout := s.Timeout()
+	if timeout <= 0 {
+		return zero, fmt.Errorf("harness: skill %s v%d: timeout %v is not positive", s.Name(), s.Version(), timeout)
+	}
+	val, err := cfg.Guard.do(ctx, flightKey{skill: s.Name(), scope: scope}, func(ctx context.Context) (any, error) {
+		return runOnce(ctx, cfg, s, timeout, in)
+	})
+	if err != nil {
+		return zero, err
+	}
+	out, ok := val.(Out)
+	if !ok {
+		return zero, fmt.Errorf("harness: skill %s v%d: scope %q is shared with a run whose output is %T", s.Name(), s.Version(), scope, val)
+	}
+	return out, nil
+}
+
+// runOnce is one execution of s on in, ended at timeout, with its ai_runs row.
+func runOnce[In, Out any](ctx context.Context, cfg Config, s Skill[In, Out], timeout time.Duration, in In) (Out, error) {
+	var zero Out
+	expired := fmt.Errorf("harness: skill %s v%d: %w: no result within %v", s.Name(), s.Version(), llm.ErrTimeout, timeout)
+	ctx, cancel := context.WithTimeoutCause(ctx, timeout, expired)
+	defer cancel()
 	log := &runLog{start: store.Now()}
 	out, status, err := execute(ctx, cfg, s, in, log)
+	if err != nil && context.Cause(ctx) == expired {
+		err = fmt.Errorf("%w: %w", expired, err)
+	}
 	if saveErr := log.save(ctx, cfg, s.Name(), s.Version(), status, err); saveErr != nil {
 		return zero, errors.Join(err, fmt.Errorf("harness: skill %s v%d: record ai_runs row: %w", s.Name(), s.Version(), saveErr))
 	}
@@ -139,6 +193,7 @@ func execute[In, Out any](ctx context.Context, cfg Config, s Skill[In, Out], in 
 	if err != nil {
 		return zero, StatusProviderError, fmt.Errorf("harness: skill %s v%d: provider: %w", s.Name(), s.Version(), err)
 	}
+	provider = limited{Provider: provider, slots: cfg.Guard.slots}
 	schema := s.Schema()
 	temperature := cfg.Settings.Temperature
 	req := llm.Request{

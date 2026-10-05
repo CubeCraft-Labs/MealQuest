@@ -299,12 +299,20 @@ automatic** (D-021).
   recorded twice. Files written for a transaction that rolls back are
   removed by the caller (`RemovePhotoFiles`).
 - Grounding (`recipes.Grounder`) ties these together.
-  `Ground(ctx, dishName, query)` searches for the top 5 candidates; if one
-  is already a stored `source_url`, the first such is returned without
-  fetching anything. Otherwise it ranks them and tries each ranked recipe
-  best first: download its photo, run `normalize_recipe`, then store the
-  photo, recipe, ingredients and steps in **one transaction** (an existing
-  `source_url` is updated in place). It returns `Grounded{recipe_id,
+  `Ground(ctx, dishName, query)` searches for the top 5 candidates and ranks
+  them all, stored and new alike: a candidate whose `source_url` is already
+  stored is scored on its stored recipe (title, ingredients, steps, times,
+  photo source) and its page is never refetched; every other candidate is
+  fetched and extracted. Ranking alone decides between them. It then tries
+  each ranked candidate best first. A stored one is returned as it is, so a
+  stored recipe is reused only when it ranks above every new candidate that
+  grounds. A new one is grounded in this order: (1) `DownloadPhoto` —
+  the download and validation step of photo caching — (2)
+  `normalize_recipe`, then (3) one **transaction** that runs `CachePhoto`
+  (scales and writes the photo files and records the `photos` row) and
+  stores the recipe, ingredients and steps (an existing `source_url` is
+  updated in place); files written for a rolled-back transaction are
+  removed. It returns `Grounded{recipe_id,
   photo_id, method, minutes_total, difficulty, source_url, site_name}`. A
   candidate whose photo fails or whose model output is unusable
   (`llm.ErrBadOutput`) is passed over; when none grounds, the error is a

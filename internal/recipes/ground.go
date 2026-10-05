@@ -319,6 +319,11 @@ func (g *Grounder) storedRecipe(ctx context.Context, sourceURL string) (storedRe
 // ground downloads r's photo, normalizes it and stores it as sourceURL's
 // recipe. A problem with this recipe is returned as reason, so the caller
 // can try another; err is a failure that is not the recipe's.
+//
+// The order is fixed: the photo is downloaded and validated first, so a
+// recipe without a usable photo never costs a normalize_recipe call; then
+// normalize_recipe runs; then save records the photo (CachePhoto) and the
+// recipe in one transaction.
 func (g *Grounder) ground(ctx context.Context, sourceURL string, r Recipe) (gr Grounded, reason, err error) {
 	photo, err := g.photos.DownloadPhoto(ctx, r.ImageURL)
 	if err != nil {

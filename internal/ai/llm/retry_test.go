@@ -240,6 +240,43 @@ func TestRetryingStopsWhenContextDone(t *testing.T) {
 	assertConsumed(t, f, 1)
 }
 
+func TestRetryingWaitInterruptedReturnsContextError(t *testing.T) {
+	t.Run("cancelled", func(t *testing.T) {
+		r, f, _ := newTestRetrying()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		r.sleep = func(ctx context.Context, d time.Duration) error {
+			cancel()
+			return sleep(ctx, d)
+		}
+		f.QueueGenerate(fail(NewRateLimitedError(3*time.Second, "")))
+
+		_, err := r.Generate(ctx, retryReq)
+		if !errors.Is(err, context.Canceled) || errors.Is(err, ErrRateLimited) {
+			t.Fatalf("err = %v, want context.Canceled", err)
+		}
+		assertConsumed(t, f, 1)
+	})
+	t.Run("deadline", func(t *testing.T) {
+		r, f, _ := newTestRetrying()
+		// The fake clock stands still, so the 500ms backoff fits before
+		// the caller's deadline; the real wait outlasts it.
+		r.jitter = func(time.Duration) time.Duration { return 0 }
+		r.sleep = func(ctx context.Context, _ time.Duration) error {
+			return sleep(ctx, time.Hour)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
+		defer cancel()
+		f.QueueGenerate(fail(NewRateLimitedError(0, "")))
+
+		_, err := r.Generate(ctx, retryReq)
+		if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrRateLimited) {
+			t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+		}
+		assertConsumed(t, f, 1)
+	})
+}
+
 // slowProvider is a Provider whose every attempt takes d on clock c,
 // records the deadline of the context it received, and times out.
 type slowProvider struct {

@@ -136,3 +136,37 @@ func TestFakeConcurrentUse(t *testing.T) {
 		t.Fatalf("%d Generate results unused", g)
 	}
 }
+
+func TestFakeGenerateBlocksUntilReleased(t *testing.T) {
+	var f Fake
+	started, release := make(chan struct{}), make(chan struct{})
+	f.QueueGenerate(GenerateResult{Response: Response{Text: "done"}, Started: started, Release: release})
+	got := make(chan string)
+	go func() {
+		resp, err := f.Generate(context.Background(), Request{})
+		if err != nil {
+			t.Error(err)
+		}
+		got <- resp.Text
+	}()
+	<-started
+	select {
+	case text := <-got:
+		t.Fatalf("Generate returned %q before release", text)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	if text := <-got; text != "done" {
+		t.Fatalf("Generate = %q, want the scripted reply", text)
+	}
+}
+
+func TestFakeBlockedGenerateHonoursContext(t *testing.T) {
+	var f Fake
+	f.QueueGenerate(GenerateResult{Response: Response{Text: "never"}, Release: make(chan struct{})})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if _, err := f.Generate(ctx, Request{}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+	}
+}

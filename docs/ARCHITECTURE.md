@@ -150,7 +150,59 @@ automatic** (D-021).
   Anthropic and Ollama endpoints, called over plain HTTP — no vendor SDKs.
 - **Skill harness** (`ai/harness`): prompt layering, validation of the
   structured output, and **one repair retry**; if the repair also fails the
-  run fails — no silent fallback. Every call is recorded in `ai_runs`.
+  run fails — no silent fallback. Every run writes one `ai_runs` row when it
+  ends, covering the repair turn too, with status `ok`, `repaired`,
+  `bad_output` or `provider_error`; a prompt that cannot be rendered is
+  `bad_output` and a provider that cannot be built is `provider_error`, both
+  with no turns. The harness builds the provider itself from the settings
+  and the decrypted API key (`presets.FromSettings`), so the key it redacts
+  is always the key the provider sends. Request and response
+  bodies are redacted before they are stored: the decrypted API key,
+  Authorization and API-key header values, Google Chat webhook URLs and URLs
+  with key-like query parameters are removed, inside JSON strings too; the
+  skill, provider and model columns are redacted the same way. Writing the
+  row is bounded: a run whose work ended in time must write its row before
+  the skill's deadline or it fails with `llm.ErrTimeout` and its row records
+  the timeout; a failed run's row has a further fixed bound, and if even
+  that write fails the run returns the write error with its own and no row
+  is stored. A stored row's status therefore always matches what the caller
+  received.
+  `harness.Purge` deletes rows older than `harness.RunRetention` (30 days),
+  clearing the `suggestion_batches` and `week_plans` references first. The
+  harness does not call it: the scheduler's daily `ai_runs` purge
+  (Feature 20) must call `harness.Purge` with `now - RunRetention`.
+- **Concurrency guards** (`harness.Guard`, one per process): `harness.Run`
+  takes a scope key, and concurrent runs of one skill with one scope share a
+  single in-flight run and its result, error included (single-flight); runs
+  with different scopes are independent. A semaphore lets at most
+  `harness.DefaultMaxCalls` (2, set by `NewGuard`) LLM calls run at once;
+  waiting for a slot honours the context. Each skill declares a timeout
+  (`harness.DefaultTimeout`, 60 s, unless it needs another) bounding the
+  whole run, slot waits and repair turn included; a run past it fails with
+  `llm.ErrTimeout`. A caller whose context ends gets the context error; the
+  shared run is cancelled, freeing its slot, once no caller waits for it.
+- **Prompt layering** (D-007): each skill version's prompt is a
+  `text/template` file embedded from `ai/skills/prompts/`
+  (`<skill>.v<version>.tmpl`). The system prompt is always, in order:
+  [1] the admin persona (`ai_settings.system_prompt`), [2] the skill's
+  instructions, [3] the household context block, [4] the output contract
+  with the JSON Schema — the contract is always last. The user message comes
+  from the skill's input. `checksums.txt` pins every template; changing one
+  without a version bump fails the tests.
+- **Household context** (`harness.BuildContext`): layer 3 holds today's date
+  and weekday in the household timezone, the Regulars, the Quest log, the
+  last 60 passed Side quests and the plans of the last four ISO weeks. A
+  character budget trims the oldest plans first, then the oldest passes;
+  Regulars and the Quest log are never trimmed.
+- **Name dedupe** (`harness.Normalize`, `harness.Similar`, `harness.Deduper`):
+  a dinner name is normalized by lowercasing, dropping combining marks and
+  folding precomposed letters to their base letters through a table generated
+  from Unicode data (`gen_folds.py`), so composed and decomposed spellings
+  match, stripping punctuation, dropping filler words (easy, best, homemade, quick, simple,
+  the, a, recipe, classic) and collapsing whitespace. Two names are the same
+  dinner when the token-set (Jaccard) similarity of their words is at least
+  0.85. A `Deduper` over the Regulars, Quest log, pending suggestions and
+  passed names rejects a suggestion that repeats any of them.
 
 ## Recipe grounding
 
@@ -178,7 +230,7 @@ purge are fixed and not configurable.
 | `day_of_reminder` | Daily 16:30 | Tonight's dinner reminder. |
 | `rotation_check` | Daily 09:00 | Asks "Keep it in rotation?" for tried dinners. |
 | `week_rollover` | Monday 00:05 (fixed) | Freezes last week's Supply run into the Supply archive. |
-| `ai_runs` purge | Daily (fixed) | Deletes `ai_runs` rows past 30-day retention. |
+| `ai_runs` purge | Daily (fixed) | Calls `harness.Purge` to delete `ai_runs` rows past 30-day retention (Feature 20). |
 
 Runs are recorded in `schedule_runs` and executed through `jobs`.
 

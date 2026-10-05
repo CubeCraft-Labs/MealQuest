@@ -95,3 +95,9 @@ self.addEventListener('activate', (event) => {
       .then((names) => Promise.all(staleCaches(names, current).map((name) => caches.delete(name)))),
   )
 })
+
+// The update prompt (src/pwa/UpdatePrompt.tsx) asks a waiting worker to take
+// over when the household chooses Reload.
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'SKIP_WAITING') void self.skipWaiting()
+})

@@ -159,6 +159,11 @@ automatic** (D-021).
   with the JSON Schema — the contract is always last. The user message comes
   from the skill's input. `checksums.txt` pins every template; changing one
   without a version bump fails the tests.
+- **Household context** (`harness.BuildContext`): layer 3 holds today's date
+  and weekday in the household timezone, the Regulars, the Quest log, the
+  last 60 passed Side quests and the plans of the last four ISO weeks. A
+  character budget trims the oldest plans first, then the oldest passes;
+  Regulars and the Quest log are never trimmed.
 
 ## Recipe grounding
 

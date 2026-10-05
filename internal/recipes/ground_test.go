@@ -319,7 +319,9 @@ func TestGroundReusesStoredRecipe(t *testing.T) {
 	}
 	pages, images, calls := env.pages.fetchCount(), env.images.requests.Load(), len(env.llm.Requests())
 
-	// The model has no reply left: a second normalization would fail.
+	// The stored page is gone and the model has no reply left: only the
+	// stored recipe can ground the dish.
+	delete(env.pages.pages, "https://b.example/curry")
 	again, err := env.g.Ground(t.Context(), "Chicken Curry", "chicken curry")
 	if err != nil {
 		t.Fatalf("second Ground: %v", err)
@@ -332,9 +334,13 @@ func TestGroundReusesStoredRecipe(t *testing.T) {
 		t.Errorf("reuse fetched images %d→%d, model calls %d→%d; want none",
 			images, env.images.requests.Load(), calls, len(env.llm.Requests()))
 	}
-	// Ranking fetches both candidates' pages; only the stored one ranks.
-	if n := env.pages.fetchCount() - pages; n != 2 {
-		t.Errorf("reuse fetched %d pages, want the 2 candidates ranked", n)
+	// Ranking fetches only the candidate not stored; the stored one ranks
+	// on its stored recipe.
+	env.pages.mu.Lock()
+	fetched := append([]string(nil), env.pages.fetched[pages:]...)
+	env.pages.mu.Unlock()
+	if len(fetched) != 1 || fetched[0] != "https://a.example/other" {
+		t.Errorf("reuse fetched %v, want only https://a.example/other", fetched)
 	}
 	pages = env.pages.fetchCount()
 
@@ -354,7 +360,7 @@ func TestGroundStoredRecipeDoesNotOutrankRelevantOne(t *testing.T) {
 	t.Parallel()
 	search := &fakeSearch{results: map[string][]Candidate{
 		"brownies":      {{URL: "https://b.example/brownies"}},
-		"chicken curry": {{URL: "https://a.example/curry"}, {URL: "https://b.example/brownies"}},
+		"chicken curry": {{URL: "https://b.example/brownies"}, {URL: "https://a.example/curry"}},
 	}}
 	env := newGroundEnv(t,
 		map[string][]byte{
@@ -373,8 +379,9 @@ func TestGroundStoredRecipeDoesNotOutrankRelevantOne(t *testing.T) {
 		t.Fatalf("Ground brownies: %v", err)
 	}
 
-	// Search lists the relevant new recipe first and the unrelated stored
-	// one second: the relevant one is grounded.
+	// Search lists the unrelated stored recipe first and the relevant new
+	// one second: ranking, not search order or storage, grounds the
+	// relevant one.
 	curry, err := env.g.Ground(t.Context(), "Chicken Curry", "chicken curry")
 	if err != nil {
 		t.Fatalf("Ground chicken curry: %v", err)

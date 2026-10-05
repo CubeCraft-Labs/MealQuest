@@ -3,6 +3,7 @@ package recipes
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -102,11 +103,13 @@ func NewGrounder(st *store.Store, search SearchSource, pages PageFetcher, photos
 }
 
 // Ground searches for query and grounds dishName in the best recipe found.
-// The candidates are ranked (see Rank) and tried best first: a candidate
-// already stored is returned as it is, and otherwise the first whose photo
-// can be cached and whose ingredients normalize is stored — the recipe, its
-// ingredients, steps and photo in one transaction — and returned. A stored
-// recipe is reused only when it ranks above every candidate that grounds.
+// The candidates are ranked as Rank does, except that a candidate already
+// stored is scored on its stored recipe and never fetched. They are tried
+// best first: a stored candidate is returned as it is, and otherwise the
+// first whose photo can be cached and whose ingredients normalize is stored
+// — the recipe, its ingredients, steps and photo in one transaction — and
+// returned. A stored recipe is reused only when it ranks above every
+// candidate that grounds.
 //
 // When no candidate grounds the dish the error is an *ErrUngroundable with
 // each reason. A failure that is not the candidates' — the search, the
@@ -126,7 +129,23 @@ func (g *Grounder) Ground(ctx context.Context, dishName, query string) (Grounded
 	if len(cands) == 0 {
 		return Grounded{}, &ErrUngroundable{Target: dishName, Reasons: []error{ErrNoCandidates}}
 	}
-	ranked, rankErr := Rank(ctx, g.pages, dishName, cands)
+	cands = cands[:min(len(cands), RankDepth)]
+	stored := make(map[string]storedRecipe)
+	for _, c := range cands {
+		sr, ok, err := g.storedRecipe(ctx, c.URL)
+		if err != nil {
+			return Grounded{}, fmt.Errorf("recipes: ground %q: %w", dishName, err)
+		}
+		if ok {
+			stored[c.URL] = sr
+		}
+	}
+	ranked, rankErr := rank(ctx, dishName, cands, func(ctx context.Context, c Candidate) (Recipe, error) {
+		if sr, ok := stored[c.URL]; ok {
+			return sr.recipe, nil
+		}
+		return fetchRecipe(ctx, g.pages, c.URL)
+	})
 	if err := ctx.Err(); err != nil {
 		return Grounded{}, err
 	}
@@ -135,8 +154,8 @@ func (g *Grounder) Ground(ctx context.Context, dishName, query string) (Grounded
 		reasons = append(reasons, rankErr)
 	}
 	for _, r := range ranked {
-		if gr, ok, err := g.stored(ctx, r.Candidate.URL); err != nil || ok {
-			return gr, err
+		if sr, ok := stored[r.Candidate.URL]; ok {
+			return sr.grounded, nil
 		}
 		gr, reason, err := g.ground(ctx, r.Candidate.URL, r.Recipe)
 		if err != nil {
@@ -227,17 +246,74 @@ func (g *Grounder) GroundMany(ctx context.Context, reqs []GroundRequest) []Groun
 // stored returns the grounding of the recipe stored for sourceURL, and
 // false when there is none.
 func (g *Grounder) stored(ctx context.Context, sourceURL string) (Grounded, bool, error) {
-	row, err := db.New(g.st.Reader).GetRecipeBySourceURL(ctx, sourceURL)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Grounded{}, false, nil
-	}
-	if err != nil {
-		return Grounded{}, false, fmt.Errorf("recipes: look up recipe %s: %w", sourceURL, err)
-	}
-	if !row.PhotoID.Valid || !row.Method.Valid || !row.Difficulty.Valid {
-		return Grounded{}, false, fmt.Errorf("recipes: stored recipe %s for %s has no photo, method or difficulty", row.ID, sourceURL)
+	row, ok, err := g.storedRow(ctx, sourceURL)
+	if err != nil || !ok {
+		return Grounded{}, false, err
 	}
 	return groundedFrom(row), true, nil
+}
+
+// storedRow returns the recipe row stored for sourceURL, and false when
+// there is none.
+func (g *Grounder) storedRow(ctx context.Context, sourceURL string) (db.Recipe, bool, error) {
+	row, err := db.New(g.st.Reader).GetRecipeBySourceURL(ctx, sourceURL)
+	if errors.Is(err, sql.ErrNoRows) {
+		return db.Recipe{}, false, nil
+	}
+	if err != nil {
+		return db.Recipe{}, false, fmt.Errorf("recipes: look up recipe %s: %w", sourceURL, err)
+	}
+	if !row.PhotoID.Valid || !row.Method.Valid || !row.Difficulty.Valid {
+		return db.Recipe{}, false, fmt.Errorf("recipes: stored recipe %s for %s has no photo, method or difficulty", row.ID, sourceURL)
+	}
+	return row, true, nil
+}
+
+// storedRecipe is a recipe already stored: its grounding, and the recipe
+// rebuilt from what was stored so it can be ranked without its page.
+type storedRecipe struct {
+	grounded Grounded
+	recipe   Recipe
+}
+
+// storedRecipe returns the recipe stored for sourceURL with its photo,
+// ingredients and steps, and false when there is none.
+func (g *Grounder) storedRecipe(ctx context.Context, sourceURL string) (storedRecipe, bool, error) {
+	row, ok, err := g.storedRow(ctx, sourceURL)
+	if err != nil || !ok {
+		return storedRecipe{}, false, err
+	}
+	gr := groundedFrom(row)
+	q := db.New(g.st.Reader)
+	photo, err := q.GetPhoto(ctx, gr.PhotoID)
+	if err != nil {
+		return storedRecipe{}, false, fmt.Errorf("recipes: load photo %s of recipe %s: %w", gr.PhotoID, gr.RecipeID, err)
+	}
+	ings, err := q.ListRecipeIngredients(ctx, gr.RecipeID)
+	if err != nil {
+		return storedRecipe{}, false, fmt.Errorf("recipes: load ingredients of recipe %s: %w", gr.RecipeID, err)
+	}
+	steps, err := q.ListRecipeSteps(ctx, gr.RecipeID)
+	if err != nil {
+		return storedRecipe{}, false, fmt.Errorf("recipes: load steps of recipe %s: %w", gr.RecipeID, err)
+	}
+	r := Recipe{
+		Title:        row.Title,
+		SiteName:     row.SiteName.String,
+		ImageURL:     photo.SourceUrl,
+		PrepMinutes:  intFrom(row.PrepMinutes),
+		CookMinutes:  intFrom(row.CookMinutes),
+		TotalMinutes: intFrom(row.TotalMinutes),
+		Yield:        row.Yield.String,
+		JSONLD:       json.RawMessage(row.RawJsonld),
+	}
+	for _, ing := range ings {
+		r.Ingredients = append(r.Ingredients, ing.RawText)
+	}
+	for _, st := range steps {
+		r.Steps = append(r.Steps, st.Text)
+	}
+	return storedRecipe{grounded: gr, recipe: r}, true, nil
 }
 
 // ground downloads r's photo, normalizes it and stores it as sourceURL's
@@ -372,6 +448,14 @@ func groundedFrom(row db.Recipe) Grounded {
 		gr.MinutesTotal = &m
 	}
 	return gr
+}
+
+func intFrom(v sql.NullInt64) *int {
+	if !v.Valid {
+		return nil
+	}
+	n := int(v.Int64)
+	return &n
 }
 
 func nullInt(v *int) sql.NullInt64 {

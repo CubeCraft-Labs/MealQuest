@@ -57,6 +57,14 @@ type Ranked struct {
 // unranked candidate's URL and reason. A cancelled ctx returns only its
 // error.
 func Rank(ctx context.Context, f PageFetcher, dish string, cands []Candidate) ([]Ranked, error) {
+	return rank(ctx, dish, cands, func(ctx context.Context, c Candidate) (Recipe, error) {
+		return fetchRecipe(ctx, f, c.URL)
+	})
+}
+
+// rank is Rank with each candidate's recipe got by load rather than always
+// fetched.
+func rank(ctx context.Context, dish string, cands []Candidate, load func(context.Context, Candidate) (Recipe, error)) ([]Ranked, error) {
 	if len(cands) > RankDepth {
 		cands = cands[:RankDepth]
 	}
@@ -70,7 +78,7 @@ func Rank(ctx context.Context, f PageFetcher, dish string, cands []Candidate) ([
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r, err := rankOne(ctx, f, dish, c)
+			r, err := rankOne(ctx, load, dish, c)
 			outcomes[i] = outcome{r, err}
 		}()
 	}
@@ -98,14 +106,10 @@ func Rank(ctx context.Context, f PageFetcher, dish string, cands []Candidate) ([
 	return ranked, nil
 }
 
-// rankOne fetches, extracts and scores one candidate, or says why it is
+// rankOne loads and scores one candidate's recipe, or says why it is
 // rejected.
-func rankOne(ctx context.Context, f PageFetcher, dish string, c Candidate) (Ranked, error) {
-	page, err := f.Fetch(ctx, c.URL)
-	if err != nil {
-		return Ranked{}, err
-	}
-	r, err := Extract(page.Body, page.URL)
+func rankOne(ctx context.Context, load func(context.Context, Candidate) (Recipe, error), dish string, c Candidate) (Ranked, error) {
+	r, err := load(ctx, c)
 	if err != nil {
 		return Ranked{}, err
 	}
@@ -113,6 +117,15 @@ func rankOne(ctx context.Context, f PageFetcher, dish string, c Candidate) (Rank
 		return Ranked{}, err
 	}
 	return Ranked{Candidate: c, Recipe: r, Score: harness.Similarity(r.Title, dish) + completeness(r)}, nil
+}
+
+// fetchRecipe fetches the page at rawURL and extracts its recipe.
+func fetchRecipe(ctx context.Context, f PageFetcher, rawURL string) (Recipe, error) {
+	page, err := f.Fetch(ctx, rawURL)
+	if err != nil {
+		return Recipe{}, err
+	}
+	return Extract(page.Body, page.URL)
 }
 
 // usable says why r cannot ground a dish: it has no ingredients or no

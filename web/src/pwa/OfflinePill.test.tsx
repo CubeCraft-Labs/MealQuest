@@ -1,7 +1,7 @@
 import { act, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiProvider, createApiClient, type ApiClient } from '../api/index.ts'
-import { fakeLocation, jsonResponse, stubFetch } from '../test/fetchStub.ts'
+import { fakeLocation, jsonResponse, ME, stubFetch } from '../test/fetchStub.ts'
 import { createNetworkStatus } from './networkStatus.ts'
 import { OfflinePill } from './OfflinePill.tsx'
 
@@ -77,6 +77,22 @@ describe('OfflinePill', () => {
 
     stubFetch(jsonResponse(200, {}))
     await act(() => api.apiFetch('/api/v1/plan'))
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('ignores a request body that cannot be serialized', async () => {
+    const api = renderPill()
+    const fetchMock = stubFetch(jsonResponse(200, ME))
+    await act(() => api.loadMe())
+    const body: Record<string, unknown> = {}
+    body.self = body
+
+    await act(() =>
+      expect(api.apiFetch('/api/v1/plan', { method: 'PUT', body })).rejects.toThrow(
+        'PUT /api/v1/plan: request body is not serializable as JSON',
+      ),
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(screen.queryByRole('status')).toBeNull()
   })
 

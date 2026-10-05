@@ -74,14 +74,17 @@ export function createApiClient(location: ApiLocation, network: NetworkStatus): 
       }
       headers[CSRF_HEADER] = csrfToken
     }
+    // Serialize before fetching so a body that cannot be sent is its own error
+    // and never counts as a network failure.
+    let json: string | undefined
+    try {
+      json = body === undefined ? undefined : JSON.stringify(body)
+    } catch (error) {
+      throw new Error(`${method} ${path}: request body is not serializable as JSON`, { cause: error })
+    }
     let response: Response
     try {
-      response = await fetch(path, {
-        method,
-        headers,
-        credentials: 'same-origin',
-        body: body === undefined ? undefined : JSON.stringify(body),
-      })
+      response = await fetch(path, { method, headers, credentials: 'same-origin', body: json })
     } catch (error) {
       // fetch rejects with a TypeError when the network fails; an abort is a
       // DOMException and says nothing about the network.

@@ -10,12 +10,10 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptrace"
 	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -88,11 +86,14 @@ type dialFunc func(ctx context.Context, network, address string) (net.Conn, erro
 // answer cannot swap in a private one. Keep-alives are off: every request,
 // redirect hops included, dials and checks afresh. Proxies from the
 // environment are not used, since a proxy would dial on the Fetcher's
-// behalf. A Fetcher is safe for concurrent use.
+// behalf. Requests are HTTP/1.1, so each connection carries exactly one
+// request and its first write is that request. A Fetcher is safe for
+// concurrent use.
 type Fetcher struct {
-	client   *http.Client
-	resolver Resolver
-	dial     dialFunc
+	client    *http.Client
+	resolver  Resolver
+	dial      dialFunc
+	tlsConfig *tls.Config
 	// timeout bounds a fetch; tests shorten it.
 	timeout time.Duration
 	// now is the clock; tests replace it.
@@ -101,8 +102,9 @@ type Fetcher struct {
 	sleep func(ctx context.Context, d time.Duration) error
 
 	mu sync.Mutex
-	// lastSent is when each host's latest request was let through; a
-	// request that is never sent hands its slot back.
+	// lastSent is when each host's latest request began to be written to
+	// its connection; a request whose write fails before any byte is sent
+	// hands its slot back.
 	lastSent map[string]time.Time
 	// released is closed, then replaced, whenever a slot is handed back,
 	// waking requests waiting for their turn.
@@ -124,25 +126,23 @@ func NewFetcher() *Fetcher {
 // nil, replaces the default TLS settings so tests can trust their servers.
 func newFetcher(resolver Resolver, dial dialFunc, tlsConfig *tls.Config) *Fetcher {
 	f := &Fetcher{
-		resolver: resolver,
-		dial:     dial,
-		timeout:  Timeout,
-		now:      time.Now,
-		sleep:    sleep,
-		lastSent: map[string]time.Time{},
-		released: make(chan struct{}),
-		cache:    map[string]cacheEntry{},
+		resolver:  resolver,
+		dial:      dial,
+		tlsConfig: tlsConfig,
+		timeout:   Timeout,
+		now:       time.Now,
+		sleep:     sleep,
+		lastSent:  map[string]time.Time{},
+		released:  make(chan struct{}),
+		cache:     map[string]cacheEntry{},
 	}
 	transport := &http.Transport{
-		Proxy:               nil,
-		DialContext:         f.dialPublic,
-		TLSClientConfig:     tlsConfig,
-		DisableKeepAlives:   true,
-		ForceAttemptHTTP2:   true,
-		TLSHandshakeTimeout: Timeout,
+		Proxy:             nil,
+		DialTLSContext:    f.dialTLS,
+		DisableKeepAlives: true,
 	}
 	f.client = &http.Client{
-		Transport:     &limitedTransport{f: f, next: transport},
+		Transport:     &requestTransport{next: transport},
 		CheckRedirect: checkRedirect,
 	}
 	return f
@@ -245,8 +245,10 @@ func (f *Fetcher) store(key string, page Page) {
 // waitTurn blocks until a request to host may be sent, keeping requests to
 // one host at least HostInterval apart. A wait holds no reservation, and a
 // request ending with ctx before its turn takes no slot. The request let
-// through takes the host's slot and must call release if it is not sent,
-// so that it delays no other request.
+// through takes the host's slot and must be sent at once, or call release
+// if sending fails, so that it delays no other request. Fetch calls it from
+// turnConn's first Write, so the slot is taken after DNS, dialing and the
+// TLS handshake, as the request is written.
 func (f *Fetcher) waitTurn(ctx context.Context, host string) (release func(), err error) {
 	for {
 		if err := ctx.Err(); err != nil {
@@ -350,26 +352,83 @@ func (f *Fetcher) dialPublic(ctx context.Context, network, address string) (net.
 	return nil, errors.Join(errs...)
 }
 
-// limitedTransport waits for each request's per-host rate-limit slot,
-// redirect hops included, before sending it. A request that fails before
-// its headers are written was not sent and hands its slot back.
-type limitedTransport struct {
-	f    *Fetcher
+// requestCtxKey carries a request's own context into its dial. The
+// transport dials with a context that keeps the request's values but not
+// its cancellation; the connection and the rate-limit wait must end with
+// the request.
+type requestCtxKey struct{}
+
+// requestTransport hands each request's context, redirect hops included,
+// to dialTLS.
+type requestTransport struct {
 	next http.RoundTripper
 }
 
-func (t *limitedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	release, err := t.f.waitTurn(req.Context(), strings.ToLower(req.URL.Hostname()))
+func (t *requestTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	ctx := req.Context()
+	return t.next.RoundTrip(req.WithContext(context.WithValue(ctx, requestCtxKey{}, ctx)))
+}
+
+// dialTLS connects to address through dialPublic and completes the TLS
+// handshake, all under the request's context, and returns a turnConn whose
+// first write waits for the host's rate-limit slot. ALPN offers only
+// HTTP/1.1, so the connection carries this one request.
+func (f *Fetcher) dialTLS(dialCtx context.Context, network, address string) (net.Conn, error) {
+	ctx, ok := dialCtx.Value(requestCtxKey{}).(context.Context)
+	if !ok {
+		return nil, fmt.Errorf("recipes: dial %s outside a request", address)
+	}
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, fmt.Errorf("recipes: dial address %q: %w", address, err)
+	}
+	conn, err := f.dialPublic(ctx, network, address)
 	if err != nil {
 		return nil, err
 	}
-	var sent atomic.Bool
-	trace := &httptrace.ClientTrace{WroteHeaders: func() { sent.Store(true) }}
-	resp, err := t.next.RoundTrip(req.WithContext(httptrace.WithClientTrace(req.Context(), trace)))
-	if err != nil && !sent.Load() {
+	cfg := &tls.Config{}
+	if f.tlsConfig != nil {
+		cfg = f.tlsConfig.Clone()
+	}
+	cfg.ServerName = host
+	cfg.NextProtos = []string{"http/1.1"}
+	tc := tls.Client(conn, cfg)
+	if err := tc.HandshakeContext(ctx); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("recipes: TLS handshake with %s: %w", host, err)
+	}
+	return &turnConn{Conn: tc, f: f, ctx: ctx, host: strings.ToLower(host)}, nil
+}
+
+// turnConn is a connection ready to carry one request. Its first Write —
+// the start of the request — waits for the host's rate-limit slot, so two
+// requests to one host are written at least HostInterval apart however
+// long each spent resolving, dialing and in the TLS handshake. A first
+// Write that sends nothing hands the slot back.
+type turnConn struct {
+	net.Conn
+	f    *Fetcher
+	ctx  context.Context
+	host string
+	// started is set by the first Write; the transport writes a request
+	// from one goroutine, so it needs no lock.
+	started bool
+}
+
+func (c *turnConn) Write(p []byte) (int, error) {
+	if c.started {
+		return c.Conn.Write(p)
+	}
+	release, err := c.f.waitTurn(c.ctx, c.host)
+	if err != nil {
+		return 0, err
+	}
+	c.started = true
+	n, err := c.Conn.Write(p)
+	if n == 0 && err != nil {
 		release()
 	}
-	return resp, err
+	return n, err
 }
 
 // checkURL refuses anything but an absolute https:// URL with a host.

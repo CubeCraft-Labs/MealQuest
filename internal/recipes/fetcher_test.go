@@ -653,3 +653,69 @@ func TestReleaseWakesWaiter(t *testing.T) {
 		t.Fatal("waiter still waiting after the slot was handed back")
 	}
 }
+
+// stallingResolver holds its first lookup until unstall is closed, then
+// answers from the stub.
+type stallingResolver struct {
+	*stubResolver
+	once    sync.Once
+	stalled chan struct{}
+	unstall chan struct{}
+}
+
+func (r *stallingResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
+	first := false
+	r.once.Do(func() { first = true })
+	if first {
+		close(r.stalled)
+		<-r.unstall
+	}
+	return r.stubResolver.LookupIPAddr(ctx, host)
+}
+
+// TestFetchRateLimitsSendsNotSetup covers a request that stalls in DNS
+// while a later request to the same host is sent: the stalled request must
+// still be sent a full HostInterval after the other one, because the slot
+// is taken when the request is written, not when it starts.
+func TestFetchRateLimitsSendsNotSetup(t *testing.T) {
+	t.Parallel()
+	var clock *fakeClock
+	var mu sync.Mutex
+	sentAt := map[string]time.Time{}
+	env := newTestEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		sentAt[r.URL.Path] = clock.now()
+		mu.Unlock()
+		fmt.Fprint(w, "ok")
+	}), publicAnswers())
+	resolver := &stallingResolver{
+		stubResolver: env.resolver,
+		stalled:      make(chan struct{}),
+		unstall:      make(chan struct{}),
+	}
+	env.f.resolver = resolver
+	clock = installClock(env.f)
+
+	slow := make(chan error, 1)
+	go func() {
+		_, err := env.f.Fetch(t.Context(), "https://example.com/slow")
+		slow <- err
+	}()
+	<-resolver.stalled
+	if _, err := env.f.Fetch(t.Context(), "https://example.com/fast"); err != nil {
+		t.Fatalf("fast Fetch: %v", err)
+	}
+	close(resolver.unstall)
+	if err := <-slow; err != nil {
+		t.Fatalf("slow Fetch: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if gap := sentAt["/slow"].Sub(sentAt["/fast"]); gap < HostInterval {
+		t.Errorf("slow request sent %s after fast, want at least %s", gap, HostInterval)
+	}
+	if got := clock.waits(); len(got) != 1 || got[0] != HostInterval {
+		t.Errorf("waits = %v, want [%s]: only the stalled request waits", got, HostInterval)
+	}
+}

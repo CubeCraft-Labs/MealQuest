@@ -22,12 +22,41 @@ func TestNormalize(t *testing.T) {
 		{"Cre\u0300me bru\u0302le\u0301e", "creme brulee"}, // decomposed accents
 		{"İskender Kebab", "iskender kebab"},
 		{"Pho 24", "pho 24"},
+		{"Phở Bò", "pho bo"},
+		{"Bún Chả Hà Nội", "bun cha ha noi"},
+		{"Łosoś z Koperkiem", "losos z koperkiem"},
+		{"Ćevapčići", "cevapcici"},
 		{"Easy Recipe", ""},
 		{"", ""},
+		{"!?-- & ...", ""}, // punctuation only
 	}
 	for _, tt := range tests {
 		if got := Normalize(tt.name); got != tt.want {
 			t.Errorf("Normalize(%q) = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+// TestNormalizeCanonicalEquivalence checks that a composed spelling and its
+// canonically equivalent decomposed spelling normalize equal and are Similar.
+func TestNormalizeCanonicalEquivalence(t *testing.T) {
+	tests := []struct {
+		composed, decomposed, want string
+	}{
+		{"Phở", "Pho\u031b\u0309", "pho"}, // o + horn + hook above
+		{"Bánh Xèo", "Ba\u0301nh Xe\u0300o", "banh xeo"},
+		{"Cơm Tấm", "Co\u031bm Ta\u0302\u0301m", "com tam"},
+		{"Ẓaʿtar Ȟash", "Z\u0323aʿtar H\u030cash", "zaʿtar hash"},
+		{"Smǫrrebrød", "Smo\u0328rrebrød", "smorrebrod"},
+	}
+	for _, tt := range tests {
+		c, d := Normalize(tt.composed), Normalize(tt.decomposed)
+		if c != tt.want || d != tt.want {
+			t.Errorf("Normalize(%q) = %q, Normalize(%+q) = %q, want both %q",
+				tt.composed, c, tt.decomposed, d, tt.want)
+		}
+		if !Similar(tt.composed, tt.decomposed) {
+			t.Errorf("Similar(%q, %+q) = false, want true", tt.composed, tt.decomposed)
 		}
 	}
 }
@@ -44,6 +73,8 @@ func TestSimilar(t *testing.T) {
 		{"Crème Brûlée", "creme brulee", true},
 		{"Jalapeño Poppers", "JALAPENO POPPERS", true},
 		{"Smørrebrød", "Smorrebrod", true},
+		{"Phở", "Pho\u031b\u0309", true},
+		{"Phở", "Pho", true},
 		{"Chicken Tikka Masala", "Chicken Tikka Masala Curry", false}, // 3/4
 		{"Tacos", "Fish tacos", false},
 		{"Pad Thai", "Thai Green Curry", false},

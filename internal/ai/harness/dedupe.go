@@ -16,25 +16,12 @@ var fillerWords = map[string]bool{
 	"the": true, "a": true, "recipe": true, "classic": true,
 }
 
-// accentFolds maps each lowercase accented Latin letter to its plain form.
-var accentFolds = func() map[rune]string {
-	m := map[rune]string{'ß': "ss", 'æ': "ae", 'œ': "oe", 'þ': "th", 'ð': "d"}
-	for plain, accented := range map[string]string{
-		"a": "àáâãäåāăą", "c": "çćĉċč", "d": "ďđ", "e": "èéêëēĕėęě",
-		"g": "ĝğġģ", "h": "ĥħ", "i": "ìíîïĩīĭįı", "j": "ĵ", "k": "ķ",
-		"l": "ĺļľŀł", "n": "ñńņňŉ", "o": "òóôõöøōŏő", "r": "ŕŗř",
-		"s": "śŝşšș", "t": "ţťŧț", "u": "ùúûüũūŭůűų", "w": "ŵ", "y": "ýÿŷ",
-		"z": "źżž",
-	} {
-		for _, r := range accented {
-			m[r] = plain
-		}
-	}
-	return m
-}()
+//go:generate python3 gen_folds.py
 
 // Normalize returns the comparable form of a dinner name: lowercased,
-// accents folded to plain letters, apostrophes removed, other punctuation
+// combining marks (Unicode category Mn) dropped, precomposed and stroked
+// letters folded to their base letters (see letterFolds) so composed and
+// decomposed spellings are equal, apostrophes removed, other punctuation
 // turned into spaces, filler words (see fillerWords) dropped and whitespace
 // collapsed to single spaces. "Easy Chicken Tikka-Masala!" becomes
 // "chicken tikka masala".
@@ -44,8 +31,8 @@ func Normalize(name string) string {
 		switch {
 		case unicode.Is(unicode.Mn, r), r == '\'', r == '’':
 			// Combining accents and apostrophes join their neighbours.
-		case accentFolds[r] != "":
-			b.WriteString(accentFolds[r])
+		case letterFolds[r] != "":
+			b.WriteString(letterFolds[r])
 		case unicode.IsLetter(r), unicode.IsDigit(r):
 			b.WriteRune(r)
 		default:

@@ -9,9 +9,13 @@ import (
 )
 
 // echoSkill is the trivial test skill: it asks the model to repeat a word.
+// Its prompt is prompts/echo.v1.tmpl.
 type echoSkill struct{}
 
-type echoInput struct{ Word string }
+type echoInput struct {
+	Word    string
+	Context []ContextSection
+}
 
 type echoOutput struct {
 	Echo string `json:"echo"`
@@ -23,11 +27,11 @@ func (echoSkill) Name() string { return "echo" }
 
 func (echoSkill) Version() int { return 1 }
 
-func (echoSkill) Render(in echoInput) (Prompt, error) {
+func (echoSkill) PromptInput(in echoInput) (PromptInput, error) {
 	if in.Word == "" {
-		return Prompt{}, errors.New("no word to echo")
+		return PromptInput{}, errors.New("no word to echo")
 	}
-	return Prompt{System: "You repeat words.", User: "Repeat: " + in.Word}, nil
+	return PromptInput{Data: in, Context: in.Context}, nil
 }
 
 func (echoSkill) Schema() llm.JSONSchema {

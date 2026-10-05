@@ -307,6 +307,8 @@ func TestSchemaEnumChecksRejectInvalidValues(t *testing.T) {
 		{"household_settings", "chat_autosend_dow", 3.5},
 		{"ai_runs", "provider", "gemini"},
 		{"ai_runs", "status", "done"},
+		{"ai_runs", "status", "running"},
+		{"ai_runs", "status", "error"},
 		{"dinners", "status", "deck"},
 		{"dinners", "origin", "ai"},
 		{"dinners", "method", "microwave"},

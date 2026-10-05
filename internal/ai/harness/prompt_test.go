@@ -117,7 +117,9 @@ func TestRunSendsLayeredPrompt(t *testing.T) {
 	var f llm.Fake
 	f.QueueGenerate(reply(`{"echo":"taco"}`))
 	in := echoInput{Word: "Taco", Context: tacoContext}
-	if _, err := Run(context.Background(), Config{Provider: &f, Persona: persona}, echoSkill{}, in); err != nil {
+	cfg := testConfig(t, &f)
+	cfg.Persona = persona
+	if _, err := Run(context.Background(), cfg, echoSkill{}, in); err != nil {
 		t.Fatal(err)
 	}
 	req := assertCalls(t, &f, 1)[0]

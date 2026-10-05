@@ -316,8 +316,11 @@ func TestRunTimeout(t *testing.T) {
 			t.Fatalf("out = %+v, want no output", out)
 		}
 		assertCalls(t, &f, 1)
-		if rows := runRows(t, cfg.Store); len(rows) != 1 {
-			t.Fatalf("rows = %+v, want one row", rows)
+		// An ok row with no error proves the work ended in time and only
+		// the save ran past the deadline.
+		rows := runRows(t, cfg.Store)
+		if len(rows) != 1 || rows[0].Status != string(StatusOK) || rows[0].Error.Valid {
+			t.Fatalf("rows = %+v, want one ok row with no error", rows)
 		}
 	})
 	t.Run("waiting for a slot", func(t *testing.T) {

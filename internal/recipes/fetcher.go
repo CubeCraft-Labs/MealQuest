@@ -10,10 +10,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -99,9 +101,12 @@ type Fetcher struct {
 	sleep func(ctx context.Context, d time.Duration) error
 
 	mu sync.Mutex
-	// lastSent is when each host's latest request was let through; only
-	// requests actually sent advance it.
+	// lastSent is when each host's latest request was let through; a
+	// request that is never sent hands its slot back.
 	lastSent map[string]time.Time
+	// released is closed, then replaced, whenever a slot is handed back,
+	// waking requests waiting for their turn.
+	released chan struct{}
 	cache    map[string]cacheEntry
 }
 
@@ -125,6 +130,7 @@ func newFetcher(resolver Resolver, dial dialFunc, tlsConfig *tls.Config) *Fetche
 		now:      time.Now,
 		sleep:    sleep,
 		lastSent: map[string]time.Time{},
+		released: make(chan struct{}),
 		cache:    map[string]cacheEntry{},
 	}
 	transport := &http.Transport{
@@ -237,11 +243,15 @@ func (f *Fetcher) store(key string, page Page) {
 }
 
 // waitTurn blocks until a request to host may be sent, keeping requests to
-// one host at least HostInterval apart. A wait holds no reservation: the
-// host's slot advances only when a request is let through, so a wait that
-// ends with ctx does not delay later requests.
-func (f *Fetcher) waitTurn(ctx context.Context, host string) error {
+// one host at least HostInterval apart. A wait holds no reservation, and a
+// request ending with ctx before its turn takes no slot. The request let
+// through takes the host's slot and must call release if it is not sent,
+// so that it delays no other request.
+func (f *Fetcher) waitTurn(ctx context.Context, host string) (release func(), err error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		f.mu.Lock()
 		now := f.now()
 		last, sent := f.lastSent[host]
@@ -249,12 +259,52 @@ func (f *Fetcher) waitTurn(ctx context.Context, host string) error {
 		if !sent || wait <= 0 {
 			f.lastSent[host] = now
 			f.mu.Unlock()
-			return nil
+			return func() { f.release(host, now, last, sent) }, nil
 		}
+		released := f.released
 		f.mu.Unlock()
-		if err := f.sleep(ctx, wait); err != nil {
-			return err
+		if err := f.waitOrRelease(ctx, wait, released); err != nil {
+			return nil, err
 		}
+	}
+}
+
+// release hands back the slot taken at taken for a request that was not
+// sent, restoring the host's previous send time, and wakes waiting requests.
+func (f *Fetcher) release(host string, taken, prev time.Time, hadPrev bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.lastSent[host].Equal(taken) {
+		// A later request already holds the slot.
+		return
+	}
+	if hadPrev {
+		f.lastSent[host] = prev
+	} else {
+		delete(f.lastSent, host)
+	}
+	close(f.released)
+	f.released = make(chan struct{})
+}
+
+// waitOrRelease sleeps for d, returning early without error when a slot is
+// handed back so the caller can look again.
+func (f *Fetcher) waitOrRelease(ctx context.Context, d time.Duration, released <-chan struct{}) error {
+	sleepCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		select {
+		case <-released:
+			cancel()
+		case <-sleepCtx.Done():
+		}
+	}()
+	err := f.sleep(sleepCtx, d)
+	select {
+	case <-released:
+		return nil
+	default:
+		return err
 	}
 }
 
@@ -301,17 +351,25 @@ func (f *Fetcher) dialPublic(ctx context.Context, network, address string) (net.
 }
 
 // limitedTransport waits for each request's per-host rate-limit slot,
-// redirect hops included, before sending it.
+// redirect hops included, before sending it. A request that fails before
+// its headers are written was not sent and hands its slot back.
 type limitedTransport struct {
 	f    *Fetcher
 	next http.RoundTripper
 }
 
 func (t *limitedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if err := t.f.waitTurn(req.Context(), strings.ToLower(req.URL.Hostname())); err != nil {
+	release, err := t.f.waitTurn(req.Context(), strings.ToLower(req.URL.Hostname()))
+	if err != nil {
 		return nil, err
 	}
-	return t.next.RoundTrip(req)
+	var sent atomic.Bool
+	trace := &httptrace.ClientTrace{WroteHeaders: func() { sent.Store(true) }}
+	resp, err := t.next.RoundTrip(req.WithContext(httptrace.WithClientTrace(req.Context(), trace)))
+	if err != nil && !sent.Load() {
+		release()
+	}
+	return resp, err
 }
 
 // checkURL refuses anything but an absolute https:// URL with a host.

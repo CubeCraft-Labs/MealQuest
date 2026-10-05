@@ -592,3 +592,64 @@ func TestFetchCanceledWaitHoldsNoSlot(t *testing.T) {
 		t.Errorf("waits = %v, want none: canceled waits held slots", got)
 	}
 }
+
+// TestFetchUnsentRequestHoldsNoSlot covers requests to a host with no
+// previous request that are never sent — canceled before Fetch, or failing
+// to connect — and checks that the next request is not delayed.
+func TestFetchUnsentRequestHoldsNoSlot(t *testing.T) {
+	t.Parallel()
+	const unroutableIP = "93.184.215.99"
+	answers := map[string][][]string{"example.com": {{unroutableIP}, {publicIP}}}
+	env := newTestEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "ok")
+	}), answers)
+	clock := installClock(env.f)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := env.f.Fetch(ctx, "https://example.com/canceled"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled Fetch error = %v, want context.Canceled", err)
+	}
+	if _, err := env.f.Fetch(t.Context(), "https://example.com/unroutable"); err == nil || !strings.Contains(err.Error(), "no route") {
+		t.Fatalf("unroutable Fetch error = %v, want a dial failure", err)
+	}
+	if _, err := env.f.Fetch(t.Context(), "https://example.com/next"); err != nil {
+		t.Fatalf("next Fetch: %v", err)
+	}
+	if got := clock.waits(); len(got) != 0 {
+		t.Errorf("waits = %v, want none: unsent requests held slots", got)
+	}
+	if got := env.dials(); len(got) != 2 {
+		t.Errorf("dials = %v, want the unroutable and the next request only", got)
+	}
+}
+
+// TestReleaseWakesWaiter checks that a request waiting behind a slot that
+// is handed back goes ahead at once instead of sleeping out the interval.
+func TestReleaseWakesWaiter(t *testing.T) {
+	t.Parallel()
+	f := newFetcher(&stubResolver{}, nil, nil)
+	release, err := f.waitTurn(t.Context(), "example.com")
+	if err != nil {
+		t.Fatalf("first waitTurn: %v", err)
+	}
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		_, err := f.waitTurn(t.Context(), "example.com")
+		done <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	release()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("waiting waitTurn: %v", err)
+		}
+		if waited := time.Since(start); waited >= HostInterval {
+			t.Errorf("waiter took %s, want less than %s", waited, HostInterval)
+		}
+	case <-time.After(HostInterval / 2):
+		t.Fatal("waiter still waiting after the slot was handed back")
+	}
+}

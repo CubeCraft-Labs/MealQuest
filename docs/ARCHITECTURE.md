@@ -223,7 +223,22 @@ automatic** (D-021).
   1 s apart, counted from requests actually sent (an abandoned wait holds no
   slot); 2xx pages cached by URL for an hour (64 pages, oldest evicted), and
   callers get their own copy of a cached body.
-- Recipe data is parsed from schema.org `Recipe` JSON-LD.
+- Recipe data is parsed from schema.org `Recipe` JSON-LD
+  (`recipes.Extract`): a small targeted scan of the page's
+  `application/ld+json` scripts and `og:site_name` (no HTML parser
+  dependency), finding the Recipe node at a script's top level, in a
+  top-level array or in an `@graph`, with `@type` a string or an array of
+  terms or absolute schema.org IRIs (`https://schema.org/Recipe`). An image
+  or publisher given as an `{"@id": ...}` reference resolves to the node
+  with that `@id` anywhere in the page's JSON-LD. The largest image (by ImageObject width × height; the first of equals) is
+  resolved to an absolute URL; instructions — one string of lines, or a
+  list of strings, HowToSteps and HowToSections — are flattened in order;
+  ISO-8601 prep/cook/total times become minutes, total derived as prep +
+  cook when only those are given; the site name is the publisher's, else
+  `og:site_name`, else the host. A page with no Recipe is `ErrNoRecipe`,
+  with two is `ErrManyRecipes`; a shape schema.org does not allow — such as
+  a non-ISO-8601 duration like "20 minutes" or an empty one, or an image
+  `@id` no node has — is `ErrMalformedRecipe`, never guessed at.
 - Photos are cached locally (`photos`) and processed with
   `golang.org/x/image`.
 

@@ -114,6 +114,22 @@ func TestSimilar(t *testing.T) {
 	}
 }
 
+func TestSimilarity(t *testing.T) {
+	for _, tc := range []struct {
+		a, b string
+		want float64
+	}{
+		{"Easy Chicken Curry", "chicken curry", 1},
+		{"Thai Green Curry", "Chicken curry", 0.25},
+		{"Beef Stew", "Chicken curry", 0},
+		{"The Recipe", "chicken curry", 0},
+	} {
+		if got := Similarity(tc.a, tc.b); got != tc.want {
+			t.Errorf("Similarity(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
+
 func TestDeduper(t *testing.T) {
 	d := NewDeduper(DedupeSources{
 		Regulars: []string{"Beef Tacos", "Spaghetti Bolognese"},

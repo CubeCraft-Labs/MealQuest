@@ -96,6 +96,19 @@ describe('OfflinePill', () => {
     expect(screen.queryByRole('status')).toBeNull()
   })
 
+  it('ignores a GET request with a body, which fetch would refuse to send', async () => {
+    const api = renderPill()
+    const fetchMock = stubFetch()
+
+    await act(() =>
+      expect(api.apiFetch('/api/v1/plan', { body: { week: 1 } })).rejects.toThrow(
+        'GET /api/v1/plan: a GET request cannot carry a body',
+      ),
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
   it('ignores an aborted request', async () => {
     const api = renderPill()
     vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockRejectedValue(new DOMException('aborted', 'AbortError')))

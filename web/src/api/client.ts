@@ -37,7 +37,7 @@ export type ApiLocation = Pick<Location, 'origin' | 'pathname' | 'search' | 'ass
 
 export type ApiRequest = {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
-  // Sent as JSON.
+  // Sent as JSON. A GET must not have one.
   body?: unknown
 }
 
@@ -107,6 +107,11 @@ export function createApiClient(location: ApiLocation, network: NetworkStatus): 
   async function apiFetch<T>(path: string, request: ApiRequest = {}): Promise<T> {
     const method = request.method ?? 'GET'
     const url = apiURL(location.origin, method, path)
+    // fetch refuses a GET with a body by rejecting with a TypeError, the same
+    // error as a network failure, so refuse it here before anything is sent.
+    if (method === 'GET' && request.body !== undefined) {
+      throw new Error(`GET ${path}: a GET request cannot carry a body`)
+    }
     let response = await send(method, url, request.body)
     if (response.status === 403) {
       const error = await parseForbidden(method, path, response)

@@ -151,6 +151,14 @@ automatic** (D-021).
 - **Skill harness** (`ai/harness`): prompt layering, validation of the
   structured output, and **one repair retry**; if the repair also fails the
   run fails — no silent fallback. Every call is recorded in `ai_runs`.
+- **Prompt layering** (D-007): each skill version's prompt is a
+  `text/template` file embedded from `ai/skills/prompts/`
+  (`<skill>.v<version>.tmpl`). The system prompt is always, in order:
+  [1] the admin persona (`ai_settings.system_prompt`), [2] the skill's
+  instructions, [3] the household context block, [4] the output contract
+  with the JSON Schema — the contract is always last. The user message comes
+  from the skill's input. `checksums.txt` pins every template; changing one
+  without a version bump fails the tests.
 
 ## Recipe grounding
 

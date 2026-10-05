@@ -1,0 +1,4 @@
+# SHA-256 of every prompt template: <skill> v<version> <sha256>.
+# A recorded line never changes. To change a prompt, bump the skill's
+# version, rename its template to match and add a line for the new version.
+echo v1 ab5d7884f5c7a2261c06b0c9353bb9597070c001420bd4cbb6ec6272c093fdce

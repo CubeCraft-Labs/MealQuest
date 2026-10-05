@@ -43,7 +43,11 @@ func TestRunValidFirstTime(t *testing.T) {
 		t.Fatalf("Echo = %q, want post-processed %q", out.Echo, "taco")
 	}
 	req := assertCalls(t, &f, 1)[0]
-	if req.System != "You repeat words." || len(req.Messages) != 1 ||
+	want, err := Render("", echoSkill{}, echoInput{Word: "taco"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.System != want.System || len(req.Messages) != 1 ||
 		req.Messages[0] != (llm.Message{Role: llm.RoleUser, Content: "Repeat: taco"}) {
 		t.Fatalf("request prompt = %+v", req)
 	}

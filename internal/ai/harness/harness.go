@@ -1,5 +1,6 @@
 // Package harness runs skills: versioned, typed prompts whose structured
-// output Go validates. A run renders the skill's prompt, asks the provider
+// output Go validates. A run renders the skill's layered prompt from its
+// embedded template (see Render and package prompts), asks the provider
 // for output matching the skill's schema, decodes and validates the reply,
 // and on failure sends exactly one repair turn quoting the problems. If the
 // repair fails too the run fails with llm.ErrBadOutput; there is no silent
@@ -18,22 +19,15 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/llm"
 )
 
-// Prompt is a rendered skill prompt. Prompt layering builds on it later.
-type Prompt struct {
-	// System is the system prompt; empty means none.
-	System string
-	// User is the user message. It must not be empty.
-	User string
-}
-
 // Skill is one versioned AI task with input In and structured output Out.
 type Skill[In, Out any] interface {
 	// Name identifies the skill, e.g. "side_quests".
 	Name() string
 	// Version is bumped whenever the prompt, schema or validation changes.
+	// The prompt template is prompts/<Name>.v<Version>.tmpl.
 	Version() int
-	// Render builds the prompt for in.
-	Render(in In) (Prompt, error)
+	// PromptInput derives the template data and household context for in.
+	PromptInput(in In) (PromptInput, error)
 	// Schema is the JSON Schema the reply must match; Out decodes from it.
 	Schema() llm.JSONSchema
 	// Validate returns every problem with out, or none when it is usable.
@@ -50,6 +44,9 @@ type Skill[In, Out any] interface {
 type Config struct {
 	// Provider answers the requests.
 	Provider llm.Provider
+	// Persona is ai_settings.system_prompt, the first layer of every
+	// system prompt; empty means none.
+	Persona string
 	// Temperature is the household's sampling temperature, sent with
 	// every request.
 	Temperature float64
@@ -79,12 +76,9 @@ func (e *BadOutputError) Unwrap() error { return llm.ErrBadOutput }
 // unchanged and never repaired.
 func Run[In, Out any](ctx context.Context, cfg Config, s Skill[In, Out], in In) (Out, error) {
 	var zero Out
-	prompt, err := s.Render(in)
+	prompt, err := Render(cfg.Persona, s, in)
 	if err != nil {
 		return zero, fmt.Errorf("harness: skill %s v%d: render: %w", s.Name(), s.Version(), err)
-	}
-	if prompt.User == "" {
-		return zero, fmt.Errorf("harness: skill %s v%d: render: empty user message", s.Name(), s.Version())
 	}
 	schema := s.Schema()
 	temperature := cfg.Temperature

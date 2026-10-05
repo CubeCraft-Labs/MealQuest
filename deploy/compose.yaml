@@ -56,10 +56,8 @@ services:
   # the app's own user (owner of the volume) with a read-only root
   # filesystem, no privilege escalation and no Linux capabilities.
   #
-  # Restore (app stopped; --no-deps so the app does not start and create a
-  # fresh database first):
-  #   docker compose -f deploy/compose.yaml run --rm --no-deps litestream \
-  #     restore -config /etc/litestream.yml -o /data/mealquest.db /data/mealquest.db
+  # Restore: follow "Restore the database" in deploy/RUNBOOK.md (stop the
+  # stack, move the database with its -wal and -shm aside, restore, check).
   litestream:
     image: litestream/litestream:0.5.17
     user: "10001:10001"

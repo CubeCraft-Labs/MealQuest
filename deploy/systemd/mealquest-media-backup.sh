@@ -3,38 +3,42 @@
 # to the Synology NAS. The database itself is replicated continuously by
 # Litestream; this covers the files beside it.
 #
-# rsync mirrors the media directory onto .../mealquest-backups/media/ only:
-# both paths end in a slash, so --delete removes files from that target
-# directory and nothing outside it. A missing source directory (no media
-# uploaded yet) is reported and skipped, never synced, so an empty source
-# can never wipe the remote copy. Re-runs transfer only what changed.
+# Runs as the unprivileged app user (10001, host user "mealquest"), never
+# root: mealquest-media-backup.service bind-mounts the data volume
+# read-only at /run/mealquest-data and hands the NAS key in as a systemd
+# credential. Anything the app could plant in the volume is therefore read
+# with the app's own permissions only.
 #
-# The volume is writable by the app container, so a media path that is a
-# symlink is refused: root's rsync would otherwise follow it and copy
-# whatever it points at. Symlinks inside the directory are copied as links
-# (-a), never followed.
+# The script changes into the media directory and checks that the physical
+# path is the expected one, so a media path that is a symlink is refused.
+# rsync then copies "./" — the directory the shell is already in — so
+# swapping the path afterwards cannot redirect it. Symlinks inside the
+# directory are copied as links (-a), never followed.
 #
-# Connects with the dedicated MealQuest key; the NAS host key must already
-# be in root's known_hosts (StrictHostKeyChecking=yes fails otherwise).
-# Installed as /usr/local/sbin/mealquest-media-backup; output goes to the
+# The media directory is created at deploy time (deploy/RUNBOOK.md). If it
+# is missing the job fails; it is never treated as "nothing to back up".
+#
+# rsync mirrors into .../mealquest-backups/media/ only: the target ends in
+# a slash, so --delete removes files from that directory and nothing
+# outside it. Re-runs transfer only what changed. Output goes to the
 # journal via mealquest-media-backup.service.
 set -eu
 
-src=/var/lib/docker/volumes/mealquest-data/_data/media/
+src=/run/mealquest-data/media
 dest=joshua@10.60.1.50:/volume1/homes/Joshua/mealquest-backups/media/
-key=/home/overseer/mealquest/deploy/secrets/litestream_key
+key=$CREDENTIALS_DIRECTORY/nas_key
+known_hosts=/etc/mealquest/known_hosts
 
-if [ -L "${src%/}" ]; then
-	echo "mealquest-media-backup: ${src%/} is a symlink; refusing to back it up" >&2
+if ! cd "$src"; then
+	echo "mealquest-media-backup: media directory $src is missing" >&2
+	exit 1
+fi
+if [ "$(pwd -P)" != "$src" ]; then
+	echo "mealquest-media-backup: $src is a symlink to $(pwd -P); refusing to back it up" >&2
 	exit 1
 fi
 
-if [ ! -d "$src" ]; then
-	echo "mealquest-media-backup: no media directory at $src yet; nothing to back up"
-	exit 0
-fi
-
 rsync -a --delete --stats \
-	-e "ssh -i $key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes" \
-	"$src" "$dest"
-echo "mealquest-media-backup: synced $src to $dest"
+	-e "ssh -F none -i $key -o IdentitiesOnly=yes -o BatchMode=yes -o UserKnownHostsFile=$known_hosts -o GlobalKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes" \
+	./ "$dest"
+echo "mealquest-media-backup: synced $src to $dest as uid $(id -u)"

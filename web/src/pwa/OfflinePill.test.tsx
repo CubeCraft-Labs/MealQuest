@@ -1,0 +1,150 @@
+import { act, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ApiProvider, createApiClient, createVerifiedSession, type ApiClient } from '../api/index.ts'
+import { fakeLocation, jsonResponse, ME, stubFetch } from '../test/fetchStub.ts'
+import { cacheFallbackHeader } from '../sw/routes.ts'
+import { createNetworkStatus } from './networkStatus.ts'
+import { OfflinePill } from './OfflinePill.tsx'
+
+const copy = 'Offline — showing saved data'
+
+let onLine: boolean
+
+beforeEach(() => {
+  onLine = true
+  vi.spyOn(navigator, 'onLine', 'get').mockImplementation(() => onLine)
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
+})
+
+function goOffline() {
+  onLine = false
+  window.dispatchEvent(new Event('offline'))
+}
+
+function goOnline() {
+  onLine = true
+  window.dispatchEvent(new Event('online'))
+}
+
+function renderPill(): ApiClient {
+  const api = createApiClient(fakeLocation(), createNetworkStatus(window), createVerifiedSession(localStorage))
+  render(
+    <ApiProvider client={api}>
+      <OfflinePill />
+    </ApiProvider>,
+  )
+  return api
+}
+
+describe('OfflinePill', () => {
+  it('is hidden while online', () => {
+    renderPill()
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('shows while the browser is offline when it renders', () => {
+    onLine = false
+    renderPill()
+    expect(screen.getByRole('status')).toHaveTextContent(copy)
+  })
+
+  it('appears on the offline event and disappears on the online event', () => {
+    renderPill()
+    act(goOffline)
+    expect(screen.getByRole('status')).toHaveTextContent(copy)
+    act(goOnline)
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('appears when a request fails with a network error', async () => {
+    const api = renderPill()
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockRejectedValue(new TypeError('Failed to fetch')))
+    await act(() => expect(api.apiFetch('/api/v1/plan')).rejects.toThrow(TypeError))
+    expect(screen.getByRole('status')).toHaveTextContent(copy)
+
+    act(goOnline)
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('disappears when a later request gets a response', async () => {
+    const api = renderPill()
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockRejectedValue(new TypeError('Failed to fetch')))
+    await act(() => expect(api.apiFetch('/api/v1/plan')).rejects.toThrow(TypeError))
+    expect(screen.getByRole('status')).toBeInTheDocument()
+
+    stubFetch(jsonResponse(200, {}))
+    await act(() => api.apiFetch('/api/v1/plan'))
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('shows while online when the service worker answers from its cache', async () => {
+    const api = renderPill()
+    const cached = jsonResponse(200, { id: '01J9ZR' })
+    cached.headers.set(cacheFallbackHeader, '1')
+    stubFetch(cached, jsonResponse(200, { id: '01J9ZR' }))
+
+    await act(() => api.apiFetch('/api/v1/recipes/01J9ZR'))
+    expect(navigator.onLine).toBe(true)
+    expect(screen.getByRole('status')).toHaveTextContent(copy)
+
+    // The server answers again.
+    await act(() => api.apiFetch('/api/v1/recipes/01J9ZR'))
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('ignores a request body that cannot be serialized', async () => {
+    const api = renderPill()
+    const fetchMock = stubFetch(jsonResponse(200, ME))
+    await act(() => api.loadMe())
+    const body: Record<string, unknown> = {}
+    body.self = body
+
+    await act(() =>
+      expect(api.apiFetch('/api/v1/plan', { method: 'PUT', body })).rejects.toThrow(
+        'PUT /api/v1/plan: request body is not serializable as JSON',
+      ),
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('ignores a GET request with a body, which fetch would refuse to send', async () => {
+    const api = renderPill()
+    const fetchMock = stubFetch()
+
+    await act(() =>
+      expect(api.apiFetch('/api/v1/plan', { body: { week: 1 } })).rejects.toThrow(
+        'GET /api/v1/plan: a GET request cannot carry a body',
+      ),
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('ignores an aborted request', async () => {
+    const api = renderPill()
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockRejectedValue(new DOMException('aborted', 'AbortError')))
+    await act(() => expect(api.apiFetch('/api/v1/plan')).rejects.toThrow('aborted'))
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('removes its online and offline listeners on unmount', () => {
+    const add = vi.spyOn(window, 'addEventListener')
+    const remove = vi.spyOn(window, 'removeEventListener')
+    const api = createApiClient(fakeLocation(), createNetworkStatus(window), createVerifiedSession(localStorage))
+    const { unmount } = render(
+      <ApiProvider client={api}>
+        <OfflinePill />
+      </ApiProvider>,
+    )
+    const added = add.mock.calls.filter(([type]) => type === 'online' || type === 'offline')
+    expect(added.map(([type]) => type).sort()).toEqual(['offline', 'online'])
+
+    unmount()
+    for (const [type, listener] of added) expect(remove).toHaveBeenCalledWith(type, listener)
+  })
+})

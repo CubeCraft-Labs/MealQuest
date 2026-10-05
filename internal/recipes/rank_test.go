@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -66,8 +68,11 @@ func TestRankOrder(t *testing.T) {
 		{URL: "https://f.example/toodeep"},
 	}
 	got, err := Rank(context.Background(), f, "Chicken curry", cands)
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, ErrCandidatesUnranked) || !errors.Is(err, ErrNoImage) || !errors.Is(err, ErrNoIngredients) {
+		t.Errorf("err = %v, want ErrCandidatesUnranked with ErrNoImage and ErrNoIngredients", err)
+	}
+	if errors.Is(err, ErrNoUsableRecipe) {
+		t.Errorf("err = %v, want not ErrNoUsableRecipe when some are ranked", err)
 	}
 	want := []struct {
 		url   string
@@ -119,6 +124,29 @@ func TestRankTiesKeepSearchOrder(t *testing.T) {
 	}
 }
 
+// TestRankReportsFetchFailure checks a failed fetch is reported with the
+// candidates that were ranked, never swallowed.
+func TestRankReportsFetchFailure(t *testing.T) {
+	f := &fakeFetcher{pages: map[string][]byte{
+		"https://a.example/1": recipePage("Beef Stew", true, true, true, true),
+	}}
+	cands := []Candidate{{URL: "https://a.example/1"}, {URL: "https://b.example/missing"}}
+	got, err := Rank(context.Background(), f, "beef stew", cands)
+	if len(got) != 1 || got[0].Candidate.URL != "https://a.example/1" {
+		t.Errorf("ranked = %+v, want only https://a.example/1", got)
+	}
+	if !errors.Is(err, ErrCandidatesUnranked) {
+		t.Errorf("err = %v, want ErrCandidatesUnranked", err)
+	}
+	var se *StatusError
+	if !errors.As(err, &se) || se.Status != 404 || se.URL != "https://b.example/missing" {
+		t.Errorf("err = %v, want the 404 StatusError for https://b.example/missing", err)
+	}
+	if err != nil && !strings.Contains(err.Error(), "https://b.example/missing") {
+		t.Errorf("err = %v, want it to name the failed candidate", err)
+	}
+}
+
 func TestRankAllRejected(t *testing.T) {
 	f := &fakeFetcher{pages: map[string][]byte{
 		"https://a.example/noimg":  recipePage("Chicken Curry", true, false, true, true),
@@ -155,5 +183,73 @@ func TestRankContextCancelled(t *testing.T) {
 	cancel()
 	if _, err := Rank(ctx, f, "beef stew", []Candidate{{URL: "https://a.example/1"}}); !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled", err)
+	}
+}
+
+// TestRankOverHTTP ranks fixture candidates served over HTTPS through the
+// SSRF-safe Fetcher: every host, a subdomain the test server's certificate
+// covers, resolves to a public test address the test
+// dialer routes to one httptest server, which serves pages by host and path.
+func TestRankOverHTTP(t *testing.T) {
+	t.Parallel()
+	pages := map[string][]byte{
+		"best.example.com/curry":  recipePage("Chicken Curry", true, true, true, true),
+		"easy.example.com/curry":  recipePage("Easy Chicken Curry", true, true, true, false),
+		"thai.example.com/curry":  recipePage("Thai Green Curry", true, true, true, true),
+		"noimg.example.com/curry": recipePage("Chicken Curry", true, false, true, true),
+	}
+	env := newTestEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, ok := pages[r.Host+r.URL.Path]
+		if !ok {
+			http.Error(w, "broken", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		w.Write(body)
+	}), map[string][][]string{
+		"best.example.com":   {{publicIP}},
+		"easy.example.com":   {{publicIP}},
+		"thai.example.com":   {{publicIP}},
+		"noimg.example.com":  {{publicIP}},
+		"broken.example.com": {{publicIP}},
+	})
+	cands := []Candidate{
+		{URL: "https://thai.example.com/curry"},
+		{URL: "https://broken.example.com/curry"},
+		{URL: "https://easy.example.com/curry"},
+		{URL: "https://noimg.example.com/curry"},
+		{URL: "https://best.example.com/curry"},
+	}
+
+	got, err := Rank(t.Context(), env.f, "Chicken curry", cands)
+
+	want := []struct {
+		url   string
+		score float64
+	}{
+		{"https://best.example.com/curry", 2},
+		{"https://easy.example.com/curry", 1.75},
+		{"https://thai.example.com/curry", 1.25},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d ranked, want %d: %+v (err %v)", len(got), len(want), got, err)
+	}
+	for i, w := range want {
+		if got[i].Candidate.URL != w.url || got[i].Score != w.score {
+			t.Errorf("rank %d = %s (%.2f), want %s (%.2f)", i, got[i].Candidate.URL, got[i].Score, w.url, w.score)
+		}
+	}
+	if got[0].Recipe.Title != "Chicken Curry" || got[0].Recipe.ImageURL != "https://img.example.com/dish.jpg" {
+		t.Errorf("top recipe = %+v", got[0].Recipe)
+	}
+	if !errors.Is(err, ErrCandidatesUnranked) || !errors.Is(err, ErrNoImage) {
+		t.Errorf("err = %v, want ErrCandidatesUnranked with ErrNoImage", err)
+	}
+	var se *StatusError
+	if !errors.As(err, &se) || se.Status != http.StatusInternalServerError {
+		t.Errorf("err = %v, want the 500 StatusError for broken.example.com", err)
+	}
+	if n := len(env.dials()); n != len(cands) {
+		t.Errorf("dialed %d times, want %d", n, len(cands))
 	}
 }

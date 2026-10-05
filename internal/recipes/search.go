@@ -36,8 +36,10 @@ var (
 	// ErrSearchRateLimited is returned for HTTP 429.
 	ErrSearchRateLimited = errors.New("recipes: search provider rate limit reached")
 	// ErrSearchResponse is returned for a response body that is not the
-	// provider's JSON shape, is over MaxSearchBodyBytes, or holds a result
-	// without an absolute http(s) URL.
+	// provider's JSON shape — SearXNG without a results array, Brave without
+	// "type": "search" or with a web object lacking a results array — is
+	// over MaxSearchBodyBytes, or holds a result without an absolute http(s)
+	// URL.
 	ErrSearchResponse = errors.New("recipes: malformed search response")
 )
 
@@ -126,8 +128,10 @@ func (s *SearXNG) Search(ctx context.Context, query string, n int) ([]Candidate,
 	if err != nil {
 		return nil, fmt.Errorf("recipes: build SearXNG request: %w", err)
 	}
+	// Results is a pointer so a body without the array is told apart from
+	// an empty search.
 	var body struct {
-		Results []struct {
+		Results *[]struct {
 			URL     string `json:"url"`
 			Title   string `json:"title"`
 			Content string `json:"content"`
@@ -136,8 +140,11 @@ func (s *SearXNG) Search(ctx context.Context, query string, n int) ([]Candidate,
 	if err := doSearch(s.client, req, "SearXNG", &body); err != nil {
 		return nil, err
 	}
+	if body.Results == nil {
+		return nil, fmt.Errorf("%w: SearXNG body has no results array", ErrSearchResponse)
+	}
 	var out []Candidate
-	for _, r := range body.Results {
+	for _, r := range *body.Results {
 		out = append(out, Candidate{URL: r.URL, Title: r.Title, Snippet: r.Content})
 	}
 	return candidates("SearXNG", out, n)
@@ -177,9 +184,13 @@ func (b *Brave) Search(ctx context.Context, query string, n int) ([]Candidate, e
 		return nil, fmt.Errorf("recipes: build Brave request: %w", err)
 	}
 	req.Header.Set("X-Subscription-Token", b.key)
+	// Brave leaves out "web" when nothing matched, so a search response is
+	// recognised by its "type"; a web object present must hold the results
+	// array.
 	var body struct {
-		Web struct {
-			Results []struct {
+		Type string `json:"type"`
+		Web  *struct {
+			Results *[]struct {
 				URL         string `json:"url"`
 				Title       string `json:"title"`
 				Description string `json:"description"`
@@ -189,8 +200,17 @@ func (b *Brave) Search(ctx context.Context, query string, n int) ([]Candidate, e
 	if err := doSearch(b.client, req, "Brave", &body); err != nil {
 		return nil, err
 	}
+	if body.Type != "search" {
+		return nil, fmt.Errorf("%w: Brave body type is %q, not \"search\"", ErrSearchResponse, body.Type)
+	}
+	if body.Web == nil {
+		return nil, nil
+	}
+	if body.Web.Results == nil {
+		return nil, fmt.Errorf("%w: Brave web object has no results array", ErrSearchResponse)
+	}
 	var out []Candidate
-	for _, r := range body.Web.Results {
+	for _, r := range *body.Web.Results {
 		out = append(out, Candidate{URL: r.URL, Title: r.Title, Snippet: r.Description})
 	}
 	return candidates("Brave", out, n)

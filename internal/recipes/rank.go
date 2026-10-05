@@ -20,9 +20,13 @@ var (
 	ErrNoIngredients = errors.New("recipes: recipe has no ingredients")
 	// ErrNoImage rejects a candidate whose recipe has no image.
 	ErrNoImage = errors.New("recipes: recipe has no image")
-	// ErrNoUsableRecipe is returned when Rank rejects every candidate; it
-	// wraps each candidate's reason.
+	// ErrNoUsableRecipe is returned when Rank ranks no candidate; it is
+	// joined with each candidate's reason.
 	ErrNoUsableRecipe = errors.New("recipes: no candidate holds a usable recipe")
+	// ErrCandidatesUnranked is returned, alongside the ranked candidates,
+	// when Rank ranks some candidates but not all; it is joined with each
+	// unranked candidate's reason.
+	ErrCandidatesUnranked = errors.New("recipes: some candidates were not ranked")
 )
 
 // PageFetcher fetches a candidate's page; *Fetcher satisfies it.
@@ -42,8 +46,15 @@ type Ranked struct {
 
 // Rank fetches and extracts the first RankDepth candidates concurrently and
 // returns those whose recipe has ingredients and an image, highest Score
-// first; equal scores keep search order. When every candidate is rejected
-// the error is ErrNoUsableRecipe joined with each rejection's reason.
+// first; equal scores keep search order.
+//
+// Every candidate that is not ranked — its fetch failed, its page holds no
+// valid recipe, or the recipe lacks ingredients or an image — is reported,
+// never dropped silently: when some are ranked the error is
+// ErrCandidatesUnranked, returned together with the ranked ones; when none
+// are it is ErrNoUsableRecipe with no results. Either is joined with each
+// unranked candidate's URL and reason. A cancelled ctx returns only its
+// error.
 func Rank(ctx context.Context, f PageFetcher, dish string, cands []Candidate) ([]Ranked, error) {
 	if len(cands) > RankDepth {
 		cands = cands[:RankDepth]
@@ -68,7 +79,7 @@ func Rank(ctx context.Context, f PageFetcher, dish string, cands []Candidate) ([
 	}
 
 	var ranked []Ranked
-	reasons := []error{ErrNoUsableRecipe}
+	var reasons []error
 	for i, o := range outcomes {
 		if o.err != nil {
 			reasons = append(reasons, fmt.Errorf("%s: %w", cands[i].URL, o.err))
@@ -77,9 +88,12 @@ func Rank(ctx context.Context, f PageFetcher, dish string, cands []Candidate) ([
 		ranked = append(ranked, o.ranked)
 	}
 	if len(ranked) == 0 {
-		return nil, errors.Join(reasons...)
+		return nil, errors.Join(append([]error{ErrNoUsableRecipe}, reasons...)...)
 	}
 	sort.SliceStable(ranked, func(a, b int) bool { return ranked[a].Score > ranked[b].Score })
+	if len(reasons) > 0 {
+		return ranked, errors.Join(append([]error{ErrCandidatesUnranked}, reasons...)...)
+	}
 	return ranked, nil
 }
 

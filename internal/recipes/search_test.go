@@ -166,8 +166,11 @@ func TestSearchErrors(t *testing.T) {
 			return errors.As(err, &se) && se.Status == http.StatusFound
 		}},
 		{"not JSON", http.StatusOK, `<html>`, func(err error) bool { return errors.Is(err, ErrSearchResponse) }},
-		{"result without URL", http.StatusOK, `{"results":[{"title":"x"}],"web":{"results":[{"title":"x"}]}}`, func(err error) bool { return errors.Is(err, ErrSearchResponse) }},
-		{"relative URL", http.StatusOK, `{"results":[{"url":"/x"}],"web":{"results":[{"url":"/x"}]}}`, func(err error) bool { return errors.Is(err, ErrSearchResponse) }},
+		{"result without URL", http.StatusOK, `{"type":"search","results":[{"title":"x"}],"web":{"results":[{"title":"x"}]}}`, func(err error) bool { return errors.Is(err, ErrSearchResponse) }},
+		{"relative URL", http.StatusOK, `{"type":"search","results":[{"url":"/x"}],"web":{"results":[{"url":"/x"}]}}`, func(err error) bool { return errors.Is(err, ErrSearchResponse) }},
+		{"empty object", http.StatusOK, `{}`, func(err error) bool { return errors.Is(err, ErrSearchResponse) }},
+		{"null results", http.StatusOK, `{"type":"search","results":null,"web":{"results":null}}`, func(err error) bool { return errors.Is(err, ErrSearchResponse) }},
+		{"results not an array", http.StatusOK, `{"type":"search","results":{},"web":{"results":{}}}`, func(err error) bool { return errors.Is(err, ErrSearchResponse) }},
 		{"body too large", http.StatusOK, `{"results":[],"pad":"` + strings.Repeat("x", MaxSearchBodyBytes) + `"}`, func(err error) bool { return errors.Is(err, ErrSearchResponse) }},
 	}
 	for _, tc := range tests {
@@ -186,6 +189,22 @@ func TestSearchErrors(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestSearchNoMatches checks a well-formed response with nothing found is an
+// empty search, not an error.
+func TestSearchNoMatches(t *testing.T) {
+	providers := map[string]SearchProvider{
+		"SearXNG":           newSearXNGServer(t, http.StatusOK, `{"query":"x recipe","results":[]}`, nil),
+		"Brave without web": newBraveServer(t, "secret-key", http.StatusOK, `{"type":"search","query":{"original":"x recipe"}}`, nil),
+		"Brave empty web":   newBraveServer(t, "secret-key", http.StatusOK, `{"type":"search","web":{"type":"search","results":[]}}`, nil),
+	}
+	for name, p := range providers {
+		got, err := p.Search(context.Background(), "x", 3)
+		if err != nil || len(got) != 0 {
+			t.Errorf("%s: got %v, %v; want no candidates and no error", name, got, err)
+		}
 	}
 }
 

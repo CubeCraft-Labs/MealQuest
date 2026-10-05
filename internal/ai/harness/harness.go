@@ -186,6 +186,12 @@ func runOnce[In, Out any](ctx context.Context, cfg Config, s Skill[In, Out], tim
 	if err != nil {
 		return zero, err
 	}
+	// The save may wait past the deadline for the store's single writer.
+	// The run has then not ended in time, so it fails, though its row
+	// records the work's outcome as it stood before the save.
+	if !time.Now().Before(deadline) {
+		return zero, expired
+	}
 	return out, nil
 }
 

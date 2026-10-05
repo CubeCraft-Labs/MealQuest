@@ -295,6 +295,31 @@ func TestRunTimeout(t *testing.T) {
 			t.Fatalf("rows = %+v, want one provider_error row naming the timeout", rows)
 		}
 	})
+	t.Run("row saved late", func(t *testing.T) {
+		var f llm.Fake
+		cfg := testConfig(t, &f)
+		f.QueueGenerate(reply(`{"echo":"taco"}`))
+		timeout := 100 * time.Millisecond
+		// Holding the store's only writer connection makes the save wait
+		// past the deadline, after the work itself has ended in time.
+		conn, err := cfg.Store.Writer.Conn(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		released := time.AfterFunc(3*timeout, func() { conn.Close() })
+		defer released.Stop()
+		out, err := Run(context.Background(), cfg, timeoutSkill{timeout: timeout}, "week-1", echoInput{Word: "taco"})
+		if !errors.Is(err, llm.ErrTimeout) {
+			t.Fatalf("err = %v, want ErrTimeout", err)
+		}
+		if out != (echoOutput{}) {
+			t.Fatalf("out = %+v, want no output", out)
+		}
+		assertCalls(t, &f, 1)
+		if rows := runRows(t, cfg.Store); len(rows) != 1 {
+			t.Fatalf("rows = %+v, want one row", rows)
+		}
+	})
 	t.Run("waiting for a slot", func(t *testing.T) {
 		var f llm.Fake
 		cfg := testConfig(t, &f)

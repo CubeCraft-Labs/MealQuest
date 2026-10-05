@@ -208,7 +208,17 @@ automatic** (D-021).
 
 - Dinners are grounded in real recipe pages found through recipe search
   (`searxng` or `brave`, per `recipe_search_settings`).
-- Fetching is **SSRF-safe**.
+- Fetching is **SSRF-safe** (`recipes.Fetcher`): https:// only, at every
+  redirect hop. Its dialer resolves the host once and refuses unless every
+  answer is public — loopback, RFC 1918, link-local, carrier-grade NAT
+  (100.64/10), multicast, unspecified, reserved, IPv6 unique-local,
+  link-local and multicast, and IPv4-mapped or IPv4-embedding (NAT64, 6to4,
+  Teredo) forms are refused — then dials the address it checked, so a
+  rebinding DNS answer cannot swap in a private one. Keep-alives and
+  environment proxies are off, so every request dials and checks afresh. At
+  most 3 redirects; a body over 2 MB is an error, never truncated; 10 s for
+  the whole fetch; a descriptive `User-Agent`; requests to one host at least
+  1 s apart; 2xx pages cached by URL for an hour (64 pages, oldest evicted).
 - Recipe data is parsed from schema.org `Recipe` JSON-LD.
 - Photos are cached locally (`photos`) and processed with
   `golang.org/x/image`.

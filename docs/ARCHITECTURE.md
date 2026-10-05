@@ -267,6 +267,18 @@ automatic** (D-021).
   `ErrNoUsableRecipe`. Either is joined with each unranked candidate's URL
   and reason (fetch failure, no valid recipe, missing ingredients or
   image), so the caller decides per item what a failure means.
+- Ingredient lines are normalized by the `normalize_recipe` v1 skill
+  (`skills.NormalizeRecipe`), always at temperature 0 whatever the
+  household's setting. From the title, raw ingredient lines, steps and
+  JSON-LD times it returns `{ingredients: [{name, qty, unit, note}], method,
+  difficulty, minutes_total}`. Validation requires exactly one ingredient
+  per input line, in order (a name matching another line but not its own is
+  out of order), each with a name; a mismatch gets the harness's repair
+  turn. Code-derived values win: a positive JSON-LD total is
+  `minutes_total`; "slow cooker" or "crock pot" in the title or a step makes
+  the method `crockpot`; a difficulty the model leaves null is derived —
+  hard over 10 steps or 90 minutes, easy at 5 steps or fewer and 45 minutes
+  or less, else medium, a crockpot's minutes not counting.
 - Photos are cached locally (`photos`) and processed with
   `golang.org/x/image`. `recipes.PhotoCache.CachePhoto` downloads through
   the Fetcher's `FetchImage` (JPEG, PNG, WebP or GIF content types, 8 MB

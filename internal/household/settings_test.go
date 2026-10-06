@@ -217,6 +217,39 @@ func TestUpdateAppliesPatchAndRecordsUpdatedBy(t *testing.T) {
 	}
 }
 
+func TestUpdateCompletesOnboardingOnce(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := seededService(t)
+
+	got, err := svc.Update(ctx, SettingsPatch{OnboardingCompleted: ptr(true)}, "sam")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OnboardingCompletedAt == nil || *got.OnboardingCompletedAt != got.UpdatedAt {
+		t.Fatalf("onboarding_completed_at = %v, want the update time %s", got.OnboardingCompletedAt, got.UpdatedAt)
+	}
+	first := *got.OnboardingCompletedAt
+
+	// Completing again keeps the first time.
+	got, err = svc.Update(ctx, SettingsPatch{OnboardingCompleted: ptr(true)}, "alex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OnboardingCompletedAt == nil || *got.OnboardingCompletedAt != first {
+		t.Errorf("second completion: onboarding_completed_at = %v, want %s", got.OnboardingCompletedAt, first)
+	}
+
+	// Other changes leave it alone.
+	got, err = svc.Update(ctx, SettingsPatch{DinnerTime: ptr("18:00")}, "sam")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OnboardingCompletedAt == nil || *got.OnboardingCompletedAt != first {
+		t.Errorf("after another change: onboarding_completed_at = %v, want %s", got.OnboardingCompletedAt, first)
+	}
+}
+
 func TestUpdateRequiresMember(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -259,6 +292,7 @@ func TestUpdateValidation(t *testing.T) {
 		{"dow 7", SettingsPatch{PlanDraftDow: ptr(7)}, []string{"plan_draft_dow"}},
 		{"dow -1", SettingsPatch{SuggestionsDow: ptr(-1)}, []string{"suggestions_dow"}},
 		{"dow 100", SettingsPatch{ChatAutosendDow: ptr(100)}, []string{"chat_autosend_dow"}},
+		{"onboarding undone", SettingsPatch{OnboardingCompleted: ptr(false)}, []string{"onboarding_completed"}},
 		{
 			"every problem is reported",
 			SettingsPatch{Timezone: ptr("Nowhere"), DinnerTime: ptr("5pm"), PlanDraftDow: ptr(9)},

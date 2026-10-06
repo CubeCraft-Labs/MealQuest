@@ -564,9 +564,11 @@ func TestFetchCacheIsNotSharedWithCallers(t *testing.T) {
 	}
 }
 
-// TestFetchCanceledWaitHoldsNoSlot covers a burst of fetches whose
+// TestFetchCanceledWaitHoldsNoSlot covers a burst of requests whose
 // rate-limit waits end with their context: they must not push back the
-// next request that is allowed through.
+// next request that is allowed through. The burst calls waitTurn, the wait
+// turnConn's first Write makes, directly: through Fetch, net/http races the
+// failed write against its read loop, so the error it returns varies.
 func TestFetchCanceledWaitHoldsNoSlot(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -577,14 +579,24 @@ func TestFetchCanceledWaitHoldsNoSlot(t *testing.T) {
 	if _, err := env.f.Fetch(t.Context(), "https://example.com/first"); err != nil {
 		t.Fatalf("first Fetch: %v", err)
 	}
+	firstSent := clock.now()
 	env.f.sleep = func(context.Context, time.Duration) error { return context.DeadlineExceeded }
 	for i := range 5 {
-		if _, err := env.f.Fetch(t.Context(), fmt.Sprintf("https://example.com/burst/%d", i)); !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("burst Fetch %d error = %v, want context.DeadlineExceeded", i, err)
+		// Each request comes later in the interval, so a slot it took
+		// would delay the request after the burst.
+		clock.advance(HostInterval / 10)
+		if _, err := env.f.waitTurn(t.Context(), "example.com"); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("burst waitTurn %d error = %v, want context.DeadlineExceeded", i, err)
 		}
 	}
+	env.f.mu.Lock()
+	last := env.f.lastSent["example.com"]
+	env.f.mu.Unlock()
+	if !last.Equal(firstSent) {
+		t.Errorf("host slot taken at %s after the burst, want the first send at %s", last, firstSent)
+	}
 	env.f.sleep = clock.sleep
-	clock.advance(HostInterval)
+	clock.advance(firstSent.Add(HostInterval).Sub(clock.now()))
 	if _, err := env.f.Fetch(t.Context(), "https://example.com/after"); err != nil {
 		t.Fatalf("Fetch after the burst: %v", err)
 	}

@@ -414,8 +414,29 @@ while the unit is active, because the firewall is already in place.
 ## Recipe search (SearXNG)
 
 The `searxng` service in `deploy/compose.yaml` is a private SearXNG
-instance that the `mealquest` service queries for recipes
-(`MEALQUEST_SEARXNG_URL=http://searxng:8080`, set by `deploy/compose.yaml`).
+instance for recipe search. On the compose network it is reachable at
+`http://searxng:8080`; that is the address to configure in the app.
+
+Starting the sidecar does not connect the app to it. The service does not
+read `MEALQUEST_SEARXNG_URL`: `deploy/compose.yaml` sets it for a future
+wiring, and today it does nothing. The recipe-search provider and base URL
+live in the `recipe_search_settings` row and are set through
+`GET`/`PATCH /api/v1/settings/recipe-search` (the API behind the Settings
+screen's recipe search; the screen itself is not built yet). Until that row
+exists, recipe search answers 409 `not_configured`.
+
+After the first deploy, from a signed-in session (every non-`GET` request
+needs the `X-MealQuest-CSRF` header set to `csrfToken` from
+`GET /api/v1/me`):
+
+1. `PATCH /api/v1/settings/recipe-search` with
+   `{"provider": "searxng", "base_url": "http://searxng:8080"}`.
+2. `GET /api/v1/settings/recipe-search` shows `"provider": "searxng"` and
+   `"base_url": "http://searxng:8080"`.
+3. `POST /api/v1/settings/recipe-search/test` searches
+   "chicken tikka masala" and must answer 200 with
+   `{"query": "chicken tikka masala", "count": <n>}`. A 502
+   `search_failed` carries SearXNG's error.
 
 | Item | Value |
 | --- | --- |
@@ -440,9 +461,11 @@ docker compose -f deploy/compose.yaml exec mealquest \
 docker compose -f deploy/compose.yaml port searxng 8080   # prints ":0": nothing published
 ```
 
-On 2026-10-06 that query returned 17 results (Bing and Mojeek answered;
-Brave, DuckDuckGo, Google and Startpage were rate-limited or served a
-CAPTCHA). From 10.60.1.85 nothing on 10.60.1.14 answered as SearXNG:
+On 2026-10-06 that query returned 17 results. From this host four of the
+six engines were blocked (Brave, DuckDuckGo, Google and Startpage were
+rate-limited or served a CAPTCHA), so the results came from Bing and
+Mojeek. SearXNG retries suspended engines after their suspension ends, so
+the set that answers can change. From 10.60.1.85 nothing on 10.60.1.14 answered as SearXNG:
 8888 refused the connection and 8080 is NestQuest's API.
 
 For development, `deploy/compose.dev.yaml` publishes SearXNG on the

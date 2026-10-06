@@ -2,3 +2,4 @@
 # A recorded line never changes. To change a prompt, bump the skill's
 # version, rename its template to match and add a line for the new version.
 echo v1 ab5d7884f5c7a2261c06b0c9353bb9597070c001420bd4cbb6ec6272c093fdce
+normalize_recipe v1 7174e5479fc020f3b2b39953d85411381aea26defb9943145e7864c5b752d7ee

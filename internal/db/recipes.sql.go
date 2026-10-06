@@ -99,7 +99,7 @@ func (q *Queries) DeleteRecipeSteps(ctx context.Context, recipeID string) error 
 }
 
 const getRecipe = `-- name: GetRecipe :one
-SELECT id, source_url, site_name, title, total_minutes, prep_minutes, cook_minutes, yield, raw_jsonld, fetched_at, created_at, updated_at FROM recipes
+SELECT id, source_url, site_name, title, total_minutes, prep_minutes, cook_minutes, yield, raw_jsonld, fetched_at, created_at, updated_at, photo_id, method, difficulty, minutes_total FROM recipes
 WHERE id = ?
 `
 
@@ -119,12 +119,16 @@ func (q *Queries) GetRecipe(ctx context.Context, id string) (Recipe, error) {
 		&i.FetchedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PhotoID,
+		&i.Method,
+		&i.Difficulty,
+		&i.MinutesTotal,
 	)
 	return i, err
 }
 
 const getRecipeBySourceURL = `-- name: GetRecipeBySourceURL :one
-SELECT id, source_url, site_name, title, total_minutes, prep_minutes, cook_minutes, yield, raw_jsonld, fetched_at, created_at, updated_at FROM recipes
+SELECT id, source_url, site_name, title, total_minutes, prep_minutes, cook_minutes, yield, raw_jsonld, fetched_at, created_at, updated_at, photo_id, method, difficulty, minutes_total FROM recipes
 WHERE source_url = ?
 `
 
@@ -144,6 +148,10 @@ func (q *Queries) GetRecipeBySourceURL(ctx context.Context, sourceUrl string) (R
 		&i.FetchedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PhotoID,
+		&i.Method,
+		&i.Difficulty,
+		&i.MinutesTotal,
 	)
 	return i, err
 }
@@ -227,10 +235,12 @@ func (q *Queries) ListRecipeSteps(ctx context.Context, recipeID string) ([]Recip
 const upsertRecipe = `-- name: UpsertRecipe :one
 INSERT INTO recipes (
 	id, source_url, site_name, title, total_minutes, prep_minutes,
-	cook_minutes, yield, raw_jsonld, fetched_at, created_at, updated_at
+	cook_minutes, yield, raw_jsonld, photo_id, method, difficulty,
+	minutes_total, fetched_at, created_at, updated_at
 ) VALUES (
 	?, ?, ?, ?, ?, ?,
-	?, ?, ?, ?, ?, ?
+	?, ?, ?, ?, ?, ?,
+	?, ?, ?, ?
 )
 ON CONFLICT (source_url) DO UPDATE SET
 	site_name = excluded.site_name,
@@ -240,9 +250,13 @@ ON CONFLICT (source_url) DO UPDATE SET
 	cook_minutes = excluded.cook_minutes,
 	yield = excluded.yield,
 	raw_jsonld = excluded.raw_jsonld,
+	photo_id = excluded.photo_id,
+	method = excluded.method,
+	difficulty = excluded.difficulty,
+	minutes_total = excluded.minutes_total,
 	fetched_at = excluded.fetched_at,
 	updated_at = excluded.updated_at
-RETURNING id, source_url, site_name, title, total_minutes, prep_minutes, cook_minutes, yield, raw_jsonld, fetched_at, created_at, updated_at
+RETURNING id, source_url, site_name, title, total_minutes, prep_minutes, cook_minutes, yield, raw_jsonld, fetched_at, created_at, updated_at, photo_id, method, difficulty, minutes_total
 `
 
 type UpsertRecipeParams struct {
@@ -255,6 +269,10 @@ type UpsertRecipeParams struct {
 	CookMinutes  sql.NullInt64
 	Yield        sql.NullString
 	RawJsonld    string
+	PhotoID      sql.NullString
+	Method       sql.NullString
+	Difficulty   sql.NullString
+	MinutesTotal sql.NullInt64
 	FetchedAt    string
 	CreatedAt    string
 	UpdatedAt    string
@@ -275,6 +293,10 @@ func (q *Queries) UpsertRecipe(ctx context.Context, arg UpsertRecipeParams) (Rec
 		arg.CookMinutes,
 		arg.Yield,
 		arg.RawJsonld,
+		arg.PhotoID,
+		arg.Method,
+		arg.Difficulty,
+		arg.MinutesTotal,
 		arg.FetchedAt,
 		arg.CreatedAt,
 		arg.UpdatedAt,
@@ -293,6 +315,10 @@ func (q *Queries) UpsertRecipe(ctx context.Context, arg UpsertRecipeParams) (Rec
 		&i.FetchedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PhotoID,
+		&i.Method,
+		&i.Difficulty,
+		&i.MinutesTotal,
 	)
 	return i, err
 }

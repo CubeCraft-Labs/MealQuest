@@ -92,7 +92,7 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 | Table | Holds |
 | --- | --- |
 | `household_settings` | One row: timezone, dinner_time (17:30), reminder_time (16:30), review_time (09:00), plan_draft day/time (Fri 09:00), suggestions day/time (Sun 08:00), chat_autosend day/time (Sat 08:00), onboarding_completed_at, updates_seen_at. |
-| `recipes` | A real recipe page: source_url (unique), site_name, title, total/prep/cook minutes, yield, raw_jsonld, fetched_at. |
+| `recipes` | A real recipe page: source_url (unique), site_name, title, total/prep/cook minutes (the page's JSON-LD), yield, raw_jsonld, fetched_at; and its grounding: photo_id, method, difficulty, minutes_total (normalized prep to table). |
 | `recipe_ingredients` | recipe_id, position, raw_text, name, qty, unit, note. |
 | `recipe_steps` | recipe_id, position, text. |
 | `photos` | source_url, local_path, width, height, sha256, fetched_at. |
@@ -105,7 +105,7 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 | `shopping_lists` | week_start (unique), plan_id, title, status (`current` / `archived`), sent_to_chat_at, frozen_at. |
 | `shopping_groups` / `shopping_items` | One group per dinner/day; item name, qty, needed (bool), position. |
 | `ai_settings` | One row: provider, base_url, model, temperature, system_prompt, api_key_ct, api_key_last4, key_verified_at. |
-| `recipe_search_settings` | One row: provider (`searxng` / `brave`), base_url, api_key_ct. |
+| `recipe_search_settings` | One row: provider (`searxng` / `brave`), base_url (the SearXNG instance), api_key_ct and api_key_last4 (Brave). |
 | `integrations_google` | One row: refresh_token_ct, calendar_id, calendar_name, connected_at, last_sync_error. |
 | `chat_settings` | One row: webhook_url_ct, space_label, last_test_at, last_test_status. |
 | `notification_prefs` | event (`plan_ready` / `list_ready` / `day_of_reminder` / `new_suggestions` / `rotation_review`), push, chat. |
@@ -140,7 +140,18 @@ automatic** (D-021).
   It requires the session cookie and, for non-GET requests, the
   `X-MealQuest-CSRF` header.
 - `/auth/*` — the OIDC flow.
-- `/media/*` — cached photos.
+- `/media/*` — cached photos, behind the session cookie.
+  `GET /media/photos/{id}-{400|1200}.jpg` serves a stored size of a photo
+  with a `photos` row, with
+  `Cache-Control: private, max-age=31536000, immutable`; anything else is
+  404.
+- `GET`/`PATCH /api/v1/settings/recipe-search` — provider, base_url and
+  the Brave key (`api_key`, write-only: responses carry only
+  `api_key_set` and `api_key_last4`; an empty string removes it). The
+  result must be usable: SearXNG needs a base_url, Brave a key.
+  `POST /api/v1/settings/recipe-search/test` searches "chicken tikka
+  masala" and returns `{query, count}`, 409 `not_configured`, or 502
+  `search_failed` with the provider's error.
 - `/health` — liveness.
 - Everything else serves the embedded PWA with SPA fallback.
 
@@ -208,10 +219,110 @@ automatic** (D-021).
 
 - Dinners are grounded in real recipe pages found through recipe search
   (`searxng` or `brave`, per `recipe_search_settings`).
-- Fetching is **SSRF-safe**.
-- Recipe data is parsed from schema.org `Recipe` JSON-LD.
+- Fetching is **SSRF-safe** (`recipes.Fetcher`): https:// only, at every
+  redirect hop. Its dialer resolves the host once and refuses unless every
+  answer is public — every non-globally-reachable IPv4 special-purpose
+  range (loopback, RFC 1918, link-local, carrier-grade NAT, documentation
+  TEST-NETs, benchmarking 198.18/15, multicast, reserved and more) is
+  refused, IPv4-mapped forms included, and IPv6 must be global unicast
+  (2000::/3) outside documentation, 6to4, Teredo and other special ranges —
+  then dials the address it checked, so a
+  rebinding DNS answer cannot swap in a private one. Keep-alives and
+  environment proxies are off, so every request dials and checks afresh. At
+  most 3 redirects; a body over 2 MB is an error, never truncated; 10 s for
+  the whole fetch; a descriptive `User-Agent`; requests to one host at least
+  1 s apart, counted from requests actually sent (an abandoned wait holds no
+  slot); 2xx pages cached by URL for an hour (64 pages, oldest evicted), and
+  callers get their own copy of a cached body.
+- Recipe data is parsed from schema.org `Recipe` JSON-LD
+  (`recipes.Extract`): a small targeted scan of the page's
+  `application/ld+json` scripts and `og:site_name` (no HTML parser
+  dependency), finding the Recipe node at a script's top level, in a
+  top-level array or in an `@graph`, with `@type` a string or an array of
+  terms or absolute schema.org IRIs (`https://schema.org/Recipe`). An image
+  or publisher given as an `{"@id": ...}` reference resolves to the node
+  with that `@id` anywhere in the page's JSON-LD. The largest image (by ImageObject width × height; the first of equals) is
+  resolved to an absolute URL; instructions — one string of lines, or a
+  list of strings, HowToSteps and HowToSections — are flattened in order;
+  ISO-8601 prep/cook/total times become minutes, total derived as prep +
+  cook when only those are given; the site name is the publisher's, else
+  `og:site_name`, else the host. A page with no Recipe is `ErrNoRecipe`,
+  with two is `ErrManyRecipes`; a shape schema.org does not allow — such as
+  a non-ISO-8601 duration like "20 minutes" or an empty one, or an image
+  `@id` no node has — is `ErrMalformedRecipe`, never guessed at.
+- Recipe search (`recipes.SearchProvider`: `Search(ctx, query, n)` →
+  `[]Candidate{URL, Title, Snippet}`, n 1–20) appends " recipe" to a query
+  without that word. SearXNG is called at
+  `{recipe_search_settings.base_url}/search?q=…&format=json&categories=general` —
+  directly, not through the Fetcher, since this configured endpoint may be
+  on the internal network; Brave calls the Brave Web Search API with the
+  key decrypted from `recipe_search_settings.api_key_ct`
+  (`recipes.NewSearchProvider`). Redirects are not followed; 401/403 is
+  `ErrSearchRefused`, 429 `ErrSearchRateLimited`, other non-2xx a
+  `SearchStatusError`, and a body that is not the provider's JSON (SearXNG
+  without a `results` array; Brave without `"type": "search"` or with a
+  `web` object lacking `results` — Brave omits `web` when nothing matched),
+  over 1 MB or with a result lacking an absolute http(s) URL
+  `ErrSearchResponse`.
+- Ranking (`recipes.Rank`) fetches and extracts the top 5 candidates
+  concurrently, rejects any whose recipe lacks ingredients or an image, and
+  orders the rest by the token similarity of the recipe's title to the dish
+  name (`harness.Similarity`, 0–1) plus a quarter for each of ingredients,
+  image, steps and total minutes; ties keep search order. No unranked
+  candidate is dropped silently: when some are ranked, they are returned
+  with `ErrCandidatesUnranked`; when none are, the error is
+  `ErrNoUsableRecipe`. Either is joined with each unranked candidate's URL
+  and reason (fetch failure, no valid recipe, missing ingredients or
+  image), so the caller decides per item what a failure means.
+- Ingredient lines are normalized by the `normalize_recipe` v1 skill
+  (`skills.NormalizeRecipe`), always at temperature 0 whatever the
+  household's setting. From the title, raw ingredient lines, steps and
+  JSON-LD times it returns `{ingredients: [{name, qty, unit, note}], method,
+  difficulty, minutes_total}`. Validation requires exactly one ingredient
+  per input line, in order (a name matching another line but not its own is
+  out of order), each with a name; a mismatch gets the harness's repair
+  turn. Code-derived values win: a positive JSON-LD total is
+  `minutes_total`; "slow cooker" or "crock pot" in the title or a step makes
+  the method `crockpot`; a difficulty the model leaves null is derived —
+  hard over 10 steps or 90 minutes, easy at 5 steps or fewer and 45 minutes
+  or less, else medium, a crockpot's minutes not counting.
 - Photos are cached locally (`photos`) and processed with
-  `golang.org/x/image`.
+  `golang.org/x/image`. `recipes.PhotoCache.DownloadPhoto` downloads through
+  the Fetcher's `FetchImage` (JPEG, PNG, WebP or GIF content types, 8 MB
+  cap, not cached), decodes the image (a GIF's first frame) and refuses a
+  decoded image under 300 px on its short side, recording nothing.
+  `CachePhoto` then records it in the caller's transaction: it scales the
+  image so its long side is 1200 px and 400 px, and stores each as JPEG
+  quality 82 at `$MEALQUEST_DATA_DIR/media/photos/{id}-{size}.jpg`. Images
+  are deduplicated by the SHA-256 of the downloaded bytes; the writer's
+  single connection serialises transactions, so one image is never
+  recorded twice. Files written for a transaction that rolls back are
+  removed by the caller (`RemovePhotoFiles`).
+- Grounding (`recipes.Grounder`) ties these together.
+  `Ground(ctx, dishName, query)` searches for the top 5 candidates and ranks
+  them all, stored and new alike: a candidate whose `source_url` is already
+  stored is scored on its stored recipe (title, ingredients, steps, times,
+  photo source) and its page is never refetched; every other candidate is
+  fetched and extracted. Ranking alone decides between them. It then tries
+  each ranked candidate best first. A stored one is returned as it is, so a
+  stored recipe is reused only when it ranks above every new candidate that
+  grounds. A new one is grounded in this order: (1) `DownloadPhoto` —
+  the download and validation step of photo caching — (2)
+  `normalize_recipe`, then (3) one **transaction** that runs `CachePhoto`
+  (scales and writes the photo files and records the `photos` row) and
+  stores the recipe, ingredients and steps (an existing `source_url` is
+  updated in place); files written for a rolled-back transaction are
+  removed. It returns `Grounded{recipe_id,
+  photo_id, method, minutes_total, difficulty, source_url, site_name}`. A
+  candidate whose photo fails or whose model output is unusable
+  (`llm.ErrBadOutput`) is passed over; when none grounds, the error is a
+  typed `*recipes.ErrUngroundable` listing every reason (no candidates,
+  Rank's per-candidate reasons, photo or normalize failures). Failures
+  that are not the candidates' — search, model provider, database — are
+  returned as they are. `GroundURL(ctx, url)` does the same for one pasted
+  URL. `GroundMany` grounds items 3 at a time and returns one result per
+  item, so one failure never affects its siblings. A recipe is usable only
+  with ingredients, an image and, if given, a positive total time.
 
 ## Scheduler
 

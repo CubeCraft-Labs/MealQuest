@@ -1,0 +1,12 @@
+# Development override: publishes SearXNG on the dev machine's loopback so
+# it can be queried directly, e.g.
+#
+#   docker compose -f deploy/compose.yaml -f deploy/compose.dev.yaml up -d searxng
+#   curl 'http://127.0.0.1:8888/search?q=chicken+tikka+masala+recipe&format=json'
+#
+# Loopback only, never a LAN address. Never used in production: the
+# systemd unit starts deploy/compose.yaml alone.
+services:
+  searxng:
+    ports:
+      - "127.0.0.1:8888:8080"

@@ -294,8 +294,9 @@ func (s *Service) List(ctx context.Context, status string) ([]Dinner, error) {
 // Update applies p to dinner id, recording updatedBy. An invalid patch is a
 // *ValidationError and a new name repeating another unarchived dinner a
 // *DuplicateError; either changes nothing. Renaming a dinner still pending
-// enqueues a fresh KindGroundDinner job for the new name: the job already
-// running was for the old name, and its result no longer applies.
+// clears its recipe_url and enqueues a fresh KindGroundDinner job that
+// grounds the new name: the job already running was for the old name or
+// link, and its result no longer applies.
 func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy string) (Dinner, error) {
 	if updatedBy == "" {
 		return Dinner{}, errors.New("dinners: update: no member to record as updated_by")
@@ -327,6 +328,7 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 			Difficulty:      cur.Difficulty,
 			Cuisine:         cur.Cuisine,
 			RecipeID:        cur.RecipeID,
+			RecipeUrl:       cur.RecipeUrl,
 			PhotoID:         cur.PhotoID,
 			GroundingStatus: cur.GroundingStatus,
 			UpdatedBy:       sql.NullString{String: updatedBy, Valid: true},
@@ -338,6 +340,11 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 			}
 			params.Name = name
 			params.NormalizedName = harness.Normalize(name)
+			if cur.GroundingStatus == GroundingPending && params.NormalizedName != cur.NormalizedName {
+				// The link was the old dinner's recipe; the new name is
+				// grounded by name, and a link can be given by hand.
+				params.RecipeUrl = sql.NullString{}
+			}
 		}
 		if p.Method != nil {
 			params.Method = sql.NullString{String: *p.Method, Valid: true}

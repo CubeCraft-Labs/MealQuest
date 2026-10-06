@@ -543,6 +543,7 @@ SET name = ?,
 	difficulty = ?,
 	cuisine = ?,
 	recipe_id = ?,
+	recipe_url = ?,
 	photo_id = ?,
 	grounding_status = ?,
 	updated_by = ?,
@@ -561,6 +562,7 @@ type UpdateDinnerParams struct {
 	Difficulty      sql.NullString
 	Cuisine         sql.NullString
 	RecipeID        sql.NullString
+	RecipeUrl       sql.NullString
 	PhotoID         sql.NullString
 	GroundingStatus string
 	UpdatedBy       sql.NullString
@@ -580,6 +582,7 @@ func (q *Queries) UpdateDinner(ctx context.Context, arg UpdateDinnerParams) (Din
 		arg.Difficulty,
 		arg.Cuisine,
 		arg.RecipeID,
+		arg.RecipeUrl,
 		arg.PhotoID,
 		arg.GroundingStatus,
 		arg.UpdatedBy,

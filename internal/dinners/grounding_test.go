@@ -349,6 +349,44 @@ func TestRenameWhilePendingGroundsNewName(t *testing.T) {
 	}
 }
 
+// TestRenameLinkWhilePendingGroundsNewName: a Regular added from a link and
+// renamed while still pending drops the link and grounds its new name, not
+// the old link's recipe and photo.
+func TestRenameLinkWhilePendingGroundsNewName(t *testing.T) {
+	t.Parallel()
+	e := newUnstartedEnv(t)
+	e.search.Results["Beef stew"] = []recipes.Candidate{{URL: stew}}
+	e.model.QueueGenerate(recipestest.NormalizedReply("oven", 150))
+
+	c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{RecipeURL: ptr(curryA)}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := e.svc.Update(t.Context(), c.ID, dinners.Patch{Name: ptr("Beef stew")}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.GroundingStatus != dinners.GroundingPending || d.RecipeURL != nil {
+		t.Fatalf("renamed = %+v, want still pending with no recipe_url", d)
+	}
+	e.start(t)
+
+	row := e.waitGrounding(t, c.ID)
+	if row.GroundingStatus != dinners.GroundingGrounded {
+		t.Fatalf("dinner = %+v, want grounded for the new name", row)
+	}
+	rec, err := db.New(e.st.Reader).GetRecipe(t.Context(), row.RecipeID.String)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.SourceUrl != stew || rec.PhotoID != row.PhotoID || row.Method.String != "oven" || row.MinutesTotal.Int64 != 150 {
+		t.Errorf("dinner = %+v recipe %s, want grounded in %s, not the old link %s", row, rec.SourceUrl, stew, curryA)
+	}
+	if got := e.search.Queries(); !slices.Equal(got, []string{"Beef stew"}) {
+		t.Errorf("searched %q, want only the new name", got)
+	}
+}
+
 // TestRenameWhilePendingEnqueueFailure: a pending Regular renamed when the
 // job for its new name cannot be enqueued is failed, not left pending.
 func TestRenameWhilePendingEnqueueFailure(t *testing.T) {

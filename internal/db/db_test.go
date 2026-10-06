@@ -190,6 +190,7 @@ func TestDinners(t *testing.T) {
 		Difficulty:      str("medium"),
 		Cuisine:         sql.NullString{},
 		RecipeID:        sql.NullString{},
+		RecipeUrl:       str("https://example.com/tacos"),
 		PhotoID:         str(photo.ID),
 		GroundingStatus: "failed",
 		UpdatedBy:       str("sam@example.com"),

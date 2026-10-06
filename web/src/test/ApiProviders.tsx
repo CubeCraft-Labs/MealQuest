@@ -21,6 +21,7 @@ export const AI_SETTINGS = {
 export const RECIPE_SEARCH_SETTINGS = {
   provider: 'searxng',
   base_url: 'http://searxng:8080',
+  default_base_url: 'http://searxng:8080',
   api_key_set: false,
   api_key_last4: null,
   updated_at: '2026-10-01T15:00:00.000Z',

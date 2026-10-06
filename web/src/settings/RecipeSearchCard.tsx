@@ -61,9 +61,14 @@ type Draft = {
 }
 
 // draftOf starts a household that has not set up recipe search on SearXNG,
-// the sidecar every deployment runs.
+// the sidecar every deployment runs. With no URL saved the field holds the
+// deployment's SearXNG URL, which saving stores.
 function draftOf(saved: RecipeSearchSettings): Draft {
-  return { provider: saved.provider ?? 'searxng', base_url: saved.base_url ?? '', api_key: null }
+  return {
+    provider: saved.provider ?? 'searxng',
+    base_url: saved.base_url ?? saved.default_base_url ?? '',
+    api_key: null,
+  }
 }
 
 // patchOf is the PATCH body for what draft changes. Only the chosen
@@ -88,8 +93,11 @@ function RecipeSearchForm({ saved, onDirtyChange }: { saved: RecipeSearchSetting
   }, [dirty, onDirtyChange])
   useEffect(() => () => onDirtyChange(false), [onDirtyChange])
 
+  // An edit clears the last save and test results: they describe the saved
+  // settings, not the draft.
   function edit(change: Partial<Draft>) {
     save.reset()
+    test.reset()
     setDraft((current) => ({ ...current, ...change }))
   }
 

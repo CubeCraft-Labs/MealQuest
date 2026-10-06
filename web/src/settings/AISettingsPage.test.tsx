@@ -462,16 +462,52 @@ describe('Recipe search card', () => {
     expect(testSearch()).toBeEnabled()
   })
 
-  it('starts on SearXNG with an empty URL before recipe search is set up', async () => {
-    stubAPI({
-      'GET /api/v1/settings/recipe-search': () =>
-        jsonResponse(200, { provider: null, base_url: null, api_key_set: false, api_key_last4: null, updated_at: null }),
+  const UNCONFIGURED = {
+    provider: null,
+    base_url: null,
+    default_base_url: 'http://searxng:8080',
+    api_key_set: false,
+    api_key_last4: null,
+    updated_at: null,
+  }
+
+  it('starts on SearXNG with the deployment\'s URL before recipe search is set up, and saves it', async () => {
+    const fetchMock = stubAPI({
+      'GET /api/v1/settings/recipe-search': () => jsonResponse(200, UNCONFIGURED),
+      'PATCH /api/v1/settings/recipe-search': (body) =>
+        jsonResponse(200, { ...RECIPE_SEARCH_SETTINGS, ...(body as object) }),
     })
     await renderCard()
     expect(searxng()).toHaveAttribute('aria-checked', 'true')
-    expect(url()).toHaveValue('')
+    expect(url()).toHaveValue('http://searxng:8080')
     expect(testSearch()).toBeDisabled()
     expect(saveSearch()).toBeEnabled()
+    fireEvent.click(saveSearch())
+    expect(await within(card()).findByText('Recipe search saved.')).toBeInTheDocument()
+    expect(sent(fetchMock)).toEqual([
+      {
+        request: 'PATCH /api/v1/settings/recipe-search',
+        body: { provider: 'searxng', base_url: 'http://searxng:8080' },
+      },
+    ])
+  })
+
+  it('starts with an empty URL when the deployment names no SearXNG', async () => {
+    stubAPI({
+      'GET /api/v1/settings/recipe-search': () => jsonResponse(200, { ...UNCONFIGURED, default_base_url: null }),
+    })
+    await renderCard()
+    expect(url()).toHaveValue('')
+  })
+
+  it('shows the saved URL, not the deployment\'s', async () => {
+    stubAPI({
+      'GET /api/v1/settings/recipe-search': () =>
+        jsonResponse(200, { ...RECIPE_SEARCH_SETTINGS, base_url: 'https://search.example' }),
+    })
+    await renderCard()
+    expect(url()).toHaveValue('https://search.example')
+    expect(saveSearch()).toBeDisabled()
   })
 
   it('switches providers, keeping each provider\'s field', async () => {
@@ -585,6 +621,32 @@ describe('Recipe search card', () => {
     expect(await within(card()).findByRole('alert')).toHaveTextContent(
       'Test failed: recipes: SearXNG answered 403 Forbidden',
     )
+  })
+
+  it('clears a test result when the settings are edited', async () => {
+    stubAPI({
+      'POST /api/v1/settings/recipe-search/test': () =>
+        jsonResponse(200, { query: 'chicken tikka masala', count: 12 }),
+    })
+    await renderCard()
+    fireEvent.click(testSearch())
+    expect(await within(card()).findByText("Found 12 recipes for 'chicken tikka masala'")).toBeInTheDocument()
+    fireEvent.change(url(), { target: { value: 'https://search.example' } })
+    expect(within(card()).getByText('Save your changes to test them.')).toBeInTheDocument()
+    expect(within(card()).queryByText(/Found 12 recipes/)).not.toBeInTheDocument()
+  })
+
+  it('clears a test error when the settings are edited', async () => {
+    stubAPI({
+      'POST /api/v1/settings/recipe-search/test': () =>
+        apiError(502, 'search_failed', 'recipes: SearXNG answered 403 Forbidden'),
+    })
+    await renderCard()
+    fireEvent.click(testSearch())
+    expect(await within(card()).findByRole('alert')).toHaveTextContent('Test failed')
+    fireEvent.click(brave())
+    expect(within(card()).getByText('Save your changes to test them.')).toBeInTheDocument()
+    expect(within(card()).queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('asks before leaving with an unsaved recipe search change', async () => {

@@ -20,6 +20,13 @@ const testBraveKey = "BSA-secret-brave-key-9f3c"
 
 func newTestSearchSettings(t *testing.T) *SearchSettingsService {
 	t.Helper()
+	return newTestSearchSettingsWithDefault(t, "")
+}
+
+// newTestSearchSettingsWithDefault is newTestSearchSettings with
+// defaultBaseURL as the deployment's SearXNG URL.
+func newTestSearchSettingsWithDefault(t *testing.T, defaultBaseURL string) *SearchSettingsService {
+	t.Helper()
 	st, err := store.Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -38,7 +45,7 @@ func newTestSearchSettings(t *testing.T) *SearchSettingsService {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := NewSearchSettingsService(st, box)
+	svc, err := NewSearchSettingsService(st, box, defaultBaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,6 +128,74 @@ func TestSearchSettingsUpdate(t *testing.T) {
 	got, err = svc.Update(t.Context(), SearchSettingsPatch{Provider: ptr("searxng"), APIKey: ptr("")})
 	if err != nil || got.APIKeySet || got.APIKeyLast4 != nil {
 		t.Errorf("switch to SearXNG removing the key = %+v, %v", got, err)
+	}
+}
+
+func TestSearchSettingsDefaultBaseURL(t *testing.T) {
+	t.Parallel()
+	svc := newTestSearchSettingsWithDefault(t, "http://searxng:8080")
+	got, err := svc.Get(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DefaultBaseURL == nil || *got.DefaultBaseURL != "http://searxng:8080" || got.BaseURL != nil || got.Provider != nil {
+		t.Errorf("Get before any update = %+v, want only default_base_url set", got)
+	}
+	if _, err := svc.Provider(t.Context()); !errors.Is(err, ErrSearchNotConfigured) {
+		t.Errorf("Provider with only a default error = %v, want ErrSearchNotConfigured", err)
+	}
+
+	// The default is a suggestion: SearXNG still needs a saved URL.
+	if _, err := svc.Update(t.Context(), SearchSettingsPatch{Provider: ptr("searxng")}); err == nil {
+		t.Error("choosing SearXNG without a URL succeeded with a default set")
+	}
+
+	got, err = svc.Update(t.Context(), SearchSettingsPatch{Provider: ptr("searxng"), BaseURL: ptr("https://search.example")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *got.BaseURL != "https://search.example" || got.DefaultBaseURL == nil || *got.DefaultBaseURL != "http://searxng:8080" {
+		t.Errorf("Update result = %+v, want the saved URL beside the default", got)
+	}
+	got, err = svc.Get(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *got.BaseURL != "https://search.example" {
+		t.Errorf("Get base_url = %q, want the saved URL, not the default", *got.BaseURL)
+	}
+	row, err := db.New(svc.st.Reader).GetRecipeSearchSettings(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.BaseUrl.String != "https://search.example" {
+		t.Errorf("stored base_url = %q", row.BaseUrl.String)
+	}
+}
+
+func TestNewSearchSettingsServiceRejectsBadDefault(t *testing.T) {
+	t.Parallel()
+	st, err := store.Open(t.Context(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	key := make([]byte, secretbox.KeySize)
+	rand.Read(key)
+	box, err := secretbox.New(base64.StdEncoding.EncodeToString(key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range []string{"searxng:8080", "ftp://searxng", "http://user:pw@searxng:8080"} {
+		if _, err := NewSearchSettingsService(st, box, u); err == nil {
+			t.Errorf("NewSearchSettingsService(%q) succeeded", u)
+		} else if strings.Contains(err.Error(), "pw") {
+			t.Errorf("error for %q echoes the URL: %v", u, err)
+		}
 	}
 }
 

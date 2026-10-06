@@ -149,6 +149,9 @@ automatic** (D-021).
   the Brave key (`api_key`, write-only: responses carry only
   `api_key_set` and `api_key_last4`; an empty string removes it). The
   result must be usable: SearXNG needs a base_url, Brave a key.
+  Responses also carry the read-only `default_base_url`, the deployment's
+  `MEALQUEST_SEARXNG_URL` (or null), which the client pre-fills while no
+  base_url is saved; only a PATCH of base_url stores a URL.
   `POST /api/v1/settings/recipe-search/test` searches "chicken tikka
   masala" and returns `{query, count}`, 409 `not_configured`, or 502
   `search_failed` with the provider's error.

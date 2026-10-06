@@ -417,15 +417,23 @@ The `searxng` service in `deploy/compose.yaml` is a private SearXNG
 instance for recipe search. On the compose network it is reachable at
 `http://searxng:8080`; that is the address to configure in the app.
 
-Starting the sidecar does not connect the app to it. The service does not
-read `MEALQUEST_SEARXNG_URL`: `deploy/compose.yaml` sets it for a future
-wiring, and today it does nothing. The recipe-search provider and base URL
-live in the `recipe_search_settings` row and are set through
-`GET`/`PATCH /api/v1/settings/recipe-search` (the API behind the Settings
-screen's recipe search; the screen itself is not built yet). Until that row
-exists, recipe search answers 409 `not_configured`.
+Starting the sidecar does not connect the app to it. The recipe-search
+provider and base URL live in the `recipe_search_settings` row and are set
+through `GET`/`PATCH /api/v1/settings/recipe-search` (the API behind the
+recipe search card on Settings → AI assistant). Until that row exists,
+recipe search answers 409 `not_configured`.
 
-After the first deploy, from a signed-in session (every non-`GET` request
+`deploy/compose.yaml` sets `MEALQUEST_SEARXNG_URL=http://searxng:8080`.
+The service only suggests it: `GET` returns it as `default_base_url`, and
+the recipe search card pre-fills the SearXNG URL with it while no URL is
+saved. Nothing is stored until the card is saved, and a saved `base_url`
+always wins. A set value must be an absolute `http://` or `https://` URL
+without credentials, a query or a fragment, or the service refuses to
+start; unset, `default_base_url` is `null`.
+
+To set it up, open Settings → AI assistant, check that the recipe search
+card shows SearXNG with `http://searxng:8080`, select **Save recipe search**
+and then **Test**. Or, from a signed-in session (every non-`GET` request
 needs the `X-MealQuest-CSRF` header set to `csrfToken` from
 `GET /api/v1/me`):
 

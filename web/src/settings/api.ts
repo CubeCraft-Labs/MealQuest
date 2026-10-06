@@ -209,8 +209,12 @@ export type RecipeSearchProvider = keyof typeof recipeSearchProviderLabels
 export type RecipeSearchSettings = {
   // Null until recipe search is first set up.
   provider: RecipeSearchProvider | null
-  // The SearXNG instance's URL, null when none is set.
+  // The saved SearXNG instance's URL, null when none is set.
   base_url: string | null
+  // The deployment's SearXNG URL (MEALQUEST_SEARXNG_URL) to suggest while
+  // base_url is null; null when the deployment names none. Only saving
+  // base_url stores a URL.
+  default_base_url: string | null
   api_key_set: boolean
   api_key_last4: string | null
   updated_at: string | null
@@ -237,6 +241,7 @@ function parseRecipeSearchSettings(where: string, body: unknown): RecipeSearchSe
     !isRecord(body) ||
     !isStringOrNull(body.provider) ||
     !isStringOrNull(body.base_url) ||
+    !isStringOrNull(body.default_base_url) ||
     typeof body.api_key_set !== 'boolean' ||
     !isStringOrNull(body.api_key_last4) ||
     !isStringOrNull(body.updated_at)
@@ -249,6 +254,7 @@ function parseRecipeSearchSettings(where: string, body: unknown): RecipeSearchSe
   return {
     provider: body.provider,
     base_url: body.base_url,
+    default_base_url: body.default_base_url,
     api_key_set: body.api_key_set,
     api_key_last4: body.api_key_last4,
     updated_at: body.updated_at,

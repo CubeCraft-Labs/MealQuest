@@ -132,7 +132,7 @@ func newTestPhotos(t *testing.T) *recipes.PhotoCache {
 // configured, over a migrated temp database and a random secret box.
 func newTestSearch(t *testing.T) *recipes.SearchSettingsService {
 	t.Helper()
-	search, err := recipes.NewSearchSettingsService(newTestStore(t), newTestBox(t))
+	search, err := recipes.NewSearchSettingsService(newTestStore(t), newTestBox(t), "")
 	if err != nil {
 		t.Fatal(err)
 	}

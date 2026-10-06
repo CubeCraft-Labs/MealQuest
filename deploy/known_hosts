@@ -1,0 +1,6 @@
+# Host keys of the Synology NAS (10.60.1.50), the backup target. Installed
+# root-owned with mode 0644 as /etc/mealquest/known_hosts and pinned by the
+# media backup (UserKnownHostsFile, StrictHostKeyChecking=yes). The ECDSA
+# key is also pinned in deploy/litestream.yml (host-key).
+10.60.1.50 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKHxIfgjavBABMRE5GW/EFY4C4gO6mo0sKbhkUW2NcAo
+10.60.1.50 ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBNujay9nYEiXuRQf4wDRDU1gp+CDvpeMdhuhC2XypIihzKGEtB654kwrUGfA2kDWAoSPGlmojeS3OIRtHPkj6GY=

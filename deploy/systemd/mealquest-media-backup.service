@@ -1,0 +1,29 @@
+# Runs the nightly MealQuest media backup (/usr/local/sbin/mealquest-media-backup).
+# Triggered by mealquest-media-backup.timer; run by hand with
+#   systemctl start mealquest-media-backup
+# and read the result with
+#   journalctl -u mealquest-media-backup
+#
+# The script runs as the app's user (10001, host user "mealquest") with no
+# capabilities. systemd, as root, only bind-mounts the data volume's root
+# (a root-owned path the app cannot replace) read-only at
+# /run/mealquest-data and copies the NAS key into the credentials directory.
+[Unit]
+Description=Back up MealQuest media to the Synology NAS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mealquest-media-backup
+User=mealquest
+Group=mealquest
+LoadCredential=nas_key:/home/overseer/mealquest/deploy/secrets/litestream_key
+BindReadOnlyPaths=/var/lib/docker/volumes/mealquest-data/_data:/run/mealquest-data
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

@@ -1,0 +1,11 @@
+# Nightly trigger for mealquest-media-backup.service. Persistent= runs a
+# missed backup at the next boot.
+[Unit]
+Description=Nightly MealQuest media backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

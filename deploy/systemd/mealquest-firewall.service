@@ -1,0 +1,22 @@
+# Applies the MealQuest DOCKER-USER rules (/usr/local/sbin/mealquest-firewall).
+#
+# PartOf= re-runs this unit whenever docker.service is stopped or restarted,
+# and WantedBy=docker.service starts it whenever docker.service starts. Both
+# are one-way: a failure here fails this unit visibly and never fails
+# docker.service.
+#
+# Start MealQuest only after this unit has succeeded:
+#   systemctl start mealquest-firewall && docker compose up -d
+[Unit]
+Description=Restrict MealQuest port 8090 to Traefik (DOCKER-USER)
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/mealquest-firewall
+
+[Install]
+WantedBy=multi-user.target docker.service

@@ -1,0 +1,467 @@
+// Package dinners keeps the household's dinners: adding Regulars by name or
+// recipe link, listing Regulars and the Quest log, editing, archiving and
+// favoriting. Names are deduplicated with the harness's dinner-name rules,
+// so the Regulars the household types and the Side quests the AI suggests
+// are compared the same way.
+package dinners
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"net/url"
+	"slices"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
+)
+
+// Dinner statuses (the dinners.status column).
+const (
+	StatusSuggested = "suggested"
+	StatusQuestLog  = "quest_log"
+	StatusTried     = "tried"
+	StatusRegular   = "regular"
+	StatusArchived  = "archived"
+)
+
+// Limits on what a member may enter.
+const (
+	MaxNameChars   = 120
+	MaxRecipeURL   = 2048
+	MaxMinutes     = 1440 // a day; a crock-pot dinner fits
+	photoListWidth = 400  // the stored photo size lists show
+)
+
+// Methods and Difficulties are the values the dinners table allows.
+var (
+	Methods      = []string{"stovetop", "oven", "crockpot", "grill", "other"}
+	Difficulties = []string{"easy", "medium", "hard"}
+)
+
+// listable are the statuses List answers for.
+var listable = []string{StatusRegular, StatusQuestLog}
+
+// ErrNotFound is returned for an unknown dinner id.
+var ErrNotFound = errors.New("dinner not found")
+
+// Dinner is a dinner as the API shows it.
+type Dinner struct {
+	ID              string  `json:"id"`
+	Name            string  `json:"name"`
+	Status          string  `json:"status"`
+	Origin          string  `json:"origin"`
+	Method          *string `json:"method"`
+	MinutesTotal    *int64  `json:"minutes_total"`
+	Difficulty      *string `json:"difficulty"`
+	Cuisine         *string `json:"cuisine"`
+	IsFavorite      bool    `json:"is_favorite"`
+	RecipeID        *string `json:"recipe_id"`
+	RecipeURL       *string `json:"recipe_url"`
+	PhotoURL        *string `json:"photo_url"`
+	GroundingStatus string  `json:"grounding_status"`
+	UpdatedBy       *string `json:"updated_by"`
+	CreatedAt       string  `json:"created_at"`
+	UpdatedAt       string  `json:"updated_at"`
+}
+
+// NewRegular is a Regular to add: exactly one of Name and RecipeURL.
+type NewRegular struct {
+	Name      *string
+	RecipeURL *string
+}
+
+// Patch edits a dinner. Nil fields are left as they are.
+type Patch struct {
+	Name         *string
+	Method       *string
+	MinutesTotal *int
+	Difficulty   *string
+}
+
+// Problem is one invalid field, named by its JSON key.
+type Problem struct {
+	Field  string
+	Reason string
+}
+
+// ValidationError lists every invalid field of a request.
+type ValidationError struct {
+	Problems []Problem
+}
+
+func (e *ValidationError) Error() string {
+	parts := make([]string, len(e.Problems))
+	for i, p := range e.Problems {
+		parts[i] = p.Field + ": " + p.Reason
+	}
+	return "invalid dinner: " + strings.Join(parts, "; ")
+}
+
+func invalid(field, reason string) *ValidationError {
+	return &ValidationError{Problems: []Problem{{Field: field, Reason: reason}}}
+}
+
+// DuplicateError is returned when a new or renamed dinner repeats an
+// unarchived one: its name is harness.Similar, or it has the same recipe
+// link.
+type DuplicateError struct {
+	Existing Dinner
+}
+
+func (e *DuplicateError) Error() string {
+	return fmt.Sprintf("%q is already a dinner (%s)", e.Existing.Name, e.Existing.Status)
+}
+
+// Service reads and changes dinners.
+type Service struct {
+	st *store.Store
+}
+
+// NewService returns a service over st.
+func NewService(st *store.Store) *Service {
+	return &Service{st: st}
+}
+
+// CreateRegular adds a Regular named by r.Name, or by the last path segment
+// of r.RecipeURL (whose recipe grounding later replaces), with status and
+// origin regular and grounding_status pending, recording updatedBy. A name
+// repeating an unarchived dinner is a *DuplicateError.
+func (s *Service) CreateRegular(ctx context.Context, r NewRegular, updatedBy string) (Dinner, error) {
+	if updatedBy == "" {
+		return Dinner{}, errors.New("dinners: create: no member to record as updated_by")
+	}
+	var name string
+	var recipeURL sql.NullString
+	switch {
+	case r.Name != nil && r.RecipeURL != nil:
+		return Dinner{}, invalid("name", "give a name or a recipe_url, not both")
+	case r.Name != nil:
+		n, err := checkName(*r.Name)
+		if err != nil {
+			return Dinner{}, err
+		}
+		name = n
+	case r.RecipeURL != nil:
+		u, err := checkRecipeURL(*r.RecipeURL)
+		if err != nil {
+			return Dinner{}, err
+		}
+		n, ok := nameFromURL(u)
+		if !ok {
+			return Dinner{}, invalid("recipe_url", "the link does not name a dinner; add it by name instead")
+		}
+		name = n
+		recipeURL = sql.NullString{String: u.String(), Valid: true}
+	default:
+		return Dinner{}, invalid("name", "give a name or a recipe_url")
+	}
+
+	var row db.Dinner
+	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		q := db.New(tx)
+		if err := checkUnique(ctx, q, "", name, recipeURL); err != nil {
+			return err
+		}
+		now := store.Now().String()
+		var err error
+		row, err = q.CreateDinner(ctx, db.CreateDinnerParams{
+			ID:              store.NewID(),
+			Name:            name,
+			NormalizedName:  harness.Normalize(name),
+			Status:          StatusRegular,
+			Origin:          "regular",
+			RecipeUrl:       recipeURL,
+			GroundingStatus: "pending",
+			UpdatedBy:       sql.NullString{String: updatedBy, Valid: true},
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		})
+		if err != nil {
+			return fmt.Errorf("dinners: create: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return Dinner{}, err
+	}
+	return fromRow(row), nil
+}
+
+// List returns the dinners with status, which must be regular or
+// quest_log, ordered by normalized name.
+func (s *Service) List(ctx context.Context, status string) ([]Dinner, error) {
+	if !slices.Contains(listable, status) {
+		return nil, invalid("status", "must be one of "+strings.Join(listable, ", "))
+	}
+	rows, err := db.New(s.st.Reader).ListDinnersByStatus(ctx, status)
+	if err != nil {
+		return nil, fmt.Errorf("dinners: list %s: %w", status, err)
+	}
+	out := make([]Dinner, len(rows))
+	for i, row := range rows {
+		out[i] = fromRow(row)
+	}
+	return out, nil
+}
+
+// Update applies p to dinner id, recording updatedBy. An invalid patch is a
+// *ValidationError and a new name repeating another unarchived dinner a
+// *DuplicateError; either changes nothing.
+func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy string) (Dinner, error) {
+	if updatedBy == "" {
+		return Dinner{}, errors.New("dinners: update: no member to record as updated_by")
+	}
+	name, err := p.validate()
+	if err != nil {
+		return Dinner{}, err
+	}
+
+	var row db.Dinner
+	err = s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		q := db.New(tx)
+		cur, err := q.GetDinner(ctx, id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("dinners: read %s: %w", id, err)
+		}
+		params := db.UpdateDinnerParams{
+			ID:              cur.ID,
+			Name:            cur.Name,
+			NormalizedName:  cur.NormalizedName,
+			Status:          cur.Status,
+			Origin:          cur.Origin,
+			Method:          cur.Method,
+			MinutesTotal:    cur.MinutesTotal,
+			Difficulty:      cur.Difficulty,
+			Cuisine:         cur.Cuisine,
+			RecipeID:        cur.RecipeID,
+			PhotoID:         cur.PhotoID,
+			GroundingStatus: cur.GroundingStatus,
+			UpdatedBy:       sql.NullString{String: updatedBy, Valid: true},
+			UpdatedAt:       store.Now().String(),
+		}
+		if p.Name != nil {
+			if err := checkUnique(ctx, q, cur.ID, name, sql.NullString{}); err != nil {
+				return err
+			}
+			params.Name = name
+			params.NormalizedName = harness.Normalize(name)
+		}
+		if p.Method != nil {
+			params.Method = sql.NullString{String: *p.Method, Valid: true}
+		}
+		if p.MinutesTotal != nil {
+			params.MinutesTotal = sql.NullInt64{Int64: int64(*p.MinutesTotal), Valid: true}
+		}
+		if p.Difficulty != nil {
+			params.Difficulty = sql.NullString{String: *p.Difficulty, Valid: true}
+		}
+		row, err = q.UpdateDinner(ctx, params)
+		if err != nil {
+			return fmt.Errorf("dinners: update %s: %w", id, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return Dinner{}, err
+	}
+	return fromRow(row), nil
+}
+
+// Archive sets dinner id's status to archived, recording updatedBy. The row
+// is kept, so its name still counts for Side quest dedupe.
+func (s *Service) Archive(ctx context.Context, id, updatedBy string) (Dinner, error) {
+	if updatedBy == "" {
+		return Dinner{}, errors.New("dinners: archive: no member to record as updated_by")
+	}
+	row, err := db.New(s.st.Writer).ArchiveDinner(ctx, db.ArchiveDinnerParams{
+		ID:        id,
+		UpdatedBy: sql.NullString{String: updatedBy, Valid: true},
+		UpdatedAt: store.Now().String(),
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return Dinner{}, ErrNotFound
+	}
+	if err != nil {
+		return Dinner{}, fmt.Errorf("dinners: archive %s: %w", id, err)
+	}
+	return fromRow(row), nil
+}
+
+// ToggleFavorite flips dinner id's is_favorite, recording updatedBy.
+func (s *Service) ToggleFavorite(ctx context.Context, id, updatedBy string) (Dinner, error) {
+	if updatedBy == "" {
+		return Dinner{}, errors.New("dinners: favorite: no member to record as updated_by")
+	}
+	row, err := db.New(s.st.Writer).ToggleDinnerFavorite(ctx, db.ToggleDinnerFavoriteParams{
+		ID:        id,
+		UpdatedBy: sql.NullString{String: updatedBy, Valid: true},
+		UpdatedAt: store.Now().String(),
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return Dinner{}, ErrNotFound
+	}
+	if err != nil {
+		return Dinner{}, fmt.Errorf("dinners: favorite %s: %w", id, err)
+	}
+	return fromRow(row), nil
+}
+
+// validate checks every field of p and returns its trimmed name.
+func (p Patch) validate() (string, error) {
+	var problems []Problem
+	var name string
+	if p.Name == nil && p.Method == nil && p.MinutesTotal == nil && p.Difficulty == nil {
+		return "", invalid("patch", "no fields to change")
+	}
+	if p.Name != nil {
+		n, err := checkName(*p.Name)
+		var verr *ValidationError
+		if errors.As(err, &verr) {
+			problems = append(problems, verr.Problems...)
+		}
+		name = n
+	}
+	if p.Method != nil && !slices.Contains(Methods, *p.Method) {
+		problems = append(problems, Problem{"method", "must be one of " + strings.Join(Methods, ", ")})
+	}
+	if p.MinutesTotal != nil && (*p.MinutesTotal < 1 || *p.MinutesTotal > MaxMinutes) {
+		problems = append(problems, Problem{"minutes_total", fmt.Sprintf("must be 1 to %d", MaxMinutes)})
+	}
+	if p.Difficulty != nil && !slices.Contains(Difficulties, *p.Difficulty) {
+		problems = append(problems, Problem{"difficulty", "must be one of " + strings.Join(Difficulties, ", ")})
+	}
+	if problems != nil {
+		return "", &ValidationError{Problems: problems}
+	}
+	return name, nil
+}
+
+// checkName returns raw trimmed, refusing a name that is empty, too long or
+// has no words left once normalized (so it could not be deduplicated).
+func checkName(raw string) (string, error) {
+	name := strings.TrimSpace(raw)
+	switch {
+	case name == "":
+		return "", invalid("name", "must not be empty")
+	case utf8.RuneCountInString(name) > MaxNameChars:
+		return "", invalid("name", fmt.Sprintf("must be at most %d characters", MaxNameChars))
+	case harness.Normalize(name) == "":
+		return "", invalid("name", "must name a dish, not only filler words")
+	}
+	return name, nil
+}
+
+// checkRecipeURL parses raw as an absolute https:// link to a recipe page,
+// the only kind recipe grounding fetches.
+func checkRecipeURL(raw string) (*url.URL, error) {
+	raw = strings.TrimSpace(raw)
+	if len(raw) > MaxRecipeURL {
+		return nil, invalid("recipe_url", fmt.Sprintf("must be at most %d bytes", MaxRecipeURL))
+	}
+	u, err := url.Parse(raw)
+	switch {
+	case err != nil:
+		return nil, invalid("recipe_url", "is not a URL")
+	case u.Scheme != "https" || u.Hostname() == "":
+		return nil, invalid("recipe_url", "must be an https:// link")
+	case u.User != nil:
+		return nil, invalid("recipe_url", "must not carry a user name or password")
+	}
+	return u, nil
+}
+
+// nameFromURL names a dinner from the last path segment of u: separators
+// become spaces, a file extension and words of only digits are dropped and
+// the first letter is capitalized, so
+// https://example.com/recipes/12345/chicken-tikka-masala/ is
+// "Chicken tikka masala". ok is false when no usable name is left.
+func nameFromURL(u *url.URL) (name string, ok bool) {
+	segments := strings.FieldsFunc(u.Path, func(r rune) bool { return r == '/' })
+	if len(segments) == 0 {
+		return "", false
+	}
+	slug := segments[len(segments)-1]
+	if i := strings.LastIndexByte(slug, '.'); i > 0 {
+		slug = slug[:i]
+	}
+	var words []string
+	for _, w := range strings.FieldsFunc(slug, func(r rune) bool { return r == '-' || r == '_' || r == '+' || unicode.IsSpace(r) }) {
+		if strings.IndexFunc(w, func(r rune) bool { return !unicode.IsDigit(r) }) >= 0 {
+			words = append(words, strings.ToLower(w))
+		}
+	}
+	name = strings.Join(words, " ")
+	if r, size := utf8.DecodeRuneInString(name); r != utf8.RuneError {
+		name = string(unicode.ToUpper(r)) + name[size:]
+	}
+	if _, err := checkName(name); err != nil {
+		return "", false
+	}
+	return name, true
+}
+
+// checkUnique returns a *DuplicateError when name is harness.Similar to an
+// unarchived dinner other than self, or recipeURL is one's recipe link.
+func checkUnique(ctx context.Context, q *db.Queries, self, name string, recipeURL sql.NullString) error {
+	rows, err := q.ListUnarchivedDinners(ctx)
+	if err != nil {
+		return fmt.Errorf("dinners: list for dedupe: %w", err)
+	}
+	for _, row := range rows {
+		if row.ID == self {
+			continue
+		}
+		if harness.Similar(name, row.Name) || (recipeURL.Valid && row.RecipeUrl == recipeURL) {
+			return &DuplicateError{Existing: fromRow(row)}
+		}
+	}
+	return nil
+}
+
+// PhotoURL is where the API serves a list-sized copy of photo id.
+func PhotoURL(id string) string {
+	return fmt.Sprintf("/media/photos/%s-%d.jpg", id, photoListWidth)
+}
+
+func fromRow(r db.Dinner) Dinner {
+	d := Dinner{
+		ID:              r.ID,
+		Name:            r.Name,
+		Status:          r.Status,
+		Origin:          r.Origin,
+		Method:          nullString(r.Method),
+		Difficulty:      nullString(r.Difficulty),
+		Cuisine:         nullString(r.Cuisine),
+		IsFavorite:      r.IsFavorite == 1,
+		RecipeID:        nullString(r.RecipeID),
+		RecipeURL:       nullString(r.RecipeUrl),
+		GroundingStatus: r.GroundingStatus,
+		UpdatedBy:       nullString(r.UpdatedBy),
+		CreatedAt:       r.CreatedAt,
+		UpdatedAt:       r.UpdatedAt,
+	}
+	if r.MinutesTotal.Valid {
+		d.MinutesTotal = &r.MinutesTotal.Int64
+	}
+	if r.PhotoID.Valid {
+		u := PhotoURL(r.PhotoID.String)
+		d.PhotoURL = &u
+	}
+	return d
+}
+
+func nullString(s sql.NullString) *string {
+	if !s.Valid {
+		return nil
+	}
+	return &s.String
+}

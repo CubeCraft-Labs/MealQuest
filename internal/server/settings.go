@@ -110,7 +110,7 @@ func decodePatch[T any](body io.Reader) (T, error) {
 		if errors.As(err, &typeErr) {
 			return patch, fmt.Errorf("%s: want a JSON %s", typeErr.Field, typeErr.Type)
 		}
-		return patch, fmt.Errorf("invalid settings: %v", err)
+		return patch, fmt.Errorf("invalid request body: %v", err)
 	}
 	return patch, nil
 }

@@ -1,9 +1,11 @@
 import { render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppRoutes } from '../App.tsx'
+import { ApiProviders, SETTINGS_API } from '../test/ApiProviders.tsx'
 import { declaredStyle, outerSize } from '../test/cssRules.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
+import { stubFetchByPath } from '../test/fetchStub.ts'
 import { mockViewport } from '../test/matchMedia.ts'
 import bottomBarStyles from './BottomBar.module.css'
 import railStyles from './Rail.module.css'
@@ -16,13 +18,17 @@ const DESKTOP = 1440
 
 afterEach(() => {
   Reflect.deleteProperty(window, 'matchMedia')
+  vi.unstubAllGlobals()
 })
 
 function renderAt(path: string, width: number) {
   const resize = mockViewport(width)
+  stubFetchByPath(SETTINGS_API)
   render(
     <MemoryRouter initialEntries={[path]}>
-      <AppRoutes />
+      <ApiProviders>
+        <AppRoutes />
+      </ApiProviders>
     </MemoryRouter>,
   )
   return resize

@@ -47,3 +47,17 @@ export function request(fetchMock: Mock<typeof fetch>, n: number) {
 export function fakeLocation(pathname = '/', search = ''): ApiLocation & { assign: Mock<(url: string | URL) => void> } {
   return { origin: 'https://mealquest.test', pathname, search, assign: vi.fn<(url: string | URL) => void>() }
 }
+
+// stubFetchByPath replaces the global fetch with a mock that answers each
+// path from responses with a fresh response from its factory, so requests
+// sent in parallel need no order; a path not in responses fails the test.
+// Undo with vi.unstubAllGlobals.
+export function stubFetchByPath(responses: Record<string, () => Response>): Mock<typeof fetch> {
+  const fetchMock = vi.fn<typeof fetch>((input, init) => {
+    const respond = Object.hasOwn(responses, String(input)) ? responses[String(input)] : undefined
+    if (respond === undefined) throw new Error(`unexpected fetch: ${init?.method ?? 'GET'} ${String(input)}`)
+    return Promise.resolve(respond())
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  return fetchMock
+}

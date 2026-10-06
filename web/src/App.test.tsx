@@ -4,8 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApiClient, createVerifiedSession } from './api/index.ts'
 import { createNetworkStatus } from './pwa/networkStatus.ts'
 import { mockViewport } from './test/matchMedia.ts'
-import { errorResponse, fakeLocation, jsonResponse, ME, request, stubFetch } from './test/fetchStub.ts'
+import { errorResponse, fakeLocation, jsonResponse, ME, request, stubFetch, stubFetchByPath } from './test/fetchStub.ts'
 import App, { routes } from './App.tsx'
+import { SETTINGS_API } from './test/ApiProviders.tsx'
 
 afterEach(() => {
   Reflect.deleteProperty(window, 'matchMedia')
@@ -46,7 +47,7 @@ describe('App routes', () => {
     ])
   })
 
-  it.each(routes.map(({ path, title }) => [path.replace(':id', 'abc123'), title]))(
+  it.each(routes.filter(({ path }) => path !== '/settings').map(({ path, title }) => [path.replace(':id', 'abc123'), title]))(
     '%s renders its placeholder page inside the shell',
     async (path, title) => {
       mockViewport(390)
@@ -57,6 +58,18 @@ describe('App routes', () => {
       expect(screen.getByRole('navigation', { name: 'Primary' })).toBeInTheDocument()
     },
   )
+
+  it('/settings renders the settings home inside the shell', async () => {
+    mockViewport(390)
+    stubFetchByPath({
+      '/api/v1/me': () => jsonResponse(200, ME),
+      ...SETTINGS_API,
+    })
+    renderAt('/settings')
+    const heading = await screen.findByRole('heading', { level: 1, name: 'Settings' })
+    expect(screen.getByRole('main')).toContainElement(heading)
+    expect(await screen.findByText('Anthropic · Claude Sonnet')).toBeInTheDocument()
+  })
 })
 
 describe('App bootstrap', () => {

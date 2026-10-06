@@ -16,7 +16,7 @@ SET status = 'archived',
 	updated_by = ?,
 	updated_at = ?
 WHERE id = ?
-RETURNING id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url, grounding_error
+RETURNING id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url, grounding_error, grounding_revision
 `
 
 type ArchiveDinnerParams struct {
@@ -48,6 +48,7 @@ func (q *Queries) ArchiveDinner(ctx context.Context, arg ArchiveDinnerParams) (D
 		&i.UpdatedAt,
 		&i.RecipeUrl,
 		&i.GroundingError,
+		&i.GroundingRevision,
 	)
 	return i, err
 }
@@ -75,7 +76,7 @@ INSERT INTO dinners (
 	?, ?, ?, ?, ?, ?,
 	?, ?, ?, ?
 )
-RETURNING id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url, grounding_error
+RETURNING id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url, grounding_error, grounding_revision
 `
 
 type CreateDinnerParams struct {
@@ -138,6 +139,7 @@ func (q *Queries) CreateDinner(ctx context.Context, arg CreateDinnerParams) (Din
 		&i.UpdatedAt,
 		&i.RecipeUrl,
 		&i.GroundingError,
+		&i.GroundingRevision,
 	)
 	return i, err
 }
@@ -148,11 +150,13 @@ SET grounding_status = 'failed',
 	grounding_error = ?1,
 	updated_at = ?2
 WHERE grounding_status = 'pending'
+	AND status <> 'archived'
 	AND NOT EXISTS (
 		SELECT 1 FROM jobs
 		WHERE jobs.kind = ?3
 			AND jobs.status IN ('queued', 'running')
 			AND json_extract(jobs.payload, '$.dinner_id') = dinners.id
+			AND json_extract(jobs.payload, '$.revision') = dinners.grounding_revision
 	)
 `
 
@@ -162,10 +166,11 @@ type FailOrphanedPendingDinnerGroundingsParams struct {
 	Kind           string
 }
 
-// Fails every dinner still pending whose grounding job is no longer queued
-// or running: the process stopped before the job, or before its handler
-// recorded a result. Run at boot, after the job runner fails the jobs a
-// previous process left running.
+// Fails every unarchived dinner still pending whose grounding job for its
+// current grounding_revision is no longer queued or running: the process
+// stopped before the job, or before its handler recorded a result. An
+// archived dinner is left as it is; archiving stopped its grounding. Run at
+// boot, after the job runner fails the jobs a previous process left running.
 func (q *Queries) FailOrphanedPendingDinnerGroundings(ctx context.Context, arg FailOrphanedPendingDinnerGroundingsParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, failOrphanedPendingDinnerGroundings, arg.GroundingError, arg.UpdatedAt, arg.Kind)
 	if err != nil {
@@ -179,25 +184,29 @@ UPDATE dinners
 SET grounding_status = 'failed',
 	grounding_error = ?,
 	updated_at = ?
-WHERE id = ? AND grounding_status = 'pending' AND normalized_name = ?
+WHERE id = ?
+	AND status <> 'archived'
+	AND grounding_status = 'pending'
+	AND grounding_revision = ?
 `
 
 type FailPendingDinnerGroundingParams struct {
-	GroundingError sql.NullString
-	UpdatedAt      string
-	ID             string
-	NormalizedName string
+	GroundingError    sql.NullString
+	UpdatedAt         string
+	ID                string
+	GroundingRevision int64
 }
 
-// Records why the background grounding of a dinner still pending under the
-// normalized name it was grounded for failed; a dinner grounded some other
-// way or renamed meanwhile is left as it is (0 rows).
+// Records why the background grounding of an unarchived dinner still
+// pending at the grounding_revision it was grounded for failed; a dinner
+// grounded some other way, renamed or archived meanwhile is left as it is
+// (0 rows).
 func (q *Queries) FailPendingDinnerGrounding(ctx context.Context, arg FailPendingDinnerGroundingParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, failPendingDinnerGrounding,
 		arg.GroundingError,
 		arg.UpdatedAt,
 		arg.ID,
-		arg.NormalizedName,
+		arg.GroundingRevision,
 	)
 	if err != nil {
 		return 0, err
@@ -206,7 +215,7 @@ func (q *Queries) FailPendingDinnerGrounding(ctx context.Context, arg FailPendin
 }
 
 const getDinner = `-- name: GetDinner :one
-SELECT id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url, grounding_error FROM dinners
+SELECT id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url, grounding_error, grounding_revision FROM dinners
 WHERE id = ?
 `
 
@@ -232,6 +241,7 @@ func (q *Queries) GetDinner(ctx context.Context, id string) (Dinner, error) {
 		&i.UpdatedAt,
 		&i.RecipeUrl,
 		&i.GroundingError,
+		&i.GroundingRevision,
 	)
 	return i, err
 }
@@ -239,6 +249,7 @@ func (q *Queries) GetDinner(ctx context.Context, id string) (Dinner, error) {
 const groundDinner = `-- name: GroundDinner :one
 UPDATE dinners
 SET recipe_id = ?,
+	recipe_url = NULL,
 	photo_id = ?,
 	method = ?,
 	minutes_total = ?,
@@ -248,7 +259,7 @@ SET recipe_id = ?,
 	updated_by = ?,
 	updated_at = ?
 WHERE id = ?
-RETURNING id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url, grounding_error
+RETURNING id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url, grounding_error, grounding_revision
 `
 
 type GroundDinnerParams struct {
@@ -263,8 +274,9 @@ type GroundDinnerParams struct {
 	ID              string
 }
 
-// Records a dinner's grounding (grounded or manual) and clears any
-// grounding_error. An unknown id returns sql.ErrNoRows.
+// Records a dinner's grounding by hand (grounded or manual) and clears any
+// grounding_error and pasted recipe_url: the recipe chosen replaces the
+// link. An unknown id returns sql.ErrNoRows.
 func (q *Queries) GroundDinner(ctx context.Context, arg GroundDinnerParams) (Dinner, error) {
 	row := q.db.QueryRowContext(ctx, groundDinner,
 		arg.RecipeID,
@@ -297,37 +309,43 @@ func (q *Queries) GroundDinner(ctx context.Context, arg GroundDinnerParams) (Din
 		&i.UpdatedAt,
 		&i.RecipeUrl,
 		&i.GroundingError,
+		&i.GroundingRevision,
 	)
 	return i, err
 }
 
 const groundPendingDinner = `-- name: GroundPendingDinner :execrows
 UPDATE dinners
-SET recipe_id = ?,
-	photo_id = ?,
-	method = ?,
-	minutes_total = ?,
-	difficulty = ?,
+SET recipe_id = ?1,
+	photo_id = ?2,
+	method = COALESCE(method, ?3),
+	minutes_total = COALESCE(minutes_total, ?4),
+	difficulty = COALESCE(difficulty, ?5),
 	grounding_status = 'grounded',
 	grounding_error = NULL,
-	updated_at = ?
-WHERE id = ? AND grounding_status = 'pending' AND normalized_name = ?
+	updated_at = ?6
+WHERE id = ?7
+	AND status <> 'archived'
+	AND grounding_status = 'pending'
+	AND grounding_revision = ?8
 `
 
 type GroundPendingDinnerParams struct {
-	RecipeID       sql.NullString
-	PhotoID        sql.NullString
-	Method         sql.NullString
-	MinutesTotal   sql.NullInt64
-	Difficulty     sql.NullString
-	UpdatedAt      string
-	ID             string
-	NormalizedName string
+	RecipeID          sql.NullString
+	PhotoID           sql.NullString
+	Method            sql.NullString
+	MinutesTotal      sql.NullInt64
+	Difficulty        sql.NullString
+	UpdatedAt         string
+	ID                string
+	GroundingRevision int64
 }
 
-// Records the background grounding of a dinner still pending under the
-// normalized name it was grounded for; a dinner grounded some other way or
-// renamed meanwhile is left as it is (0 rows).
+// Records the background grounding of an unarchived dinner still pending at
+// the grounding_revision it was grounded for; a dinner grounded some other
+// way, renamed or archived meanwhile is left as it is (0 rows). A method,
+// minutes_total or difficulty already set is kept: a pending dinner has
+// them only when a member edited them while it was grounding.
 func (q *Queries) GroundPendingDinner(ctx context.Context, arg GroundPendingDinnerParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, groundPendingDinner,
 		arg.RecipeID,
@@ -337,7 +355,7 @@ func (q *Queries) GroundPendingDinner(ctx context.Context, arg GroundPendingDinn
 		arg.Difficulty,
 		arg.UpdatedAt,
 		arg.ID,
-		arg.NormalizedName,
+		arg.GroundingRevision,
 	)
 	if err != nil {
 		return 0, err
@@ -346,7 +364,7 @@ func (q *Queries) GroundPendingDinner(ctx context.Context, arg GroundPendingDinn
 }
 
 const listDinnersByStatus = `-- name: ListDinnersByStatus :many
-SELECT id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url, grounding_error FROM dinners
+SELECT id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url, grounding_error, grounding_revision FROM dinners
 WHERE status = ?
 ORDER BY normalized_name, id
 `
@@ -379,6 +397,7 @@ func (q *Queries) ListDinnersByStatus(ctx context.Context, status string) ([]Din
 			&i.UpdatedAt,
 			&i.RecipeUrl,
 			&i.GroundingError,
+			&i.GroundingRevision,
 		); err != nil {
 			return nil, err
 		}
@@ -394,40 +413,50 @@ func (q *Queries) ListDinnersByStatus(ctx context.Context, status string) ([]Din
 }
 
 const listUnarchivedDinners = `-- name: ListUnarchivedDinners :many
-SELECT id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url, grounding_error FROM dinners
-WHERE status <> 'archived'
-ORDER BY id
+SELECT dinners.id, dinners.name, dinners.normalized_name, dinners.status, dinners.origin, dinners.method, dinners.minutes_total, dinners.difficulty, dinners.cuisine, dinners.is_favorite, dinners.recipe_id, dinners.photo_id, dinners.grounding_status, dinners.updated_by, dinners.created_at, dinners.updated_at, dinners.recipe_url, dinners.grounding_error, dinners.grounding_revision, recipes.source_url AS recipe_source_url
+FROM dinners
+LEFT JOIN recipes ON recipes.id = dinners.recipe_id
+WHERE dinners.status <> 'archived'
+ORDER BY dinners.id
 `
 
-// Every dinner a new or renamed dinner must not repeat.
-func (q *Queries) ListUnarchivedDinners(ctx context.Context) ([]Dinner, error) {
+type ListUnarchivedDinnersRow struct {
+	Dinner          Dinner
+	RecipeSourceUrl sql.NullString
+}
+
+// Every dinner a new or renamed dinner must not repeat, with the
+// source_url of the recipe it is grounded in (NULL while it has none).
+func (q *Queries) ListUnarchivedDinners(ctx context.Context) ([]ListUnarchivedDinnersRow, error) {
 	rows, err := q.db.QueryContext(ctx, listUnarchivedDinners)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Dinner
+	var items []ListUnarchivedDinnersRow
 	for rows.Next() {
-		var i Dinner
+		var i ListUnarchivedDinnersRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.Name,
-			&i.NormalizedName,
-			&i.Status,
-			&i.Origin,
-			&i.Method,
-			&i.MinutesTotal,
-			&i.Difficulty,
-			&i.Cuisine,
-			&i.IsFavorite,
-			&i.RecipeID,
-			&i.PhotoID,
-			&i.GroundingStatus,
-			&i.UpdatedBy,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.RecipeUrl,
-			&i.GroundingError,
+			&i.Dinner.ID,
+			&i.Dinner.Name,
+			&i.Dinner.NormalizedName,
+			&i.Dinner.Status,
+			&i.Dinner.Origin,
+			&i.Dinner.Method,
+			&i.Dinner.MinutesTotal,
+			&i.Dinner.Difficulty,
+			&i.Dinner.Cuisine,
+			&i.Dinner.IsFavorite,
+			&i.Dinner.RecipeID,
+			&i.Dinner.PhotoID,
+			&i.Dinner.GroundingStatus,
+			&i.Dinner.UpdatedBy,
+			&i.Dinner.CreatedAt,
+			&i.Dinner.UpdatedAt,
+			&i.Dinner.RecipeUrl,
+			&i.Dinner.GroundingError,
+			&i.Dinner.GroundingRevision,
+			&i.RecipeSourceUrl,
 		); err != nil {
 			return nil, err
 		}
@@ -448,7 +477,7 @@ SET is_favorite = ?,
 	updated_by = ?,
 	updated_at = ?
 WHERE id = ?
-RETURNING id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url, grounding_error
+RETURNING id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url, grounding_error, grounding_revision
 `
 
 type SetDinnerFavoriteParams struct {
@@ -486,6 +515,7 @@ func (q *Queries) SetDinnerFavorite(ctx context.Context, arg SetDinnerFavoritePa
 		&i.UpdatedAt,
 		&i.RecipeUrl,
 		&i.GroundingError,
+		&i.GroundingRevision,
 	)
 	return i, err
 }
@@ -496,7 +526,7 @@ SET is_favorite = 1 - is_favorite,
 	updated_by = ?,
 	updated_at = ?
 WHERE id = ?
-RETURNING id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url, grounding_error
+RETURNING id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url, grounding_error, grounding_revision
 `
 
 type ToggleDinnerFavoriteParams struct {
@@ -528,6 +558,7 @@ func (q *Queries) ToggleDinnerFavorite(ctx context.Context, arg ToggleDinnerFavo
 		&i.UpdatedAt,
 		&i.RecipeUrl,
 		&i.GroundingError,
+		&i.GroundingRevision,
 	)
 	return i, err
 }
@@ -543,29 +574,33 @@ SET name = ?,
 	difficulty = ?,
 	cuisine = ?,
 	recipe_id = ?,
+	recipe_url = ?,
 	photo_id = ?,
 	grounding_status = ?,
+	grounding_revision = ?,
 	updated_by = ?,
 	updated_at = ?
 WHERE id = ?
-RETURNING id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url, grounding_error
+RETURNING id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url, grounding_error, grounding_revision
 `
 
 type UpdateDinnerParams struct {
-	Name            string
-	NormalizedName  string
-	Status          string
-	Origin          string
-	Method          sql.NullString
-	MinutesTotal    sql.NullInt64
-	Difficulty      sql.NullString
-	Cuisine         sql.NullString
-	RecipeID        sql.NullString
-	PhotoID         sql.NullString
-	GroundingStatus string
-	UpdatedBy       sql.NullString
-	UpdatedAt       string
-	ID              string
+	Name              string
+	NormalizedName    string
+	Status            string
+	Origin            string
+	Method            sql.NullString
+	MinutesTotal      sql.NullInt64
+	Difficulty        sql.NullString
+	Cuisine           sql.NullString
+	RecipeID          sql.NullString
+	RecipeUrl         sql.NullString
+	PhotoID           sql.NullString
+	GroundingStatus   string
+	GroundingRevision int64
+	UpdatedBy         sql.NullString
+	UpdatedAt         string
+	ID                string
 }
 
 // An unknown id returns sql.ErrNoRows.
@@ -580,8 +615,10 @@ func (q *Queries) UpdateDinner(ctx context.Context, arg UpdateDinnerParams) (Din
 		arg.Difficulty,
 		arg.Cuisine,
 		arg.RecipeID,
+		arg.RecipeUrl,
 		arg.PhotoID,
 		arg.GroundingStatus,
+		arg.GroundingRevision,
 		arg.UpdatedBy,
 		arg.UpdatedAt,
 		arg.ID,
@@ -606,6 +643,7 @@ func (q *Queries) UpdateDinner(ctx context.Context, arg UpdateDinnerParams) (Din
 		&i.UpdatedAt,
 		&i.RecipeUrl,
 		&i.GroundingError,
+		&i.GroundingRevision,
 	)
 	return i, err
 }

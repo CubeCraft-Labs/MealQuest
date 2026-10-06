@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Generate folds_table.go, the letter-fold table used by harness.Normalize.
+"""Generate folds_table.go, the letter-fold table used by harness.Normalize,
+and its copy web/src/dinners/letterFolds.json, used by the PWA's
+normalizeName (web/src/dinners/names.ts). TestLetterFoldsMatchPWA fails when
+the two differ.
 
 Run from this directory with `go generate ./internal/ai/harness` (or
 `python3 gen_folds.py`; gofmt must be on PATH). It uses only the Python
@@ -28,10 +31,13 @@ Hangul syllables are left out: their decomposition is into conjoining jamo,
 not combining marks.
 """
 
+import json
 import re
 import subprocess
 import sys
 import unicodedata
+
+PWA_TABLE = "../../../web/src/dinners/letterFolds.json"
 
 EXTRA = {
     "ß": "ss", "ẞ": "ss", "æ": "ae", "Æ": "ae", "œ": "oe", "Œ": "oe",
@@ -110,6 +116,9 @@ def main():
     with open("folds_table.go", "w", encoding="utf-8") as f:
         f.write("\n".join(out) + "\n")
     subprocess.run(["gofmt", "-w", "folds_table.go"], check=True)
+    with open(PWA_TABLE, "w", encoding="ascii") as f:
+        json.dump({chr(cp): folded for cp, folded in entries}, f, indent=2)
+        f.write("\n")
 
 
 if __name__ == "__main__":

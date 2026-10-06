@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { CalendarDays, ShoppingBasket, Sparkles, UtensilsCrossed, type LucideIcon } from 'lucide-react'
 import { useNavigate } from 'react-router'
 import { InstallHint } from '../pwa/InstallHint.tsx'
-import { useCompleteOnboarding } from '../settings/api.ts'
+import { needsMoreRegulars, useCompleteOnboarding } from '../settings/api.ts'
 import { Button } from '../ui/Button.tsx'
 import { Icon } from '../ui/Icon.tsx'
 import { OnboardingStep } from './OnboardingStep.tsx'
@@ -50,12 +50,15 @@ export type NotificationsStepProps = {
 
 // NotificationsStep is onboarding step 3: what MealQuest notifies about, the
 // iOS install hint, and finishing onboarding. Either button records that
-// onboarding is finished and goes Home.
+// onboarding is finished and goes Home. When the server refuses because the
+// household has fewer than three Regulars, the reason shows with a way back
+// to step 2 to add them.
 export function NotificationsStep({ enableNotifications = notificationsUnavailable }: NotificationsStepProps) {
   const navigate = useNavigate()
   const complete = useCompleteOnboarding()
   const [enabling, setEnabling] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
+  const [fewRegulars, setFewRegulars] = useState(false)
   const busy = enabling || complete.isPending
 
   async function finish() {
@@ -63,13 +66,19 @@ export function NotificationsStep({ enableNotifications = notificationsUnavailab
       await complete.mutateAsync()
     } catch (error) {
       setProblem(`Could not finish setting up: ${(error as Error).message}`)
+      setFewRegulars(needsMoreRegulars(error as Error))
       return
     }
     void navigate('/', { replace: true })
   }
 
-  async function turnOn() {
+  function clearProblem() {
     setProblem(null)
+    setFewRegulars(false)
+  }
+
+  async function turnOn() {
+    clearProblem()
     setEnabling(true)
     try {
       await enableNotifications()
@@ -83,7 +92,7 @@ export function NotificationsStep({ enableNotifications = notificationsUnavailab
   }
 
   function later() {
-    setProblem(null)
+    clearProblem()
     void finish()
   }
 
@@ -123,6 +132,11 @@ export function NotificationsStep({ enableNotifications = notificationsUnavailab
         <p role="alert" className={styles.problem}>
           {problem}
         </p>
+      )}
+      {fewRegulars && (
+        <Button variant="outline" className={styles.recover} onClick={() => void navigate('/onboarding/regulars')}>
+          Add Regulars
+        </Button>
       )}
     </OnboardingStep>
   )

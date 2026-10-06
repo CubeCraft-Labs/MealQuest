@@ -96,7 +96,7 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 | `recipe_ingredients` | recipe_id, position, raw_text, name, qty, unit, note. |
 | `recipe_steps` | recipe_id, position, text. |
 | `photos` | source_url, local_path, width, height, sha256, fetched_at. |
-| `dinners` | The meal record and its lifecycle: name, normalized_name, status (`suggested` / `quest_log` / `tried` / `regular` / `archived`), origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, recipe_url (a pasted recipe link awaiting grounding), photo_id, grounding_status (`pending` / `grounded` / `failed` / `manual`), grounding_error (why grounding failed), updated_by. |
+| `dinners` | The meal record and its lifecycle: name, normalized_name, status (`suggested` / `quest_log` / `tried` / `regular` / `archived`), origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, recipe_url (a pasted recipe link awaiting grounding), photo_id, grounding_status (`pending` / `grounded` / `failed` / `manual`), grounding_error (why grounding failed), grounding_revision (raised when a pending dinner is renamed, so only the latest `ground_dinner` job may write it), updated_by. |
 | `suggestion_batches` | trigger, status, ai_run_id. |
 | `suggestions` | dinner_id, batch_id, reason, cited_regular_ids (JSON), status, decided_at. |
 | `week_plans` | week_start (unique), status (`draft` / `synced` / `changed`), ai_note, ai_run_id, calendar_synced_at. |
@@ -187,8 +187,10 @@ automatic** (D-021).
   "Beef stew"); a link that names nothing is 400 — add it by name. A name
   is trimmed, at most 120 characters and must keep a word after
   `harness.Normalize`, which sets `normalized_name`. A name
-  `harness.Similar` to an unarchived dinner's, or a link one already has,
-  is 409 `duplicate_dinner`; archived names may be added again.
+  `harness.Similar` to an unarchived dinner's, or a link one already has
+  (the source_url of the recipe it is grounded in, else its pasted
+  `recipe_url`), is 409 `duplicate_dinner`; archived names may be added
+  again.
   `GET /api/v1/dinners?status=regular|quest_log` returns
   `{dinners: [...]}` ordered by normalized name, each with `photo_url`
   (`/media/photos/{photo_id}-400.jpg`, or null) and `grounding_status`;
@@ -211,11 +213,22 @@ automatic** (D-021).
   `failed` with `grounding_error` — also the job's failure code — one of
   `no_recipe_found`, `recipe_unusable` (the pasted link), `search_not_configured`,
   `search_failed`, `ai_failed`, `interrupted` (the server stopped) or
-  `grounding_error`. It only writes a dinner still `pending`, so a fix-up
-  made meanwhile wins. At boot, after the job runner fails the jobs a
-  previous process left running, every dinner still `pending` with no
-  `ground_dinner` job queued or running is set `failed` with `interrupted`,
-  so no dinner stays pending with nothing left to ground it.
+  `grounding_error`. Each job carries the dinner's `grounding_revision`
+  from when it was enqueued; renaming a `pending` dinner clears its
+  `recipe_url`, raises the revision and enqueues a job for the new name.
+  A job for a dinner archived, no longer `pending` or at another revision
+  does no work, and a job only writes a dinner still unarchived, `pending`
+  and at its revision, so a fix-up made meanwhile wins and an earlier job
+  for an old name — queued or running — never decides the outcome.
+  Archiving or renaming a dinner also stops its running job where it is,
+  so no further search, page fetch, photo download or model call is made
+  for it. A
+  method, minutes_total or difficulty a member saved while the dinner was
+  `pending` is kept; grounding fills only those left empty. At boot, after
+  the job runner fails the jobs a previous process left running, every
+  unarchived dinner still `pending` with no `ground_dinner` job for its revision
+  queued or running is set `failed` with `interrupted`, so no dinner stays
+  pending with nothing left to ground it.
   `GET /api/v1/dinners/{id}/recipe-candidates`
   searches for the dinner's name and returns `{candidates: [{candidate_id,
   title, site_name, photo_url, minutes}]}`, at most 3, ranked as `Ground`
@@ -229,8 +242,9 @@ automatic** (D-021).
   — no model runs — as a `recipes` row whose source_url is
   `mealquest:manual:{recipe_id}` and whose raw_jsonld is a schema.org
   Recipe built from it, and sets `manual` with its method and minutes, no
-  photo and the dinner's difficulty unchanged. It answers 200 with the
-  dinner; an invalid body is 400, an unknown dinner 404, a page that cannot
+  photo and the dinner's difficulty unchanged. Either clears the dinner's
+  pasted `recipe_url`: the recipe chosen replaces it. It answers 200 with
+  the dinner; an invalid body is 400, an unknown dinner 404, a page that cannot
   ground it 422 `ungroundable` (the dinner is unchanged), recipe search not
   set up 409 `not_configured`, a search or model failure 502
   `search_failed` / `ai_failed` (only the reason code is logged, never the
@@ -488,13 +502,24 @@ First run: while `household_settings.onboarding_completed_at` (read from
 `GET /api/v1/settings/household`) is null, every route redirects to
 `/onboarding`. Onboarding is a full screen outside the app shell, in three
 steps: the welcome (`/onboarding`), the Regulars (`/onboarding/regulars`,
-mock 1h, adding and archiving through the dinners API optimistically) and
+mock 1h, adding and archiving through the dinners API optimistically; Next
+waits for three saved Regulars, and a common pick is not offered once a
+Regular has a name `harness.Similar` to it — the PWA's copy of the name
+rules in `web/src/dinners/names.ts` folds letters with
+`web/src/dinners/letterFolds.json`, which `gen_folds.py` writes from the
+same table as the server's, and runs the same cases,
+`internal/ai/harness/testdata/dedupe_cases.json`, as the server's) and
 notifications (`/onboarding/notifications`: what MealQuest notifies about,
 the iOS install hint, "Turn on notifications" and "Maybe later"). Either
 button sends `PATCH /api/v1/settings/household` with
 `{"onboarding_completed": true}`; the server sets `onboarding_completed_at`
 to the time of that update (keeping the first time if it is already set;
 the field itself is read-only and `false` is refused) and the app goes Home.
+Completing needs at least three Regulars (`household.MinRegulars`); with
+fewer the server answers 400 `invalid_settings` naming
+`onboarding_completed` and changes nothing. Step 3 can be reached with
+fewer — by its URL, or after another member removes a Regular — so it then
+shows the server's reason with an "Add Regulars" button back to step 2.
 Notification permission is never asked for on page load; until Feature 19
 wires Web Push, "Turn on notifications" asks for nothing. Offline on the saved pages the
 settings cannot be read (the service worker never caches `/api/v1/settings`),

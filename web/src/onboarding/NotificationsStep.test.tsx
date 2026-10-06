@@ -100,6 +100,7 @@ async function renderStep(enableNotifications?: EnableNotifications) {
               element={<NotificationsStep enableNotifications={enableNotifications} />}
             />
             <Route path="/" element={<h1>Home</h1>} />
+            <Route path="/onboarding/regulars" element={<h1>Regulars step</h1>} />
           </Routes>
         </AuthBootstrap>
       </ApiProviders>
@@ -254,6 +255,41 @@ describe('onboarding step 3', () => {
     await vi.waitFor(() => expect(server.held).toHaveLength(2))
     completed(server.held[1]!)
     expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument()
+  })
+})
+
+describe('onboarding step 3 with too few Regulars', () => {
+  it('says why and offers a way back to add Regulars', async () => {
+    const server = await renderStep()
+    fireEvent.click(later())
+    await vi.waitFor(() => expect(server.held).toHaveLength(1))
+    server.held[0]!.answer(
+      jsonResponse(400, {
+        error: {
+          code: 'invalid_settings',
+          message: 'invalid household settings: onboarding_completed: add at least 3 Regulars first (have 2)',
+          retryable: false,
+        },
+      }),
+    )
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not finish setting up: invalid household settings: onboarding_completed: add at least 3 Regulars first (have 2)',
+    )
+    const addRegulars = screen.getByRole('button', { name: 'Add Regulars' })
+    expectMinHitArea(addRegulars)
+    fireEvent.click(addRegulars)
+    expect(await screen.findByRole('heading', { level: 1, name: 'Regulars step' })).toBeInTheDocument()
+  })
+
+  it('offers no way back for any other refusal', async () => {
+    const server = await renderStep()
+    fireEvent.click(later())
+    await vi.waitFor(() => expect(server.held).toHaveLength(1))
+    server.held[0]!.answer(errorResponse(500, 'internal'))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not finish setting up: internal message')
+    expect(screen.queryByRole('button', { name: 'Add Regulars' })).not.toBeInTheDocument()
   })
 })
 

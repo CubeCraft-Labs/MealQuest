@@ -1,0 +1,136 @@
+{
+  "normalize": [
+    {
+      "name": "Easy Chicken Tikka-Masala!",
+      "want": "chicken tikka masala"
+    },
+    {
+      "name": "  Homemade   Chili ",
+      "want": "chili"
+    },
+    {
+      "name": "Grandma's Stew",
+      "want": "grandmas stew"
+    },
+    {
+      "name": "Grandma’s Stew",
+      "want": "grandmas stew"
+    },
+    {
+      "name": "İskender Kebab",
+      "want": "iskender kebab"
+    },
+    {
+      "name": "Paella à la Valenciana",
+      "want": "paella la valenciana"
+    },
+    {
+      "name": "Crème Brûlée",
+      "want": "creme brulee"
+    },
+    {
+      "name": "Crème Brûlée",
+      "want": "creme brulee"
+    },
+    {
+      "name": "Smørrebrød",
+      "want": "smorrebrod"
+    },
+    {
+      "name": "Pierogi z Łososiem",
+      "want": "pierogi z lososiem"
+    },
+    {
+      "name": "Straße Würstchen",
+      "want": "strasse wurstchen"
+    },
+    {
+      "name": "Œufs en Cocotte",
+      "want": "oeufs en cocotte"
+    },
+    {
+      "name": "Æbleskiver",
+      "want": "aebleskiver"
+    },
+    {
+      "name": "Phở Bò",
+      "want": "pho bo"
+    },
+    {
+      "name": "The Best Quick Recipe",
+      "want": ""
+    },
+    {
+      "name": "Chicken stir-fry",
+      "want": "chicken stir fry"
+    },
+    {
+      "name": "7-layer dip",
+      "want": "7 layer dip"
+    },
+    {
+      "name": "Ƈhili",
+      "want": "chili"
+    },
+    {
+      "name": "Ꞔarbanzo Stew",
+      "want": "carbanzo stew"
+    },
+    {
+      "name": "ΜΟΥΣΑΚΑΣ",
+      "want": "μουσακασ"
+    }
+  ],
+  "similar": [
+    {
+      "a": "Homemade chili",
+      "b": "Chili",
+      "want": true
+    },
+    {
+      "a": "Easy Spaghetti Bolognese",
+      "b": "spaghetti bolognese",
+      "want": true
+    },
+    {
+      "a": "Chicken stir fry",
+      "b": "Chicken stir-fry",
+      "want": true
+    },
+    {
+      "a": "Crème brûlée",
+      "b": "Creme brulee",
+      "want": true
+    },
+    {
+      "a": "Smørrebrød",
+      "b": "smorrebrod",
+      "want": true
+    },
+    {
+      "a": "Beef tacos",
+      "b": "Fish tacos",
+      "want": false
+    },
+    {
+      "a": "Chili",
+      "b": "White chicken chili",
+      "want": false
+    },
+    {
+      "a": "Pot roast",
+      "b": "Roast",
+      "want": false
+    },
+    {
+      "a": "The best",
+      "b": "Easy recipe",
+      "want": false
+    },
+    {
+      "a": "Ƈhili",
+      "b": "Chili",
+      "want": true
+    }
+  ]
+}

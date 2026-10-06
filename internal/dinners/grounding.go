@@ -76,14 +76,17 @@ var groundTimeout = GroundTimeout
 // runs past GroundTimeout; the dinner is left as it was.
 var ErrGroundTimeout = errors.New("dinners: grounding the recipe took too long")
 
-// GroundJob is the KindGroundDinner payload.
+// GroundJob is the KindGroundDinner payload: the dinner to ground and its
+// grounding_revision when the job was enqueued.
 type GroundJob struct {
 	DinnerID string `json:"dinner_id"`
+	Revision int64  `json:"revision"`
 }
 
 // groundResult is the KindGroundDinner result: the dinner's grounding
-// status once the job ends. It is not grounded when the dinner was
-// grounded by hand before the job finished.
+// status once the job ends. It is not grounded by this job when the dinner
+// was grounded by hand before the job finished, renamed (a later job
+// grounds it) or archived; the job then reports the status it found.
 type groundResult struct {
 	DinnerID        string `json:"dinner_id"`
 	GroundingStatus string `json:"grounding_status"`
@@ -93,26 +96,38 @@ func (r groundResult) PublicJSON() ([]byte, error) { return json.Marshal(r) }
 
 // runGroundJob grounds a pending dinner as its creation asked: its
 // recipe_url with GroundURL, else its name with Ground. Success records
-// the recipe, photo, method, minutes and difficulty with grounding_status
-// grounded; failure records grounding_status failed with its Reason, which
-// is also the job's failure code. Either is recorded only while the dinner
-// is still pending under the normalized name read here: a dinner grounded
-// by hand meanwhile is left as it is, and one renamed meanwhile is left
-// pending for the job its rename enqueued.
+// the recipe and photo with grounding_status grounded, and the recipe's
+// method, minutes and difficulty where a member has not set them; failure
+// records grounding_status failed with its Reason, which is also the job's
+// failure code. A dinner archived, no longer pending, or at a
+// grounding_revision other than p.Revision is not grounded at all, and
+// either result is recorded only while the dinner is still unarchived,
+// pending and at p.Revision: a dinner grounded by hand meanwhile is left as
+// it is, and one renamed or archived meanwhile is left pending — for the
+// job its rename enqueued, or for none. Archiving or renaming the dinner
+// stops the grounding where it is, so no further search, fetch, photo
+// download or model call is made for it.
 func (s *Service) runGroundJob(ctx context.Context, p GroundJob, _ func(groundResult) error) (groundResult, error) {
+	// Tracked before the dinner is read: an archive or rename committed
+	// after the read finds this job to stop.
+	groundCtx, done := s.trackGrounding(ctx, p.DinnerID, p.Revision)
+	defer done()
 	row, err := db.New(s.st.Reader).GetDinner(ctx, p.DinnerID)
 	if err != nil {
 		return groundResult{}, fmt.Errorf("dinners: ground: read %s: %w", p.DinnerID, err)
 	}
-	if row.GroundingStatus != GroundingPending {
+	if row.Status == StatusArchived || row.GroundingStatus != GroundingPending || row.GroundingRevision != p.Revision {
 		return groundResult{DinnerID: row.ID, GroundingStatus: row.GroundingStatus}, nil
 	}
 
 	var gr recipes.Grounded
 	if row.RecipeUrl.Valid {
-		gr, err = s.grounder.GroundURL(ctx, row.RecipeUrl.String)
+		gr, err = s.grounder.GroundURL(groundCtx, row.RecipeUrl.String)
 	} else {
-		gr, err = s.grounder.Ground(ctx, row.Name, row.Name)
+		gr, err = s.grounder.Ground(groundCtx, row.Name, row.Name)
+	}
+	if err != nil && ctx.Err() == nil && errors.Is(context.Cause(groundCtx), errGroundingStopped) {
+		return s.currentGrounding(ctx, row.ID)
 	}
 	if err != nil {
 		reason := reasonFor(err, row.RecipeUrl.Valid)
@@ -124,10 +139,10 @@ func (s *Service) runGroundJob(ctx context.Context, p GroundJob, _ func(groundRe
 		s.logger.InfoContext(ctx, "dinner grounding failed", "dinner_id", row.ID, "reason", reason)
 		write := context.WithoutCancel(ctx)
 		if _, failErr := db.New(s.st.Writer).FailPendingDinnerGrounding(write, db.FailPendingDinnerGroundingParams{
-			GroundingError: sql.NullString{String: reason, Valid: true},
-			UpdatedAt:      store.Now().String(),
-			ID:             row.ID,
-			NormalizedName: row.NormalizedName,
+			GroundingError:    sql.NullString{String: reason, Valid: true},
+			UpdatedAt:         store.Now().String(),
+			ID:                row.ID,
+			GroundingRevision: p.Revision,
 		}); failErr != nil {
 			return groundResult{}, fmt.Errorf("dinners: ground: record failure of %s: %w", row.ID, failErr)
 		}
@@ -138,32 +153,85 @@ func (s *Service) runGroundJob(ctx context.Context, p GroundJob, _ func(groundRe
 	}
 
 	n, err := db.New(s.st.Writer).GroundPendingDinner(ctx, db.GroundPendingDinnerParams{
-		RecipeID:       sql.NullString{String: gr.RecipeID, Valid: true},
-		PhotoID:        sql.NullString{String: gr.PhotoID, Valid: true},
-		Method:         sql.NullString{String: gr.Method, Valid: true},
-		MinutesTotal:   nullInt(gr.MinutesTotal),
-		Difficulty:     sql.NullString{String: gr.Difficulty, Valid: true},
-		UpdatedAt:      store.Now().String(),
-		ID:             row.ID,
-		NormalizedName: row.NormalizedName,
+		RecipeID:          sql.NullString{String: gr.RecipeID, Valid: true},
+		PhotoID:           sql.NullString{String: gr.PhotoID, Valid: true},
+		Method:            sql.NullString{String: gr.Method, Valid: true},
+		MinutesTotal:      nullInt(gr.MinutesTotal),
+		Difficulty:        sql.NullString{String: gr.Difficulty, Valid: true},
+		UpdatedAt:         store.Now().String(),
+		ID:                row.ID,
+		GroundingRevision: p.Revision,
 	})
 	if err != nil {
 		return groundResult{}, fmt.Errorf("dinners: ground: record %s: %w", row.ID, err)
 	}
 	if n == 0 {
-		cur, err := db.New(s.st.Reader).GetDinner(ctx, row.ID)
-		if err != nil {
-			return groundResult{}, fmt.Errorf("dinners: ground: read %s: %w", row.ID, err)
-		}
-		return groundResult{DinnerID: cur.ID, GroundingStatus: cur.GroundingStatus}, nil
+		return s.currentGrounding(ctx, row.ID)
 	}
 	return groundResult{DinnerID: row.ID, GroundingStatus: GroundingGrounded}, nil
 }
 
-// FailInterruptedGroundings fails, with ReasonInterrupted, every dinner
-// still pending whose KindGroundDinner job is no longer queued or running:
-// a previous process stopped before enqueuing the job or before its
-// handler recorded a result. Call it once at boot, after the job runner's
+// currentGrounding is the KindGroundDinner result of a job that did not
+// ground dinner id: the grounding status the dinner has now.
+func (s *Service) currentGrounding(ctx context.Context, id string) (groundResult, error) {
+	cur, err := db.New(s.st.Reader).GetDinner(ctx, id)
+	if err != nil {
+		return groundResult{}, fmt.Errorf("dinners: ground: read %s: %w", id, err)
+	}
+	return groundResult{DinnerID: cur.ID, GroundingStatus: cur.GroundingStatus}, nil
+}
+
+// errGroundingStopped is the cause a running KindGroundDinner job's
+// grounding is cancelled with when its dinner is archived or renamed.
+var errGroundingStopped = errors.New("dinners: grounding stopped: dinner archived or renamed")
+
+// runningGrounding is a KindGroundDinner job running for a dinner at
+// revision, with the cancel of its grounding.
+type runningGrounding struct {
+	revision int64
+	cancel   context.CancelCauseFunc
+}
+
+// trackGrounding returns a context for grounding dinnerID at revision that
+// stopGroundings cancels, and the func to call when the job ends.
+func (s *Service) trackGrounding(ctx context.Context, dinnerID string, revision int64) (context.Context, func()) {
+	groundCtx, cancel := context.WithCancelCause(ctx)
+	r := &runningGrounding{revision: revision, cancel: cancel}
+	s.groundingsMu.Lock()
+	if s.groundings[dinnerID] == nil {
+		s.groundings[dinnerID] = make(map[*runningGrounding]struct{})
+	}
+	s.groundings[dinnerID][r] = struct{}{}
+	s.groundingsMu.Unlock()
+	return groundCtx, func() {
+		s.groundingsMu.Lock()
+		delete(s.groundings[dinnerID], r)
+		if len(s.groundings[dinnerID]) == 0 {
+			delete(s.groundings, dinnerID)
+		}
+		s.groundingsMu.Unlock()
+		cancel(nil)
+	}
+}
+
+// stopGroundings cancels, with errGroundingStopped, the grounding of every
+// KindGroundDinner job running for dinnerID at a revision below below. Call
+// it once the change that makes those jobs stale is committed.
+func (s *Service) stopGroundings(dinnerID string, below int64) {
+	s.groundingsMu.Lock()
+	defer s.groundingsMu.Unlock()
+	for r := range s.groundings[dinnerID] {
+		if r.revision < below {
+			r.cancel(errGroundingStopped)
+		}
+	}
+}
+
+// FailInterruptedGroundings fails, with ReasonInterrupted, every unarchived
+// dinner still pending whose KindGroundDinner job is no longer queued or
+// running: a previous process stopped before enqueuing the job or before
+// its handler recorded a result. An archived dinner is left pending, since
+// archiving, not a restart, stopped its grounding. Call it once at boot, after the job runner's
 // Start has failed the jobs that process left running, so no dinner stays
 // pending with nothing left to ground it. It returns how many it failed.
 func (s *Service) FailInterruptedGroundings(ctx context.Context) (int64, error) {

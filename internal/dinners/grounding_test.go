@@ -2,11 +2,15 @@ package dinners_test
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"slices"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/llm"
@@ -52,6 +56,13 @@ func newEnv(t *testing.T) *env {
 func newUnstartedEnv(t *testing.T) *env {
 	t.Helper()
 	dataDir := t.TempDir()
+	return newUnstartedEnvOn(t, openStore(t, dataDir), dataDir)
+}
+
+// openStore opens the store in dataDir, closing it when the test ends. It
+// is not migrated.
+func openStore(t *testing.T, dataDir string) *store.Store {
+	t.Helper()
 	st, err := store.Open(t.Context(), dataDir)
 	if err != nil {
 		t.Fatal(err)
@@ -61,6 +72,13 @@ func newUnstartedEnv(t *testing.T) *env {
 			t.Error(err)
 		}
 	})
+	return st
+}
+
+// newUnstartedEnvOn is newUnstartedEnv over st, the store in dataDir,
+// which it migrates to the latest version.
+func newUnstartedEnvOn(t *testing.T, st *store.Store, dataDir string) *env {
+	t.Helper()
 	if err := store.Migrate(t.Context(), st.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
@@ -288,19 +306,16 @@ func TestManualFixWhilePendingIsKept(t *testing.T) {
 
 // TestRenameWhilePendingGroundsNewName: a Regular renamed while its job is
 // still grounding the old name never gets the old name's result, whether
-// that job succeeds or fails; the job the rename enqueues grounds the new
-// name.
+// the old name would be found or not: the rename stops that job where it
+// is, and the job the rename enqueues grounds the new name.
 func TestRenameWhilePendingGroundsNewName(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
 		oldName string
-		replies []llm.GenerateResult
 	}{
-		{"old name found", "Chicken curry", []llm.GenerateResult{
-			recipestest.NormalizedReply("stovetop", 40), recipestest.NormalizedReply("oven", 150),
-		}},
-		{"old name not found", "Unknown dish", []llm.GenerateResult{recipestest.NormalizedReply("oven", 150)}},
+		{"old name found", "Chicken curry"},
+		{"old name not found", "Unknown dish"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -308,9 +323,7 @@ func TestRenameWhilePendingGroundsNewName(t *testing.T) {
 			e := newEnv(t)
 			e.search.Results["Beef stew"] = []recipes.Candidate{{URL: stew}}
 			e.search.Gate = make(chan struct{})
-			for _, r := range tt.replies {
-				e.model.QueueGenerate(r)
-			}
+			e.model.QueueGenerate(recipestest.NormalizedReply("oven", 150))
 
 			c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr(tt.oldName)}, member)
 			if err != nil {
@@ -325,12 +338,13 @@ func TestRenameWhilePendingGroundsNewName(t *testing.T) {
 			if d.GroundingStatus != dinners.GroundingPending {
 				t.Fatalf("renamed = %+v, want still pending", d)
 			}
+			// The old name's job ends while its search is still held.
+			first := e.waitJob(t, *c.GroundingJobID)
+			if first.Status != jobs.StatusSucceeded || string(first.Result) != `{"dinner_id":"`+c.ID+`","grounding_status":"pending"}` {
+				t.Fatalf("old name's job = %+v (result %s), want succeeded leaving the dinner pending", first, first.Result)
+			}
 			close(e.search.Gate)
 
-			first := e.waitJob(t, *c.GroundingJobID)
-			if string(first.Result) == `{"dinner_id":"`+c.ID+`","grounding_status":"grounded"}` {
-				t.Fatalf("old name's job reported grounded: %+v (result %s)", first, first.Result)
-			}
 			row := e.waitGrounding(t, c.ID)
 			if row.GroundingStatus != dinners.GroundingGrounded {
 				t.Fatalf("dinner = %+v, want grounded for the new name", row)
@@ -345,8 +359,220 @@ func TestRenameWhilePendingGroundsNewName(t *testing.T) {
 			if got := e.search.Queries(); !slices.Equal(got, []string{tt.oldName, "Beef stew"}) {
 				t.Errorf("searched %q, want the old name then the new", got)
 			}
+			if got := len(e.model.Requests()); got != 1 {
+				t.Errorf("model called %d times, want once, for the new name only", got)
+			}
 		})
 	}
+}
+
+// TestRenameLinkWhilePendingGroundsNewName: a Regular added from a link and
+// renamed while still pending drops the link and grounds its new name, not
+// the old link's recipe and photo.
+func TestRenameLinkWhilePendingGroundsNewName(t *testing.T) {
+	t.Parallel()
+	e := newUnstartedEnv(t)
+	e.search.Results["Beef stew"] = []recipes.Candidate{{URL: stew}}
+	e.model.QueueGenerate(recipestest.NormalizedReply("oven", 150))
+
+	c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{RecipeURL: ptr(curryA)}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := e.svc.Update(t.Context(), c.ID, dinners.Patch{Name: ptr("Beef stew")}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.GroundingStatus != dinners.GroundingPending || d.RecipeURL != nil {
+		t.Fatalf("renamed = %+v, want still pending with no recipe_url", d)
+	}
+	e.start(t)
+
+	row := e.waitGrounding(t, c.ID)
+	if row.GroundingStatus != dinners.GroundingGrounded {
+		t.Fatalf("dinner = %+v, want grounded for the new name", row)
+	}
+	rec, err := db.New(e.st.Reader).GetRecipe(t.Context(), row.RecipeID.String)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.SourceUrl != stew || rec.PhotoID != row.PhotoID || row.Method.String != "oven" || row.MinutesTotal.Int64 != 150 {
+		t.Errorf("dinner = %+v recipe %s, want grounded in %s, not the old link %s", row, rec.SourceUrl, stew, curryA)
+	}
+	if got := e.search.Queries(); !slices.Equal(got, []string{"Beef stew"}) {
+		t.Errorf("searched %q, want only the new name", got)
+	}
+	if row.RecipeUrl.Valid {
+		t.Errorf("recipe_url = %q, want the old link dropped", row.RecipeUrl.String)
+	}
+	if _, err := db.New(e.st.Reader).GetRecipeBySourceURL(t.Context(), curryA); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("old link's recipe lookup err = %v, want it never grounded (sql.ErrNoRows)", err)
+	}
+}
+
+// queuedJob reads the payload of queued KindGroundDinner job id.
+func (e *env) queuedJob(t *testing.T, id string) dinners.GroundJob {
+	t.Helper()
+	var payload string
+	if err := e.st.Reader.QueryRowContext(t.Context(), `SELECT payload FROM jobs WHERE id = ?`, id).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	var p dinners.GroundJob
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// TestRenameBeforeJobStartsSkipsStaleJob: a Regular renamed before its
+// first job starts is grounded only by the job its rename enqueued. The
+// first job, though it would read the new name, does no work and writes
+// nothing, so its failure cannot leave the dinner "Needs a recipe" while
+// the rename's job finds a recipe.
+func TestRenameBeforeJobStartsSkipsStaleJob(t *testing.T) {
+	t.Parallel()
+	e := newUnstartedEnv(t)
+	e.search.Results["Beef stew"] = []recipes.Candidate{{URL: stew}}
+
+	c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr("Chicken curry")}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := e.queuedJob(t, *c.GroundingJobID)
+	if first.DinnerID != c.ID || first.Revision != e.dinner(t, c.ID).GroundingRevision {
+		t.Fatalf("first job = %+v, want dinner %s at its revision", first, c.ID)
+	}
+	if _, err := e.svc.Update(t.Context(), c.ID, dinners.Patch{Name: ptr("Beef stew")}, member); err != nil {
+		t.Fatal(err)
+	}
+	renamed := e.dinner(t, c.ID)
+	if renamed.GroundingRevision != first.Revision+1 {
+		t.Fatalf("revision after rename = %d, want %d", renamed.GroundingRevision, first.Revision+1)
+	}
+
+	// The first job would fail if it searched.
+	e.search.Err = recipes.ErrSearchRateLimited
+	status, err := e.svc.RunGroundJob(t.Context(), first)
+	if err != nil || status != dinners.GroundingPending {
+		t.Fatalf("first job = %q, %v; want pending, no error", status, err)
+	}
+	if q := e.search.Queries(); len(q) != 0 {
+		t.Errorf("first job searched %q, want no work for a stale revision", q)
+	}
+	if row := e.dinner(t, c.ID); row != renamed {
+		t.Fatalf("first job wrote the dinner: %+v, was %+v", row, renamed)
+	}
+
+	e.search.Err = nil
+	e.model.QueueGenerate(recipestest.NormalizedReply("oven", 150))
+	status, err = e.svc.RunGroundJob(t.Context(), dinners.GroundJob{DinnerID: c.ID, Revision: renamed.GroundingRevision})
+	if err != nil || status != dinners.GroundingGrounded {
+		t.Fatalf("rename's job = %q, %v; want grounded", status, err)
+	}
+	row := e.dinner(t, c.ID)
+	rec, err := db.New(e.st.Reader).GetRecipe(t.Context(), row.RecipeID.String)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.GroundingStatus != dinners.GroundingGrounded || rec.SourceUrl != stew {
+		t.Errorf("dinner = %+v recipe %s, want grounded in %s", row, rec.SourceUrl, stew)
+	}
+
+	// A stale job finishing last changes nothing either.
+	if status, err := e.svc.RunGroundJob(t.Context(), first); err != nil || status != dinners.GroundingGrounded {
+		t.Errorf("first job run last = %q, %v; want grounded reported, no error", status, err)
+	}
+	if after := e.dinner(t, c.ID); after != row {
+		t.Errorf("stale job changed the grounded dinner: %+v, was %+v", after, row)
+	}
+}
+
+// TestEditWhilePendingIsKept: a method or minutes a member saves while a
+// Regular is grounding is kept when grounding succeeds; what the member
+// did not set comes from the recipe.
+func TestEditWhilePendingIsKept(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	e.search.Gate = make(chan struct{})
+	e.model.QueueGenerate(recipestest.NormalizedReply("stovetop", 40))
+
+	c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr("Chicken curry")}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.waitQuery(t, "Chicken curry")
+	if _, err := e.svc.Update(t.Context(), c.ID, dinners.Patch{Method: ptr("grill"), MinutesTotal: ptr(15)}, member); err != nil {
+		t.Fatal(err)
+	}
+	close(e.search.Gate)
+
+	row := e.waitGrounding(t, c.ID)
+	if row.GroundingStatus != dinners.GroundingGrounded || !row.RecipeID.Valid || !row.PhotoID.Valid {
+		t.Fatalf("dinner = %+v, want grounded", row)
+	}
+	if row.Method.String != "grill" || row.MinutesTotal.Int64 != 15 || row.Difficulty.String != "easy" {
+		t.Errorf("dinner = %s, %d minutes, %s; want the member's grill and 15 minutes, the recipe's easy",
+			row.Method.String, row.MinutesTotal.Int64, row.Difficulty.String)
+	}
+}
+
+// TestArchiveWhilePendingStopsGrounding: a pending Regular archived before
+// its job starts is not searched for, and one archived while its job runs
+// is stopped there, with no page fetched or model called; neither ends up
+// grounded.
+func TestArchiveWhilePendingStopsGrounding(t *testing.T) {
+	t.Parallel()
+	t.Run("before the job starts", func(t *testing.T) {
+		t.Parallel()
+		e := newUnstartedEnv(t)
+		e.model.QueueGenerate(recipestest.NormalizedReply("stovetop", 40))
+		c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr("Chicken curry")}, member)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.svc.Archive(t.Context(), c.ID, member); err != nil {
+			t.Fatal(err)
+		}
+		e.start(t)
+		if job := e.waitJob(t, *c.GroundingJobID); job.Status != jobs.StatusSucceeded {
+			t.Fatalf("job = %+v, want succeeded with nothing to do", job)
+		}
+		if q := e.search.Queries(); len(q) != 0 {
+			t.Errorf("searched %q for an archived dinner", q)
+		}
+		if row := e.dinner(t, c.ID); row.Status != dinners.StatusArchived || row.GroundingStatus == dinners.GroundingGrounded || row.RecipeID.Valid {
+			t.Errorf("dinner = %+v, want archived and not grounded", row)
+		}
+	})
+	t.Run("while the job runs", func(t *testing.T) {
+		t.Parallel()
+		e := newEnv(t)
+		e.search.Gate = make(chan struct{})
+		e.model.QueueGenerate(recipestest.NormalizedReply("stovetop", 40))
+		c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr("Chicken curry")}, member)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.waitQuery(t, "Chicken curry")
+		if _, err := e.svc.Archive(t.Context(), c.ID, member); err != nil {
+			t.Fatal(err)
+		}
+		// The job ends while its search is still held: archiving stopped it.
+		job := e.waitJob(t, *c.GroundingJobID)
+		close(e.search.Gate)
+		if job.Status != jobs.StatusSucceeded || string(job.Result) != `{"dinner_id":"`+c.ID+`","grounding_status":"pending"}` {
+			t.Fatalf("job = %+v (result %s), want succeeded leaving the dinner pending", job, job.Result)
+		}
+		if got := e.pages.Fetched(); len(got) != 0 {
+			t.Errorf("fetched %q for an archived dinner", got)
+		}
+		if got := len(e.model.Requests()); got != 0 {
+			t.Errorf("model called %d times for an archived dinner", got)
+		}
+		if row := e.dinner(t, c.ID); row.Status != dinners.StatusArchived || row.GroundingStatus == dinners.GroundingGrounded || row.RecipeID.Valid {
+			t.Errorf("dinner = %+v, want archived and not grounded", row)
+		}
+	})
 }
 
 // TestRenameWhilePendingEnqueueFailure: a pending Regular renamed when the
@@ -489,6 +715,59 @@ func TestFixViaCandidate(t *testing.T) {
 	}
 	if rec.SourceUrl != curryB {
 		t.Errorf("recipe source = %s, want %s", rec.SourceUrl, curryB)
+	}
+}
+
+// TestFixReplacesPendingLink: fixing a Regular added from a link that held
+// no recipe drops that link, so it no longer blocks adding the link again,
+// while the link of the recipe chosen does.
+func TestFixReplacesPendingLink(t *testing.T) {
+	t.Parallel()
+	const lost = "https://gone.example/recipes/lamb-tagine"
+	tests := []struct {
+		name string
+		fix  dinners.Fix
+		// linkTaken is the recipe link the fixed dinner now has, if any.
+		linkTaken string
+	}{
+		{"candidate", dinners.Fix{CandidateID: ptr(curryB)}, curryB},
+		{"manual", dinners.Fix{Manual: &dinners.ManualRecipe{Ingredients: []string{"1 lamb"}, Minutes: ptr(90), Method: ptr("oven")}}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			e := newEnv(t)
+			c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{RecipeURL: ptr(lost)}, member)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if job := e.waitJob(t, *c.GroundingJobID); job.Status != jobs.StatusFailed {
+				t.Fatalf("job = %+v, want failed", job)
+			}
+			// Renamed, so only the link could repeat it.
+			if _, err := e.svc.Update(t.Context(), c.ID, dinners.Patch{Name: ptr("Weeknight dinner")}, member); err != nil {
+				t.Fatal(err)
+			}
+			e.model.QueueGenerate(recipestest.NormalizedReply("stovetop", 25))
+			d, err := e.svc.Ground(t.Context(), c.ID, tt.fix, member)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if d.RecipeURL != nil {
+				t.Errorf("recipe_url = %q after the fix, want the unusable link dropped", *d.RecipeURL)
+			}
+
+			if _, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{RecipeURL: ptr(lost)}, member); err != nil {
+				t.Errorf("adding the dropped link again: %v, want added", err)
+			}
+			if tt.linkTaken != "" {
+				_, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{RecipeURL: ptr(tt.linkTaken)}, member)
+				var dup *dinners.DuplicateError
+				if !errors.As(err, &dup) || dup.Existing.ID != c.ID {
+					t.Errorf("adding the fixed dinner's recipe link: err = %v, want a duplicate of %s", err, c.ID)
+				}
+			}
+		})
 	}
 }
 
@@ -664,6 +943,126 @@ func TestRestartFailsInterruptedGrounding(t *testing.T) {
 	}
 	if row := e.dinner(t, queued.ID); row.GroundingStatus != dinners.GroundingGrounded {
 		t.Errorf("queued dinner = %s, want grounded", row.GroundingStatus)
+	}
+}
+
+// TestRestartKeepsArchivedPendingDinner: a pending Regular archived while
+// its job runs stays pending, its job succeeded; the boot cleanup leaves it
+// as it is rather than failing it as interrupted.
+func TestRestartKeepsArchivedPendingDinner(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	e.search.Gate = make(chan struct{})
+	c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr("Chicken curry")}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.waitQuery(t, "Chicken curry")
+	if _, err := e.svc.Archive(t.Context(), c.ID, member); err != nil {
+		t.Fatal(err)
+	}
+	job := e.waitJob(t, *c.GroundingJobID)
+	close(e.search.Gate)
+	if job.Status != jobs.StatusSucceeded {
+		t.Fatalf("job = %+v, want succeeded", job)
+	}
+
+	// The database is now as the next boot finds it.
+	n, err := e.svc.FailInterruptedGroundings(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("failed %d dinners, want 0", n)
+	}
+	if row := e.dinner(t, c.ID); row.Status != dinners.StatusArchived ||
+		row.GroundingStatus != dinners.GroundingPending || row.GroundingError.Valid {
+		t.Errorf("dinner = %s, %s (%s), want archived and pending with no error",
+			row.Status, row.GroundingStatus, row.GroundingError.String)
+	}
+}
+
+// TestUpgradeKeepsLegacyQueuedGrounding: a pending Regular whose
+// ground_dinner job was queued before migration 0010, so its payload has
+// no revision, is not failed as interrupted at the first boot after the
+// upgrade; its job still grounds it. The upgrade starts either from 0009
+// or from a database that has already applied 0010.
+func TestUpgradeKeepsLegacyQueuedGrounding(t *testing.T) {
+	t.Parallel()
+	for name, below := range map[string]string{
+		"from 0009": "0010",
+		"from 0010": "0011",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			upgradeWithLegacyQueuedGrounding(t, below)
+		})
+	}
+}
+
+// upgradeWithLegacyQueuedGrounding migrates a database to every migration
+// named before below, adds a pending Regular with a queued ground_dinner
+// job whose payload has no revision, then boots on the latest migrations.
+func upgradeWithLegacyQueuedGrounding(t *testing.T, below string) {
+	ctx := t.Context()
+	dataDir := t.TempDir()
+	st := openStore(t, dataDir)
+	before := fstest.MapFS{}
+	files, err := fs.Glob(migrations.FS, "*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range files {
+		if name >= below {
+			continue
+		}
+		body, err := fs.ReadFile(migrations.FS, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[name] = &fstest.MapFile{Data: body}
+	}
+	if err := store.Migrate(ctx, st.Writer, before); err != nil {
+		t.Fatal(err)
+	}
+	now := store.Now().String()
+	if _, err := st.Writer.ExecContext(ctx, `INSERT INTO dinners
+		(id, name, normalized_name, status, origin, is_favorite, grounding_status, updated_by, created_at, updated_at)
+		VALUES ('dinner-1', 'Chicken curry', 'chicken curry', 'regular', 'regular', 0, 'pending', ?, ?, ?)`,
+		member, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Writer.ExecContext(ctx, `INSERT INTO jobs (id, kind, status, payload, created_at, updated_at)
+		VALUES ('job-1', ?, 'queued', '{"dinner_id":"dinner-1"}', ?, ?)`,
+		dinners.KindGroundDinner, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// Boot: migrate, start the runner, then fail interrupted groundings. The
+	// search is held, so the job cannot finish before the cleanup runs.
+	e := newUnstartedEnvOn(t, st, dataDir)
+	e.search.Gate = make(chan struct{})
+	e.model.QueueGenerate(recipestest.NormalizedReply("stovetop", 40))
+	if p := e.queuedJob(t, "job-1"); p != (dinners.GroundJob{DinnerID: "dinner-1", Revision: 0}) {
+		t.Errorf("migrated payload = %+v, want dinner-1 at revision 0", p)
+	}
+	e.start(t)
+	n, err := e.svc.FailInterruptedGroundings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("failed %d dinners, want 0", n)
+	}
+	if row := e.dinner(t, "dinner-1"); row.GroundingStatus != dinners.GroundingPending {
+		t.Fatalf("dinner = %s (%s), want still pending", row.GroundingStatus, row.GroundingError.String)
+	}
+	close(e.search.Gate)
+	if job := e.waitJob(t, "job-1"); job.Status != jobs.StatusSucceeded {
+		t.Fatalf("job = %+v", job)
+	}
+	if row := e.dinner(t, "dinner-1"); row.GroundingStatus != dinners.GroundingGrounded {
+		t.Errorf("dinner = %s, want grounded", row.GroundingStatus)
 	}
 }
 

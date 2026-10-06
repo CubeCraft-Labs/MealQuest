@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { Plus } from 'lucide-react'
 import { useNavigate } from 'react-router'
 import { useAddRegular, useRegulars, useRemoveRegular, type Regular } from '../dinners/api.ts'
+import { similarNames } from '../dinners/names.ts'
 import { useRefusals } from '../dinners/useRefusals.ts'
 import { Button } from '../ui/Button.tsx'
 import { Chip } from '../ui/Chip.tsx'
@@ -16,7 +17,8 @@ import styles from './Onboarding.module.css'
 // household moves on.
 export const MIN_REGULARS = 3
 
-// commonPicks are offered as one-tap Regulars until the household has them.
+// commonPicks are offered as one-tap Regulars until the household has them,
+// or a Regular the server would count as the same dinner.
 export const commonPicks = [
   'Beef tacos',
   'Spaghetti bolognese',
@@ -27,10 +29,6 @@ export const commonPicks = [
   'Burgers',
   'Fried rice',
 ]
-
-function sameName(a: string, b: string): boolean {
-  return a.trim().toLowerCase() === b.trim().toLowerCase()
-}
 
 // RegularsStep is onboarding step 2, handoff mock 1h: the household adds
 // the dinners it makes on repeat. Each add and remove shows at once and is
@@ -43,7 +41,7 @@ export function RegularsStep() {
   const [draft, setDraft] = useState('')
   const { refusals, track } = useRefusals()
   const list = regulars.data ?? []
-  const picks = commonPicks.filter((pick) => !list.some((regular) => sameName(regular.name, pick)))
+  const picks = commonPicks.filter((pick) => !list.some((regular) => similarNames(regular.name, pick)))
   // Next waits for every add to be answered, so a refused add's error shows
   // here and an add the server takes back never counts towards the three.
   const adding = list.some((regular) => regular.pending)

@@ -146,6 +146,14 @@ describe('onboarding step 2 (mock 1h)', () => {
     expect(declaredStyle(pills[0]!).height).toBe('6px')
   })
 
+  it('does not offer a common pick the server would refuse as a duplicate of a Regular', async () => {
+    await regularsStep([dinnerBody('d1', 'Homemade chili'), dinnerBody('d2', 'Easy Chicken Stir Fry')])
+
+    expect(screen.queryByRole('button', { name: 'Add Chili' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add Chicken stir-fry' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add Beef tacos' })).toBeInTheDocument()
+  })
+
   it('sizes the input pill, "+" button, picks and Next as the mock does', async () => {
     await regularsStep()
     expect(hitArea(input()).height).toBe(48)

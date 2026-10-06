@@ -206,6 +206,43 @@ describe('onboarding step 2 (mock 1h)', () => {
     expect(regularNames()).toEqual(['Chili'])
   })
 
+  it('says why an add was refused while another add is still unanswered', async () => {
+    const server = await regularsStep()
+    fireEvent.click(screen.getByRole('button', { name: 'Add Burgers' }))
+    await vi.waitFor(() => expect(server.held).toHaveLength(1))
+    fireEvent.click(screen.getByRole('button', { name: 'Add Chili' }))
+    await vi.waitFor(() => expect(server.held).toHaveLength(2))
+    expect(regularNames()).toEqual(['Burgers', 'Chili'])
+
+    server.held[0]!.answer(errorResponse(409, 'duplicate_dinner'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not add Burgers: duplicate_dinner message')
+    expect(regularNames()).toEqual(['Chili'])
+
+    // The other add's answer does not hide the refusal.
+    created(server, server.held[1]!, 'd1')
+    await screen.findByRole('button', { name: 'Remove Chili' })
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not add Burgers: duplicate_dinner message')
+    expect(regularNames()).toEqual(['Chili'])
+  })
+
+  it('says why each of two overlapping adds was refused', async () => {
+    const server = await regularsStep()
+    fireEvent.click(screen.getByRole('button', { name: 'Add Burgers' }))
+    await vi.waitFor(() => expect(server.held).toHaveLength(1))
+    fireEvent.click(screen.getByRole('button', { name: 'Add Chili' }))
+    await vi.waitFor(() => expect(server.held).toHaveLength(2))
+
+    server.held[0]!.answer(errorResponse(409, 'duplicate_dinner'))
+    server.held[1]!.answer(errorResponse(500, 'internal'))
+    await vi.waitFor(() =>
+      expect(screen.getAllByRole('alert').map((alert) => alert.textContent)).toEqual([
+        'Could not add Burgers: duplicate_dinner message',
+        'Could not add Chili: internal message',
+      ]),
+    )
+    expect(regularNames()).toEqual([])
+  })
+
   it('removes a Regular at once and archives it on the server', async () => {
     const server = await regularsStep([
       { id: 'd1', name: 'Beef tacos' },
@@ -232,6 +269,30 @@ describe('onboarding step 2 (mock 1h)', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not remove Beef tacos: internal message')
     expect(regularNames()).toEqual(['Beef tacos', 'Pizza night'])
+  })
+
+  it('puts a refused removal back and says why while another removal is still unanswered', async () => {
+    const server = await regularsStep([
+      { id: 'd1', name: 'Beef tacos' },
+      { id: 'd2', name: 'Pizza night' },
+      { id: 'd3', name: 'Chili' },
+    ])
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Beef tacos' }))
+    await vi.waitFor(() => expect(server.held).toHaveLength(1))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Pizza night' }))
+    await vi.waitFor(() => expect(server.held).toHaveLength(2))
+    expect(regularNames()).toEqual(['Chili'])
+
+    server.held[0]!.answer(errorResponse(500, 'internal'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not remove Beef tacos: internal message')
+    expect(regularNames()).toEqual(['Beef tacos', 'Chili'])
+
+    // The other removal's answer does not hide the refusal.
+    server.regulars.splice(1, 1)
+    server.held[1]!.answer(new Response(null, { status: 204 }))
+    await vi.waitFor(() => expect(server.fetchMock.mock.calls.filter(([path]) => String(path).includes('status=regular'))).toHaveLength(2))
+    await vi.waitFor(() => expect(regularNames()).toEqual(['Beef tacos', 'Chili']))
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not remove Beef tacos: internal message')
   })
 
   it('enables "Next: notifications" once the server has saved 3 Regulars', async () => {

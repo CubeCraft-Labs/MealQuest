@@ -31,6 +31,10 @@ function sameName(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase()
 }
 
+// Refusal is one add or removal the server turned down. key names the
+// change, so trying it again replaces its refusal and no other.
+type Refusal = { key: string; text: string }
+
 // RegularsStep is onboarding step 2, handoff mock 1h: the household adds
 // the dinners it makes on repeat. Each add and remove shows at once and is
 // undone if the server refuses it.
@@ -40,6 +44,10 @@ export function RegularsStep() {
   const add = useAddRegular()
   const remove = useRemoveRegular()
   const [draft, setDraft] = useState('')
+  // Each change keeps its own refusal: the mutation hooks only report their
+  // latest change, which would hide a refusal while another change is in
+  // flight.
+  const [refusals, setRefusals] = useState<Refusal[]>([])
   const list = regulars.data ?? []
   const picks = commonPicks.filter((pick) => !list.some((regular) => sameName(regular.name, pick)))
   // Next waits for every add to be answered, so a refused add's error shows
@@ -47,11 +55,29 @@ export function RegularsStep() {
   const adding = list.some((regular) => regular.pending)
   const saved = list.filter((regular) => !regular.pending).length
 
+  function track(key: string, what: string, change: Promise<unknown>) {
+    setRefusals((all) => all.filter((refusal) => refusal.key !== key))
+    change.catch((error: Error) => {
+      setRefusals((all) => [
+        ...all.filter((refusal) => refusal.key !== key),
+        { key, text: `Could not ${what}: ${error.message}` },
+      ])
+    })
+  }
+
+  function addRegular(name: string) {
+    track(`add:${name.toLowerCase()}`, `add ${name}`, add.mutateAsync(name))
+  }
+
+  function removeRegular(regular: Regular) {
+    track(`remove:${regular.id}`, `remove ${regular.name}`, remove.mutateAsync(regular))
+  }
+
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const name = draft.trim()
     if (name === '') return
-    add.mutate(name)
+    addRegular(name)
     setDraft('')
   }
 
@@ -89,16 +115,11 @@ export function RegularsStep() {
           </span>
         </button>
       </form>
-      {add.isError && (
-        <p role="alert" className={styles.problem}>
-          Could not add {add.variables}: {add.error.message}
+      {refusals.map((refusal) => (
+        <p key={refusal.key} role="alert" className={styles.problem}>
+          {refusal.text}
         </p>
-      )}
-      {remove.isError && (
-        <p role="alert" className={styles.problem}>
-          Could not remove {remove.variables.name}: {remove.error.message}
-        </p>
-      )}
+      ))}
 
       <h2 className={styles.groupLabel}>Your regulars · {list.length}</h2>
       {regulars.isPending && <Skeleton className={styles.status} />}
@@ -117,7 +138,7 @@ export function RegularsStep() {
                 label={regular.name}
                 className={regular.pending && styles.pending}
                 aria-busy={regular.pending}
-                onRemove={regular.pending ? undefined : () => remove.mutate(regular)}
+                onRemove={regular.pending ? undefined : () => removeRegular(regular)}
               />
             </li>
           ))}
@@ -130,7 +151,7 @@ export function RegularsStep() {
           <ul className={styles.chips}>
             {picks.map((pick) => (
               <li key={pick}>
-                <button type="button" className={styles.pick} aria-label={`Add ${pick}`} onClick={() => add.mutate(pick)}>
+                <button type="button" className={styles.pick} aria-label={`Add ${pick}`} onClick={() => addRegular(pick)}>
                   <span aria-hidden="true">+</span>
                   {pick}
                 </button>

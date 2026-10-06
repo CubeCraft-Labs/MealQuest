@@ -234,7 +234,7 @@ describe('onboarding step 2 (mock 1h)', () => {
     expect(regularNames()).toEqual(['Beef tacos', 'Pizza night'])
   })
 
-  it('enables "Next: notifications" once there are 3 Regulars', async () => {
+  it('enables "Next: notifications" once the server has saved 3 Regulars', async () => {
     const server = await regularsStep([
       { id: 'd1', name: 'Beef tacos' },
       { id: 'd2', name: 'Pizza night' },
@@ -242,10 +242,13 @@ describe('onboarding step 2 (mock 1h)', () => {
     expect(next()).toBeDisabled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Add Burgers' }))
-    await vi.waitFor(() => expect(next()).toBeEnabled())
+    await screen.findByRole('heading', { level: 2, name: 'Your regulars · 3' })
+    // The third chip shows at once, but Next waits for the server.
+    expect(next()).toBeDisabled()
     await vi.waitFor(() => expect(server.held).toHaveLength(1))
     created(server, server.held[0]!, 'd3')
     await screen.findByRole('button', { name: 'Remove Burgers' })
+    expect(next()).toBeEnabled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove Pizza night' }))
     await vi.waitFor(() => expect(next()).toBeDisabled())
@@ -255,5 +258,38 @@ describe('onboarding step 2 (mock 1h)', () => {
 
     fireEvent.click(next())
     expect(await screen.findByText('Step 3 of 3')).toBeInTheDocument()
+  })
+
+  it('keeps "Next: notifications" disabled when the third add is refused', async () => {
+    const server = await regularsStep([
+      { id: 'd1', name: 'Beef tacos' },
+      { id: 'd2', name: 'Pizza night' },
+    ])
+    fireEvent.click(screen.getByRole('button', { name: 'Add Burgers' }))
+    await screen.findByRole('heading', { level: 2, name: 'Your regulars · 3' })
+    expect(next()).toBeDisabled()
+
+    await vi.waitFor(() => expect(server.held).toHaveLength(1))
+    server.held[0]!.answer(errorResponse(409, 'duplicate_dinner'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not add Burgers: duplicate_dinner message')
+    expect(regularNames()).toEqual(['Beef tacos', 'Pizza night'])
+    expect(next()).toBeDisabled()
+  })
+
+  it('keeps "Next: notifications" disabled while a fourth add is unanswered', async () => {
+    const server = await regularsStep([
+      { id: 'd1', name: 'Beef tacos' },
+      { id: 'd2', name: 'Pizza night' },
+      { id: 'd3', name: 'Chili' },
+    ])
+    expect(next()).toBeEnabled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add Burgers' }))
+    await screen.findByRole('heading', { level: 2, name: 'Your regulars · 4' })
+    expect(next()).toBeDisabled()
+    await vi.waitFor(() => expect(server.held).toHaveLength(1))
+    server.held[0]!.answer(errorResponse(409, 'duplicate_dinner'))
+    await screen.findByRole('alert')
+    expect(next()).toBeEnabled()
   })
 })

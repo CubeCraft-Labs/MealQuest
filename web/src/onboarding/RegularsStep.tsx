@@ -11,7 +11,8 @@ import { TextInput } from '../ui/TextInput.tsx'
 import { OnboardingStep } from './OnboardingStep.tsx'
 import styles from './Onboarding.module.css'
 
-// MIN_REGULARS is how many Regulars the household adds before moving on.
+// MIN_REGULARS is how many Regulars the server has saved before the
+// household moves on.
 export const MIN_REGULARS = 3
 
 // commonPicks are offered as one-tap Regulars until the household has them.
@@ -41,6 +42,10 @@ export function RegularsStep() {
   const [draft, setDraft] = useState('')
   const list = regulars.data ?? []
   const picks = commonPicks.filter((pick) => !list.some((regular) => sameName(regular.name, pick)))
+  // Next waits for every add to be answered, so a refused add's error shows
+  // here and an add the server takes back never counts towards the three.
+  const adding = list.some((regular) => regular.pending)
+  const saved = list.filter((regular) => !regular.pending).length
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -57,7 +62,7 @@ export function RegularsStep() {
       action={
         <Button
           className={styles.action}
-          disabled={list.length < MIN_REGULARS}
+          disabled={adding || saved < MIN_REGULARS}
           onClick={() => void navigate('/onboarding/notifications')}
         >
           Next: notifications

@@ -16,6 +16,17 @@ export const AI_SETTINGS = {
   updated_at: '2026-10-01T15:00:00.000Z',
 }
 
+// RECIPE_SEARCH_SETTINGS is a GET /api/v1/settings/recipe-search body: the
+// SearXNG sidecar, no Brave key stored.
+export const RECIPE_SEARCH_SETTINGS = {
+  provider: 'searxng',
+  base_url: 'http://searxng:8080',
+  default_base_url: 'http://searxng:8080',
+  api_key_set: false,
+  api_key_last4: null,
+  updated_at: '2026-10-01T15:00:00.000Z',
+}
+
 // SETTINGS_API answers the settings home's requests, for stubFetchByPath, as
 // today's server does: the dinners, Google Calendar and notifications status
 // endpoints do not exist yet.
@@ -25,6 +36,7 @@ export const SETTINGS_API = {
   '/api/v1/settings/notifications': () => errorResponse(404, 'not_found'),
   '/api/v1/settings/household': () => jsonResponse(200, { timezone: 'America/New_York', dinner_time: '17:30' }),
   '/api/v1/settings/ai': () => jsonResponse(200, AI_SETTINGS),
+  '/api/v1/settings/recipe-search': () => jsonResponse(200, RECIPE_SEARCH_SETTINGS),
 }
 
 // ApiProviders gives the pages under test what App gives them: an API client

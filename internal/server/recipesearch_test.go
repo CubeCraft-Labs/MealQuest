@@ -46,7 +46,7 @@ func TestRecipeSearchSettingsAPI(t *testing.T) {
 	}
 
 	rec, body := call(http.MethodGet, recipeSearchPath, "")
-	if rec.Code != http.StatusOK || body["provider"] != nil || body["api_key_set"] != false {
+	if def, ok := body["default_base_url"]; rec.Code != http.StatusOK || body["provider"] != nil || body["api_key_set"] != false || !ok || def != nil {
 		t.Errorf("GET unconfigured = %d %v", rec.Code, body)
 	}
 	rec, body = call(http.MethodPost, recipeSearchTestPath, "")

@@ -1,9 +1,9 @@
 import { render, screen, within } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppRoutes } from '../App.tsx'
 import { ApiProviders, SETTINGS_API } from '../test/ApiProviders.tsx'
 import { declaredStyle, outerSize } from '../test/cssRules.ts'
+import { InDataRouter } from '../test/dataRouter.tsx'
 import { expectMinHitArea } from '../test/hitArea.ts'
 import { stubFetchByPath } from '../test/fetchStub.ts'
 import { mockViewport } from '../test/matchMedia.ts'
@@ -25,11 +25,11 @@ function renderAt(path: string, width: number) {
   const resize = mockViewport(width)
   stubFetchByPath(SETTINGS_API)
   render(
-    <MemoryRouter initialEntries={[path]}>
+    <InDataRouter path={path}>
       <ApiProviders>
         <AppRoutes />
       </ApiProviders>
-    </MemoryRouter>,
+    </InDataRouter>,
   )
   return resize
 }

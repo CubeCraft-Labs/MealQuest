@@ -79,9 +79,9 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	search, err := recipes.NewSearchSettingsService(db, box)
+	search, err := recipes.NewSearchSettingsService(db, box, cfg.SearXNGURL)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s: %w", config.EnvSearXNGURL, err)
 	}
 
 	ai, err := aisettings.New(db, box, cfg.PublicURL.String())

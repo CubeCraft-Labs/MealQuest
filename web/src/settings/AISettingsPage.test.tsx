@@ -4,11 +4,12 @@ import { Route, Routes, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
-import { AI_SETTINGS } from '../test/ApiProviders.tsx'
+import { AI_SETTINGS, RECIPE_SEARCH_SETTINGS } from '../test/ApiProviders.tsx'
 import { InDataRouter } from '../test/dataRouter.tsx'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
-import { AISettingsPage, formatVerifiedDate, maskedKey } from './AISettingsPage.tsx'
+import { AISettingsPage, formatVerifiedDate } from './AISettingsPage.tsx'
+import { maskedKey } from './api.ts'
 
 const MODELS = {
   models: [
@@ -30,6 +31,7 @@ function stubAPI(responders: Record<string, Responder> = {}): Mock<typeof fetch>
     'GET /api/v1/me': () => jsonResponse(200, ME),
     'GET /api/v1/settings/ai': () => jsonResponse(200, AI_SETTINGS),
     'GET /api/v1/settings/ai/models': () => jsonResponse(200, MODELS),
+    'GET /api/v1/settings/recipe-search': () => jsonResponse(200, RECIPE_SEARCH_SETTINGS),
     ...responders,
   }
   const fetchMock = vi.fn<typeof fetch>((input, init) => {
@@ -416,6 +418,277 @@ describe('AISettingsPage', () => {
       slider(),
       screen.getByRole('button', { name: 'Reset' }),
       save(),
+    ]) {
+      expectMinHitArea(control)
+    }
+  })
+})
+
+// apiError is an API error response carrying message.
+function apiError(status: number, code: string, message: string): Response {
+  return jsonResponse(status, { error: { code, message, retryable: false } })
+}
+
+const BRAVE_SETTINGS = { ...RECIPE_SEARCH_SETTINGS, provider: 'brave', api_key_set: true, api_key_last4: 'b7c2' }
+
+describe('Recipe search card', () => {
+  const card = () => screen.getByRole('region', { name: 'Recipe search' })
+  const searxng = () => within(card()).getByRole('radio', { name: 'SearXNG' })
+  const brave = () => within(card()).getByRole('radio', { name: 'Brave' })
+  const url = () => within(card()).getByRole('textbox', { name: 'SearXNG URL' })
+  const saveSearch = () => within(card()).getByRole('button', { name: 'Save recipe search' })
+  const testSearch = () => within(card()).getByRole('button', { name: 'Test' })
+
+  async function renderCard() {
+    await renderPage()
+    await within(card()).findByRole('radiogroup', { name: 'Recipe search provider' })
+  }
+
+  // addKey enters key in the Brave key sheet.
+  function addKey(button: string, key: string) {
+    fireEvent.click(within(card()).getByRole('button', { name: button }))
+    const sheet = screen.getByRole('dialog')
+    fireEvent.change(within(sheet).getByLabelText('Brave API key'), { target: { value: key } })
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Use this key' }))
+  }
+
+  it('shows the saved SearXNG URL', async () => {
+    stubAPI()
+    await renderCard()
+    expect(searxng()).toHaveAttribute('aria-checked', 'true')
+    expect(url()).toHaveValue('http://searxng:8080')
+    expect(within(card()).queryByText('Brave API key')).not.toBeInTheDocument()
+    expect(saveSearch()).toBeDisabled()
+    expect(testSearch()).toBeEnabled()
+  })
+
+  const UNCONFIGURED = {
+    provider: null,
+    base_url: null,
+    default_base_url: 'http://searxng:8080',
+    api_key_set: false,
+    api_key_last4: null,
+    updated_at: null,
+  }
+
+  it('starts on SearXNG with the deployment\'s URL before recipe search is set up, and saves it', async () => {
+    const fetchMock = stubAPI({
+      'GET /api/v1/settings/recipe-search': () => jsonResponse(200, UNCONFIGURED),
+      'PATCH /api/v1/settings/recipe-search': (body) =>
+        jsonResponse(200, { ...RECIPE_SEARCH_SETTINGS, ...(body as object) }),
+    })
+    await renderCard()
+    expect(searxng()).toHaveAttribute('aria-checked', 'true')
+    expect(url()).toHaveValue('http://searxng:8080')
+    expect(testSearch()).toBeDisabled()
+    expect(saveSearch()).toBeEnabled()
+    fireEvent.click(saveSearch())
+    expect(await within(card()).findByText('Recipe search saved.')).toBeInTheDocument()
+    expect(sent(fetchMock)).toEqual([
+      {
+        request: 'PATCH /api/v1/settings/recipe-search',
+        body: { provider: 'searxng', base_url: 'http://searxng:8080' },
+      },
+    ])
+  })
+
+  it('starts with an empty URL when the deployment names no SearXNG', async () => {
+    stubAPI({
+      'GET /api/v1/settings/recipe-search': () => jsonResponse(200, { ...UNCONFIGURED, default_base_url: null }),
+    })
+    await renderCard()
+    expect(url()).toHaveValue('')
+  })
+
+  it('shows the saved URL, not the deployment\'s', async () => {
+    stubAPI({
+      'GET /api/v1/settings/recipe-search': () =>
+        jsonResponse(200, { ...RECIPE_SEARCH_SETTINGS, base_url: 'https://search.example' }),
+    })
+    await renderCard()
+    expect(url()).toHaveValue('https://search.example')
+    expect(saveSearch()).toBeDisabled()
+  })
+
+  it('switches providers, keeping each provider\'s field', async () => {
+    stubAPI()
+    await renderCard()
+    fireEvent.change(url(), { target: { value: 'https://search.example' } })
+    fireEvent.click(brave())
+    expect(brave()).toHaveAttribute('aria-checked', 'true')
+    expect(within(card()).queryByRole('textbox', { name: 'SearXNG URL' })).not.toBeInTheDocument()
+    expect(within(card()).getByText('No key stored')).toBeInTheDocument()
+    expect(within(card()).getByRole('button', { name: 'Add key' })).toBeInTheDocument()
+
+    fireEvent.click(searxng())
+    expect(url()).toHaveValue('https://search.example')
+  })
+
+  it('saves a new SearXNG URL', async () => {
+    const fetchMock = stubAPI({
+      'PATCH /api/v1/settings/recipe-search': (body) =>
+        jsonResponse(200, { ...RECIPE_SEARCH_SETTINGS, ...(body as object) }),
+    })
+    await renderCard()
+    fireEvent.change(url(), { target: { value: 'https://search.example' } })
+    expect(testSearch()).toBeDisabled()
+    expect(within(card()).getByText('Save your changes to test them.')).toBeInTheDocument()
+    fireEvent.click(saveSearch())
+    expect(await within(card()).findByText('Recipe search saved.')).toBeInTheDocument()
+    expect(sent(fetchMock)).toEqual([
+      { request: 'PATCH /api/v1/settings/recipe-search', body: { base_url: 'https://search.example' } },
+    ])
+    expect(saveSearch()).toBeDisabled()
+    expect(testSearch()).toBeEnabled()
+  })
+
+  it('saves a switch to Brave with its key, then shows only the key\'s last four characters', async () => {
+    const fetchMock = stubAPI({ 'PATCH /api/v1/settings/recipe-search': () => jsonResponse(200, BRAVE_SETTINGS) })
+    await renderCard()
+    fireEvent.click(brave())
+    addKey('Add key', 'BSA-secret-key-b7c2')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(within(card()).getByText('••••••••b7c2')).toBeInTheDocument()
+    expect(within(card()).getByText('New key not saved yet')).toBeInTheDocument()
+    expect(document.body).not.toHaveTextContent('BSA-secret-key-b7c2')
+
+    fireEvent.click(saveSearch())
+    expect(await within(card()).findByText('Recipe search saved.')).toBeInTheDocument()
+    expect(sent(fetchMock)).toEqual([
+      { request: 'PATCH /api/v1/settings/recipe-search', body: { provider: 'brave', api_key: 'BSA-secret-key-b7c2' } },
+    ])
+    expect(within(card()).getByText('••••••••b7c2')).toBeInTheDocument()
+    expect(within(card()).queryByText('New key not saved yet')).not.toBeInTheDocument()
+    expect(within(card()).getByRole('button', { name: 'Replace' })).toBeInTheDocument()
+    expect(document.body).not.toHaveTextContent('BSA-secret-key-b7c2')
+  })
+
+  it('masks a stored Brave key and replaces it', async () => {
+    const fetchMock = stubAPI({
+      'GET /api/v1/settings/recipe-search': () => jsonResponse(200, BRAVE_SETTINGS),
+      'PATCH /api/v1/settings/recipe-search': () => jsonResponse(200, { ...BRAVE_SETTINGS, api_key_last4: '9d0e' }),
+    })
+    await renderCard()
+    expect(brave()).toHaveAttribute('aria-checked', 'true')
+    expect(within(card()).getByText('••••••••b7c2')).toBeInTheDocument()
+    expect(saveSearch()).toBeDisabled()
+
+    addKey('Replace', 'BSA-other-key-9d0e')
+    fireEvent.click(within(card()).getByRole('button', { name: 'Discard' }))
+    expect(within(card()).getByText('••••••••b7c2')).toBeInTheDocument()
+    expect(saveSearch()).toBeDisabled()
+
+    addKey('Replace', 'BSA-other-key-9d0e')
+    fireEvent.click(saveSearch())
+    expect(await within(card()).findByText('••••••••9d0e')).toBeInTheDocument()
+    expect(sent(fetchMock)).toEqual([
+      { request: 'PATCH /api/v1/settings/recipe-search', body: { api_key: 'BSA-other-key-9d0e' } },
+    ])
+  })
+
+  it('reports a save the server refuses', async () => {
+    stubAPI({
+      'PATCH /api/v1/settings/recipe-search': () =>
+        apiError(400, 'invalid_settings', 'invalid recipe search settings: api_key: must be at least 8 characters'),
+    })
+    await renderCard()
+    fireEvent.click(brave())
+    addKey('Add key', 'short')
+    fireEvent.click(saveSearch())
+    expect(await within(card()).findByRole('alert')).toHaveTextContent(
+      'Not saved: invalid recipe search settings: api_key: must be at least 8 characters.',
+    )
+  })
+
+  it('shows how many recipes the test found', async () => {
+    const fetchMock = stubAPI({
+      'POST /api/v1/settings/recipe-search/test': () =>
+        jsonResponse(200, { query: 'chicken tikka masala', count: 12 }),
+    })
+    await renderCard()
+    fireEvent.click(testSearch())
+    expect(await within(card()).findByText("Found 12 recipes for 'chicken tikka masala'")).toBeInTheDocument()
+    expect(sent(fetchMock)).toEqual([{ request: 'POST /api/v1/settings/recipe-search/test', body: undefined }])
+  })
+
+  it('shows the error when the test fails', async () => {
+    stubAPI({
+      'POST /api/v1/settings/recipe-search/test': () =>
+        apiError(502, 'search_failed', 'recipes: SearXNG answered 403 Forbidden'),
+    })
+    await renderCard()
+    fireEvent.click(testSearch())
+    expect(await within(card()).findByRole('alert')).toHaveTextContent(
+      'Test failed: recipes: SearXNG answered 403 Forbidden',
+    )
+  })
+
+  it('clears a test result when the settings are edited', async () => {
+    stubAPI({
+      'POST /api/v1/settings/recipe-search/test': () =>
+        jsonResponse(200, { query: 'chicken tikka masala', count: 12 }),
+    })
+    await renderCard()
+    fireEvent.click(testSearch())
+    expect(await within(card()).findByText("Found 12 recipes for 'chicken tikka masala'")).toBeInTheDocument()
+    fireEvent.change(url(), { target: { value: 'https://search.example' } })
+    expect(within(card()).getByText('Save your changes to test them.')).toBeInTheDocument()
+    expect(within(card()).queryByText(/Found 12 recipes/)).not.toBeInTheDocument()
+  })
+
+  it('clears a test error when the settings are edited', async () => {
+    stubAPI({
+      'POST /api/v1/settings/recipe-search/test': () =>
+        apiError(502, 'search_failed', 'recipes: SearXNG answered 403 Forbidden'),
+    })
+    await renderCard()
+    fireEvent.click(testSearch())
+    expect(await within(card()).findByRole('alert')).toHaveTextContent('Test failed')
+    fireEvent.click(brave())
+    expect(within(card()).getByText('Save your changes to test them.')).toBeInTheDocument()
+    expect(within(card()).queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('asks before leaving with an unsaved recipe search change', async () => {
+    stubAPI()
+    await renderCard()
+    fireEvent.change(url(), { target: { value: 'https://search.example' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Back to Settings' }))
+    expect(await screen.findByRole('dialog', { name: 'Leave without saving?' })).toBeInTheDocument()
+  })
+
+  it('does not count the suggested SearXNG URL as an unsaved change until it is edited', async () => {
+    stubAPI({ 'GET /api/v1/settings/recipe-search': () => jsonResponse(200, UNCONFIGURED) })
+    await renderCard()
+    const unload = () => {
+      const event = new Event('beforeunload', { cancelable: true })
+      act(() => void window.dispatchEvent(event))
+      return event.defaultPrevented
+    }
+    expect(saveSearch()).toBeEnabled()
+    expect(unload()).toBe(false)
+    fireEvent.change(url(), { target: { value: 'https://search.example' } })
+    expect(unload()).toBe(true)
+    fireEvent.change(url(), { target: { value: 'http://searxng:8080' } })
+    expect(unload()).toBe(false)
+  })
+
+  it('leaves the untouched first-use card without asking', async () => {
+    stubAPI({ 'GET /api/v1/settings/recipe-search': () => jsonResponse(200, UNCONFIGURED) })
+    await renderCard()
+    fireEvent.click(screen.getByRole('button', { name: 'Back to Settings' }))
+    expect(await screen.findByTestId('path')).toHaveTextContent('/settings')
+  })
+
+  it('keeps 44 px tap targets', async () => {
+    stubAPI({ 'GET /api/v1/settings/recipe-search': () => jsonResponse(200, BRAVE_SETTINGS) })
+    await renderCard()
+    for (const control of [
+      searxng(),
+      brave(),
+      within(card()).getByRole('button', { name: 'Replace' }),
+      testSearch(),
+      saveSearch(),
     ]) {
       expectMinHitArea(control)
     }

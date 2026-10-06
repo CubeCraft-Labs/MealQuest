@@ -201,7 +201,7 @@ function AISettingsForm({ saved, onDirtyChange }: AISettingsFormProps) {
   }
 
   return (
-    <fieldset className={styles.lock} disabled={save.isPending}>
+    <fieldset className={styles.lock} disabled={save.isPending || resetPrompt.isPending}>
       <div className={styles.columns}>
         <Select
           label="Provider"

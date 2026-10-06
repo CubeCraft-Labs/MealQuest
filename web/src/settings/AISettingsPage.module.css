@@ -305,8 +305,9 @@
   resize: none;
 }
 
-/* A form locked while its save is pending, so no edit is made that the
-   saved settings would then replace. It lays out as if it were not there. */
+/* A form locked while its save or prompt reset is pending, so no edit is
+   made that the response would then replace. It lays out as if it were not
+   there. */
 .lock {
   display: contents;
 }

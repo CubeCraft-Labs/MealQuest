@@ -431,6 +431,39 @@ describe('AISettingsPage', () => {
     await waitFor(() => expect(unload()).toBe(false))
   })
 
+  it('locks the form while a prompt reset is pending, even with the sheet closed', async () => {
+    let answer: (response: Response) => void = () => {}
+    stubAPI({
+      'POST /api/v1/settings/ai/reset-prompt': () => new Promise<Response>((resolve) => (answer = resolve)),
+    })
+    await renderPage()
+    const unload = () => {
+      const event = new Event('beforeunload', { cancelable: true })
+      act(() => void window.dispatchEvent(event))
+      return event.defaultPrevented
+    }
+    fireEvent.change(slider(), { target: { value: '0.2' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }))
+    const confirm = screen.getByRole('dialog', { name: 'Reset the system prompt?' })
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Reset prompt' }))
+    expect(await within(confirm).findByRole('button', { name: 'Resetting…' })).toBeDisabled()
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    for (const field of [provider(), model(), slider(), prompt()]) expect(field).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Reset' })).toBeDisabled()
+    expect(save()).toBeDisabled()
+    expect(unload()).toBe(true)
+
+    answer(jsonResponse(200, { ...AI_SETTINGS, system_prompt: DEFAULT_PROMPT }))
+    await waitFor(() => expect(prompt()).toBeEnabled())
+    expect(prompt()).toHaveValue(DEFAULT_PROMPT)
+    expect(slider()).toHaveValue('0.2')
+    expect(unload()).toBe(true)
+    fireEvent.change(prompt(), { target: { value: 'After the reset.' } })
+    expect(prompt()).toHaveValue('After the reset.')
+  })
+
   it('keeps 44 px tap targets', async () => {
     stubAPI()
     await renderPage()

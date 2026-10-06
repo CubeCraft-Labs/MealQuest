@@ -24,6 +24,9 @@ type Querier interface {
 	CreateAIRun(ctx context.Context, arg CreateAIRunParams) error
 	CreateDinner(ctx context.Context, arg CreateDinnerParams) (Dinner, error)
 	CreateJob(ctx context.Context, arg CreateJobParams) error
+	// A recipe the household typed in. Its source_url is a mealquest:manual:
+	// URN rather than a page, so it never matches a fetched page.
+	CreateManualRecipe(ctx context.Context, arg CreateManualRecipeParams) (Recipe, error)
 	CreatePhoto(ctx context.Context, arg CreatePhotoParams) (Photo, error)
 	CreateRecipeIngredient(ctx context.Context, arg CreateRecipeIngredientParams) error
 	CreateRecipeStep(ctx context.Context, arg CreateRecipeStepParams) error
@@ -31,6 +34,14 @@ type Querier interface {
 	DeleteRecipeIngredients(ctx context.Context, recipeID string) error
 	DeleteRecipeSteps(ctx context.Context, recipeID string) error
 	FailJob(ctx context.Context, arg FailJobParams) (int64, error)
+	// Fails every dinner still pending whose grounding job is no longer queued
+	// or running: the process stopped before the job, or before its handler
+	// recorded a result. Run at boot, after the job runner fails the jobs a
+	// previous process left running.
+	FailOrphanedPendingDinnerGroundings(ctx context.Context, arg FailOrphanedPendingDinnerGroundingsParams) (int64, error)
+	// Records why the background grounding of a dinner still pending failed; a
+	// dinner grounded some other way meanwhile is left as it is (0 rows).
+	FailPendingDinnerGrounding(ctx context.Context, arg FailPendingDinnerGroundingParams) (int64, error)
 	// Fails every job left running, at boot before any worker starts.
 	FailRunningJobs(ctx context.Context, arg FailRunningJobsParams) (int64, error)
 	// Returns sql.ErrNoRows until the row exists.
@@ -51,6 +62,12 @@ type Querier interface {
 	GetRecipeBySourceURL(ctx context.Context, sourceUrl string) (Recipe, error)
 	// Returns sql.ErrNoRows until the row exists.
 	GetRecipeSearchSettings(ctx context.Context) (RecipeSearchSetting, error)
+	// Records a dinner's grounding (grounded or manual) and clears any
+	// grounding_error. An unknown id returns sql.ErrNoRows.
+	GroundDinner(ctx context.Context, arg GroundDinnerParams) (Dinner, error)
+	// Records the background grounding of a dinner still pending; a dinner
+	// grounded some other way meanwhile is left as it is (0 rows).
+	GroundPendingDinner(ctx context.Context, arg GroundPendingDinnerParams) (int64, error)
 	ListDinnersByStatus(ctx context.Context, status string) ([]Dinner, error)
 	// The planned dinners dated from from_date up to but not including
 	// to_date, oldest first. Days with no dinner are left out.

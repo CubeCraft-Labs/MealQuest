@@ -36,7 +36,9 @@ type RouteMounter interface {
 // /api/v1/settings/recipe-search and its /test; ai serves
 // /api/v1/settings/ai, its /api-key, /verify, /models and /reset-prompt;
 // dinnerSvc serves GET and POST /api/v1/dinners, PATCH and DELETE
-// /api/v1/dinners/{id} and POST /api/v1/dinners/{id}/favorite; runner serves
+// /api/v1/dinners/{id}, POST /api/v1/dinners/{id}/favorite, GET
+// /api/v1/dinners/{id}/recipe-candidates and POST /api/v1/dinners/{id}/ground;
+// runner serves
 // POST /api/v1/jobs and GET /api/v1/jobs/{id}; photos serves
 // GET /media/photos/{id}-{size}.jpg; assets is the web build
 // served for every other GET. /health, /auth and the web build are public.
@@ -102,6 +104,8 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Patch("/dinners/{id}", patchDinner(logger, dinnerSvc))
 	apiV1.Delete("/dinners/{id}", deleteDinner(logger, dinnerSvc))
 	apiV1.Post("/dinners/{id}/favorite", postDinnerFavorite(logger, dinnerSvc))
+	apiV1.Get("/dinners/{id}/recipe-candidates", getDinnerCandidates(logger, dinnerSvc))
+	apiV1.Post("/dinners/{id}/ground", postDinnerGround(logger, dinnerSvc))
 	apiV1.Post("/jobs", postJob(logger, runner))
 	apiV1.Get("/jobs/{id}", getJob(logger, runner))
 	media.Get("/photos/{name}", getPhoto(logger, photos))

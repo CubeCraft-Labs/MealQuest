@@ -1,6 +1,6 @@
 // Package dinners keeps the household's dinners: adding Regulars by name or
 // recipe link, listing Regulars and the Quest log, editing, archiving and
-// favoriting. Names are deduplicated with the harness's dinner-name rules,
+// favoriting, and grounding each dinner in a recipe. Names are deduplicated with the harness's dinner-name rules,
 // so the Regulars the household types and the Side quests the AI suggests
 // are compared the same way.
 package dinners
@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"slices"
 	"strings"
@@ -18,6 +19,8 @@ import (
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 )
 
@@ -65,9 +68,12 @@ type Dinner struct {
 	RecipeURL       *string `json:"recipe_url"`
 	PhotoURL        *string `json:"photo_url"`
 	GroundingStatus string  `json:"grounding_status"`
-	UpdatedBy       *string `json:"updated_by"`
-	CreatedAt       string  `json:"created_at"`
-	UpdatedAt       string  `json:"updated_at"`
+	// GroundingError is why grounding failed, one of the Reason codes;
+	// null unless GroundingStatus is failed.
+	GroundingError *string `json:"grounding_error"`
+	UpdatedBy      *string `json:"updated_by"`
+	CreatedAt      string  `json:"created_at"`
+	UpdatedAt      string  `json:"updated_at"`
 }
 
 // NewRegular is a Regular to add: exactly one of Name and RecipeURL.
@@ -120,19 +126,80 @@ func (e *DuplicateError) Error() string {
 
 // Service reads and changes dinners.
 type Service struct {
-	st *store.Store
+	st        *store.Store
+	grounder  *recipes.Grounder
+	logger    *slog.Logger
+	groundJob *jobs.Kind[GroundJob]
 }
 
-// NewService returns a service over st.
-func NewService(st *store.Store) *Service {
-	return &Service{st: st}
+// NewService returns a service over st that grounds dinners with grounder
+// and registers the KindGroundDinner job on runner, which must not have
+// started yet.
+func NewService(st *store.Store, grounder *recipes.Grounder, runner *jobs.Runner, logger *slog.Logger) (*Service, error) {
+	switch {
+	case st == nil:
+		return nil, errors.New("dinners: nil store")
+	case grounder == nil:
+		return nil, errors.New("dinners: nil grounder")
+	case runner == nil:
+		return nil, errors.New("dinners: nil job runner")
+	case logger == nil:
+		return nil, errors.New("dinners: nil logger")
+	}
+	s := &Service{st: st, grounder: grounder, logger: logger}
+	kind, err := jobs.Register(runner, KindGroundDinner, s.runGroundJob, Reasons...)
+	if err != nil {
+		return nil, err
+	}
+	s.groundJob = kind
+	return s, nil
+}
+
+// Created is a new Regular with the id of the job grounding it, which is
+// nil when the job could not be enqueued and the dinner's grounding is
+// failed instead.
+type Created struct {
+	Dinner
+	GroundingJobID *string `json:"grounding_job_id"`
 }
 
 // CreateRegular adds a Regular named by r.Name, or by the last path segment
 // of r.RecipeURL (whose recipe grounding later replaces), with status and
-// origin regular and grounding_status pending, recording updatedBy. A name
-// repeating an unarchived dinner is a *DuplicateError.
-func (s *Service) CreateRegular(ctx context.Context, r NewRegular, updatedBy string) (Dinner, error) {
+// origin regular and grounding_status pending, recording updatedBy, and
+// enqueues the KindGroundDinner job that grounds it. It returns without
+// waiting for the job. A name repeating an unarchived dinner is a
+// *DuplicateError. When the job cannot be enqueued, the stored dinner is
+// returned with grounding_status failed (ReasonGroundingError) and no job
+// id, so the household can fix its recipe by hand.
+func (s *Service) CreateRegular(ctx context.Context, r NewRegular, updatedBy string) (Created, error) {
+	d, err := s.createRegular(ctx, r, updatedBy)
+	if err != nil {
+		return Created{}, err
+	}
+	jobID, err := s.groundJob.Enqueue(ctx, GroundJob{DinnerID: d.ID})
+	if err == nil {
+		return Created{Dinner: d, GroundingJobID: &jobID}, nil
+	}
+	// The dinner is stored; record that it will not be grounded so it is
+	// not left pending with no job. The error is a database error, never a
+	// dependency's text.
+	s.logger.ErrorContext(ctx, "dinner grounding not enqueued", "dinner_id", d.ID, "error", err)
+	write := context.WithoutCancel(ctx)
+	if _, err := db.New(s.st.Writer).FailPendingDinnerGrounding(write, db.FailPendingDinnerGroundingParams{
+		GroundingError: sql.NullString{String: ReasonGroundingError, Valid: true},
+		UpdatedAt:      store.Now().String(),
+		ID:             d.ID,
+	}); err != nil {
+		return Created{}, fmt.Errorf("dinners: record failed grounding of %s: %w", d.ID, err)
+	}
+	row, err := db.New(s.st.Reader).GetDinner(write, d.ID)
+	if err != nil {
+		return Created{}, fmt.Errorf("dinners: read %s: %w", d.ID, err)
+	}
+	return Created{Dinner: fromRow(row)}, nil
+}
+
+func (s *Service) createRegular(ctx context.Context, r NewRegular, updatedBy string) (Dinner, error) {
 	if updatedBy == "" {
 		return Dinner{}, errors.New("dinners: create: no member to record as updated_by")
 	}
@@ -445,6 +512,7 @@ func fromRow(r db.Dinner) Dinner {
 		RecipeID:        nullString(r.RecipeID),
 		RecipeURL:       nullString(r.RecipeUrl),
 		GroundingStatus: r.GroundingStatus,
+		GroundingError:  nullString(r.GroundingError),
 		UpdatedBy:       nullString(r.UpdatedBy),
 		CreatedAt:       r.CreatedAt,
 		UpdatedAt:       r.UpdatedAt,

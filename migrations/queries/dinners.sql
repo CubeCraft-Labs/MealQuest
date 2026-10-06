@@ -70,3 +70,59 @@ SET is_favorite = 1 - is_favorite,
 	updated_at = ?
 WHERE id = ?
 RETURNING *;
+
+-- name: GroundDinner :one
+-- Records a dinner's grounding (grounded or manual) and clears any
+-- grounding_error. An unknown id returns sql.ErrNoRows.
+UPDATE dinners
+SET recipe_id = ?,
+	photo_id = ?,
+	method = ?,
+	minutes_total = ?,
+	difficulty = ?,
+	grounding_status = ?,
+	grounding_error = NULL,
+	updated_by = ?,
+	updated_at = ?
+WHERE id = ?
+RETURNING *;
+
+-- name: GroundPendingDinner :execrows
+-- Records the background grounding of a dinner still pending; a dinner
+-- grounded some other way meanwhile is left as it is (0 rows).
+UPDATE dinners
+SET recipe_id = ?,
+	photo_id = ?,
+	method = ?,
+	minutes_total = ?,
+	difficulty = ?,
+	grounding_status = 'grounded',
+	grounding_error = NULL,
+	updated_at = ?
+WHERE id = ? AND grounding_status = 'pending';
+
+-- name: FailPendingDinnerGrounding :execrows
+-- Records why the background grounding of a dinner still pending failed; a
+-- dinner grounded some other way meanwhile is left as it is (0 rows).
+UPDATE dinners
+SET grounding_status = 'failed',
+	grounding_error = ?,
+	updated_at = ?
+WHERE id = ? AND grounding_status = 'pending';
+
+-- name: FailOrphanedPendingDinnerGroundings :execrows
+-- Fails every dinner still pending whose grounding job is no longer queued
+-- or running: the process stopped before the job, or before its handler
+-- recorded a result. Run at boot, after the job runner fails the jobs a
+-- previous process left running.
+UPDATE dinners
+SET grounding_status = 'failed',
+	grounding_error = sqlc.arg(grounding_error),
+	updated_at = sqlc.arg(updated_at)
+WHERE grounding_status = 'pending'
+	AND NOT EXISTS (
+		SELECT 1 FROM jobs
+		WHERE jobs.kind = sqlc.arg(kind)
+			AND jobs.status IN ('queued', 'running')
+			AND json_extract(jobs.payload, '$.dinner_id') = dinners.id
+	);

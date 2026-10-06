@@ -729,12 +729,34 @@ stored value, do not rotate: it could not be re-entered afterwards. Keep
 the current key and wait for the matching flow (or the `rotate-key`
 helper).
 
-Pre-check, on a **copy** of the database (as in "Count check"):
+**The pre-check and the key replacement run with the whole stack
+stopped**, from the pre-check until the new key is in place. A raw copy of
+`mealquest.db` and `mealquest.db-wal` taken while the stack runs is **not**
+a consistent snapshot: the two files are copied one after the other, and a
+checkpoint (by the app or by Litestream) between the two copies can move
+committed pages out of the WAL into `mealquest.db` after `mealquest.db` was
+already copied, then reset the WAL before it is copied. The copy then
+lacks those commits — possibly a stored `_ct` value — and the pre-check
+reports a false 0. A running app could also store a `_ct` value after a
+correct pre-check and before the key is replaced. Stopping both containers
+removes every writer (Litestream also writes and checkpoints), and the
+clean close checkpoints the WAL into `mealquest.db`, so the file alone is
+complete.
+
+Run from `/home/overseer/mealquest`:
 
 ```sh
 D=/var/lib/docker/volumes/mealquest-data/_data
+
+# 1. Stop the whole stack (app and Litestream) and leave it stopped until
+#    step 4. Nothing may hold the database open.
+docker compose -f deploy/compose.yaml down
+sudo ls -la "$D"   # mealquest.db and media/ only: no -wal, no -shm; if
+                   # either exists, the close was not clean — stop here
+
+# 2. Pre-check, on a copy of the now-quiescent database.
 rm -rf /tmp/mqcheck && mkdir /tmp/mqcheck
-sudo sh -c "cp -a $D/mealquest.db* /tmp/mqcheck/" && sudo chown -R "$USER" /tmp/mqcheck
+sudo cp -a "$D/mealquest.db" /tmp/mqcheck/ && sudo chown -R "$USER" /tmp/mqcheck
 python3 - /tmp/mqcheck/mealquest.db <<'PY'
 import sqlite3, sys
 c = sqlite3.connect(sys.argv[1])
@@ -743,17 +765,18 @@ for t, col in (("ai_settings", "api_key_ct"), ("recipe_search_settings", "api_ke
     print(t, col, c.execute(f"select count(*) from {t} where {col} is not null").fetchone()[0])
 PY
 rm -rf /tmp/mqcheck
-# every count must be 0; otherwise stop here
-```
+# every count must be 0; otherwise start the stack again on the current
+# key (docker compose -f deploy/compose.yaml up -d) and stop here
 
-Rotate, from `/home/overseer/mealquest`:
-
-```sh
+# 3. Replace the key, still with the stack stopped.
 sudo cp -a deploy/secrets/secret_key /var/tmp/secret_key.old   # keep until verified, then shred
 head -c 32 /dev/urandom | base64 | sudo tee deploy/secrets/secret_key >/dev/null
 sudo chown 10001:10001 deploy/secrets/secret_key
 sudo chmod 600 deploy/secrets/secret_key
-docker compose -f deploy/compose.yaml up -d --force-recreate mealquest
+
+# 4. Start the stack on the new key and check health.
+docker compose -f deploy/compose.yaml up -d
+docker compose -f deploy/compose.yaml ps
 curl -fsS http://10.60.1.14:8090/health
 ```
 

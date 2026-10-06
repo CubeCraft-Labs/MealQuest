@@ -3,37 +3,17 @@
 // API would refuse a name as a duplicate. The server still decides.
 // internal/ai/harness/testdata/dedupe_cases.json is run against both.
 
+import folds from './letterFolds.json'
+
 // SIMILAR_THRESHOLD is harness.SimilarThreshold.
 const SIMILAR_THRESHOLD = 0.85
 
 // fillerWords is harness's fillerWords.
 const fillerWords = new Set(['easy', 'best', 'homemade', 'quick', 'simple', 'the', 'a', 'recipe', 'classic'])
 
-// letterFolds are the letters harness folds that canonical decomposition
-// leaves whole: its ligatures and extra letters, and the common stroked
-// Latin letters. Letters with accents fold by decomposing and dropping the
-// marks, as harness's table does; rarer stroked letters are compared as
-// they are.
-const letterFolds: Record<string, string> = {
-  ß: 'ss',
-  æ: 'ae',
-  œ: 'oe',
-  þ: 'th',
-  ð: 'd',
-  ı: 'i',
-  ŉ: 'n',
-  ĳ: 'ij',
-  ø: 'o',
-  đ: 'd',
-  ħ: 'h',
-  ŀ: 'l',
-  ł: 'l',
-  ŧ: 't',
-  ƀ: 'b',
-  ƶ: 'z',
-  ǥ: 'g',
-  ɨ: 'i',
-}
+// letterFolds is harness's letterFolds: gen_folds.py writes both tables,
+// and harness's TestLetterFoldsMatchPWA fails when they differ.
+const letterFolds: Record<string, string> = folds
 
 const combiningMark = /\p{Mn}/u
 const wordChar = /[\p{L}\p{Nd}]/u
@@ -44,12 +24,16 @@ const wordChar = /[\p{L}\p{Nd}]/u
 // "chicken tikka masala".
 export function normalizeName(name: string): string {
   let out = ''
-  for (const ch of name.toLowerCase().normalize('NFD')) {
-    if (combiningMark.test(ch) || ch === "'" || ch === '’') continue
-    const fold = letterFolds[ch]
-    if (fold !== undefined) out += fold
-    else if (wordChar.test(ch)) out += ch
-    else out += ' '
+  // Lowercased letter by letter, as Go's strings.ToLower does, so no
+  // letter is lowered by its context (a final Σ is σ, not ς).
+  for (const letter of name) {
+    for (const ch of letter.toLowerCase()) {
+      if (combiningMark.test(ch) || ch === "'" || ch === '’') continue
+      const fold = letterFolds[ch]
+      if (fold !== undefined) out += fold
+      else if (wordChar.test(ch)) out += ch
+      else out += ' '
+    }
   }
   return out
     .split(' ')

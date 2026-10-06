@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 	"unicode"
+	"unicode/utf8"
 )
 
 // TestSharedDedupeCases runs testdata/dedupe_cases.json, which the PWA's
@@ -36,6 +37,30 @@ func TestSharedDedupeCases(t *testing.T) {
 	for _, c := range cases.Similar {
 		if got := Similar(c.A, c.B); got != c.Want {
 			t.Errorf("Similar(%q, %q) = %v, want %v", c.A, c.B, got, c.Want)
+		}
+	}
+}
+
+// TestLetterFoldsMatchPWA checks that the PWA's letter-fold table, which
+// gen_folds.py writes beside folds_table.go, is letterFolds exactly; run
+// go generate when it fails.
+func TestLetterFoldsMatchPWA(t *testing.T) {
+	raw, err := os.ReadFile("../../../web/src/dinners/letterFolds.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pwa map[string]string
+	if err := json.Unmarshal(raw, &pwa); err != nil {
+		t.Fatal(err)
+	}
+	for r, want := range letterFolds {
+		if got, ok := pwa[string(r)]; !ok || got != want {
+			t.Errorf("PWA folds %U to %q (present %v), want %q", r, got, ok, want)
+		}
+	}
+	for k := range pwa {
+		if utf8.RuneCountInString(k) != 1 || letterFolds[[]rune(k)[0]] == "" {
+			t.Errorf("PWA folds %q, which letterFolds does not", k)
 		}
 	}
 }

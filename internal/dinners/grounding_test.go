@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"slices"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/llm"
@@ -54,6 +56,13 @@ func newEnv(t *testing.T) *env {
 func newUnstartedEnv(t *testing.T) *env {
 	t.Helper()
 	dataDir := t.TempDir()
+	return newUnstartedEnvOn(t, openStore(t, dataDir), dataDir)
+}
+
+// openStore opens the store in dataDir, closing it when the test ends. It
+// is not migrated.
+func openStore(t *testing.T, dataDir string) *store.Store {
+	t.Helper()
 	st, err := store.Open(t.Context(), dataDir)
 	if err != nil {
 		t.Fatal(err)
@@ -63,6 +72,13 @@ func newUnstartedEnv(t *testing.T) *env {
 			t.Error(err)
 		}
 	})
+	return st
+}
+
+// newUnstartedEnvOn is newUnstartedEnv over st, the store in dataDir,
+// which it migrates to the latest version.
+func newUnstartedEnvOn(t *testing.T, st *store.Store, dataDir string) *env {
+	t.Helper()
 	if err := store.Migrate(t.Context(), st.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
@@ -290,19 +306,16 @@ func TestManualFixWhilePendingIsKept(t *testing.T) {
 
 // TestRenameWhilePendingGroundsNewName: a Regular renamed while its job is
 // still grounding the old name never gets the old name's result, whether
-// that job succeeds or fails; the job the rename enqueues grounds the new
-// name.
+// the old name would be found or not: the rename stops that job where it
+// is, and the job the rename enqueues grounds the new name.
 func TestRenameWhilePendingGroundsNewName(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
 		oldName string
-		replies []llm.GenerateResult
 	}{
-		{"old name found", "Chicken curry", []llm.GenerateResult{
-			recipestest.NormalizedReply("stovetop", 40), recipestest.NormalizedReply("oven", 150),
-		}},
-		{"old name not found", "Unknown dish", []llm.GenerateResult{recipestest.NormalizedReply("oven", 150)}},
+		{"old name found", "Chicken curry"},
+		{"old name not found", "Unknown dish"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -310,9 +323,7 @@ func TestRenameWhilePendingGroundsNewName(t *testing.T) {
 			e := newEnv(t)
 			e.search.Results["Beef stew"] = []recipes.Candidate{{URL: stew}}
 			e.search.Gate = make(chan struct{})
-			for _, r := range tt.replies {
-				e.model.QueueGenerate(r)
-			}
+			e.model.QueueGenerate(recipestest.NormalizedReply("oven", 150))
 
 			c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr(tt.oldName)}, member)
 			if err != nil {
@@ -327,12 +338,13 @@ func TestRenameWhilePendingGroundsNewName(t *testing.T) {
 			if d.GroundingStatus != dinners.GroundingPending {
 				t.Fatalf("renamed = %+v, want still pending", d)
 			}
+			// The old name's job ends while its search is still held.
+			first := e.waitJob(t, *c.GroundingJobID)
+			if first.Status != jobs.StatusSucceeded || string(first.Result) != `{"dinner_id":"`+c.ID+`","grounding_status":"pending"}` {
+				t.Fatalf("old name's job = %+v (result %s), want succeeded leaving the dinner pending", first, first.Result)
+			}
 			close(e.search.Gate)
 
-			first := e.waitJob(t, *c.GroundingJobID)
-			if string(first.Result) == `{"dinner_id":"`+c.ID+`","grounding_status":"grounded"}` {
-				t.Fatalf("old name's job reported grounded: %+v (result %s)", first, first.Result)
-			}
 			row := e.waitGrounding(t, c.ID)
 			if row.GroundingStatus != dinners.GroundingGrounded {
 				t.Fatalf("dinner = %+v, want grounded for the new name", row)
@@ -346,6 +358,9 @@ func TestRenameWhilePendingGroundsNewName(t *testing.T) {
 			}
 			if got := e.search.Queries(); !slices.Equal(got, []string{tt.oldName, "Beef stew"}) {
 				t.Errorf("searched %q, want the old name then the new", got)
+			}
+			if got := len(e.model.Requests()); got != 1 {
+				t.Errorf("model called %d times, want once, for the new name only", got)
 			}
 		})
 	}
@@ -503,7 +518,8 @@ func TestEditWhilePendingIsKept(t *testing.T) {
 
 // TestArchiveWhilePendingStopsGrounding: a pending Regular archived before
 // its job starts is not searched for, and one archived while its job runs
-// is not written; neither ends up grounded.
+// is stopped there, with no page fetched or model called; neither ends up
+// grounded.
 func TestArchiveWhilePendingStopsGrounding(t *testing.T) {
 	t.Parallel()
 	t.Run("before the job starts", func(t *testing.T) {
@@ -541,9 +557,17 @@ func TestArchiveWhilePendingStopsGrounding(t *testing.T) {
 		if _, err := e.svc.Archive(t.Context(), c.ID, member); err != nil {
 			t.Fatal(err)
 		}
+		// The job ends while its search is still held: archiving stopped it.
+		job := e.waitJob(t, *c.GroundingJobID)
 		close(e.search.Gate)
-		if job := e.waitJob(t, *c.GroundingJobID); job.Status != jobs.StatusSucceeded {
-			t.Fatalf("job = %+v", job)
+		if job.Status != jobs.StatusSucceeded || string(job.Result) != `{"dinner_id":"`+c.ID+`","grounding_status":"pending"}` {
+			t.Fatalf("job = %+v (result %s), want succeeded leaving the dinner pending", job, job.Result)
+		}
+		if got := e.pages.Fetched(); len(got) != 0 {
+			t.Errorf("fetched %q for an archived dinner", got)
+		}
+		if got := len(e.model.Requests()); got != 0 {
+			t.Errorf("model called %d times for an archived dinner", got)
 		}
 		if row := e.dinner(t, c.ID); row.Status != dinners.StatusArchived || row.GroundingStatus == dinners.GroundingGrounded || row.RecipeID.Valid {
 			t.Errorf("dinner = %+v, want archived and not grounded", row)
@@ -919,6 +943,74 @@ func TestRestartFailsInterruptedGrounding(t *testing.T) {
 	}
 	if row := e.dinner(t, queued.ID); row.GroundingStatus != dinners.GroundingGrounded {
 		t.Errorf("queued dinner = %s, want grounded", row.GroundingStatus)
+	}
+}
+
+// TestUpgradeKeepsLegacyQueuedGrounding: a pending Regular whose
+// ground_dinner job was queued before migration 0010, so its payload has
+// no revision, is not failed as interrupted at the first boot after the
+// upgrade; its job still grounds it.
+func TestUpgradeKeepsLegacyQueuedGrounding(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	dataDir := t.TempDir()
+	st := openStore(t, dataDir)
+	before := fstest.MapFS{}
+	files, err := fs.Glob(migrations.FS, "*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range files {
+		if name >= "0010" {
+			continue
+		}
+		body, err := fs.ReadFile(migrations.FS, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[name] = &fstest.MapFile{Data: body}
+	}
+	if err := store.Migrate(ctx, st.Writer, before); err != nil {
+		t.Fatal(err)
+	}
+	now := store.Now().String()
+	if _, err := st.Writer.ExecContext(ctx, `INSERT INTO dinners
+		(id, name, normalized_name, status, origin, is_favorite, grounding_status, updated_by, created_at, updated_at)
+		VALUES ('dinner-1', 'Chicken curry', 'chicken curry', 'regular', 'regular', 0, 'pending', ?, ?, ?)`,
+		member, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Writer.ExecContext(ctx, `INSERT INTO jobs (id, kind, status, payload, created_at, updated_at)
+		VALUES ('job-1', ?, 'queued', '{"dinner_id":"dinner-1"}', ?, ?)`,
+		dinners.KindGroundDinner, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// Boot: migrate, start the runner, then fail interrupted groundings. The
+	// search is held, so the job cannot finish before the cleanup runs.
+	e := newUnstartedEnvOn(t, st, dataDir)
+	e.search.Gate = make(chan struct{})
+	e.model.QueueGenerate(recipestest.NormalizedReply("stovetop", 40))
+	if p := e.queuedJob(t, "job-1"); p != (dinners.GroundJob{DinnerID: "dinner-1", Revision: 0}) {
+		t.Errorf("migrated payload = %+v, want dinner-1 at revision 0", p)
+	}
+	e.start(t)
+	n, err := e.svc.FailInterruptedGroundings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("failed %d dinners, want 0", n)
+	}
+	if row := e.dinner(t, "dinner-1"); row.GroundingStatus != dinners.GroundingPending {
+		t.Fatalf("dinner = %s (%s), want still pending", row.GroundingStatus, row.GroundingError.String)
+	}
+	close(e.search.Gate)
+	if job := e.waitJob(t, "job-1"); job.Status != jobs.StatusSucceeded {
+		t.Fatalf("job = %+v", job)
+	}
+	if row := e.dinner(t, "dinner-1"); row.GroundingStatus != dinners.GroundingGrounded {
+		t.Errorf("dinner = %s, want grounded", row.GroundingStatus)
 	}
 }
 

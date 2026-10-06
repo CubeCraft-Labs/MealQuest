@@ -219,7 +219,10 @@ automatic** (D-021).
   A job for a dinner archived, no longer `pending` or at another revision
   does no work, and a job only writes a dinner still unarchived, `pending`
   and at its revision, so a fix-up made meanwhile wins and an earlier job
-  for an old name — queued or running — never decides the outcome. A
+  for an old name — queued or running — never decides the outcome.
+  Archiving or renaming a dinner also stops its running job where it is,
+  so no further search, page fetch, photo download or model call is made
+  for it. A
   method, minutes_total or difficulty a member saved while the dinner was
   `pending` is kept; grounding fills only those left empty. At boot, after
   the job runner fails the jobs a previous process left running, every
@@ -502,7 +505,9 @@ steps: the welcome (`/onboarding`), the Regulars (`/onboarding/regulars`,
 mock 1h, adding and archiving through the dinners API optimistically; Next
 waits for three saved Regulars, and a common pick is not offered once a
 Regular has a name `harness.Similar` to it — the PWA's copy of the name
-rules in `web/src/dinners/names.ts` runs the same cases,
+rules in `web/src/dinners/names.ts` folds letters with
+`web/src/dinners/letterFolds.json`, which `gen_folds.py` writes from the
+same table as the server's, and runs the same cases,
 `internal/ai/harness/testdata/dedupe_cases.json`, as the server's) and
 notifications (`/onboarding/notifications`: what MealQuest notifies about,
 the iOS install hint, "Turn on notifications" and "Maybe later"). Either

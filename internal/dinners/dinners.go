@@ -11,9 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 
@@ -130,6 +132,11 @@ type Service struct {
 	grounder  *recipes.Grounder
 	logger    *slog.Logger
 	groundJob *jobs.Kind[GroundJob]
+
+	// groundingsMu guards groundings: the KindGroundDinner jobs running,
+	// by dinner id, so archiving or renaming a dinner can stop them.
+	groundingsMu sync.Mutex
+	groundings   map[string]map[*runningGrounding]struct{}
 }
 
 // NewService returns a service over st that grounds dinners with grounder
@@ -146,7 +153,7 @@ func NewService(st *store.Store, grounder *recipes.Grounder, runner *jobs.Runner
 	case logger == nil:
 		return nil, errors.New("dinners: nil logger")
 	}
-	s := &Service{st: st, grounder: grounder, logger: logger}
+	s := &Service{st: st, grounder: grounder, logger: logger, groundings: make(map[string]map[*runningGrounding]struct{})}
 	kind, err := jobs.Register(runner, KindGroundDinner, s.runGroundJob, Reasons...)
 	if err != nil {
 		return nil, err
@@ -296,7 +303,7 @@ func (s *Service) List(ctx context.Context, status string) ([]Dinner, error) {
 // clears its recipe_url, raises its grounding_revision and enqueues a fresh
 // KindGroundDinner job that grounds the new name: a job queued or running
 // for the old name or link carries the old revision, so it can no longer
-// write the dinner.
+// write the dinner, and one running is stopped.
 func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy string) (Dinner, error) {
 	if updatedBy == "" {
 		return Dinner{}, errors.New("dinners: update: no member to record as updated_by")
@@ -368,6 +375,7 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 		return Dinner{}, err
 	}
 	if regrounding {
+		s.stopGroundings(row.ID, row.GroundingRevision)
 		jobID, err := s.enqueueGrounding(ctx, row.ID, row.GroundingRevision)
 		if err != nil {
 			return Dinner{}, err
@@ -383,7 +391,8 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 }
 
 // Archive sets dinner id's status to archived, recording updatedBy. The row
-// is kept, so its name still counts for Side quest dedupe.
+// is kept, so its name still counts for Side quest dedupe. A
+// KindGroundDinner job running for it is stopped.
 func (s *Service) Archive(ctx context.Context, id, updatedBy string) (Dinner, error) {
 	if updatedBy == "" {
 		return Dinner{}, errors.New("dinners: archive: no member to record as updated_by")
@@ -399,6 +408,7 @@ func (s *Service) Archive(ctx context.Context, id, updatedBy string) (Dinner, er
 	if err != nil {
 		return Dinner{}, fmt.Errorf("dinners: archive %s: %w", id, err)
 	}
+	s.stopGroundings(row.ID, math.MaxInt64)
 	return fromRow(row), nil
 }
 

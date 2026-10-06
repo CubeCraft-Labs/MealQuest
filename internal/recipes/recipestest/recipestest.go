@@ -66,9 +66,15 @@ func (s *Search) Queries() []string {
 type Pages struct {
 	Bodies map[string][]byte
 	Gate   chan struct{}
+
+	mu      sync.Mutex
+	fetched []string
 }
 
 func (p *Pages) Fetch(ctx context.Context, rawURL string) (recipes.Page, error) {
+	p.mu.Lock()
+	p.fetched = append(p.fetched, rawURL)
+	p.mu.Unlock()
 	if p.Gate != nil {
 		select {
 		case <-p.Gate:
@@ -81,6 +87,13 @@ func (p *Pages) Fetch(ctx context.Context, rawURL string) (recipes.Page, error) 
 		return recipes.Page{}, &recipes.StatusError{URL: rawURL, Status: 404}
 	}
 	return recipes.Page{URL: rawURL, ContentType: "text/html", Body: body}, nil
+}
+
+// Fetched returns every URL fetched, in order.
+func (p *Pages) Fetched() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.fetched...)
 }
 
 // Images is a recipes.ImageFetcher serving JPEGs by URL; any other URL is

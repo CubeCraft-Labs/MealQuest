@@ -5,3 +5,12 @@
 -- earlier job — queued or running — can no longer write the dinner.
 
 ALTER TABLE dinners ADD COLUMN grounding_revision INTEGER NOT NULL DEFAULT 0;
+
+-- Every dinner starts at revision 0, so a ground_dinner job enqueued
+-- before this migration, whose payload has only dinner_id, is for revision
+-- 0. Recording it lets the boot cleanup, which matches a pending dinner to
+-- its job by revision, see a job still queued for its dinner.
+UPDATE jobs
+SET payload = json_set(payload, '$.revision', 0)
+WHERE kind = 'ground_dinner'
+	AND json_type(payload, '$.revision') IS NULL;

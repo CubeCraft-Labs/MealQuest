@@ -67,6 +67,18 @@
     {
       "name": "7-layer dip",
       "want": "7 layer dip"
+    },
+    {
+      "name": "Ƈhili",
+      "want": "chili"
+    },
+    {
+      "name": "Ꞔarbanzo Stew",
+      "want": "carbanzo stew"
+    },
+    {
+      "name": "ΜΟΥΣΑΚΑΣ",
+      "want": "μουσακασ"
     }
   ],
   "similar": [
@@ -114,6 +126,11 @@
       "a": "The best",
       "b": "Easy recipe",
       "want": false
+    },
+    {
+      "a": "Ƈhili",
+      "b": "Chili",
+      "want": true
     }
   ]
 }

@@ -22,9 +22,11 @@ type Held = { method: string; path: string; body: unknown; answer: (response: Re
 // stubDinnersServer stands in for the server a household meets on first
 // run: signed in, onboarding not finished and the given Regulars. GET answers at once;
 // each POST and DELETE is held in `held` until the test answers it, so the
-// test sees the optimistic list first.
+// test sees the optimistic list first. Once failReads is set, every GET of
+// the Regulars fails, so the test sees the list the client keeps by itself.
 function stubDinnersServer(regulars: Dinner[] = []) {
   const held: Held[] = []
+  const reads = { fail: false }
   const fetchMock: Mock<typeof fetch> = vi.fn<typeof fetch>((input, init) => {
     const path = String(input)
     const method = init?.method ?? 'GET'
@@ -33,6 +35,7 @@ function stubDinnersServer(regulars: Dinner[] = []) {
       return Promise.resolve(jsonResponse(200, { ...HOUSEHOLD_SETTINGS, onboarding_completed_at: null }))
     }
     if (method === 'GET' && path === '/api/v1/dinners?status=regular') {
+      if (reads.fail) return Promise.resolve(errorResponse(500, 'internal'))
       return Promise.resolve(jsonResponse(200, { dinners: regulars }))
     }
     if ((method === 'POST' && path === '/api/v1/dinners') || (method === 'DELETE' && path.startsWith('/api/v1/dinners/'))) {
@@ -43,7 +46,7 @@ function stubDinnersServer(regulars: Dinner[] = []) {
     throw new Error(`unexpected fetch: ${method} ${path}`)
   })
   vi.stubGlobal('fetch', fetchMock)
-  return { fetchMock, held, regulars }
+  return { fetchMock, held, regulars, reads }
 }
 
 // created answers a held POST /api/v1/dinners as the server does, adding the
@@ -243,6 +246,31 @@ describe('onboarding step 2 (mock 1h)', () => {
     expect(regularNames()).toEqual([])
   })
 
+  it('says why each of two overlapping adds of the same name was refused', async () => {
+    const server = await regularsStep()
+    fireEvent.change(input(), { target: { value: 'Lasagne' } })
+    fireEvent.submit(input())
+    await vi.waitFor(() => expect(server.held).toHaveLength(1))
+    fireEvent.change(input(), { target: { value: 'Lasagne' } })
+    fireEvent.submit(input())
+    await vi.waitFor(() => expect(server.held).toHaveLength(2))
+    expect(regularNames()).toEqual(['Lasagne', 'Lasagne'])
+
+    server.held[0]!.answer(errorResponse(409, 'duplicate_dinner'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not add Lasagne: duplicate_dinner message')
+    expect(regularNames()).toEqual(['Lasagne'])
+
+    // The second add's refusal shows beside the first instead of replacing it.
+    server.held[1]!.answer(errorResponse(500, 'internal'))
+    await vi.waitFor(() =>
+      expect(screen.getAllByRole('alert').map((alert) => alert.textContent)).toEqual([
+        'Could not add Lasagne: duplicate_dinner message',
+        'Could not add Lasagne: internal message',
+      ]),
+    )
+    expect(regularNames()).toEqual([])
+  })
+
   it('removes a Regular at once and archives it on the server', async () => {
     const server = await regularsStep([
       { id: 'd1', name: 'Beef tacos' },
@@ -293,6 +321,32 @@ describe('onboarding step 2 (mock 1h)', () => {
     await vi.waitFor(() => expect(server.fetchMock.mock.calls.filter(([path]) => String(path).includes('status=regular'))).toHaveLength(2))
     await vi.waitFor(() => expect(regularNames()).toEqual(['Beef tacos', 'Chili']))
     expect(screen.getByRole('alert')).toHaveTextContent('Could not remove Beef tacos: internal message')
+  })
+
+  it('puts two refused removals back in their places without rereading the list', async () => {
+    const server = await regularsStep([
+      { id: 'd1', name: 'Beef tacos' },
+      { id: 'd2', name: 'Pizza night' },
+      { id: 'd3', name: 'Chili' },
+    ])
+    server.reads.fail = true
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Beef tacos' }))
+    await vi.waitFor(() => expect(server.held).toHaveLength(1))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Pizza night' }))
+    await vi.waitFor(() => expect(server.held).toHaveLength(2))
+    expect(regularNames()).toEqual(['Chili'])
+
+    server.held[0]!.answer(errorResponse(500, 'internal'))
+    await screen.findByRole('alert')
+    server.held[1]!.answer(errorResponse(500, 'internal'))
+    await screen.findByText('Could not remove Pizza night: internal message')
+    // The reread after the last answer fails, so the order is the client's own.
+    expect(await screen.findByText(/Your Regulars could not load/)).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /^Remove / }).map((button) => button.getAttribute('aria-label'))).toEqual([
+      'Remove Beef tacos',
+      'Remove Pizza night',
+      'Remove Chili',
+    ])
   })
 
   it('enables "Next: notifications" once the server has saved 3 Regulars', async () => {

@@ -9,6 +9,15 @@ export const REGULARS_PATH = `${DINNERS_PATH}?status=regular`
 // while an optimistic add waits for the server; its id is not the server's.
 export type Regular = { id: string; name: string; pending?: true }
 
+// CachedRegular is a Regular as the cache holds it. removing is true while
+// an optimistic removal waits for the server: the entry keeps its place, so
+// a refused removal returns exactly there whatever else changed meanwhile.
+type CachedRegular = Regular & { removing?: true }
+
+function shown(list: CachedRegular[]): Regular[] {
+  return list.filter((regular) => !regular.removing)
+}
+
 // REGULARS_KEY prefixes every Regulars query, so a change refreshes them all
 // (the settings home's count included).
 export const REGULARS_KEY = ['dinners', 'regular'] as const
@@ -31,19 +40,21 @@ export function useRegulars() {
       const where = `GET ${REGULARS_PATH}`
       const body = await apiFetch<unknown>(REGULARS_PATH)
       if (!isRecord(body) || !Array.isArray(body.dinners)) throw new Error(`${where}: response has no dinners list`)
-      return body.dinners.map((dinner) => parseDinner(where, dinner))
+      return body.dinners.map((dinner): CachedRegular => parseDinner(where, dinner))
     },
+    select: shown,
   })
 }
 
 // changeOptimistically stops Regulars reads in flight, so they cannot
-// overwrite the optimistic list, then applies change to it. It returns the
-// list as it was.
-async function changeOptimistically(queryClient: QueryClient, change: (list: Regular[]) => Regular[]) {
+// overwrite the optimistic list, then applies change to it.
+async function changeOptimistically(queryClient: QueryClient, change: (list: CachedRegular[]) => CachedRegular[]) {
   await queryClient.cancelQueries({ queryKey: REGULARS_LIST_KEY })
-  const before = queryClient.getQueryData<Regular[]>(REGULARS_LIST_KEY) ?? []
-  queryClient.setQueryData<Regular[]>(REGULARS_LIST_KEY, change(before))
-  return before
+  setRegulars(queryClient, change)
+}
+
+function setRegulars(queryClient: QueryClient, change: (list: CachedRegular[]) => CachedRegular[]) {
+  queryClient.setQueryData<CachedRegular[]>(REGULARS_LIST_KEY, (list) => change(list ?? []))
 }
 
 // settle refetches the Regulars once the last change in flight is done, so
@@ -71,22 +82,19 @@ export function useAddRegular() {
       return { id }
     },
     onSuccess: (dinner, _name, context) => {
-      queryClient.setQueryData<Regular[]>(REGULARS_LIST_KEY, (list) =>
-        (list ?? []).map((regular) => (regular.id === context.id ? dinner : regular)),
-      )
+      setRegulars(queryClient, (list) => list.map((regular) => (regular.id === context.id ? dinner : regular)))
     },
     onError: (_error, _name, context) => {
       if (context === undefined) return
-      queryClient.setQueryData<Regular[]>(REGULARS_LIST_KEY, (list) =>
-        (list ?? []).filter((regular) => regular.id !== context.id),
-      )
+      setRegulars(queryClient, (list) => list.filter((regular) => regular.id !== context.id))
     },
     onSettled: () => settle(queryClient),
   })
 }
 
 // useRemoveRegular archives a Regular (DELETE /api/v1/dinners/{id}). It
-// leaves the list at once and is put back if the server refuses.
+// leaves the list at once and is put back in its place if the server
+// refuses.
 export function useRemoveRegular() {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
@@ -96,16 +104,15 @@ export function useRemoveRegular() {
       await apiFetch<unknown>(`${DINNERS_PATH}/${encodeURIComponent(regular.id)}`, { method: 'DELETE' })
     },
     onMutate: async (regular) => {
-      const before = await changeOptimistically(queryClient, (list) => list.filter((r) => r.id !== regular.id))
-      return { index: before.findIndex((r) => r.id === regular.id) }
+      await changeOptimistically(queryClient, (list) =>
+        list.map((r): CachedRegular => (r.id === regular.id ? { ...r, removing: true } : r)),
+      )
     },
-    onError: (_error, regular, context) => {
-      if (context === undefined) return
-      queryClient.setQueryData<Regular[]>(REGULARS_LIST_KEY, (list) => {
-        const next = [...(list ?? [])]
-        next.splice(context.index === -1 ? next.length : context.index, 0, regular)
-        return next
-      })
+    onSuccess: (_data, regular) => {
+      setRegulars(queryClient, (list) => list.filter((r) => r.id !== regular.id))
+    },
+    onError: (_error, regular) => {
+      setRegulars(queryClient, (list) => list.map((r) => (r.id === regular.id ? { id: r.id, name: r.name } : r)))
     },
     onSettled: () => settle(queryClient),
   })

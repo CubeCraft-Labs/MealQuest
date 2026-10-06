@@ -9,13 +9,20 @@ import (
 	"log/slog"
 	"net/http"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/aisettings"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/auth"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 )
 
 // maxSettingsBody bounds a PATCH /settings/household or
-// /settings/recipe-search request body.
+// /settings/recipe-search, or PUT /settings/ai/api-key, request body.
 const maxSettingsBody = 16 << 10
+
+// maxAISettingsBody bounds a PATCH /settings/ai request body. It fits the
+// longest valid system prompt at 12 bytes of JSON per character (a
+// \u-escaped surrogate pair) on top of maxSettingsBody for the other
+// fields, so only aisettings.MaxSystemPromptChars limits the prompt.
+const maxAISettingsBody = maxSettingsBody + 12*aisettings.MaxSystemPromptChars
 
 // settingsPatch is the PATCH /settings/household body. Every field is
 // optional; unknown fields and null values are refused.
@@ -124,13 +131,18 @@ func writeJSON(w http.ResponseWriter, r *http.Request, logger *slog.Logger, stat
 
 // writeError responds with status and a non-retryable API error.
 func writeError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, status int, code, message string) {
-	body, err := json.Marshal(errorBody{Error: apiError{Code: code, Message: message}})
+	writeAPIError(w, r, logger, status, apiError{Code: code, Message: message})
+}
+
+// writeAPIError responds with status and e.
+func writeAPIError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, status int, e apiError) {
+	body, err := json.Marshal(errorBody{Error: e})
 	if err != nil {
 		panic(err) // string and bool fields cannot fail to marshal
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if _, err := w.Write(body); err != nil {
-		logger.WarnContext(r.Context(), "write error response", "code", code, "error", err)
+		logger.WarnContext(r.Context(), "write error response", "code", e.Code, "error", err)
 	}
 }

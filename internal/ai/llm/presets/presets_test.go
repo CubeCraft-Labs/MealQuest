@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -658,5 +659,37 @@ func TestFromSettingsRetriesTransportTimeout(t *testing.T) {
 	}
 	if st.sent != 2 {
 		t.Errorf("sent %d requests, want 2", st.sent)
+	}
+}
+
+// ForAccount builds without a model, so a key can be verified and the
+// model list read before a model is chosen, but keeps every other check.
+func TestForAccount(t *testing.T) {
+	if _, err := ForAccount(llm.Settings{Provider: "openai"}, testKey); err != nil {
+		t.Errorf("ForAccount without a model = %v", err)
+	}
+	for _, c := range []struct {
+		s    llm.Settings
+		key  string
+		want error
+	}{
+		{llm.Settings{Provider: "gemini"}, testKey, llm.ErrUnknownProvider},
+		{llm.Settings{Provider: "openai"}, "", llm.ErrMissingKey},
+		{llm.Settings{Provider: "ollama"}, "", llm.ErrMissingBaseURL},
+		{llm.Settings{Provider: "openrouter"}, testKey, llm.ErrMissingPublicURL},
+	} {
+		if _, err := ForAccount(c.s, c.key); !errors.Is(err, c.want) {
+			t.Errorf("ForAccount(%s) = %v, want %v", c.s.Provider, err, c.want)
+		}
+	}
+	if _, err := FromSettings(llm.Settings{Provider: "openai"}, testKey); !errors.Is(err, llm.ErrMissingModel) {
+		t.Errorf("FromSettings without a model = %v, want ErrMissingModel", err)
+	}
+}
+
+func TestNames(t *testing.T) {
+	want := []string{"anthropic", "ollama", "openai", "openai_compatible", "openrouter", "xai"}
+	if got := Names(); !slices.Equal(got, want) {
+		t.Errorf("Names = %v, want %v", got, want)
 	}
 }

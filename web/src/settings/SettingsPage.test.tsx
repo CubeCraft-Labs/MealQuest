@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
-import { SETTINGS_API } from '../test/ApiProviders.tsx'
+import { AI_SETTINGS, SETTINGS_API } from '../test/ApiProviders.tsx'
 import { declaredStyle } from '../test/cssRules.ts'
 import { errorResponse, fakeLocation, jsonResponse, stubFetchByPath } from '../test/fetchStub.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
@@ -12,7 +12,7 @@ import { formatClockTime, modelDisplayName } from './api.ts'
 import { SettingsPage } from './SettingsPage.tsx'
 
 const HOUSEHOLD = { timezone: 'America/New_York', dinner_time: '17:30' }
-const AI = { provider: 'anthropic', model: 'claude-sonnet-4-5' }
+const AI = AI_SETTINGS
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -150,14 +150,14 @@ describe('SettingsPage', () => {
 
   it('shows another provider and model as the settings name them', async () => {
     stubSettings({
-      '/api/v1/settings/ai': () => jsonResponse(200, { provider: 'openai_compatible', model: 'llama3.1:8b' }),
+      '/api/v1/settings/ai': () => jsonResponse(200, { ...AI, provider: 'openai_compatible', model: 'llama3.1:8b' }),
     })
     renderSettings()
     expect(await screen.findByText('OpenAI-compatible · llama3.1:8b')).toBeInTheDocument()
   })
 
   it('says no model is chosen for the seeded AI settings', async () => {
-    stubSettings({ '/api/v1/settings/ai': () => jsonResponse(200, { provider: 'anthropic', model: '' }) })
+    stubSettings({ '/api/v1/settings/ai': () => jsonResponse(200, { ...AI, model: '' }) })
     renderSettings()
     expect(await within(row('AI assistant')).findByText('Anthropic · No model chosen')).toBeInTheDocument()
   })
@@ -213,7 +213,7 @@ describe('SettingsPage', () => {
   })
 
   it('refuses an AI provider it has no name for', async () => {
-    stubSettings({ '/api/v1/settings/ai': () => jsonResponse(200, { provider: 'mystery', model: 'm1' }) })
+    stubSettings({ '/api/v1/settings/ai': () => jsonResponse(200, { ...AI, provider: 'mystery', model: 'm1' }) })
     renderSettings()
     expect(await screen.findByRole('alert')).toHaveTextContent('unknown AI provider "mystery"')
     expect(row('AI assistant')).toHaveAccessibleName('AI assistant Admin')

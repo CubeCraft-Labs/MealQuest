@@ -1,0 +1,249 @@
+/* Admin · AI assistant, handoff mock 1o. */
+.page {
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding-top: 6px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.kicker {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-accent-700);
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 28px;
+  font-weight: 400;
+}
+
+.loading {
+  height: 320px;
+  border-radius: 26px;
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.model {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.label {
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-neutral-700);
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.hint,
+.note,
+.verified,
+.error,
+.status {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.hint,
+.note {
+  color: var(--color-neutral-700);
+}
+
+.verified {
+  font-weight: 700;
+  color: var(--color-accent-2-800);
+}
+
+.error {
+  font-weight: 700;
+  color: var(--color-accent-700);
+}
+
+.status {
+  color: var(--color-accent-2-800);
+}
+
+.status:empty {
+  display: none;
+}
+
+.key {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.keyRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 56px;
+  padding: 0 6px 0 20px;
+  border: 1px solid var(--color-neutral-300);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+}
+
+.keyValue {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.replace {
+  flex: none;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.replace:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.keyStatus {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0 8px;
+}
+
+.link {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--color-accent-700);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.temperature {
+  display: flex;
+  flex-direction: column;
+}
+
+.temperatureHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.value {
+  font-family: var(--font-body);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.ends {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--color-neutral-700);
+}
+
+.prompt {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 150px;
+  padding: 14px 18px;
+  border: 1px solid var(--color-neutral-300);
+  border-radius: 22px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: 10px;
+  padding-top: 6px;
+}
+
+.reset,
+.save {
+  min-height: 52px;
+}
+
+.sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+.sheetTitle {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 22px;
+  font-weight: 400;
+}
+
+.sheetText {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--color-neutral-700);
+}
+
+.sheetActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}

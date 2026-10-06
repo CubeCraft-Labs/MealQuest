@@ -1,6 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter } from 'react-router'
+import { createBrowserRouter, RouterProvider } from 'react-router'
 import './styles/tokens.css'
 import './styles/base.css'
 import App from './App.tsx'
@@ -14,10 +14,17 @@ if (!root) {
 
 const api = createApiClient(window.location, createNetworkStatus(window), createVerifiedSession(window.localStorage))
 
+// A data router, so pages can block navigation (useBlocker); App's own
+// <Routes> match every path under its splat route.
+const router = createBrowserRouter([
+  {
+    path: '*',
+    element: <App api={api} serviceWorker={'serviceWorker' in navigator ? navigator.serviceWorker : undefined} />,
+  },
+])
+
 createRoot(root).render(
   <StrictMode>
-    <BrowserRouter>
-      <App api={api} serviceWorker={'serviceWorker' in navigator ? navigator.serviceWorker : undefined} />
-    </BrowserRouter>
+    <RouterProvider router={router} />
   </StrictMode>,
 )

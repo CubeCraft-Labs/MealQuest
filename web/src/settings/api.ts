@@ -1,9 +1,13 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, useApi, type ApiClient } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 
 export const HOUSEHOLD_SETTINGS_PATH = '/api/v1/settings/household'
 export const AI_SETTINGS_PATH = '/api/v1/settings/ai'
+export const AI_MODELS_PATH = '/api/v1/settings/ai/models'
+export const AI_KEY_PATH = '/api/v1/settings/ai/api-key'
+export const AI_VERIFY_PATH = '/api/v1/settings/ai/verify'
+export const AI_RESET_PROMPT_PATH = '/api/v1/settings/ai/reset-prompt'
 // TODO(Feature 12): GET /api/v1/dinners?status=regular is Feature 12's
 // dinners read API. Until it lands the server answers 404 and the Regular
 // dinners row says the count is unavailable.
@@ -37,14 +41,155 @@ export const aiProviderLabels = {
 
 export type AIProvider = keyof typeof aiProviderLabels
 
-// AISettings is the part of GET /api/v1/settings/ai the settings pages read.
+// providersWithBaseURL are the presets with no fixed API root: the
+// household supplies its base URL.
+export const providersWithBaseURL: ReadonlySet<AIProvider> = new Set(['ollama', 'openai_compatible'])
+
+// aiKeyPolicy is whether each preset needs an API key, may take one, or
+// takes none (internal/ai/llm/presets).
+export const aiKeyPolicy: Record<AIProvider, 'required' | 'optional' | 'none'> = {
+  anthropic: 'required',
+  openai: 'required',
+  openrouter: 'required',
+  xai: 'required',
+  ollama: 'none',
+  openai_compatible: 'optional',
+}
+
+// AISettings is GET /api/v1/settings/ai. The API key itself is never sent:
+// only its last four characters, null when none is stored.
 export type AISettings = {
   provider: AIProvider
+  base_url: string
   model: string
+  temperature: number
+  // Null when none is stored.
+  system_prompt: string | null
+  api_key_last4: string | null
+  // When the stored key was last verified, null when it has not been.
+  key_verified_at: string | null
+  updated_at: string
 }
+
+// AISettingsPatch is the PATCH /api/v1/settings/ai body: only the fields
+// that change.
+export type AISettingsPatch = Partial<Pick<AISettings, 'provider' | 'base_url' | 'model' | 'temperature'>> & {
+  system_prompt?: string
+}
+
+// AIModel is one model GET /api/v1/settings/ai/models lists.
+export type AIModel = { id: string; display_name: string }
 
 function isAIProvider(value: string): value is AIProvider {
   return Object.hasOwn(aiProviderLabels, value)
+}
+
+function isStringOrNull(value: unknown): value is string | null {
+  return value === null || typeof value === 'string'
+}
+
+// parseAISettings refuses a body that is not the AI settings, or names a
+// provider this client has no name for, so the settings never show a value
+// the household cannot read.
+function parseAISettings(where: string, body: unknown): AISettings {
+  if (
+    !isRecord(body) ||
+    typeof body.provider !== 'string' ||
+    typeof body.base_url !== 'string' ||
+    typeof body.model !== 'string' ||
+    typeof body.temperature !== 'number' ||
+    !isStringOrNull(body.system_prompt) ||
+    !isStringOrNull(body.api_key_last4) ||
+    !isStringOrNull(body.key_verified_at) ||
+    typeof body.updated_at !== 'string'
+  ) {
+    throw new Error(`${where}: response is not the AI settings`)
+  }
+  if (!isAIProvider(body.provider)) throw new Error(`${where}: unknown AI provider "${body.provider}"`)
+  return {
+    provider: body.provider,
+    base_url: body.base_url,
+    model: body.model,
+    temperature: body.temperature,
+    system_prompt: body.system_prompt,
+    api_key_last4: body.api_key_last4,
+    key_verified_at: body.key_verified_at,
+    updated_at: body.updated_at,
+  }
+}
+
+const AI_SETTINGS_KEY = ['settings', 'ai'] as const
+const AI_MODELS_KEY = ['settings', 'ai', 'models'] as const
+
+export function useAISettings() {
+  const { apiFetch } = useApi()
+  return useQuery({
+    queryKey: AI_SETTINGS_KEY,
+    queryFn: async () => parseAISettings(`GET ${AI_SETTINGS_PATH}`, await apiFetch<unknown>(AI_SETTINGS_PATH)),
+  })
+}
+
+// useAIModels is the saved provider's live model list. Without a usable
+// provider (no key yet, say) it fails with the server's 409 not_configured.
+export function useAIModels(enabled: boolean) {
+  const { apiFetch } = useApi()
+  return useQuery({
+    queryKey: AI_MODELS_KEY,
+    enabled,
+    queryFn: async () => {
+      const body = await apiFetch<unknown>(AI_MODELS_PATH)
+      const models = isRecord(body) ? body.models : undefined
+      if (
+        !Array.isArray(models) ||
+        !models.every((m) => isRecord(m) && typeof m.id === 'string' && typeof m.display_name === 'string')
+      ) {
+        throw new Error(`GET ${AI_MODELS_PATH}: response is not a model list`)
+      }
+      return models as AIModel[]
+    },
+  })
+}
+
+// useAISettingsMutation sends one AI settings change and stores the
+// settings the server answers with. A change that can alter which models
+// the provider offers refetches the model list.
+function useAISettingsMutation<V>(path: string, method: 'POST' | 'PUT' | 'PATCH', body: (variables: V) => unknown) {
+  const { apiFetch } = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (variables: V) =>
+      parseAISettings(`${method} ${path}`, await apiFetch<unknown>(path, { method, body: body(variables) })),
+    onSuccess: (settings) => {
+      const before = queryClient.getQueryData<AISettings>(AI_SETTINGS_KEY)
+      queryClient.setQueryData(AI_SETTINGS_KEY, settings)
+      if (
+        before === undefined ||
+        before.provider !== settings.provider ||
+        before.base_url !== settings.base_url ||
+        before.api_key_last4 !== settings.api_key_last4 ||
+        before.key_verified_at !== settings.key_verified_at
+      ) {
+        void queryClient.invalidateQueries({ queryKey: AI_MODELS_KEY })
+      }
+    },
+  })
+}
+
+export function useSaveAISettings() {
+  return useAISettingsMutation(AI_SETTINGS_PATH, 'PATCH', (patch: AISettingsPatch) => patch)
+}
+
+// useSetAIKey stores a new API key; an empty key removes the stored one.
+export function useSetAIKey() {
+  return useAISettingsMutation(AI_KEY_PATH, 'PUT', (apiKey: string) => ({ api_key: apiKey }))
+}
+
+export function useVerifyAIKey() {
+  return useAISettingsMutation(AI_VERIFY_PATH, 'POST', () => undefined)
+}
+
+export function useResetAIPrompt() {
+  return useAISettingsMutation(AI_RESET_PROMPT_PATH, 'POST', () => undefined)
 }
 
 const clockTime = /^([01][0-9]|2[0-3]):([0-5][0-9])$/
@@ -65,25 +210,9 @@ export function useHouseholdSettings() {
   })
 }
 
-// useAISettings refuses a provider this client has no name for, so the
-// settings never show a value the household cannot read.
-export function useAISettings() {
-  const { apiFetch } = useApi()
-  return useQuery({
-    queryKey: ['settings', 'ai'],
-    queryFn: async () => {
-      const settings = await apiFetch<{ provider: string; model: string }>(AI_SETTINGS_PATH)
-      if (!isAIProvider(settings.provider)) {
-        throw new Error(`GET ${AI_SETTINGS_PATH}: unknown AI provider "${settings.provider}"`)
-      }
-      return { provider: settings.provider, model: settings.model } satisfies AISettings
-    },
-  })
-}
-
 // aiStatus is the AI assistant row's status line: the provider and the
 // model's display name, or that no model is chosen yet (the seed).
-export function aiStatus(settings: AISettings): string {
+export function aiStatus(settings: Pick<AISettings, 'provider' | 'model'>): string {
   const provider = aiProviderLabels[settings.provider]
   if (settings.model === '') return `${provider} · No model chosen`
   return `${provider} · ${modelDisplayName(settings.model)}`

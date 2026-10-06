@@ -6,6 +6,7 @@ import { AuthBootstrap } from './AuthBootstrap.tsx'
 import { PlaceholderPage } from './pages/PlaceholderPage.tsx'
 import { OfflinePill } from './pwa/OfflinePill.tsx'
 import { UpdatePrompt, type UpdateContainer } from './pwa/UpdatePrompt.tsx'
+import { AISettingsPage } from './settings/AISettingsPage.tsx'
 import { SettingsPage } from './settings/SettingsPage.tsx'
 import { AppShell } from './shell/AppShell.tsx'
 
@@ -31,6 +32,7 @@ export const routes = [
 // The screens built so far; every other route shows its placeholder page.
 const screens: Partial<Record<(typeof routes)[number]['path'], ReactNode>> = {
   '/settings': <SettingsPage />,
+  '/settings/ai': <AISettingsPage />,
 }
 
 // AppRoutes is the shell and its pages, shown once /api/v1/me has loaded.
@@ -56,8 +58,9 @@ function reloadPage() {
   window.location.reload()
 }
 
-// App expects to be rendered inside a router (BrowserRouter in main.tsx,
-// MemoryRouter in tests).
+// App expects to be rendered by a data router's splat route
+// (createBrowserRouter in main.tsx, createMemoryRouter in tests), so pages can
+// block navigation.
 export default function App({ api, serviceWorker }: AppProps) {
   const [queryClient] = useState(createQueryClient)
   return (

@@ -1,12 +1,12 @@
 import { act, render, screen } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApiClient, createVerifiedSession } from './api/index.ts'
 import { createNetworkStatus } from './pwa/networkStatus.ts'
 import { mockViewport } from './test/matchMedia.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME, request, stubFetch, stubFetchByPath } from './test/fetchStub.ts'
 import App, { routes } from './App.tsx'
-import { SETTINGS_API } from './test/ApiProviders.tsx'
+import { AI_SETTINGS, SETTINGS_API } from './test/ApiProviders.tsx'
+import { InDataRouter } from './test/dataRouter.tsx'
 
 afterEach(() => {
   Reflect.deleteProperty(window, 'matchMedia')
@@ -20,11 +20,14 @@ function renderAt(path: string, location = fakeLocation(path)) {
 
 function renderAppAt(path: string, location = fakeLocation(path)) {
   return render(
-    <MemoryRouter initialEntries={[path]}>
+    <InDataRouter path={path}>
       <App api={createApiClient(location, createNetworkStatus(window), createVerifiedSession(localStorage))} serviceWorker={undefined} />
-    </MemoryRouter>,
+    </InDataRouter>,
   )
 }
+
+// The routes that render a built screen rather than a placeholder page.
+const SCREENS = { '/settings': true, '/settings/ai': true }
 
 describe('App routes', () => {
   it('registers every handoff route plus the extra settings pages', () => {
@@ -47,7 +50,7 @@ describe('App routes', () => {
     ])
   })
 
-  it.each(routes.filter(({ path }) => path !== '/settings').map(({ path, title }) => [path.replace(':id', 'abc123'), title]))(
+  it.each(routes.filter(({ path }) => !Object.hasOwn(SCREENS, path)).map(({ path, title }) => [path.replace(':id', 'abc123'), title]))(
     '%s renders its placeholder page inside the shell',
     async (path, title) => {
       mockViewport(390)
@@ -69,6 +72,19 @@ describe('App routes', () => {
     const heading = await screen.findByRole('heading', { level: 1, name: 'Settings' })
     expect(screen.getByRole('main')).toContainElement(heading)
     expect(await screen.findByText('Anthropic · Claude Sonnet')).toBeInTheDocument()
+  })
+
+  it('/settings/ai renders the AI assistant screen inside the shell', async () => {
+    mockViewport(390)
+    stubFetchByPath({
+      '/api/v1/me': () => jsonResponse(200, ME),
+      '/api/v1/settings/ai': () => jsonResponse(200, AI_SETTINGS),
+      '/api/v1/settings/ai/models': () => jsonResponse(200, { models: [] }),
+    })
+    renderAt('/settings/ai')
+    const heading = await screen.findByRole('heading', { level: 1, name: 'AI assistant' })
+    expect(screen.getByRole('main')).toContainElement(heading)
+    expect(await screen.findByText('••••••••3f9a')).toBeInTheDocument()
   })
 })
 
@@ -190,9 +206,9 @@ describe('App offline bootstrap', () => {
     goOffline()
     const api = createApiClient(fakeLocation('/plan'), createNetworkStatus(window), createVerifiedSession(localStorage))
     render(
-      <MemoryRouter initialEntries={['/plan']}>
+      <InDataRouter path="/plan">
         <App api={api} serviceWorker={undefined} />
-      </MemoryRouter>,
+      </InDataRouter>,
     )
     expect(await screen.findByRole('heading', { level: 1, name: 'Plan' })).toBeInTheDocument()
     await expect(api.apiFetch('/api/v1/plans', { method: 'POST', body: {} })).rejects.toThrow(/no CSRF token/)

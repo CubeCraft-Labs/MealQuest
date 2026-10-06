@@ -119,7 +119,7 @@ function RecipeSearchForm({ saved, onDirtyChange }: { saved: RecipeSearchSetting
   }
 
   return (
-    <>
+    <fieldset className={styles.lock} disabled={save.isPending}>
       <Segmented
         label="Recipe search provider"
         options={providerOptions}
@@ -173,7 +173,7 @@ function RecipeSearchForm({ saved, onDirtyChange }: { saved: RecipeSearchSetting
           {save.isPending ? 'Saving…' : 'Save recipe search'}
         </Button>
       </div>
-    </>
+    </fieldset>
   )
 }
 

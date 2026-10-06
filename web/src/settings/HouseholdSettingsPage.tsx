@@ -113,7 +113,7 @@ function HouseholdSettingsForm({ saved, onDirtyChange }: HouseholdSettingsFormPr
   }
 
   return (
-    <>
+    <fieldset className={styles.lock} disabled={save.isPending}>
       <Section title="Time zone">
         <TimeZoneField
           value={draft.timezone}
@@ -202,7 +202,7 @@ function HouseholdSettingsForm({ saved, onDirtyChange }: HouseholdSettingsFormPr
           {save.isPending ? 'Saving…' : 'Save changes'}
         </Button>
       </div>
-    </>
+    </fieldset>
   )
 }
 

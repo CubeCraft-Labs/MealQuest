@@ -304,3 +304,9 @@
 .fill .textarea {
   resize: none;
 }
+
+/* A form locked while its save is pending, so no edit is made that the
+   saved settings would then replace. It lays out as if it were not there. */
+.lock {
+  display: contents;
+}

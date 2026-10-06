@@ -1,5 +1,5 @@
 import { QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { Route, Routes, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { ApiProvider, ApiError, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
@@ -291,6 +291,34 @@ describe('HouseholdSettingsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Back to Settings' }))
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Leave' }))
     expect(await screen.findByTestId('path')).toHaveTextContent('/settings')
+  })
+
+  it('locks the form while a save is pending, and guards leaving until the save lands', async () => {
+    let answer: (response: Response) => void = () => {}
+    stubAPI({
+      'PATCH /api/v1/settings/household': () => new Promise<Response>((resolve) => (answer = resolve)),
+    })
+    await renderPage()
+    const unload = () => {
+      const event = new Event('beforeunload', { cancelable: true })
+      act(() => void window.dispatchEvent(event))
+      return event.defaultPrevented
+    }
+    fireEvent.change(input('Dinner time'), { target: { value: '18:15' } })
+    fireEvent.click(save())
+
+    expect(await screen.findByRole('button', { name: 'Saving…' })).toBeDisabled()
+    for (const field of ['Dinner time', 'Day-of reminder', 'Plan draft day', 'Google Chat Supply run time']) {
+      expect(input(field)).toBeDisabled()
+    }
+    expect(screen.getByRole('button', { name: 'Change' })).toBeDisabled()
+    expect(unload()).toBe(true)
+
+    answer(jsonResponse(200, { ...HOUSEHOLD_SETTINGS, dinner_time: '18:15' }))
+    expect(await screen.findByText('Changes saved.')).toBeInTheDocument()
+    expect(input('Dinner time')).toBeEnabled()
+    expect(input('Dinner time')).toHaveValue('18:15')
+    await waitFor(() => expect(unload()).toBe(false))
   })
 
   it('leaves without asking when nothing changed', async () => {

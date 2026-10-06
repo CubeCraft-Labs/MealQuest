@@ -201,7 +201,7 @@ function AISettingsForm({ saved, onDirtyChange }: AISettingsFormProps) {
   }
 
   return (
-    <>
+    <fieldset className={styles.lock} disabled={save.isPending}>
       <div className={styles.columns}>
         <Select
           label="Provider"
@@ -325,7 +325,7 @@ function AISettingsForm({ saved, onDirtyChange }: AISettingsFormProps) {
       >
         This restores MealQuest's default system prompt for everyone in the household.
       </Confirm>
-    </>
+    </fieldset>
   )
 }
 

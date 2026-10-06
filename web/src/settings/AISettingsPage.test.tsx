@@ -407,6 +407,30 @@ describe('AISettingsPage', () => {
     expect(unload()).toBe(true)
   })
 
+  it('locks the form while a save is pending, and guards leaving until the save lands', async () => {
+    let answer: (response: Response) => void = () => {}
+    stubAPI({ 'PATCH /api/v1/settings/ai': () => new Promise<Response>((resolve) => (answer = resolve)) })
+    await renderPage()
+    const unload = () => {
+      const event = new Event('beforeunload', { cancelable: true })
+      act(() => void window.dispatchEvent(event))
+      return event.defaultPrevented
+    }
+    fireEvent.change(prompt(), { target: { value: 'Keep it cozy.' } })
+    fireEvent.click(save())
+
+    expect(await screen.findByRole('button', { name: 'Saving…' })).toBeDisabled()
+    for (const field of [provider(), model(), slider(), prompt()]) expect(field).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Reset' })).toBeDisabled()
+    expect(unload()).toBe(true)
+
+    answer(jsonResponse(200, { ...AI_SETTINGS, system_prompt: 'Keep it cozy.' }))
+    expect(await screen.findByText('Changes saved.')).toBeInTheDocument()
+    expect(prompt()).toBeEnabled()
+    expect(prompt()).toHaveValue('Keep it cozy.')
+    await waitFor(() => expect(unload()).toBe(false))
+  })
+
   it('keeps 44 px tap targets', async () => {
     stubAPI()
     await renderPage()
@@ -678,6 +702,29 @@ describe('Recipe search card', () => {
     await renderCard()
     fireEvent.click(screen.getByRole('button', { name: 'Back to Settings' }))
     expect(await screen.findByTestId('path')).toHaveTextContent('/settings')
+  })
+
+  it('locks the card while a save is pending, and guards leaving until the save lands', async () => {
+    let answer: (response: Response) => void = () => {}
+    stubAPI({ 'PATCH /api/v1/settings/recipe-search': () => new Promise<Response>((resolve) => (answer = resolve)) })
+    await renderCard()
+    const unload = () => {
+      const event = new Event('beforeunload', { cancelable: true })
+      act(() => void window.dispatchEvent(event))
+      return event.defaultPrevented
+    }
+    fireEvent.change(url(), { target: { value: 'https://search.example' } })
+    fireEvent.click(saveSearch())
+
+    expect(await within(card()).findByRole('button', { name: 'Saving…' })).toBeDisabled()
+    for (const field of [url(), searxng(), brave()]) expect(field).toBeDisabled()
+    expect(unload()).toBe(true)
+
+    answer(jsonResponse(200, { ...RECIPE_SEARCH_SETTINGS, base_url: 'https://search.example' }))
+    expect(await within(card()).findByText('Recipe search saved.')).toBeInTheDocument()
+    expect(url()).toBeEnabled()
+    expect(url()).toHaveValue('https://search.example')
+    await waitFor(() => expect(unload()).toBe(false))
   })
 
   it('keeps 44 px tap targets', async () => {

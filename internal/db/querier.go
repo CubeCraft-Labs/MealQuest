@@ -34,6 +34,11 @@ type Querier interface {
 	DeleteRecipeIngredients(ctx context.Context, recipeID string) error
 	DeleteRecipeSteps(ctx context.Context, recipeID string) error
 	FailJob(ctx context.Context, arg FailJobParams) (int64, error)
+	// Fails every dinner still pending whose grounding job is no longer queued
+	// or running: the process stopped before the job, or before its handler
+	// recorded a result. Run at boot, after the job runner fails the jobs a
+	// previous process left running.
+	FailOrphanedPendingDinnerGroundings(ctx context.Context, arg FailOrphanedPendingDinnerGroundingsParams) (int64, error)
 	// Records why the background grounding of a dinner still pending failed; a
 	// dinner grounded some other way meanwhile is left as it is (0 rows).
 	FailPendingDinnerGrounding(ctx context.Context, arg FailPendingDinnerGroundingParams) (int64, error)

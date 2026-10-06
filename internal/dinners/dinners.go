@@ -155,10 +155,12 @@ func NewService(st *store.Store, grounder *recipes.Grounder, runner *jobs.Runner
 	return s, nil
 }
 
-// Created is a new Regular with the id of the job grounding it.
+// Created is a new Regular with the id of the job grounding it, which is
+// nil when the job could not be enqueued and the dinner's grounding is
+// failed instead.
 type Created struct {
 	Dinner
-	GroundingJobID string `json:"grounding_job_id"`
+	GroundingJobID *string `json:"grounding_job_id"`
 }
 
 // CreateRegular adds a Regular named by r.Name, or by the last path segment
@@ -166,24 +168,35 @@ type Created struct {
 // origin regular and grounding_status pending, recording updatedBy, and
 // enqueues the KindGroundDinner job that grounds it. It returns without
 // waiting for the job. A name repeating an unarchived dinner is a
-// *DuplicateError.
+// *DuplicateError. When the job cannot be enqueued, the stored dinner is
+// returned with grounding_status failed (ReasonGroundingError) and no job
+// id, so the household can fix its recipe by hand.
 func (s *Service) CreateRegular(ctx context.Context, r NewRegular, updatedBy string) (Created, error) {
 	d, err := s.createRegular(ctx, r, updatedBy)
 	if err != nil {
 		return Created{}, err
 	}
 	jobID, err := s.groundJob.Enqueue(ctx, GroundJob{DinnerID: d.ID})
-	if err != nil {
-		// The dinner is stored; record that it will not be grounded so it
-		// is not left pending with no job, and can be fixed by hand.
-		_, failErr := db.New(s.st.Writer).FailPendingDinnerGrounding(context.WithoutCancel(ctx), db.FailPendingDinnerGroundingParams{
-			GroundingError: sql.NullString{String: ReasonGroundingError, Valid: true},
-			UpdatedAt:      store.Now().String(),
-			ID:             d.ID,
-		})
-		return Created{}, errors.Join(fmt.Errorf("dinners: enqueue grounding of %s: %w", d.ID, err), failErr)
+	if err == nil {
+		return Created{Dinner: d, GroundingJobID: &jobID}, nil
 	}
-	return Created{Dinner: d, GroundingJobID: jobID}, nil
+	// The dinner is stored; record that it will not be grounded so it is
+	// not left pending with no job. The error is a database error, never a
+	// dependency's text.
+	s.logger.ErrorContext(ctx, "dinner grounding not enqueued", "dinner_id", d.ID, "error", err)
+	write := context.WithoutCancel(ctx)
+	if _, err := db.New(s.st.Writer).FailPendingDinnerGrounding(write, db.FailPendingDinnerGroundingParams{
+		GroundingError: sql.NullString{String: ReasonGroundingError, Valid: true},
+		UpdatedAt:      store.Now().String(),
+		ID:             d.ID,
+	}); err != nil {
+		return Created{}, fmt.Errorf("dinners: record failed grounding of %s: %w", d.ID, err)
+	}
+	row, err := db.New(s.st.Reader).GetDinner(write, d.ID)
+	if err != nil {
+		return Created{}, fmt.Errorf("dinners: read %s: %w", d.ID, err)
+	}
+	return Created{Dinner: fromRow(row)}, nil
 }
 
 func (s *Service) createRegular(ctx context.Context, r NewRegular, updatedBy string) (Dinner, error) {

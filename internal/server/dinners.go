@@ -71,7 +71,8 @@ func getDinners(logger *slog.Logger, svc *dinners.Service) http.HandlerFunc {
 
 // postDinner adds a Regular, recording the session's actor as updated_by,
 // and answers 201 with it and its grounding_job_id without waiting for the
-// job.
+// job. When the job cannot be enqueued it still answers 201, with the dinner
+// grounding_status failed and grounding_job_id null.
 func postDinner(logger *slog.Logger, svc *dinners.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		actor, ok := actorOrFail(w, r, logger)
@@ -198,7 +199,8 @@ func actorOrFail(w http.ResponseWriter, r *http.Request, logger *slog.Logger) (a
 
 // writeDinnerError maps a dinners.Service error to its API error. A page
 // that cannot ground the dinner is 422 ungroundable; recipe search not set
-// up is 409 not_configured; a search or model failure is 502.
+// up is 409 not_configured; a search or model failure is 502; grounding by
+// hand that runs past dinners.GroundTimeout is 504 ground_timeout.
 func writeDinnerError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, action string, err error) {
 	var invalid *dinners.ValidationError
 	var dup *dinners.DuplicateError
@@ -211,11 +213,16 @@ func writeDinnerError(w http.ResponseWriter, r *http.Request, logger *slog.Logge
 	case errors.Is(err, recipes.ErrSearchNotConfigured):
 		writeError(w, r, logger, http.StatusConflict, "not_configured", "recipe search is not configured")
 	case errors.Is(err, recipes.ErrSearchFailed):
-		logger.WarnContext(r.Context(), action, "error", err)
+		// The error may quote the search provider's response, so only the
+		// reason is logged.
+		logger.WarnContext(r.Context(), action, "reason", "search_failed")
 		writeError(w, r, logger, http.StatusBadGateway, "search_failed", "recipe search failed")
 	case errors.Is(err, recipes.ErrNormalizeFailed):
 		logger.WarnContext(r.Context(), action, "reason", "normalize_recipe failed")
 		writeError(w, r, logger, http.StatusBadGateway, "ai_failed", "the AI provider failed to read the recipe")
+	case errors.Is(err, dinners.ErrGroundTimeout):
+		logger.WarnContext(r.Context(), action, "reason", "ground_timeout")
+		writeError(w, r, logger, http.StatusGatewayTimeout, "ground_timeout", "grounding the recipe took too long; try again")
 	case errors.As(err, &invalid):
 		writeError(w, r, logger, http.StatusBadRequest, "invalid_dinner", invalid.Error())
 	case errors.As(err, &dup):

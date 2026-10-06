@@ -139,6 +139,12 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	if err := runner.Start(jobsCtx); err != nil {
 		return err
 	}
+	// With those jobs failed, a dinner still pending with no grounding job
+	// queued or running is failed as interrupted, before any request can
+	// create one.
+	if _, err := dinnerSvc.FailInterruptedGroundings(ctx); err != nil {
+		return err
+	}
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           router,

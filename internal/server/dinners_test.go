@@ -1,12 +1,14 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 
@@ -39,6 +41,26 @@ type dinnersEnv struct {
 	pages  *recipestest.Pages
 	images *recipestest.Images
 	model  *llm.Fake
+	// logs holds everything the router and services log.
+	logs *logBuffer
+}
+
+// logBuffer is a bytes.Buffer safe for concurrent log writes.
+type logBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *logBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func newDinnersEnv(t *testing.T) *dinnersEnv {
@@ -50,8 +72,9 @@ func newDinnersEnv(t *testing.T) *dinnersEnv {
 		pages:  &recipestest.Pages{Bodies: map[string][]byte{}},
 		images: &recipestest.Images{JPEGs: map[string][]byte{}},
 		model:  &llm.Fake{},
+		logs:   &logBuffer{},
 	}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.NewTextHandler(e.logs, nil))
 	runner, err := jobs.NewRunner(st, logger, 1)
 	if err != nil {
 		t.Fatal(err)

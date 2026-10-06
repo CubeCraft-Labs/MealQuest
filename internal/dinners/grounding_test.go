@@ -33,6 +33,7 @@ type env struct {
 	st     *store.Store
 	runner *jobs.Runner
 	search *recipestest.Search
+	pages  *recipestest.Pages
 	model  *llm.Fake
 }
 
@@ -40,6 +41,15 @@ type env struct {
 // with fake search, pages, images and model. Searching "Chicken curry"
 // finds curryA, curryB and a missing page.
 func newEnv(t *testing.T) *env {
+	t.Helper()
+	e := newUnstartedEnv(t)
+	e.start(t)
+	return e
+}
+
+// newUnstartedEnv is newEnv with its job runner not yet started, so jobs
+// enqueued stay queued until start.
+func newUnstartedEnv(t *testing.T) *env {
 	t.Helper()
 	dataDir := t.TempDir()
 	st, err := store.Open(t.Context(), dataDir)
@@ -79,16 +89,21 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return &env{svc: svc, st: st, runner: runner, search: search, pages: pages, model: model}
+}
+
+// start starts the env's job runner, stopping it when the test ends.
+func (e *env) start(t *testing.T) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	if err := runner.Start(ctx); err != nil {
+	if err := e.runner.Start(ctx); err != nil {
 		cancel()
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		cancel()
-		runner.Wait()
+		e.runner.Wait()
 	})
-	return &env{svc: svc, st: st, runner: runner, search: search, model: model}
 }
 
 func ptr[T any](v T) *T { return &v }
@@ -130,10 +145,10 @@ func TestCreateGroundsInBackground(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.GroundingStatus != dinners.GroundingPending || c.GroundingJobID == "" {
+	if c.GroundingStatus != dinners.GroundingPending || c.GroundingJobID == nil {
 		t.Fatalf("created = %+v, want pending with a job id", c)
 	}
-	job := e.waitJob(t, c.GroundingJobID)
+	job := e.waitJob(t, *c.GroundingJobID)
 	if job.Kind != dinners.KindGroundDinner || job.Status != jobs.StatusSucceeded ||
 		string(job.Result) != `{"dinner_id":"`+c.ID+`","grounding_status":"grounded"}` {
 		t.Fatalf("job = %+v (result %s)", job, job.Result)
@@ -165,7 +180,7 @@ func TestCreateByRecipeURLGroundsThatURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if job := e.waitJob(t, c.GroundingJobID); job.Status != jobs.StatusSucceeded {
+	if job := e.waitJob(t, *c.GroundingJobID); job.Status != jobs.StatusSucceeded {
 		t.Fatalf("job = %+v", job)
 	}
 	row := e.dinner(t, c.ID)
@@ -208,7 +223,7 @@ func TestCreateGroundingFailureRecordsReason(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			job := e.waitJob(t, c.GroundingJobID)
+			job := e.waitJob(t, *c.GroundingJobID)
 			if job.Status != jobs.StatusFailed || job.Error == nil || *job.Error != tt.reason {
 				t.Errorf("job = %+v, want failed with %s", job, tt.reason)
 			}
@@ -234,11 +249,11 @@ func TestCreateReturnsBeforeGroundingCompletes(t *testing.T) {
 	if row := e.dinner(t, c.ID); row.GroundingStatus != "pending" {
 		t.Fatalf("grounding_status = %s right after create, want pending", row.GroundingStatus)
 	}
-	if job, err := e.runner.Get(t.Context(), c.GroundingJobID); err != nil || (job.Status != jobs.StatusQueued && job.Status != jobs.StatusRunning) {
+	if job, err := e.runner.Get(t.Context(), *c.GroundingJobID); err != nil || (job.Status != jobs.StatusQueued && job.Status != jobs.StatusRunning) {
 		t.Fatalf("job = %+v, %v; want queued or running", job, err)
 	}
 	close(e.search.Gate)
-	if job := e.waitJob(t, c.GroundingJobID); job.Status != jobs.StatusSucceeded {
+	if job := e.waitJob(t, *c.GroundingJobID); job.Status != jobs.StatusSucceeded {
 		t.Fatalf("job = %+v", job)
 	}
 	if row := e.dinner(t, c.ID); row.GroundingStatus != "grounded" {
@@ -262,7 +277,7 @@ func TestManualFixWhilePendingIsKept(t *testing.T) {
 		t.Fatal(err)
 	}
 	close(e.search.Gate)
-	job := e.waitJob(t, c.GroundingJobID)
+	job := e.waitJob(t, *c.GroundingJobID)
 	if job.Status != jobs.StatusSucceeded || string(job.Result) != `{"dinner_id":"`+c.ID+`","grounding_status":"manual"}` {
 		t.Errorf("job = %+v (result %s), want succeeded reporting manual", job, job.Result)
 	}
@@ -278,7 +293,7 @@ func failedDinner(t *testing.T, e *env, name string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if job := e.waitJob(t, c.GroundingJobID); job.Status != jobs.StatusFailed {
+	if job := e.waitJob(t, *c.GroundingJobID); job.Status != jobs.StatusFailed {
 		t.Fatalf("job = %+v, want failed", job)
 	}
 	return c.ID
@@ -293,7 +308,7 @@ func TestCandidates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if job := e.waitJob(t, c.GroundingJobID); job.Status != jobs.StatusSucceeded {
+	if job := e.waitJob(t, *c.GroundingJobID); job.Status != jobs.StatusSucceeded {
 		t.Fatalf("job = %+v", job)
 	}
 
@@ -474,5 +489,107 @@ func TestFixValidation(t *testing.T) {
 	}
 	if _, err := e.svc.Ground(t.Context(), "nope", dinners.Fix{RecipeURL: ptr(stew)}, member); !errors.Is(err, dinners.ErrNotFound) {
 		t.Errorf("unknown dinner, link: err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestRestartFailsInterruptedGrounding simulates a crash: one dinner's job
+// was left running and another dinner was saved before its job was
+// enqueued. At the next boot both end failed as interrupted, while a
+// dinner whose job is still queued stays pending and is grounded.
+func TestRestartFailsInterruptedGrounding(t *testing.T) {
+	t.Parallel()
+	e := newUnstartedEnv(t)
+	e.search.Gate = make(chan struct{})
+	e.model.QueueGenerate(recipestest.NormalizedReply("stovetop", 40))
+
+	running, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr("Fish pie")}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.st.Writer.ExecContext(t.Context(),
+		`UPDATE jobs SET status = 'running', started_at = updated_at WHERE id = ?`, *running.GroundingJobID); err != nil {
+		t.Fatal(err)
+	}
+	unqueued, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr("Lentil soup")}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.st.Writer.ExecContext(t.Context(), `DELETE FROM jobs WHERE id = ?`, *unqueued.GroundingJobID); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr("Chicken curry")}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Boot: the runner fails the running job, then the service fails the
+	// dinners nothing is left to ground. The search is held, so the queued
+	// dinner's job cannot finish meanwhile.
+	e.start(t)
+	n, err := e.svc.FailInterruptedGroundings(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("failed %d dinners, want 2", n)
+	}
+	if job, err := e.runner.Get(t.Context(), *running.GroundingJobID); err != nil || job.Status != jobs.StatusFailed {
+		t.Errorf("running job = %+v, %v; want failed", job, err)
+	}
+	for _, id := range []string{running.ID, unqueued.ID} {
+		if row := e.dinner(t, id); row.GroundingStatus != dinners.GroundingFailed || row.GroundingError.String != dinners.ReasonInterrupted {
+			t.Errorf("dinner %s = %s (%s), want failed (interrupted)", id, row.GroundingStatus, row.GroundingError.String)
+		}
+	}
+	if row := e.dinner(t, queued.ID); row.GroundingStatus != dinners.GroundingPending {
+		t.Errorf("queued dinner = %s, want pending", row.GroundingStatus)
+	}
+	close(e.search.Gate)
+	if job := e.waitJob(t, *queued.GroundingJobID); job.Status != jobs.StatusSucceeded {
+		t.Fatalf("queued job = %+v", job)
+	}
+	if row := e.dinner(t, queued.ID); row.GroundingStatus != dinners.GroundingGrounded {
+		t.Errorf("queued dinner = %s, want grounded", row.GroundingStatus)
+	}
+}
+
+// TestCreateEnqueueFailureReturnsFailedDinner: a dinner saved when its job
+// cannot be enqueued is returned, with its id, failed and no job id.
+func TestCreateEnqueueFailureReturnsFailedDinner(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	if _, err := e.st.Writer.ExecContext(t.Context(),
+		`CREATE TRIGGER refuse_jobs BEFORE INSERT ON jobs BEGIN SELECT RAISE(ABORT, 'no jobs'); END`); err != nil {
+		t.Fatal(err)
+	}
+	c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr("Chicken curry")}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ID == "" || c.GroundingJobID != nil || c.GroundingStatus != dinners.GroundingFailed ||
+		c.GroundingError == nil || *c.GroundingError != dinners.ReasonGroundingError {
+		t.Fatalf("created = %+v, want its id, failed (grounding_error) and no job", c)
+	}
+	if row := e.dinner(t, c.ID); row.GroundingStatus != dinners.GroundingFailed {
+		t.Errorf("stored grounding_status = %s, want failed", row.GroundingStatus)
+	}
+}
+
+// TestGroundTimesOut: grounding a link by hand that runs past its deadline
+// is ErrGroundTimeout and leaves the dinner as it was. It shortens the
+// package deadline, so it does not run in parallel.
+func TestGroundTimesOut(t *testing.T) {
+	dinners.SetGroundTimeout(t, 50*time.Millisecond)
+	e := newEnv(t)
+	id := failedDinner(t, e, "Beef stew")
+	e.pages.Gate = make(chan struct{})
+	defer close(e.pages.Gate)
+
+	_, err := e.svc.Ground(t.Context(), id, dinners.Fix{RecipeURL: ptr(stew)}, member)
+	if !errors.Is(err, dinners.ErrGroundTimeout) {
+		t.Fatalf("err = %v, want ErrGroundTimeout", err)
+	}
+	if row := e.dinner(t, id); row.GroundingStatus != dinners.GroundingFailed {
+		t.Errorf("grounding_status = %s, want failed as before", row.GroundingStatus)
 	}
 }

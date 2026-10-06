@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
@@ -62,6 +63,18 @@ const (
 	// followed by the recipe's id; it is never a fetchable page.
 	manualSourcePrefix = "mealquest:manual:"
 )
+
+// GroundTimeout bounds grounding a candidate or link by hand, which runs in
+// the request: the page fetch (recipes.Timeout), its photo download and
+// normalize_recipe (harness.DefaultTimeout), with some slack.
+const GroundTimeout = 90 * time.Second
+
+// groundTimeout is GroundTimeout; tests shorten it.
+var groundTimeout = GroundTimeout
+
+// ErrGroundTimeout is returned by Ground when grounding a candidate or link
+// runs past GroundTimeout; the dinner is left as it was.
+var ErrGroundTimeout = errors.New("dinners: grounding the recipe took too long")
 
 // GroundJob is the KindGroundDinner payload.
 type GroundJob struct {
@@ -141,6 +154,27 @@ func (s *Service) runGroundJob(ctx context.Context, p GroundJob, _ func(groundRe
 		return groundResult{DinnerID: cur.ID, GroundingStatus: cur.GroundingStatus}, nil
 	}
 	return groundResult{DinnerID: row.ID, GroundingStatus: GroundingGrounded}, nil
+}
+
+// FailInterruptedGroundings fails, with ReasonInterrupted, every dinner
+// still pending whose KindGroundDinner job is no longer queued or running:
+// a previous process stopped before enqueuing the job or before its
+// handler recorded a result. Call it once at boot, after the job runner's
+// Start has failed the jobs that process left running, so no dinner stays
+// pending with nothing left to ground it. It returns how many it failed.
+func (s *Service) FailInterruptedGroundings(ctx context.Context) (int64, error) {
+	n, err := db.New(s.st.Writer).FailOrphanedPendingDinnerGroundings(ctx, db.FailOrphanedPendingDinnerGroundingsParams{
+		GroundingError: sql.NullString{String: ReasonInterrupted, Valid: true},
+		UpdatedAt:      store.Now().String(),
+		Kind:           KindGroundDinner,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("dinners: fail interrupted groundings: %w", err)
+	}
+	if n > 0 {
+		s.logger.WarnContext(ctx, "failed dinner groundings interrupted by restart", "count", n)
+	}
+	return n, nil
 }
 
 // reasonFor is the Reason for a grounding error; fromURL says whether the
@@ -236,8 +270,13 @@ func (s *Service) Ground(ctx context.Context, id string, f Fix, updatedBy string
 	if _, err := s.get(ctx, id); err != nil {
 		return Dinner{}, err
 	}
-	gr, err := s.grounder.GroundURL(ctx, link)
+	groundCtx, cancel := context.WithTimeout(ctx, groundTimeout)
+	defer cancel()
+	gr, err := s.grounder.GroundURL(groundCtx, link)
 	if err != nil {
+		if ctx.Err() == nil && errors.Is(groundCtx.Err(), context.DeadlineExceeded) {
+			return Dinner{}, ErrGroundTimeout
+		}
 		return Dinner{}, fmt.Errorf("dinners: ground %s: %w", id, err)
 	}
 	row, err := db.New(s.st.Writer).GroundDinner(ctx, db.GroundDinnerParams{

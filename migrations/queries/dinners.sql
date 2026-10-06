@@ -109,3 +109,20 @@ SET grounding_status = 'failed',
 	grounding_error = ?,
 	updated_at = ?
 WHERE id = ? AND grounding_status = 'pending';
+
+-- name: FailOrphanedPendingDinnerGroundings :execrows
+-- Fails every dinner still pending whose grounding job is no longer queued
+-- or running: the process stopped before the job, or before its handler
+-- recorded a result. Run at boot, after the job runner fails the jobs a
+-- previous process left running.
+UPDATE dinners
+SET grounding_status = 'failed',
+	grounding_error = sqlc.arg(grounding_error),
+	updated_at = sqlc.arg(updated_at)
+WHERE grounding_status = 'pending'
+	AND NOT EXISTS (
+		SELECT 1 FROM jobs
+		WHERE jobs.kind = sqlc.arg(kind)
+			AND jobs.status IN ('queued', 'running')
+			AND json_extract(jobs.payload, '$.dinner_id') = dinners.id
+	);

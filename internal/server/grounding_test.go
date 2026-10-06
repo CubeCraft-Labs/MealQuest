@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -162,11 +163,20 @@ func TestGetRecipeCandidates(t *testing.T) {
 func TestGetRecipeCandidatesSearchFails(t *testing.T) {
 	t.Parallel()
 	e := newDinnersEnv(t)
-	e.search.Err = recipes.ErrSearchRefused
+	// The provider's text must reach neither the response nor the logs.
+	const leak = "provider-said-token-abc123"
+	e.search.Err = fmt.Errorf("%w: %s", recipes.ErrSearchRefused, leak)
 	id := createDinner(t, e.h, `{"name":"Chicken curry"}`)
 	rec, body := callDinners(t, e.h, http.MethodGet, dinnersPath+"/"+id+"/recipe-candidates", "")
 	if rec.Code != http.StatusBadGateway || errorCode(body) != "search_failed" {
 		t.Errorf("GET = %d %v, want 502 search_failed", rec.Code, body)
+	}
+	if strings.Contains(rec.Body.String(), leak) {
+		t.Errorf("response quotes the provider: %s", rec.Body)
+	}
+	logs := e.logs.String()
+	if strings.Contains(logs, leak) || !strings.Contains(logs, "reason=search_failed") {
+		t.Errorf("logs = %q, want reason=search_failed and no provider text", logs)
 	}
 }
 
@@ -269,5 +279,25 @@ func TestPostGroundRejects(t *testing.T) {
 		`{"manual":{"ingredients":["x"],"minutes":5,"method":"oven"}}`)
 	if rec.Code != http.StatusNotFound || errorCode(body) != "not_found" {
 		t.Errorf("unknown dinner = %d %v, want 404", rec.Code, body)
+	}
+}
+
+func TestPostDinnerEnqueueFailureAnswersFailedDinner(t *testing.T) {
+	t.Parallel()
+	e := newDinnersEnv(t)
+	if _, err := e.st.Writer.ExecContext(t.Context(),
+		`CREATE TRIGGER refuse_jobs BEFORE INSERT ON jobs BEGIN SELECT RAISE(ABORT, 'no jobs'); END`); err != nil {
+		t.Fatal(err)
+	}
+	rec, created := callDinners(t, e.h, http.MethodPost, dinnersPath, `{"name":"Chicken curry"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST = %d: %s", rec.Code, rec.Body)
+	}
+	id, _ := created["id"].(string)
+	if id == "" || created["grounding_status"] != "failed" || created["grounding_error"] != "grounding_error" || created["grounding_job_id"] != nil {
+		t.Fatalf("created = %v, want its id, failed (grounding_error) and a null grounding_job_id", created)
+	}
+	if got := listedDinner(t, e.h, id); got["grounding_status"] != "failed" {
+		t.Errorf("listed = %v, want failed", got)
 	}
 }

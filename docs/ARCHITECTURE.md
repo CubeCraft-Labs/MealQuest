@@ -202,7 +202,9 @@ automatic** (D-021).
   the session's subject as `updated_by`; an unknown id is 404.
 - Dinner grounding. `POST /api/v1/dinners` also enqueues a `ground_dinner`
   job and answers with its `grounding_job_id` without waiting for it
-  (`GET /api/v1/jobs/{id}` reports it). The job grounds the dinner's
+  (`GET /api/v1/jobs/{id}` reports it); if the job cannot be enqueued it
+  still answers 201, with grounding_status `failed` (`grounding_error`)
+  and `grounding_job_id` null. The job grounds the dinner's
   `recipe_url` directly with `GroundURL`, else its name with `Ground`
   (see Recipe grounding), and sets grounding_status `grounded` with the
   recipe's recipe_id, photo_id, method, minutes_total and difficulty, or
@@ -210,7 +212,11 @@ automatic** (D-021).
   `no_recipe_found`, `recipe_unusable` (the pasted link), `search_not_configured`,
   `search_failed`, `ai_failed`, `interrupted` (the server stopped) or
   `grounding_error`. It only writes a dinner still `pending`, so a fix-up
-  made meanwhile wins. `GET /api/v1/dinners/{id}/recipe-candidates`
+  made meanwhile wins. At boot, after the job runner fails the jobs a
+  previous process left running, every dinner still `pending` with no
+  `ground_dinner` job queued or running is set `failed` with `interrupted`,
+  so no dinner stays pending with nothing left to ground it.
+  `GET /api/v1/dinners/{id}/recipe-candidates`
   searches for the dinner's name and returns `{candidates: [{candidate_id,
   title, site_name, photo_url, minutes}]}`, at most 3, ranked as `Ground`
   ranks them; it fetches pages but downloads no photo and runs no model,
@@ -226,8 +232,11 @@ automatic** (D-021).
   photo and the dinner's difficulty unchanged. It answers 200 with the
   dinner; an invalid body is 400, an unknown dinner 404, a page that cannot
   ground it 422 `ungroundable` (the dinner is unchanged), recipe search not
-  set up 409 `not_configured`, and a search or model failure 502
-  `search_failed` / `ai_failed`.
+  set up 409 `not_configured`, a search or model failure 502
+  `search_failed` / `ai_failed` (only the reason code is logged, never the
+  provider's text), and grounding a candidate or link that runs past 90
+  seconds (fetch, photo and `normalize_recipe`, all in the request) 504
+  `ground_timeout`, leaving the dinner unchanged.
 - `/health` — liveness.
 - Everything else serves the embedded PWA with SPA fallback.
 

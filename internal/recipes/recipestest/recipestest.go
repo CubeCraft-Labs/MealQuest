@@ -62,12 +62,20 @@ func (s *Search) Queries() []string {
 }
 
 // Pages is a recipes.PageFetcher serving Bodies by URL; any other URL is a
-// 404.
+// 404. Gate, when set, makes every fetch wait for it to close.
 type Pages struct {
 	Bodies map[string][]byte
+	Gate   chan struct{}
 }
 
-func (p *Pages) Fetch(_ context.Context, rawURL string) (recipes.Page, error) {
+func (p *Pages) Fetch(ctx context.Context, rawURL string) (recipes.Page, error) {
+	if p.Gate != nil {
+		select {
+		case <-p.Gate:
+		case <-ctx.Done():
+			return recipes.Page{}, ctx.Err()
+		}
+	}
 	body, ok := p.Bodies[rawURL]
 	if !ok {
 		return recipes.Page{}, &recipes.StatusError{URL: rawURL, Status: 404}

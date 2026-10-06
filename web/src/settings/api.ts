@@ -389,6 +389,21 @@ export function useSaveHouseholdSettings() {
   })
 }
 
+// useCompleteOnboarding records that the household finished onboarding: the
+// server sets onboarding_completed_at, which ends the first-run redirect.
+export function useCompleteOnboarding() {
+  const { apiFetch } = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async () =>
+      parseHouseholdSettings(
+        `PATCH ${HOUSEHOLD_SETTINGS_PATH}`,
+        await apiFetch<unknown>(HOUSEHOLD_SETTINGS_PATH, { method: 'PATCH', body: { onboarding_completed: true } }),
+      ),
+    onSuccess: (settings) => queryClient.setQueryData(HOUSEHOLD_SETTINGS_KEY, settings),
+  })
+}
+
 // HouseholdSettingsProblems is a refused household settings save: the reason
 // for each field the server named, and any reasons that name no field.
 export type HouseholdSettingsProblems = {

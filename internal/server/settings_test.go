@@ -115,6 +115,19 @@ func TestPatchHouseholdSettings(t *testing.T) {
 	}
 }
 
+func TestPatchHouseholdSettingsCompletesOnboarding(t *testing.T) {
+	t.Parallel()
+
+	rec, body := serve(t, newTestRouter(t, "dev"), signedIn(http.MethodPatch, settingsPath,
+		strings.NewReader(`{"onboarding_completed":true}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+	if at, ok := body["onboarding_completed_at"].(string); !ok || at != body["updated_at"] {
+		t.Errorf("onboarding_completed_at = %#v, want the update time %#v", body["onboarding_completed_at"], body["updated_at"])
+	}
+}
+
 func TestPatchHouseholdSettingsRejected(t *testing.T) {
 	t.Parallel()
 
@@ -136,6 +149,8 @@ func TestPatchHouseholdSettingsRejected(t *testing.T) {
 		{"null value", `{"timezone":null}`, "invalid_request", "timezone"},
 		{"unknown field", `{"dinner":"17:30"}`, "invalid_request", "dinner"},
 		{"read-only field", `{"updated_by":"someone"}`, "invalid_request", "updated_by"},
+		{"read-only onboarding time", `{"onboarding_completed_at":"2026-10-06T12:00:00.000Z"}`, "invalid_request", "onboarding_completed_at"},
+		{"onboarding undone", `{"onboarding_completed":false}`, "invalid_settings", "onboarding_completed"},
 		{"not an object", `["timezone"]`, "invalid_request", "JSON object"},
 		{"null body", `null`, "invalid_request", "JSON object"},
 		{"trailing data", `{"dinner_time":"18:00"} {}`, "invalid_request", "JSON object"},

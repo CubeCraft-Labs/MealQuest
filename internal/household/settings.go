@@ -68,6 +68,11 @@ type SettingsPatch struct {
 	SuggestionsTime  *string
 	ChatAutosendDow  *int
 	ChatAutosendTime *string
+	// OnboardingCompleted, when true, records that the household finished
+	// onboarding: onboarding_completed_at becomes the time of the update,
+	// unless it is already set, when the first time is kept. Onboarding is
+	// never undone, so false is invalid.
+	OnboardingCompleted *bool
 }
 
 // Problem is one invalid field of a SettingsPatch, named by its JSON key.
@@ -208,6 +213,9 @@ func (s *SettingsService) Update(ctx context.Context, patch SettingsPatch, updat
 		setString(&p.SuggestionsTime, patch.SuggestionsTime)
 		setDow(&p.ChatAutosendDow, patch.ChatAutosendDow)
 		setString(&p.ChatAutosendTime, patch.ChatAutosendTime)
+		if patch.OnboardingCompleted != nil && !p.OnboardingCompletedAt.Valid {
+			p.OnboardingCompletedAt = sql.NullString{String: p.UpdatedAt, Valid: true}
+		}
 		row, err = q.UpsertHouseholdSettings(ctx, p)
 		if err != nil {
 			return fmt.Errorf("household: update settings: %w", err)
@@ -290,6 +298,9 @@ func (p SettingsPatch) validate() error {
 		if d.value != nil && (*d.value < 0 || *d.value > 6) {
 			fail(d.field, fmt.Sprintf("invalid day of the week %d (want 0-6, Sunday = 0)", *d.value))
 		}
+	}
+	if p.OnboardingCompleted != nil && !*p.OnboardingCompleted {
+		fail("onboarding_completed", "onboarding cannot be undone (want true)")
 	}
 	if len(problems) > 0 {
 		return &ValidationError{Problems: problems}

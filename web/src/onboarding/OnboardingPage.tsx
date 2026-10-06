@@ -2,6 +2,7 @@ import { Repeat, ScrollText, Sparkles, type LucideIcon } from 'lucide-react'
 import { Route, Routes, useNavigate } from 'react-router'
 import { Button } from '../ui/Button.tsx'
 import { Icon } from '../ui/Icon.tsx'
+import { NotificationsStep } from './NotificationsStep.tsx'
 import { OnboardingStep } from './OnboardingStep.tsx'
 import { RegularsStep } from './RegularsStep.tsx'
 import styles from './Onboarding.module.css'
@@ -62,16 +63,6 @@ function WelcomeStep() {
           </li>
         ))}
       </ul>
-    </OnboardingStep>
-  )
-}
-
-// TODO(Feature 12): onboarding step 3 — notifications and finishing
-// onboarding — is a later task; until then the step only says so.
-function NotificationsStep() {
-  return (
-    <OnboardingStep step={3} title="Stay in the loop">
-      <p className={styles.helper}>Setting up notifications arrives in a later update.</p>
     </OnboardingStep>
   )
 }

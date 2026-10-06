@@ -73,7 +73,19 @@
   font-size: 17px;
 }
 
-/* Step 1: what MealQuest's words mean. */
+/* Step 3: two stacked actions. */
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* Room for the second fixed action and the gap above it. */
+.screen:has(.actions) {
+  padding-bottom: calc(2 * 52px + var(--space-3) + 2 * var(--space-6));
+}
+
+/* Step 1: what MealQuest's words mean; step 3: what it notifies about. */
 .terms {
   display: flex;
   flex-direction: column;
@@ -219,6 +231,15 @@
 
 .status {
   margin-top: 10px;
+}
+
+/* Step 3: the iOS install hint, when it shows. */
+.hint {
+  margin-top: var(--space-4);
+}
+
+.hint:empty {
+  display: none;
 }
 
 @media (prefers-reduced-motion: reduce) {

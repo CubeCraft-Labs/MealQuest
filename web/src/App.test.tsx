@@ -7,6 +7,7 @@ import { errorResponse, fakeLocation, jsonResponse, ME, request, stubFetch, stub
 import App, { routes } from './App.tsx'
 import { AI_SETTINGS, HOUSEHOLD_SETTINGS, RECIPE_SEARCH_SETTINGS, SETTINGS_API } from './test/ApiProviders.tsx'
 import { InDataRouter } from './test/dataRouter.tsx'
+import { dinnerBody } from './test/dinners.ts'
 
 afterEach(() => {
   Reflect.deleteProperty(window, 'matchMedia')
@@ -27,7 +28,13 @@ function renderAppAt(path: string, location = fakeLocation(path)) {
 }
 
 // The routes that render a built screen rather than a placeholder page.
-const SCREENS = { '/onboarding': true, '/settings': true, '/settings/ai': true, '/settings/household': true }
+const SCREENS = {
+  '/onboarding': true,
+  '/settings': true,
+  '/settings/ai': true,
+  '/settings/household': true,
+  '/settings/regulars': true,
+}
 
 // SIGNED_IN answers what every route reads first: the session, then the
 // household settings, onboarding finished.
@@ -102,6 +109,18 @@ describe('App routes', () => {
     const heading = await screen.findByRole('heading', { level: 1, name: 'Household' })
     expect(screen.getByRole('main')).toContainElement(heading)
     expect(await screen.findByLabelText('Dinner time')).toHaveValue('17:30')
+  })
+
+  it('/settings/regulars renders the Regular dinners screen inside the shell', async () => {
+    mockViewport(390)
+    stubFetchByPath({
+      ...SIGNED_IN,
+      '/api/v1/dinners?status=regular': () => jsonResponse(200, { dinners: [dinnerBody('d1', 'Beef tacos')] }),
+    })
+    renderAt('/settings/regulars')
+    const heading = await screen.findByRole('heading', { level: 1, name: 'Regular dinners' })
+    expect(screen.getByRole('main')).toContainElement(heading)
+    expect(await screen.findByText('Beef tacos')).toBeInTheDocument()
   })
 })
 

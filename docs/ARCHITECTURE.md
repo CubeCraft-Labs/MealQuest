@@ -500,6 +500,19 @@ wires Web Push, "Turn on notifications" asks for nothing. Offline on the saved p
 settings cannot be read (the service worker never caches `/api/v1/settings`),
 so the saved pages open as they are.
 
+Regular dinners (`/settings/regulars`) lists the Regulars from
+`GET /api/v1/dinners?status=regular`, each with its photo, "method ·
+minutes", favorite heart and grounding badge ("Finding recipe…" while
+`pending`, "Recipe found" when `grounded` or `manual`, "Needs a recipe" when
+`failed`). The add field takes a name or a pasted `https://` recipe link.
+Tapping a Regular opens an edit sheet (name, method, minutes, difficulty;
+remove archives it after a confirmation); tapping one that needs a recipe
+opens "Fix recipe" (pick one of the recipe candidates, paste a link or type
+the ingredients and steps in). Adds, removals and the heart show at once and
+are undone if the server refuses them. While any Regular is `pending`, the
+list is read again every 3 seconds (not while a change is in flight), and
+polling stops once none is.
+
 ## Boundaries and gotchas
 
 - **Secrets never reach the client** — API keys, OAuth tokens and the Chat

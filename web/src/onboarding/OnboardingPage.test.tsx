@@ -5,6 +5,7 @@ import App from '../App.tsx'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
 import { HOUSEHOLD_SETTINGS } from '../test/ApiProviders.tsx'
 import { declaredStyle } from '../test/cssRules.ts'
+import { dinnerBody, type DinnerBody } from '../test/dinners.ts'
 import { InDataRouter } from '../test/dataRouter.tsx'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { expectMinHitArea, hitArea } from '../test/hitArea.ts'
@@ -14,7 +15,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-type Dinner = { id: string; name: string }
+type Dinner = DinnerBody
 
 // A request the fake server holds until the test answers it.
 type Held = { method: string; path: string; body: unknown; answer: (response: Response) => void }
@@ -53,8 +54,8 @@ function stubDinnersServer(regulars: Dinner[] = []) {
 // Regular to the list later GETs read.
 function created(server: ReturnType<typeof stubDinnersServer>, request: Held, id: string) {
   const { name } = request.body as { name: string }
-  server.regulars.push({ id, name })
-  request.answer(jsonResponse(201, { id, name, status: 'regular', grounding_status: 'pending', grounding_job_id: 'job-1' }))
+  server.regulars.push(dinnerBody(id, name))
+  request.answer(jsonResponse(201, { ...dinnerBody(id, name, { grounding_status: 'pending' }), grounding_job_id: 'job-1' }))
 }
 
 // renderAt renders the whole app, so /me supplies the CSRF token every
@@ -125,7 +126,7 @@ describe('onboarding step 1', () => {
 
 describe('onboarding step 2 (mock 1h)', () => {
   it('shows the step as the mock does', async () => {
-    await regularsStep([{ id: 'd1', name: 'Beef tacos' }])
+    await regularsStep([dinnerBody('d1', 'Beef tacos')])
 
     expect(screen.getByText('Step 2 of 3')).toBeInTheDocument()
     expect(screen.getByRole('heading', { level: 1, name: "What's on your usual rotation?" })).toBeInTheDocument()
@@ -198,7 +199,7 @@ describe('onboarding step 2 (mock 1h)', () => {
   })
 
   it('takes an add back out and says why when the server refuses it', async () => {
-    const server = await regularsStep([{ id: 'd1', name: 'Chili' }])
+    const server = await regularsStep([dinnerBody('d1', 'Chili')])
     fireEvent.change(input(), { target: { value: 'chili' } })
     fireEvent.submit(input())
     await vi.waitFor(() => expect(regularNames()).toEqual(['Chili', 'chili']))
@@ -273,8 +274,8 @@ describe('onboarding step 2 (mock 1h)', () => {
 
   it('removes a Regular at once and archives it on the server', async () => {
     const server = await regularsStep([
-      { id: 'd1', name: 'Beef tacos' },
-      { id: 'd2', name: 'Pizza night' },
+      dinnerBody('d1', 'Beef tacos'),
+      dinnerBody('d2', 'Pizza night'),
     ])
     fireEvent.click(screen.getByRole('button', { name: 'Remove Beef tacos' }))
 
@@ -288,8 +289,8 @@ describe('onboarding step 2 (mock 1h)', () => {
 
   it('puts a removed Regular back in its place when the server refuses', async () => {
     const server = await regularsStep([
-      { id: 'd1', name: 'Beef tacos' },
-      { id: 'd2', name: 'Pizza night' },
+      dinnerBody('d1', 'Beef tacos'),
+      dinnerBody('d2', 'Pizza night'),
     ])
     fireEvent.click(screen.getByRole('button', { name: 'Remove Beef tacos' }))
     await vi.waitFor(() => expect(server.held).toHaveLength(1))
@@ -301,9 +302,9 @@ describe('onboarding step 2 (mock 1h)', () => {
 
   it('puts a refused removal back and says why while another removal is still unanswered', async () => {
     const server = await regularsStep([
-      { id: 'd1', name: 'Beef tacos' },
-      { id: 'd2', name: 'Pizza night' },
-      { id: 'd3', name: 'Chili' },
+      dinnerBody('d1', 'Beef tacos'),
+      dinnerBody('d2', 'Pizza night'),
+      dinnerBody('d3', 'Chili'),
     ])
     fireEvent.click(screen.getByRole('button', { name: 'Remove Beef tacos' }))
     await vi.waitFor(() => expect(server.held).toHaveLength(1))
@@ -325,9 +326,9 @@ describe('onboarding step 2 (mock 1h)', () => {
 
   it('puts two refused removals back in their places without rereading the list', async () => {
     const server = await regularsStep([
-      { id: 'd1', name: 'Beef tacos' },
-      { id: 'd2', name: 'Pizza night' },
-      { id: 'd3', name: 'Chili' },
+      dinnerBody('d1', 'Beef tacos'),
+      dinnerBody('d2', 'Pizza night'),
+      dinnerBody('d3', 'Chili'),
     ])
     server.reads.fail = true
     fireEvent.click(screen.getByRole('button', { name: 'Remove Beef tacos' }))
@@ -351,8 +352,8 @@ describe('onboarding step 2 (mock 1h)', () => {
 
   it('enables "Next: notifications" once the server has saved 3 Regulars', async () => {
     const server = await regularsStep([
-      { id: 'd1', name: 'Beef tacos' },
-      { id: 'd2', name: 'Pizza night' },
+      dinnerBody('d1', 'Beef tacos'),
+      dinnerBody('d2', 'Pizza night'),
     ])
     expect(next()).toBeDisabled()
 
@@ -377,8 +378,8 @@ describe('onboarding step 2 (mock 1h)', () => {
 
   it('keeps "Next: notifications" disabled when the third add is refused', async () => {
     const server = await regularsStep([
-      { id: 'd1', name: 'Beef tacos' },
-      { id: 'd2', name: 'Pizza night' },
+      dinnerBody('d1', 'Beef tacos'),
+      dinnerBody('d2', 'Pizza night'),
     ])
     fireEvent.click(screen.getByRole('button', { name: 'Add Burgers' }))
     await screen.findByRole('heading', { level: 2, name: 'Your regulars · 3' })
@@ -393,9 +394,9 @@ describe('onboarding step 2 (mock 1h)', () => {
 
   it('keeps "Next: notifications" disabled while a fourth add is unanswered', async () => {
     const server = await regularsStep([
-      { id: 'd1', name: 'Beef tacos' },
-      { id: 'd2', name: 'Pizza night' },
-      { id: 'd3', name: 'Chili' },
+      dinnerBody('d1', 'Beef tacos'),
+      dinnerBody('d2', 'Pizza night'),
+      dinnerBody('d3', 'Chili'),
     ])
     expect(next()).toBeEnabled()
 

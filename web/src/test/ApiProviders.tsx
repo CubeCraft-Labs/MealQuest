@@ -16,6 +16,26 @@ export const AI_SETTINGS = {
   updated_at: '2026-10-01T15:00:00.000Z',
 }
 
+// HOUSEHOLD_SETTINGS is a GET /api/v1/settings/household body: the seed
+// times in New York.
+export const HOUSEHOLD_SETTINGS = {
+  timezone: 'America/New_York',
+  dinner_time: '17:30',
+  reminder_time: '16:30',
+  review_time: '09:00',
+  plan_draft_dow: 5,
+  plan_draft_time: '09:00',
+  suggestions_dow: 0,
+  suggestions_time: '08:00',
+  chat_autosend_dow: 6,
+  chat_autosend_time: '08:00',
+  onboarding_completed_at: null,
+  updates_seen_at: null,
+  updated_by: null,
+  created_at: '2026-10-01T15:00:00.000Z',
+  updated_at: '2026-10-01T15:00:00.000Z',
+}
+
 // RECIPE_SEARCH_SETTINGS is a GET /api/v1/settings/recipe-search body: the
 // SearXNG sidecar, no Brave key stored.
 export const RECIPE_SEARCH_SETTINGS = {
@@ -34,7 +54,7 @@ export const SETTINGS_API = {
   '/api/v1/dinners?status=regular': () => errorResponse(404, 'not_found'),
   '/api/v1/settings/calendar': () => errorResponse(404, 'not_found'),
   '/api/v1/settings/notifications': () => errorResponse(404, 'not_found'),
-  '/api/v1/settings/household': () => jsonResponse(200, { timezone: 'America/New_York', dinner_time: '17:30' }),
+  '/api/v1/settings/household': () => jsonResponse(200, HOUSEHOLD_SETTINGS),
   '/api/v1/settings/ai': () => jsonResponse(200, AI_SETTINGS),
   '/api/v1/settings/recipe-search': () => jsonResponse(200, RECIPE_SEARCH_SETTINGS),
 }

@@ -1,6 +1,6 @@
 import { ChevronLeft } from 'lucide-react'
 import { useEffect, useId, useState, type ReactNode } from 'react'
-import { useBlocker, useNavigate } from 'react-router'
+import { useNavigate } from 'react-router'
 import { ApiError } from '../api/index.ts'
 import { Button } from '../ui/Button.tsx'
 import { ErrorBanner } from '../ui/ErrorBanner.tsx'
@@ -27,6 +27,7 @@ import {
   type AISettingsPatch,
 } from './api.ts'
 import styles from './AISettingsPage.module.css'
+import { Confirm, LeaveGuard } from './LeaveGuard.tsx'
 import { RecipeSearchCard } from './RecipeSearchCard.tsx'
 
 // TYPE_MODEL is the Model dropdown's "Type a model id" option.
@@ -54,31 +55,6 @@ export function AISettingsPage() {
       <RecipeSearchCard onDirtyChange={setRecipeSearchDirty} />
       <LeaveGuard dirty={aiDirty || recipeSearchDirty} />
     </div>
-  )
-}
-
-// LeaveGuard asks before leaving the screen with unsaved changes.
-function LeaveGuard({ dirty }: { dirty: boolean }) {
-  const blocker = useBlocker(
-    ({ currentLocation, nextLocation }) => dirty && currentLocation.pathname !== nextLocation.pathname,
-  )
-  useEffect(() => {
-    if (!dirty) return
-    const onBeforeUnload = (event: BeforeUnloadEvent) => event.preventDefault()
-    window.addEventListener('beforeunload', onBeforeUnload)
-    return () => window.removeEventListener('beforeunload', onBeforeUnload)
-  }, [dirty])
-  return (
-    <Confirm
-      open={blocker.state === 'blocked'}
-      title="Leave without saving?"
-      confirmLabel="Leave"
-      cancelLabel="Keep editing"
-      onCancel={() => blocker.reset?.()}
-      onConfirm={() => blocker.proceed?.()}
-    >
-      Your changes on this screen have not been saved.
-    </Confirm>
   )
 }
 
@@ -535,54 +511,5 @@ function PromptField({ value, onChange }: { value: string; onChange: (value: str
         onChange={(event) => onChange(event.target.value)}
       />
     </div>
-  )
-}
-
-type ConfirmProps = {
-  open: boolean
-  title: string
-  children: ReactNode
-  confirmLabel: string
-  cancelLabel?: string
-  busy?: boolean
-  error?: string | null
-  onCancel: () => void
-  onConfirm: () => void
-}
-
-function Confirm({
-  open,
-  title,
-  children,
-  confirmLabel,
-  cancelLabel = 'Cancel',
-  busy = false,
-  error = null,
-  onCancel,
-  onConfirm,
-}: ConfirmProps) {
-  const titleId = useId()
-  return (
-    <Sheet open={open} onClose={onCancel} aria-labelledby={titleId}>
-      <div className={styles.sheet}>
-        <h2 id={titleId} className={styles.sheetTitle}>
-          {title}
-        </h2>
-        <p className={styles.sheetText}>{children}</p>
-        {error !== null && (
-          <p className={styles.error} role="alert">
-            {error}
-          </p>
-        )}
-        <div className={styles.sheetActions}>
-          <Button variant="outline" onClick={onCancel}>
-            {cancelLabel}
-          </Button>
-          <Button disabled={busy} onClick={onConfirm}>
-            {confirmLabel}
-          </Button>
-        </div>
-      </div>
-    </Sheet>
   )
 }

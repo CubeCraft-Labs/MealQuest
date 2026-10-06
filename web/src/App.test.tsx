@@ -5,7 +5,7 @@ import { createNetworkStatus } from './pwa/networkStatus.ts'
 import { mockViewport } from './test/matchMedia.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME, request, stubFetch, stubFetchByPath } from './test/fetchStub.ts'
 import App, { routes } from './App.tsx'
-import { AI_SETTINGS, RECIPE_SEARCH_SETTINGS, SETTINGS_API } from './test/ApiProviders.tsx'
+import { AI_SETTINGS, HOUSEHOLD_SETTINGS, RECIPE_SEARCH_SETTINGS, SETTINGS_API } from './test/ApiProviders.tsx'
 import { InDataRouter } from './test/dataRouter.tsx'
 
 afterEach(() => {
@@ -27,7 +27,7 @@ function renderAppAt(path: string, location = fakeLocation(path)) {
 }
 
 // The routes that render a built screen rather than a placeholder page.
-const SCREENS = { '/settings': true, '/settings/ai': true }
+const SCREENS = { '/settings': true, '/settings/ai': true, '/settings/household': true }
 
 describe('App routes', () => {
   it('registers every handoff route plus the extra settings pages', () => {
@@ -86,6 +86,18 @@ describe('App routes', () => {
     const heading = await screen.findByRole('heading', { level: 1, name: 'AI assistant' })
     expect(screen.getByRole('main')).toContainElement(heading)
     expect(await screen.findByText('••••••••3f9a')).toBeInTheDocument()
+  })
+
+  it('/settings/household renders the household settings screen inside the shell', async () => {
+    mockViewport(390)
+    stubFetchByPath({
+      '/api/v1/me': () => jsonResponse(200, ME),
+      '/api/v1/settings/household': () => jsonResponse(200, HOUSEHOLD_SETTINGS),
+    })
+    renderAt('/settings/household')
+    const heading = await screen.findByRole('heading', { level: 1, name: 'Household' })
+    expect(screen.getByRole('main')).toContainElement(heading)
+    expect(await screen.findByLabelText('Dinner time')).toHaveValue('17:30')
   })
 })
 

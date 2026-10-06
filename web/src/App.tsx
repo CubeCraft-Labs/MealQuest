@@ -7,6 +7,7 @@ import { PlaceholderPage } from './pages/PlaceholderPage.tsx'
 import { OfflinePill } from './pwa/OfflinePill.tsx'
 import { UpdatePrompt, type UpdateContainer } from './pwa/UpdatePrompt.tsx'
 import { AISettingsPage } from './settings/AISettingsPage.tsx'
+import { HouseholdSettingsPage } from './settings/HouseholdSettingsPage.tsx'
 import { SettingsPage } from './settings/SettingsPage.tsx'
 import { AppShell } from './shell/AppShell.tsx'
 
@@ -33,6 +34,7 @@ export const routes = [
 const screens: Partial<Record<(typeof routes)[number]['path'], ReactNode>> = {
   '/settings': <SettingsPage />,
   '/settings/ai': <AISettingsPage />,
+  '/settings/household': <HouseholdSettingsPage />,
 }
 
 // AppRoutes is the shell and its pages, shown once /api/v1/me has loaded.

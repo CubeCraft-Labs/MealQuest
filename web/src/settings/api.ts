@@ -23,12 +23,44 @@ export const CALENDAR_STATUS_PATH = '/api/v1/settings/calendar'
 export const NOTIFICATIONS_STATUS_PATH = '/api/v1/settings/notifications'
 
 // HouseholdSettings is the part of GET /api/v1/settings/household the
-// settings pages read.
+// settings pages read. Times are zero-padded 24-hour HH:MM in timezone; days
+// of the week count from Sunday = 0.
 export type HouseholdSettings = {
   timezone: string
-  // Zero-padded 24-hour HH:MM.
   dinner_time: string
+  reminder_time: string
+  // The rotation check: when the household is asked "Keep it in rotation?".
+  review_time: string
+  plan_draft_dow: number
+  plan_draft_time: string
+  suggestions_dow: number
+  suggestions_time: string
+  chat_autosend_dow: number
+  chat_autosend_time: string
 }
+
+// HouseholdSettingsPatch is the PATCH /api/v1/settings/household body: only
+// the fields that change.
+export type HouseholdSettingsPatch = Partial<HouseholdSettings>
+
+export type HouseholdSettingsField = keyof HouseholdSettings
+
+const householdTimeFields = [
+  'dinner_time',
+  'reminder_time',
+  'review_time',
+  'plan_draft_time',
+  'suggestions_time',
+  'chat_autosend_time',
+] as const satisfies readonly HouseholdSettingsField[]
+
+const householdDayFields = [
+  'plan_draft_dow',
+  'suggestions_dow',
+  'chat_autosend_dow',
+] as const satisfies readonly HouseholdSettingsField[]
+
+const householdFields: readonly HouseholdSettingsField[] = ['timezone', ...householdTimeFields, ...householdDayFields]
 
 // aiProviderLabels names every AI provider preset the server accepts
 // (internal/ai/llm/presets) as the household reads it.
@@ -301,20 +333,90 @@ export function useTestRecipeSearch() {
 
 const clockTime = /^([01][0-9]|2[0-3]):([0-5][0-9])$/
 
-// useHouseholdSettings refuses a dinner time that is not HH:MM, so
-// formatClockTime never sees one.
+// parseHouseholdSettings refuses a body that is not the household settings,
+// or has a time that is not HH:MM, so formatClockTime never sees one.
+function parseHouseholdSettings(where: string, body: unknown): HouseholdSettings {
+  if (!isRecord(body) || typeof body.timezone !== 'string') {
+    throw new Error(`${where}: response is not the household settings`)
+  }
+  const times = {} as Record<(typeof householdTimeFields)[number], string>
+  for (const field of householdTimeFields) {
+    const value = body[field]
+    if (typeof value !== 'string' || !clockTime.test(value)) {
+      throw new Error(`${where}: ${field} ${JSON.stringify(value)} is not HH:MM`)
+    }
+    times[field] = value
+  }
+  const days = {} as Record<(typeof householdDayFields)[number], number>
+  for (const field of householdDayFields) {
+    const value = body[field]
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 6) {
+      throw new Error(`${where}: ${field} ${JSON.stringify(value)} is not a day of the week (0-6)`)
+    }
+    days[field] = value
+  }
+  return { timezone: body.timezone, ...times, ...days }
+}
+
+const HOUSEHOLD_SETTINGS_KEY = ['settings', 'household'] as const
+
 export function useHouseholdSettings() {
   const { apiFetch } = useApi()
   return useQuery({
-    queryKey: ['settings', 'household'],
-    queryFn: async () => {
-      const settings = await apiFetch<HouseholdSettings>(HOUSEHOLD_SETTINGS_PATH)
-      if (!clockTime.test(settings.dinner_time)) {
-        throw new Error(`GET ${HOUSEHOLD_SETTINGS_PATH}: dinner_time "${settings.dinner_time}" is not HH:MM`)
-      }
-      return { timezone: settings.timezone, dinner_time: settings.dinner_time } satisfies HouseholdSettings
-    },
+    queryKey: HOUSEHOLD_SETTINGS_KEY,
+    queryFn: async () =>
+      parseHouseholdSettings(`GET ${HOUSEHOLD_SETTINGS_PATH}`, await apiFetch<unknown>(HOUSEHOLD_SETTINGS_PATH)),
   })
+}
+
+export function useSaveHouseholdSettings() {
+  const { apiFetch } = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (patch: HouseholdSettingsPatch) =>
+      parseHouseholdSettings(
+        `PATCH ${HOUSEHOLD_SETTINGS_PATH}`,
+        await apiFetch<unknown>(HOUSEHOLD_SETTINGS_PATH, { method: 'PATCH', body: patch }),
+      ),
+    onSuccess: (settings) => queryClient.setQueryData(HOUSEHOLD_SETTINGS_KEY, settings),
+  })
+}
+
+// HouseholdSettingsProblems is a refused household settings save: the reason
+// for each field the server named, and any reasons that name no field.
+export type HouseholdSettingsProblems = {
+  fields: Partial<Record<HouseholdSettingsField, string>>
+  other: string[]
+}
+
+const invalidHouseholdPrefix = 'invalid household settings: '
+
+// A problem starts with a field name and ": " (internal/household
+// ValidationError.Error joins them with "; ").
+const problemStart = /; (?=[a-z_]+: )/
+
+// householdSettingsProblems reads the server's invalid_settings error into
+// the problems it lists. Any other error is one problem naming no field.
+export function householdSettingsProblems(error: Error): HouseholdSettingsProblems {
+  const problems: HouseholdSettingsProblems = { fields: {}, other: [] }
+  if (
+    !(error instanceof ApiError) ||
+    error.code !== 'invalid_settings' ||
+    !error.message.startsWith(invalidHouseholdPrefix)
+  ) {
+    problems.other.push(error.message)
+    return problems
+  }
+  for (const problem of error.message.slice(invalidHouseholdPrefix.length).split(problemStart)) {
+    const colon = problem.indexOf(': ')
+    const field = problem.slice(0, colon)
+    if (colon !== -1 && (householdFields as readonly string[]).includes(field)) {
+      problems.fields[field as HouseholdSettingsField] = problem.slice(colon + 2)
+    } else {
+      problems.other.push(problem)
+    }
+  }
+  return problems
 }
 
 // aiStatus is the AI assistant row's status line: the provider and the

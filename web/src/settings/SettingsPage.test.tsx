@@ -4,14 +4,14 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
-import { AI_SETTINGS, SETTINGS_API } from '../test/ApiProviders.tsx'
+import { AI_SETTINGS, HOUSEHOLD_SETTINGS, SETTINGS_API } from '../test/ApiProviders.tsx'
 import { declaredStyle } from '../test/cssRules.ts'
 import { errorResponse, fakeLocation, jsonResponse, stubFetchByPath } from '../test/fetchStub.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
 import { formatClockTime, modelDisplayName } from './api.ts'
 import { SettingsPage } from './SettingsPage.tsx'
 
-const HOUSEHOLD = { timezone: 'America/New_York', dinner_time: '17:30' }
+const HOUSEHOLD = HOUSEHOLD_SETTINGS
 const AI = AI_SETTINGS
 
 afterEach(() => {
@@ -221,7 +221,7 @@ describe('SettingsPage', () => {
 
   it('refuses a dinner time that is not HH:MM', async () => {
     stubSettings({
-      '/api/v1/settings/household': () => jsonResponse(200, { timezone: 'UTC', dinner_time: '5:30pm' }),
+      '/api/v1/settings/household': () => jsonResponse(200, { ...HOUSEHOLD, timezone: 'UTC', dinner_time: '5:30pm' }),
     })
     renderSettings()
     expect(await screen.findByRole('alert')).toHaveTextContent('dinner_time "5:30pm" is not HH:MM')

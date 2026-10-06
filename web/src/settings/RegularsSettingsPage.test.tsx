@@ -447,6 +447,34 @@ describe('RegularsSettingsPage', () => {
       expect(within(row('Pizza night')).getByText('Oven · 35 min')).toBeInTheDocument()
     })
 
+    it('saves a typed-in recipe only once its method and minutes are set', async () => {
+      const server = stubServer([PIZZA], {
+        'GET /api/v1/dinners/d3/recipe-candidates': () => jsonResponse(200, CANDIDATES),
+      })
+      await renderPage()
+
+      openRow('Pizza night')
+      fireEvent.click(fixSheet().getByRole('radio', { name: 'Type it in' }))
+      const save = fixSheet().getByRole('button', { name: 'Save recipe' })
+      fireEvent.change(fixSheet().getByLabelText('Ingredients, one per line'), { target: { value: '1 pizza dough' } })
+      expect(fixSheet().getByText('Choose a method and minutes to save.')).toBeInTheDocument()
+      expect(save).toBeDisabled()
+
+      fireEvent.change(fixSheet().getByLabelText('Method'), { target: { value: 'oven' } })
+      expect(save).toBeDisabled()
+      fireEvent.change(fixSheet().getByLabelText('Method'), { target: { value: '' } })
+      fireEvent.change(fixSheet().getByLabelText('Minutes'), { target: { value: '35' } })
+      expect(save).toBeDisabled()
+
+      // Even a submit that skips the button sends nothing.
+      fireEvent.submit(save.closest('form')!)
+      expect(sent(server.fetchMock)).toEqual([])
+
+      fireEvent.change(fixSheet().getByLabelText('Method'), { target: { value: 'oven' } })
+      expect(fixSheet().queryByText('Choose a method and minutes to save.')).not.toBeInTheDocument()
+      expect(save).toBeEnabled()
+    })
+
     it('switches to editing the Regular', async () => {
       stubServer([PIZZA], { 'GET /api/v1/dinners/d3/recipe-candidates': () => jsonResponse(200, CANDIDATES) })
       await renderPage()
@@ -478,6 +506,67 @@ describe('RegularsSettingsPage', () => {
     // Nothing is pending any more, so nothing is read again.
     await act(() => vi.advanceTimersByTimeAsync(GROUNDING_POLL_MS * 3))
     expect(reads(server.fetchMock)).toBe(3)
+  })
+
+  // held answers a request only when release is called, so a test can look
+  // at the page while a save is in flight.
+  function held(answer: () => Response) {
+    let release = () => {}
+    const response = new Promise<Response>((resolve) => {
+      release = () => resolve(answer())
+    })
+    return { respond: () => response, release: () => release() }
+  }
+
+  it('pauses the refresh while an edit is being saved, then resumes', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const edited = { ...TACOS, name: 'Fish tacos' }
+    const patch = held(() => jsonResponse(200, edited))
+    const server = stubServer([TACOS, CHILI], { 'PATCH /api/v1/dinners/d1': patch.respond })
+    await renderPage()
+
+    openRow('Beef tacos')
+    const sheet = within(screen.getByRole('dialog', { name: 'Edit Beef tacos' }))
+    fireEvent.change(sheet.getByLabelText('Name'), { target: { value: 'Fish tacos' } })
+    fireEvent.click(sheet.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(sent(server.fetchMock)).toHaveLength(1))
+
+    await act(() => vi.advanceTimersByTimeAsync(GROUNDING_POLL_MS * 3))
+    expect(reads(server.fetchMock)).toBe(1)
+
+    server.regulars = [edited, CHILI]
+    patch.release()
+    // Settling reads the list once, then the refresh carries on.
+    await waitFor(() => expect(reads(server.fetchMock)).toBe(2))
+    await act(() => vi.advanceTimersByTimeAsync(GROUNDING_POLL_MS))
+    await waitFor(() => expect(reads(server.fetchMock)).toBe(3))
+  })
+
+  it('pauses the refresh while a recipe fix is being saved, then resumes', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const fixed = { ...PIZZA, grounding_status: 'grounded' as const, grounding_error: null }
+    const ground = held(() => jsonResponse(200, fixed))
+    const server = stubServer([CHILI, PIZZA], {
+      'GET /api/v1/dinners/d3/recipe-candidates': () => jsonResponse(200, { candidates: [] }),
+      'POST /api/v1/dinners/d3/ground': ground.respond,
+    })
+    await renderPage()
+
+    openRow('Pizza night')
+    const sheet = within(screen.getByRole('dialog', { name: 'Fix recipe' }))
+    fireEvent.click(sheet.getByRole('radio', { name: 'Paste a link' }))
+    fireEvent.change(sheet.getByLabelText('Recipe link'), { target: { value: 'https://example.com/pizza' } })
+    fireEvent.click(sheet.getByRole('button', { name: 'Use this recipe' }))
+    await waitFor(() => expect(sent(server.fetchMock)).toHaveLength(1))
+
+    await act(() => vi.advanceTimersByTimeAsync(GROUNDING_POLL_MS * 3))
+    expect(reads(server.fetchMock)).toBe(1)
+
+    server.regulars = [CHILI, fixed]
+    ground.release()
+    await waitFor(() => expect(reads(server.fetchMock)).toBe(2))
+    await act(() => vi.advanceTimersByTimeAsync(GROUNDING_POLL_MS))
+    await waitFor(() => expect(reads(server.fetchMock)).toBe(3))
   })
 
   it('does not poll when no Regular is finding its recipe', async () => {

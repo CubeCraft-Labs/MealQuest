@@ -550,15 +550,13 @@ function ManualEntry({ onSubmit }: { onSubmit: (manual: ManualRecipe) => void })
   const stepsId = useId()
   const minutesError = minutesProblem(minutes)
   const ingredientLines = lines(ingredients)
-  const canSave = ingredientLines.length > 0 && minutesError === null
+  const missing = method === '' || minutes === ''
+  const canSave = ingredientLines.length > 0 && !missing && minutesError === null
 
   function onSave(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!canSave) return
-    const manual: ManualRecipe = { ingredients: ingredientLines, steps: lines(steps) }
-    if (minutes !== '') manual.minutes = Number(minutes)
-    if (method !== '') manual.method = method
-    onSubmit(manual)
+    onSubmit({ ingredients: ingredientLines, steps: lines(steps), minutes: Number(minutes), method })
   }
 
   return (
@@ -609,6 +607,7 @@ function ManualEntry({ onSubmit }: { onSubmit: (manual: ManualRecipe) => void })
         />
       </div>
       {minutesError && <p className={styles.problem}>{minutesError}</p>}
+      {ingredientLines.length > 0 && missing && <p className={styles.problem}>Choose a method and minutes to save.</p>}
       <Button type="submit" disabled={!canSave}>
         Save recipe
       </Button>

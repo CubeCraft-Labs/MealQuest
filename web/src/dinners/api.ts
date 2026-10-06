@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { useIsMutating, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 
@@ -39,8 +39,9 @@ export type NewRegular = { name: string } | { recipe_url: string }
 // RegularPatch is a PATCH /api/v1/dinners/{id} body; every field is optional.
 export type RegularPatch = Partial<{ name: string; method: Method; minutes_total: number; difficulty: Difficulty }>
 
-// ManualRecipe is a recipe the household types in.
-export type ManualRecipe = { ingredients: string[]; steps: string[]; minutes?: number; method?: Method }
+// ManualRecipe is a recipe the household types in; the server needs its
+// minutes and method.
+export type ManualRecipe = { ingredients: string[]; steps: string[]; minutes: number; method: Method }
 
 // RecipeFix is a POST /api/v1/dinners/{id}/ground body: exactly one way to
 // ground the dinner.
@@ -144,11 +145,13 @@ function dinnerPath(id: string): string {
 
 // useRegulars is the household's Regulars, in the server's order. While any
 // of them is still finding its recipe it is read again every
-// GROUNDING_POLL_MS, except while a change is in flight (whose settling
-// reads it again anyway), so a poll never overwrites an optimistic change.
+// GROUNDING_POLL_MS, except while any change is in flight (whose settling
+// reads it again anyway), so a poll never overwrites a change being saved.
+// Watching the changes in flight re-renders the hook as each one starts and
+// settles, which pauses and resumes the poll.
 export function useRegulars() {
   const { apiFetch } = useApi()
-  const queryClient = useQueryClient()
+  const changing = useIsMutating({ mutationKey: REGULARS_MUTATION_KEY }) > 0
   return useQuery({
     queryKey: REGULARS_LIST_KEY,
     queryFn: async () => {
@@ -160,7 +163,7 @@ export function useRegulars() {
     select: shown,
     refetchInterval: (query) => {
       const list = query.state.data
-      if (list === undefined || queryClient.isMutating({ mutationKey: REGULARS_MUTATION_KEY }) > 0) return false
+      if (list === undefined || changing) return false
       return list.some((regular) => regular.grounding_status === 'pending') ? GROUNDING_POLL_MS : false
     },
   })

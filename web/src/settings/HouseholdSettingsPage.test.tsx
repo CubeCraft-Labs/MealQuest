@@ -181,6 +181,53 @@ describe('HouseholdSettingsPage', () => {
     ])
   })
 
+  it('offers the UTC zones the browser list leaves out', async () => {
+    expect(Intl.supportedValuesOf('timeZone')).not.toContain('Etc/UTC')
+    const fetchMock = stubAPI({
+      'PATCH /api/v1/settings/household': (body) => jsonResponse(200, { ...HOUSEHOLD_SETTINGS, ...(body as object) }),
+    })
+    await renderPage()
+    expect(zoneGroup()).toHaveTextContent('America / New York')
+    fireEvent.click(within(zoneGroup()).getByRole('button', { name: 'Change' }))
+    const sheet = screen.getByRole('dialog', { name: 'Choose a time zone' })
+    const list = within(sheet).getByRole('list', { name: 'Time zones' })
+    fireEvent.change(within(sheet).getByRole('searchbox', { name: 'Search time zones' }), {
+      target: { value: 'utc' },
+    })
+    expect(within(list).getByRole('button', { name: 'UTC, UTC+00:00' })).toBeInTheDocument()
+    fireEvent.click(within(list).getByRole('button', { name: 'Etc / UTC, UTC+00:00' }))
+
+    expect(zoneGroup()).toHaveTextContent('Etc / UTC')
+    fireEvent.click(save())
+    await screen.findByText('Changes saved.')
+    expect(sent(fetchMock)).toEqual([
+      { request: 'PATCH /api/v1/settings/household', body: { timezone: 'Etc/UTC' } },
+    ])
+  })
+
+  it('keeps offering a saved zone the browser list leaves out after another is chosen', async () => {
+    expect(Intl.supportedValuesOf('timeZone')).not.toContain('US/Eastern')
+    stubAPI({
+      'GET /api/v1/settings/household': () => jsonResponse(200, { ...HOUSEHOLD_SETTINGS, timezone: 'US/Eastern' }),
+    })
+    await renderPage()
+    const search = (value: string) =>
+      fireEvent.change(screen.getByRole('searchbox', { name: 'Search time zones' }), { target: { value } })
+    const option = (name: RegExp) =>
+      within(screen.getByRole('list', { name: 'Time zones' })).getByRole('button', { name })
+
+    fireEvent.click(within(zoneGroup()).getByRole('button', { name: 'Change' }))
+    search('los angeles')
+    fireEvent.click(option(/^America \/ Los Angeles,/))
+    expect(zoneGroup()).toHaveTextContent('America / Los Angeles')
+
+    fireEvent.click(within(zoneGroup()).getByRole('button', { name: 'Change' }))
+    search('us eastern')
+    fireEvent.click(option(/^US \/ Eastern,/))
+    expect(zoneGroup()).toHaveTextContent('US / Eastern')
+    expect(save()).toBeDisabled()
+  })
+
   it('says when no time zone matches the search', async () => {
     stubAPI()
     await renderPage()

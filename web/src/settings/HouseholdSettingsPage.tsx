@@ -101,7 +101,12 @@ function HouseholdSettingsForm({ saved, onDirtyChange }: HouseholdSettingsFormPr
   return (
     <>
       <Section title="Time zone">
-        <TimeZoneField value={draft.timezone} onChange={(timezone) => edit({ timezone })} error={problems.fields.timezone} />
+        <TimeZoneField
+          value={draft.timezone}
+          saved={saved.timezone}
+          onChange={(timezone) => edit({ timezone })}
+          error={problems.fields.timezone}
+        />
         <p className={styles.hint}>Every time on this screen is in this zone.</p>
       </Section>
 
@@ -289,13 +294,14 @@ function DayTimeField({ draft, edit, problems, day, time, label, hint }: DayTime
 
 type TimeZoneFieldProps = {
   value: string
+  saved: string
   onChange: (zone: string) => void
   error: string | undefined
 }
 
 // TimeZoneField shows the chosen zone and its current UTC offset; Change
 // opens a searchable list of every IANA zone.
-function TimeZoneField({ value, onChange, error }: TimeZoneFieldProps) {
+function TimeZoneField({ value, saved, onChange, error }: TimeZoneFieldProps) {
   const [open, setOpen] = useState(false)
   const labelId = useId()
   const errorId = useId()
@@ -323,6 +329,7 @@ function TimeZoneField({ value, onChange, error }: TimeZoneFieldProps) {
       {open && (
         <TimeZoneSheet
           value={value}
+          saved={saved}
           onClose={() => setOpen(false)}
           onChoose={(zone) => {
             onChange(zone)
@@ -336,14 +343,16 @@ function TimeZoneField({ value, onChange, error }: TimeZoneFieldProps) {
 
 type TimeZoneSheetProps = {
   value: string
+  // The saved zone, offered even after another is chosen.
+  saved: string
   onClose: () => void
   onChoose: (zone: string) => void
 }
 
-function TimeZoneSheet({ value, onClose, onChoose }: TimeZoneSheetProps) {
+function TimeZoneSheet({ value, saved, onClose, onChoose }: TimeZoneSheetProps) {
   const [search, setSearch] = useState('')
   const titleId = useId()
-  const options = useMemo(() => timeZoneOptions(value, new Date()), [value])
+  const options = useMemo(() => timeZoneOptions([saved, value], new Date()), [saved, value])
   const shown = options.filter((option) => matchesZone(option, search))
   return (
     <Sheet open onClose={onClose} aria-labelledby={titleId}>

@@ -18,11 +18,15 @@ export function utcOffset(zone: string, instant: Date): string {
   return `UTC${name.slice(3)}`
 }
 
-// timeZoneOptions lists every zone the browser supports, plus current (the
-// saved zone, which may be an alias the list leaves out), sorted by name.
-export function timeZoneOptions(current: string, instant: Date): TimeZoneOption[] {
-  const zones = new Set(Intl.supportedValuesOf('timeZone'))
-  zones.add(current)
+// Zones the server accepts that Intl.supportedValuesOf('timeZone') leaves
+// out: it lists only canonical zones, and UTC is not one of them.
+const unlistedZones = ['UTC', 'Etc/UTC', 'GMT', 'Etc/GMT']
+
+// timeZoneOptions lists every zone the browser supports, the unlisted UTC
+// zones, and kept (the saved and chosen zones, which may be aliases the
+// list leaves out), sorted by name.
+export function timeZoneOptions(kept: string[], instant: Date): TimeZoneOption[] {
+  const zones = new Set([...Intl.supportedValuesOf('timeZone'), ...unlistedZones, ...kept])
   return [...zones].sort().map((zone) => ({ zone, offset: utcOffset(zone, instant) }))
 }
 

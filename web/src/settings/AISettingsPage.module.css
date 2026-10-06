@@ -1,5 +1,7 @@
 /* Admin · AI assistant, handoff mock 1o. */
 .page {
+  box-sizing: border-box;
+  min-height: 100%;
   max-width: 560px;
   display: flex;
   flex-direction: column;
@@ -208,6 +210,8 @@
 }
 
 .actions {
+  /* Mock 1o anchors Reset and Save changes at the bottom of the screen. */
+  margin-top: auto;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
   gap: 10px;

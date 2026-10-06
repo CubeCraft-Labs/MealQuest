@@ -19,7 +19,7 @@ const MODELS = {
 
 const DEFAULT_PROMPT = 'You are MealQuest, the default persona.'
 
-type Responder = (body: unknown) => Response
+type Responder = (body: unknown) => Response | Promise<Response>
 
 // stubAPI answers "METHOD path" from responders, each called with the
 // request's decoded JSON body; GET /settings/ai and /settings/ai/models
@@ -180,13 +180,66 @@ describe('AISettingsPage', () => {
     })
     await renderPage()
     fireEvent.change(provider(), { target: { value: 'openai' } })
-    expect(screen.getByText(/Anthropic's API key is stored\. Remove it/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Replace' })).toBeDisabled()
+    expect(screen.getByText(/An API key is stored\. Remove it \(Replace → Remove key\)/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Replace' })).toBeEnabled()
     fireEvent.change(screen.getByRole('textbox', { name: 'Model id' }), { target: { value: 'gpt-5' } })
     fireEvent.click(save())
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent('Not saved: invalid AI settings: provider: cannot change while an API key is stored')
-    expect(alert).toHaveTextContent('To switch provider, remove the API key first')
+    expect(alert).toHaveTextContent('Remove it (Replace → Remove key) before changing the provider or base URL.')
+  })
+
+  it('gives the same guidance when a stored key locks the base URL', async () => {
+    stubAPI({
+      'GET /api/v1/settings/ai': () =>
+        jsonResponse(200, { ...AI_SETTINGS, provider: 'openai_compatible', base_url: 'https://llm.example.com/v1' }),
+      'PATCH /api/v1/settings/ai': () =>
+        jsonResponse(400, {
+          error: {
+            code: 'invalid_settings',
+            message: 'invalid AI settings: base_url: cannot change while an API key is stored: remove the key first',
+            retryable: false,
+          },
+        }),
+    })
+    await renderPage()
+    fireEvent.change(screen.getByRole('textbox', { name: 'Base URL' }), { target: { value: 'https://other.example.com/v1' } })
+    expect(screen.getByText(/An API key is stored\. Remove it/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Replace' })).toBeEnabled()
+    fireEvent.click(save())
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Remove it (Replace → Remove key) before changing the provider or base URL.',
+    )
+  })
+
+  it('recovers a provider switch by removing the stored key, without undoing the switch', async () => {
+    const fetchMock = stubAPI({
+      'PUT /api/v1/settings/ai/api-key': () =>
+        jsonResponse(200, { ...AI_SETTINGS, api_key_last4: null, key_verified_at: null }),
+      'PATCH /api/v1/settings/ai': (body) =>
+        jsonResponse(200, { ...AI_SETTINGS, api_key_last4: null, key_verified_at: null, ...(body as object) }),
+    })
+    await renderPage()
+    fireEvent.change(provider(), { target: { value: 'ollama' } })
+    fireEvent.change(screen.getByRole('textbox', { name: 'Base URL' }), { target: { value: 'http://localhost:11434' } })
+    fireEvent.change(screen.getByRole('textbox', { name: 'Model id' }), { target: { value: 'llama3.2' } })
+    // The stored key stays in view, and removable, while Ollama is chosen.
+    expect(screen.getByText('••••••••3f9a')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Replace' }))
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Remove key' }))
+
+    expect(await screen.findByText('Ollama takes no API key.')).toBeInTheDocument()
+    expect(screen.queryByText(/An API key is stored/)).not.toBeInTheDocument()
+    expect(provider()).toHaveValue('ollama')
+    fireEvent.click(save())
+    expect(await screen.findByText('Changes saved.')).toBeInTheDocument()
+    expect(sent(fetchMock)).toEqual([
+      { request: 'PUT /api/v1/settings/ai/api-key', body: { api_key: '' } },
+      {
+        request: 'PATCH /api/v1/settings/ai',
+        body: { provider: 'ollama', base_url: 'http://localhost:11434', model: 'llama3.2' },
+      },
+    ])
   })
 
   it('replaces the key in a sheet, then verifies it', async () => {
@@ -213,6 +266,35 @@ describe('AISettingsPage', () => {
       { request: 'POST /api/v1/settings/ai/verify', body: undefined },
     ])
     expect(document.body).not.toHaveTextContent('sk-ant-secret-b7c1')
+  })
+
+  it('still verifies the key when the sheet is dismissed while it is being stored', async () => {
+    let answerPut: (response: Response) => void = () => {
+      throw new Error('PUT not sent')
+    }
+    const fetchMock = stubAPI({
+      'PUT /api/v1/settings/ai/api-key': () => new Promise<Response>((resolve) => (answerPut = resolve)),
+      'POST /api/v1/settings/ai/verify': () =>
+        jsonResponse(200, { ...AI_SETTINGS, api_key_last4: 'b7c1', key_verified_at: '2026-10-06T14:00:00.000Z' }),
+    })
+    await renderPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Replace' }))
+    const sheet = screen.getByRole('dialog', { name: 'Replace API key' })
+    fireEvent.change(within(sheet).getByLabelText('API key'), { target: { value: 'sk-ant-secret-b7c1' } })
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Save and verify' }))
+    await waitFor(() => expect(within(sheet).getByRole('button', { name: 'Saving…' })).toBeDisabled())
+    fireEvent.keyDown(sheet, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Saving…' })).toBeDisabled()
+
+    act(() => answerPut(jsonResponse(200, { ...AI_SETTINGS, api_key_last4: 'b7c1', key_verified_at: null })))
+    expect(await screen.findByText('Verified · Oct 6')).toBeInTheDocument()
+    expect(screen.getByText('••••••••b7c1')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Replace' })).toBeEnabled()
+    expect(sent(fetchMock)).toEqual([
+      { request: 'PUT /api/v1/settings/ai/api-key', body: { api_key: 'sk-ant-secret-b7c1' } },
+      { request: 'POST /api/v1/settings/ai/verify', body: undefined },
+    ])
   })
 
   it('shows the verify error and verifies again on request', async () => {

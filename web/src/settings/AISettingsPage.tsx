@@ -104,6 +104,9 @@ function AISettingsForm({ saved }: { saved: AISettings }) {
   const patch = patchOf(saved, draft)
   const dirty = Object.keys(patch).length > 0
   const providerChanged = draft.provider !== saved.provider
+  // The server keeps a stored key's provider and base URL fixed until the
+  // key is removed.
+  const keyLocked = saved.api_key_last4 !== null && (providerChanged || draft.base_url !== saved.base_url)
   const temperatureId = useId()
   // The model list is the saved provider's, so it is asked for only while
   // that provider is chosen and has the key it needs.
@@ -200,12 +203,7 @@ function AISettingsForm({ saved }: { saved: AISettings }) {
           )}
         </div>
       </div>
-      {providerChanged && saved.api_key_last4 !== null && (
-        <p className={styles.hint}>
-          {aiProviderLabels[saved.provider]}'s API key is stored. Remove it (Replace → Remove key) before switching
-          provider.
-        </p>
-      )}
+      {keyLocked && <p className={styles.hint}>{keyLockedGuidance}</p>}
       {typedModel && (
         <TextInput
           label="Model id"
@@ -229,11 +227,7 @@ function AISettingsForm({ saved }: { saved: AISettings }) {
           onChange={(event) => edit({ base_url: event.target.value })}
         />
       )}
-      {aiKeyPolicy[draft.provider] === 'none' ? (
-        <p className={styles.hint}>{aiProviderLabels[draft.provider]} takes no API key.</p>
-      ) : (
-        <APIKey saved={saved} providerChanged={providerChanged} />
-      )}
+      <APIKey saved={saved} draftProvider={draft.provider} />
 
       <div className={styles.temperature}>
         <div className={styles.temperatureHeader}>
@@ -318,7 +312,15 @@ export function formatVerifiedDate(timestamp: string): string {
   return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(date)
 }
 
-function APIKey({ saved, providerChanged }: { saved: AISettings; providerChanged: boolean }) {
+// keyLockedGuidance is how to change the provider or base URL while a key
+// is stored.
+const keyLockedGuidance =
+  'An API key is stored. Remove it (Replace → Remove key) before changing the provider or base URL.'
+
+// APIKey stays mounted whatever provider the draft names, so a key stored
+// (and the verify that follows it) completes even if the household changes
+// the provider meanwhile, and a stored key can always be removed.
+function APIKey({ saved, draftProvider }: { saved: AISettings; draftProvider: AIProvider }) {
   const [replacing, setReplacing] = useState(false)
   const [key, setKey] = useState('')
   const store = useSetAIKey()
@@ -326,11 +328,18 @@ function APIKey({ saved, providerChanged }: { saved: AISettings; providerChanged
   const labelId = useId()
   const sheetTitleId = useId()
   const last4 = saved.api_key_last4
+  const providerChanged = draftProvider !== saved.provider
 
+  function open() {
+    store.reset()
+    setReplacing(true)
+  }
+
+  // close keeps the store mutation: a key already sent is still stored and
+  // verified after the sheet is dismissed.
   function close() {
     setReplacing(false)
     setKey('')
-    store.reset()
   }
 
   function onStore() {
@@ -348,6 +357,21 @@ function APIKey({ saved, providerChanged }: { saved: AISettings; providerChanged
     store.mutate('', { onSuccess: close })
   }
 
+  const storeError = store.isError && (
+    <p className={styles.error} role="alert">
+      The key was not stored: {store.error.message}
+    </p>
+  )
+
+  if (last4 === null && aiKeyPolicy[draftProvider] === 'none') {
+    return (
+      <div className={styles.key}>
+        <p className={styles.hint}>{aiProviderLabels[draftProvider]} takes no API key.</p>
+        {!replacing && storeError}
+      </div>
+    )
+  }
+
   return (
     <div className={styles.key}>
       <span id={labelId} className={styles.label}>
@@ -358,13 +382,16 @@ function APIKey({ saved, providerChanged }: { saved: AISettings; providerChanged
         <button
           type="button"
           className={styles.replace}
-          disabled={providerChanged}
-          onClick={() => setReplacing(true)}
+          disabled={store.isPending || (last4 === null && providerChanged)}
+          onClick={open}
         >
-          {last4 === null ? 'Add key' : 'Replace'}
+          {store.isPending ? 'Saving…' : last4 === null ? 'Add key' : 'Replace'}
         </button>
       </div>
-      {providerChanged && <p className={styles.note}>Save the provider change before adding its key.</p>}
+      {last4 === null && providerChanged && (
+        <p className={styles.note}>Save the provider change before adding its key.</p>
+      )}
+      {!replacing && storeError}
       <KeyStatus saved={saved} verify={verify} />
 
       <Sheet open={replacing} onClose={close} aria-labelledby={sheetTitleId}>
@@ -391,11 +418,7 @@ function APIKey({ saved, providerChanged }: { saved: AISettings; providerChanged
             spellCheck={false}
             onChange={(event) => setKey(event.target.value)}
           />
-          {store.isError && (
-            <p className={styles.error} role="alert">
-              The key was not stored: {store.error.message}
-            </p>
-          )}
+          {storeError}
           <div className={styles.sheetActions}>
             {last4 !== null && (
               <Button variant="outline" disabled={store.isPending} onClick={onRemove}>
@@ -473,9 +496,7 @@ export function verifyErrorMessage(error: Error): string {
 // stored key to another provider or base URL; it names how to fix that.
 function saveErrorMessage(error: Error): string {
   if (error instanceof ApiError && error.code === 'invalid_settings') {
-    const guidance = error.message.includes('while an API key is stored')
-      ? ' To switch provider, remove the API key first (Replace → Remove key).'
-      : ''
+    const guidance = error.message.includes('while an API key is stored') ? ` ${keyLockedGuidance}` : ''
     return `Not saved: ${error.message}.${guidance}`
   }
   return `Not saved: ${error.message}`

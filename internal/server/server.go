@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/aisettings"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
@@ -31,17 +32,22 @@ type RouteMounter interface {
 // only from a peer in trusted (see resolveOrigin). version is reported by
 // GET /health; auth mounts the /auth routes; sessions guards /api/v1 and
 // /media; settings serves /api/v1/settings/household; search serves
-// /api/v1/settings/recipe-search and its /test; runner serves
+// /api/v1/settings/recipe-search and its /test; ai serves
+// /api/v1/settings/ai, its /api-key, /verify, /models and /reset-prompt;
+// runner serves
 // POST /api/v1/jobs and GET /api/v1/jobs/{id}; photos serves
 // GET /media/photos/{id}-{size}.jpg; assets is the web build
 // served for every other GET. /health, /auth and the web build are public.
 // Requests to /api/v1 other than GET also need the session's CSRF token in CSRFHeader.
-func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, settings *household.SettingsService, search *recipes.SearchSettingsService, runner *jobs.Runner, photos PhotoFiles, assets fs.FS) (http.Handler, error) {
+func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, settings *household.SettingsService, search *recipes.SearchSettingsService, ai *aisettings.Service, runner *jobs.Runner, photos PhotoFiles, assets fs.FS) (http.Handler, error) {
 	if settings == nil {
 		return nil, errors.New("server: nil household settings service")
 	}
 	if search == nil {
 		return nil, errors.New("server: nil recipe search settings service")
+	}
+	if ai == nil {
+		return nil, errors.New("server: nil AI settings service")
 	}
 	if runner == nil {
 		return nil, errors.New("server: nil job runner")
@@ -80,6 +86,12 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Get("/settings/recipe-search", getRecipeSearchSettings(logger, search))
 	apiV1.Patch("/settings/recipe-search", patchRecipeSearchSettings(logger, search))
 	apiV1.Post("/settings/recipe-search/test", postRecipeSearchTest(logger, search))
+	apiV1.Get("/settings/ai", getAISettings(logger, ai))
+	apiV1.Patch("/settings/ai", patchAISettings(logger, ai))
+	apiV1.Put("/settings/ai/api-key", putAIKey(logger, ai))
+	apiV1.Post("/settings/ai/verify", postAIVerify(logger, ai))
+	apiV1.Get("/settings/ai/models", getAIModels(logger, ai))
+	apiV1.Post("/settings/ai/reset-prompt", postAIResetPrompt(logger, ai))
 	apiV1.Post("/jobs", postJob(logger, runner))
 	apiV1.Get("/jobs/{id}", getJob(logger, runner))
 	media.Get("/photos/{name}", getPhoto(logger, photos))

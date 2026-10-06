@@ -35,6 +35,8 @@ const (
 	EnvTrustedProxy = "MEALQUEST_TRUSTED_PROXY"
 
 	EnvDefaultTZ = "MEALQUEST_DEFAULT_TZ"
+
+	EnvSearXNGURL = "MEALQUEST_SEARXNG_URL"
 )
 
 // Session lifetime defaults (D-004): long enough that the kitchen tablet
@@ -73,6 +75,13 @@ type Config struct {
 	// validates it only while the settings do not exist yet, and ignores it
 	// once they do. Empty when unset.
 	DefaultTZ string
+
+	// SearXNGURL is the deployment's SearXNG instance, which the Settings
+	// screen suggests while no recipe-search URL is saved. It is optional
+	// and validated by recipes.NewSearchSettingsService: the compose
+	// network's http://searxng:8080 is neither https nor loopback, so the
+	// secure-URL rule does not apply. Empty when unset.
+	SearXNGURL string
 }
 
 // PublicOrigin returns the scheme and host of PublicURL, the only parts of it
@@ -107,6 +116,8 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 		TrustedProxy: r.trustedProxy(EnvTrustedProxy),
 
 		DefaultTZ: r.optional(EnvDefaultTZ),
+
+		SearXNGURL: r.optional(EnvSearXNGURL),
 	}
 	if cfg.SessionIdle > 0 && cfg.SessionMax > 0 && cfg.SessionMax < cfg.SessionIdle {
 		r.fail(EnvSessionMax, "must be at least %s (%s)", EnvSessionIdle, cfg.SessionIdle)

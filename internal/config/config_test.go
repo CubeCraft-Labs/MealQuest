@@ -422,6 +422,8 @@ func TestLoadValues(t *testing.T) {
 		EnvOIDCAllowedGroups:    " mealquest-admin ,family",
 
 		EnvDefaultTZ: "Europe/London",
+
+		EnvSearXNGURL: "http://searxng:8080",
 	}
 	cfg, err := load(func(k string) (string, bool) { v, ok := env[k]; return v, ok })
 	if err != nil {
@@ -479,6 +481,9 @@ func TestLoadValues(t *testing.T) {
 	}
 	if cfg.DefaultTZ != "Europe/London" {
 		t.Errorf("DefaultTZ = %q, want Europe/London", cfg.DefaultTZ)
+	}
+	if cfg.SearXNGURL != "http://searxng:8080" {
+		t.Errorf("SearXNGURL = %q, want http://searxng:8080", cfg.SearXNGURL)
 	}
 }
 

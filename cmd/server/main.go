@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/aisettings"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/auth"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/config"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
@@ -78,7 +79,12 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	search, err := recipes.NewSearchSettingsService(db, box)
+	search, err := recipes.NewSearchSettingsService(db, box, cfg.SearXNGURL)
+	if err != nil {
+		return fmt.Errorf("%s: %w", config.EnvSearXNGURL, err)
+	}
+
+	ai, err := aisettings.New(db, box, cfg.PublicURL.String())
 	if err != nil {
 		return err
 	}
@@ -99,7 +105,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, search, runner, photos, frontend.Assets())
+	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, search, ai, runner, photos, frontend.Assets())
 	if err != nil {
 		return err
 	}

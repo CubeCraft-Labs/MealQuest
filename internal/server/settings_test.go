@@ -216,7 +216,7 @@ func TestHouseholdSettingsWithRealSession(t *testing.T) {
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	router, err := NewRouter(logger, "dev", nil, stubAuth{}, sessions, household.NewSettingsService(st),
-		newTestSearch(t), newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
+		newTestSearch(t), newTestAI(t), newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
 	if err != nil {
 		t.Fatal(err)
 	}

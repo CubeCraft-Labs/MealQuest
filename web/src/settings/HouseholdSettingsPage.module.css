@@ -1,0 +1,237 @@
+/* Settings · Household. */
+.page {
+  box-sizing: border-box;
+  min-height: 100%;
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding-top: 6px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.kicker {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-accent-700);
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 28px;
+  font-weight: 400;
+}
+
+.shared {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 26px;
+  background: var(--color-accent-2-100);
+  color: var(--color-accent-2-900);
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.loading {
+  height: 420px;
+  border-radius: 26px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  border: 1px solid var(--color-neutral-300);
+}
+
+.cardTitle {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 22px;
+  font-weight: 400;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.groupLabel {
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-neutral-700);
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: end;
+}
+
+.time {
+  width: 100%;
+}
+
+/* Beside a day dropdown, a time matches its height. */
+.pairedTime {
+  height: 56px;
+}
+
+.hint,
+.error,
+.status {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.hint {
+  color: var(--color-neutral-700);
+}
+
+.error {
+  font-weight: 700;
+  color: var(--color-accent-700);
+}
+
+.errors {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.status {
+  color: var(--color-accent-2-800);
+}
+
+.status:empty {
+  display: none;
+}
+
+.zoneRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 56px;
+  padding: 0 6px 0 20px;
+  border: 1px solid var(--color-neutral-300);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+}
+
+.zoneValue {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 8px;
+}
+
+.zoneName {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-body);
+  font-size: 15px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+}
+
+.offset {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--color-neutral-700);
+}
+
+.change {
+  flex: none;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.actions {
+  margin-top: auto;
+  display: grid;
+  padding-top: 6px;
+}
+
+.save {
+  min-height: 52px;
+}
+
+.sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+.zoneList {
+  max-height: 50vh;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.zoneOption {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 44px;
+  min-height: 48px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--color-text);
+  text-align: start;
+  cursor: pointer;
+}
+
+.zoneOption .zoneName {
+  flex: 1;
+}
+
+.zoneOption[aria-pressed='true'] {
+  background: var(--color-accent-2-100);
+  color: var(--color-accent-2-900);
+}
+
+.check {
+  flex: none;
+}
+
+/* A form locked while its save is pending, so no edit is made that the
+   saved settings would then replace. It lays out as if it were not there. */
+.lock {
+  display: contents;
+}

@@ -8,9 +8,13 @@ function cssRules(): CSSRule[] {
   return Array.from(document.styleSheets).flatMap((sheet) => Array.from(sheet.cssRules))
 }
 
+// A selector with a pseudo-element never matches an element, and jsdom's
+// matches() throws on the vendor ones (::-moz-range-track), so those rules
+// are skipped.
 function collect(element: Element, rules: CSSRule[], style: CSSStyleDeclaration) {
   for (const rule of rules) {
-    if (!(rule instanceof CSSStyleRule) || !element.matches(rule.selectorText)) continue
+    if (!(rule instanceof CSSStyleRule) || rule.selectorText.includes('::')) continue
+    if (!element.matches(rule.selectorText)) continue
     for (const property of Array.from(rule.style)) {
       style.setProperty(property, rule.style.getPropertyValue(property))
     }

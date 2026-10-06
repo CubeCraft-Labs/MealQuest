@@ -30,10 +30,15 @@ var ErrSearchNotConfigured = errors.New("recipes: recipe search is not configure
 type SearchSettings struct {
 	// Provider is "searxng" or "brave", nil until first chosen.
 	Provider *string `json:"provider"`
-	// BaseURL is the SearXNG instance's URL, nil when not set.
-	BaseURL     *string `json:"base_url"`
-	APIKeySet   bool    `json:"api_key_set"`
-	APIKeyLast4 *string `json:"api_key_last4"`
+	// BaseURL is the saved SearXNG instance's URL, nil when not set.
+	BaseURL *string `json:"base_url"`
+	// DefaultBaseURL is the deployment's SearXNG URL
+	// (MEALQUEST_SEARXNG_URL), for the client to suggest while BaseURL is
+	// not set. It is never saved by itself: only a PATCH of base_url saves
+	// a URL. Nil when the deployment names none.
+	DefaultBaseURL *string `json:"default_base_url"`
+	APIKeySet      bool    `json:"api_key_set"`
+	APIKeyLast4    *string `json:"api_key_last4"`
 	// UpdatedAt is nil until the settings are first saved.
 	UpdatedAt *string `json:"updated_at"`
 }
@@ -75,32 +80,49 @@ func (e *SearchSettingsError) Error() string {
 type SearchSettingsService struct {
 	st  *store.Store
 	box *secretbox.Box
+	// defaultBaseURL is SearchSettings.DefaultBaseURL, "" for none.
+	defaultBaseURL string
 	// newProvider is NewSearchProvider; tests point Brave elsewhere.
 	newProvider func(db.RecipeSearchSetting, *secretbox.Box) (SearchProvider, error)
 }
 
 // NewSearchSettingsService returns the service over st, sealing keys with
-// box.
-func NewSearchSettingsService(st *store.Store, box *secretbox.Box) (*SearchSettingsService, error) {
+// box. defaultBaseURL is the deployment's SearXNG URL, "" for none; a set
+// one must be a valid SearXNG URL.
+func NewSearchSettingsService(st *store.Store, box *secretbox.Box, defaultBaseURL string) (*SearchSettingsService, error) {
 	if st == nil {
 		return nil, errors.New("recipes: nil store")
 	}
 	if box == nil {
 		return nil, errors.New("recipes: nil secret box")
 	}
-	return &SearchSettingsService{st: st, box: box, newProvider: NewSearchProvider}, nil
+	if defaultBaseURL != "" {
+		if _, err := NewSearXNG(defaultBaseURL); err != nil {
+			return nil, fmt.Errorf("recipes: default SearXNG URL: %s", strings.TrimPrefix(err.Error(), "recipes: "))
+		}
+	}
+	return &SearchSettingsService{st: st, box: box, defaultBaseURL: defaultBaseURL, newProvider: NewSearchProvider}, nil
 }
 
-// Get returns the settings; before any are saved every field is unset.
+// Get returns the settings; before any are saved every field but
+// DefaultBaseURL is unset.
 func (s *SearchSettingsService) Get(ctx context.Context) (SearchSettings, error) {
 	row, err := db.New(s.st.Reader).GetRecipeSearchSettings(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
-		return SearchSettings{}, nil
+		return SearchSettings{DefaultBaseURL: s.defaultBase()}, nil
 	}
 	if err != nil {
 		return SearchSettings{}, fmt.Errorf("recipes: read recipe search settings: %w", err)
 	}
-	return searchSettingsFrom(row), nil
+	return s.settingsFrom(row), nil
+}
+
+func (s *SearchSettingsService) defaultBase() *string {
+	if s.defaultBaseURL == "" {
+		return nil
+	}
+	u := s.defaultBaseURL
+	return &u
 }
 
 // Update applies patch and returns the settings it leaves. The first update
@@ -141,7 +163,7 @@ func (s *SearchSettingsService) Update(ctx context.Context, patch SearchSettings
 	if err != nil {
 		return SearchSettings{}, err
 	}
-	return searchSettingsFrom(saved), nil
+	return s.settingsFrom(saved), nil
 }
 
 // apply returns row with patch applied, validated.
@@ -226,14 +248,15 @@ func (s *SearchSettingsService) TestSearch(ctx context.Context) (int, error) {
 	return len(cands), nil
 }
 
-func searchSettingsFrom(row db.RecipeSearchSetting) SearchSettings {
+func (s *SearchSettingsService) settingsFrom(row db.RecipeSearchSetting) SearchSettings {
 	provider, updated := row.Provider, row.UpdatedAt
 	return SearchSettings{
-		Provider:    &provider,
-		BaseURL:     nullString(row.BaseUrl),
-		APIKeySet:   len(row.ApiKeyCt) > 0,
-		APIKeyLast4: nullString(row.ApiKeyLast4),
-		UpdatedAt:   &updated,
+		Provider:       &provider,
+		BaseURL:        nullString(row.BaseUrl),
+		DefaultBaseURL: s.defaultBase(),
+		APIKeySet:      len(row.ApiKeyCt) > 0,
+		APIKeyLast4:    nullString(row.ApiKeyLast4),
+		UpdatedAt:      &updated,
 	}
 }
 

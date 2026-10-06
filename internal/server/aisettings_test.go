@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"testing/fstest"
+	"unicode/utf8"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 )
@@ -38,7 +39,8 @@ func newAIRouter(t *testing.T) http.Handler {
 // newModelsServer is an OpenAI-compatible server whose GET /models accepts
 // only testAIKey. While echo is set it answers 500 with a body quoting the
 // Authorization header it received, so a response that passed the vendor
-// body through unredacted would leak the key.
+// body through unredacted would leak the key. Its model list holds a model
+// whose ID and name quote the key.
 func newModelsServer(t *testing.T, echo *atomic.Bool) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -53,7 +55,8 @@ func newModelsServer(t *testing.T, echo *atomic.Bool) *httptest.Server {
 			w.WriteHeader(http.StatusUnauthorized)
 			io.WriteString(w, `{"error":{"message":"invalid key `+auth+`"}}`)
 		default:
-			io.WriteString(w, `{"data":[{"id":"gpt-test"},{"id":"gpt-test-mini","name":"GPT Test Mini"}]}`)
+			io.WriteString(w, `{"data":[{"id":"gpt-test"},{"id":"gpt-test-mini","name":"GPT Test Mini"},`+
+				`{"id":"gpt-`+testAIKey+`","name":"Leaky `+testAIKey+`"}]}`)
 		}
 	}))
 	t.Cleanup(srv.Close)
@@ -117,10 +120,21 @@ func TestAISettingsAPI(t *testing.T) {
 		`{"model":""}`,
 		`{"model":null}`,
 		`{"system_prompt":"` + strings.Repeat("é", 8001) + `"}`,
+		`{"system_prompt":"` + strings.Repeat("€", 8001) + `"}`,
+		`{"system_prompt":"` + strings.Repeat("a", maxAISettingsBody) + `"}`,
 		`{"api_key":"` + testAIKey + `"}`,
 	} {
 		if rec, body := call(http.MethodPatch, aiPath, bad); rec.Code != http.StatusBadRequest {
 			t.Errorf("PATCH %.80s = %d %v, want 400", bad, rec.Code, body)
+		}
+	}
+
+	// The longest prompt fits the body limit however its 8,000 characters
+	// are written: three-byte, four-byte, or as \u-escaped surrogate pairs.
+	for _, char := range []string{"€", "🍲", `\ud83c\udf72`} {
+		rec, body := call(http.MethodPatch, aiPath, `{"system_prompt":"`+strings.Repeat(char, 8000)+`"}`)
+		if prompt, _ := body["system_prompt"].(string); rec.Code != http.StatusOK || utf8.RuneCountInString(prompt) != 8000 {
+			t.Errorf("PATCH 8,000 × %s = %d, %d characters", char, rec.Code, utf8.RuneCountInString(prompt))
 		}
 	}
 
@@ -178,11 +192,14 @@ func TestAISettingsAPI(t *testing.T) {
 
 	rec, body = call(http.MethodGet, aiModelsPath, "")
 	models, _ := body["models"].([]any)
-	if rec.Code != http.StatusOK || len(models) != 2 {
+	if rec.Code != http.StatusOK || len(models) != 3 {
 		t.Fatalf("GET models = %d %v", rec.Code, body)
 	}
 	if m := models[1].(map[string]any); m["id"] != "gpt-test-mini" || m["display_name"] != "GPT Test Mini" {
 		t.Errorf("GET models[1] = %v", m)
+	}
+	if m := models[2].(map[string]any); m["id"] != "gpt-[REDACTED]" || m["display_name"] != "Leaky [REDACTED]" {
+		t.Errorf("GET models[2] = %v, want the key redacted", m)
 	}
 
 	rec, body = call(http.MethodPatch, aiPath, `{"system_prompt":"Be brief."}`)

@@ -217,7 +217,8 @@ func (s *Service) Verify(ctx context.Context) (Settings, error) {
 	})
 }
 
-// Models returns the provider's live model list. Its errors are Verify's.
+// Models returns the provider's live model list with the API key removed
+// from every model's ID and display name. Its errors are Verify's.
 func (s *Service) Models(ctx context.Context) ([]Model, error) {
 	row, err := s.read(ctx, db.New(s.st.Reader))
 	if err != nil {
@@ -233,7 +234,7 @@ func (s *Service) Models(ctx context.Context) ([]Model, error) {
 	}
 	out := make([]Model, len(models))
 	for i, m := range models {
-		out[i] = Model{ID: m.ID, DisplayName: m.DisplayName}
+		out[i] = Model{ID: llm.Redact(m.ID, key), DisplayName: llm.Redact(m.DisplayName, key)}
 	}
 	return out, nil
 }

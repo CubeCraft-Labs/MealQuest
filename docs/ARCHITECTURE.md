@@ -166,7 +166,8 @@ automatic** (D-021).
   only when its base_url passes `secureurl.Check`. `POST /api/v1/settings/ai/verify` calls
   `Provider.Verify` and records `key_verified_at`;
   `GET /api/v1/settings/ai/models` returns `{models: [{id, display_name}]}`
-  live from the provider. Both work before a model is chosen
+  live from the provider, with the key redacted from every id and
+  display_name. Both work before a model is chosen
   (`presets.ForAccount`), answer 409 `not_configured` when the settings
   cannot build a provider, and 502 with the provider's typed error
   (`auth_failed`, `rate_limited`, `bad_output`, `provider_error`; 504

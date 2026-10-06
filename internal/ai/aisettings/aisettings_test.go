@@ -352,6 +352,11 @@ func TestVerifyRedactsKey(t *testing.T) {
 	if _, err := s.Models(ctx); !errors.Is(err, ErrProviderFailed) || strings.Contains(err.Error(), testKey) {
 		t.Errorf("Models = %v, want ErrProviderFailed without the key", err)
 	}
+	f.QueueListModels(llm.ListModelsResult{Models: []llm.Model{{ID: "m-" + testKey, DisplayName: "Model " + testKey}}})
+	models, err := s.Models(ctx)
+	if err != nil || len(models) != 1 || models[0] != (Model{ID: "m-[REDACTED]", DisplayName: "Model [REDACTED]"}) {
+		t.Errorf("Models = %+v, %v, want the key redacted", models, err)
+	}
 }
 
 // Settings changed while the provider verifies the key are not marked

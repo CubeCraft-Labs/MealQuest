@@ -21,8 +21,8 @@ type modelsResponse struct {
 }
 
 // No response from these handlers holds the API key: the settings carry
-// only its last four characters, and provider errors are redacted by
-// package aisettings.
+// only its last four characters, and provider errors and model lists are
+// redacted by package aisettings.
 
 func getAISettings(logger *slog.Logger, svc *aisettings.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -38,7 +38,7 @@ func getAISettings(logger *slog.Logger, svc *aisettings.Service) http.HandlerFun
 
 func patchAISettings(logger *slog.Logger, svc *aisettings.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		patch, err := decodePatch[aisettings.Patch](http.MaxBytesReader(w, r.Body, maxSettingsBody))
+		patch, err := decodePatch[aisettings.Patch](http.MaxBytesReader(w, r.Body, maxAISettingsBody))
 		if err != nil {
 			writeError(w, r, logger, http.StatusBadRequest, "invalid_request", err.Error())
 			return

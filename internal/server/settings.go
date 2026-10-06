@@ -9,13 +9,20 @@ import (
 	"log/slog"
 	"net/http"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/aisettings"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/auth"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 )
 
-// maxSettingsBody bounds a PATCH /settings/household, /settings/ai or
+// maxSettingsBody bounds a PATCH /settings/household or
 // /settings/recipe-search, or PUT /settings/ai/api-key, request body.
 const maxSettingsBody = 16 << 10
+
+// maxAISettingsBody bounds a PATCH /settings/ai request body. It fits the
+// longest valid system prompt at 12 bytes of JSON per character (a
+// \u-escaped surrogate pair) on top of maxSettingsBody for the other
+// fields, so only aisettings.MaxSystemPromptChars limits the prompt.
+const maxAISettingsBody = maxSettingsBody + 12*aisettings.MaxSystemPromptChars
 
 // settingsPatch is the PATCH /settings/household body. Every field is
 // optional; unknown fields and null values are refused.

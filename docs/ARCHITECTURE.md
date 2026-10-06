@@ -96,7 +96,7 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 | `recipe_ingredients` | recipe_id, position, raw_text, name, qty, unit, note. |
 | `recipe_steps` | recipe_id, position, text. |
 | `photos` | source_url, local_path, width, height, sha256, fetched_at. |
-| `dinners` | The meal record and its lifecycle: name, normalized_name, status (`suggested` / `quest_log` / `tried` / `regular` / `archived`), origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by. |
+| `dinners` | The meal record and its lifecycle: name, normalized_name, status (`suggested` / `quest_log` / `tried` / `regular` / `archived`), origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, recipe_url (a pasted recipe link awaiting grounding), photo_id, grounding_status, updated_by. |
 | `suggestion_batches` | trigger, status, ai_run_id. |
 | `suggestions` | dinner_id, batch_id, reason, cited_regular_ids (JSON), status, decided_at. |
 | `week_plans` | week_start (unique), status (`draft` / `synced` / `changed`), ai_note, ai_run_id, calendar_synced_at. |
@@ -178,6 +178,28 @@ automatic** (D-021).
   restores `household.DefaultPersonaPrompt` (CTXD PROMPTS.MD §4). No
   response holds the key. `Service.HarnessConfig` reads the settings for
   each skill run, so a saved change applies to the next run.
+- Dinners (`dinners.Service`). `POST /api/v1/dinners` adds a Regular from
+  exactly one of `{name}` or `{recipe_url}` (an https:// link, kept in
+  `recipe_url` for grounding) with status and origin `regular` and
+  grounding_status `pending`, answering 201 with the dinner. A link's
+  dinner is named from its last path segment (separators become spaces,
+  an extension and all-digit words are dropped: `…/12345/beef-stew/` is
+  "Beef stew"); a link that names nothing is 400 — add it by name. A name
+  is trimmed, at most 120 characters and must keep a word after
+  `harness.Normalize`, which sets `normalized_name`. A name
+  `harness.Similar` to an unarchived dinner's, or a link one already has,
+  is 409 `duplicate_dinner`; archived names may be added again.
+  `GET /api/v1/dinners?status=regular|quest_log` returns
+  `{dinners: [...]}` ordered by normalized name, each with `photo_url`
+  (`/media/photos/{photo_id}-400.jpg`, or null) and `grounding_status`;
+  any other status is 400. `PATCH /api/v1/dinners/{id}` edits `name`
+  (deduplicated against the other unarchived dinners), `method`
+  (`stovetop` / `oven` / `crockpot` / `grill` / `other`), `minutes_total`
+  (1–1440) and `difficulty` (`easy` / `medium` / `hard`); invalid values
+  are 400 `invalid_dinner` and change nothing. `DELETE /api/v1/dinners/{id}`
+  sets status `archived` and keeps the row; `POST
+  /api/v1/dinners/{id}/favorite` toggles `is_favorite`. Every write records
+  the session's subject as `updated_by`; an unknown id is 404.
 - `/health` — liveness.
 - Everything else serves the embedded PWA with SPA fallback.
 

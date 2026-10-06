@@ -1,0 +1,148 @@
+package server
+
+import (
+	"errors"
+	"log/slog"
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/auth"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
+)
+
+// maxDinnerBody bounds a POST or PATCH /dinners request body.
+const maxDinnerBody = 16 << 10
+
+// dinnerCreate is the POST /dinners body: a name or a recipe_url.
+type dinnerCreate struct {
+	Name      *string `json:"name"`
+	RecipeURL *string `json:"recipe_url"`
+}
+
+// dinnerPatch is the PATCH /dinners/{id} body. Every field is optional;
+// unknown fields and null values are refused.
+type dinnerPatch struct {
+	Name         *string `json:"name"`
+	Method       *string `json:"method"`
+	MinutesTotal *int    `json:"minutes_total"`
+	Difficulty   *string `json:"difficulty"`
+}
+
+type dinnerList struct {
+	Dinners []dinners.Dinner `json:"dinners"`
+}
+
+// getDinners answers GET /dinners?status=regular|quest_log.
+func getDinners(logger *slog.Logger, svc *dinners.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		list, err := svc.List(r.Context(), r.URL.Query().Get("status"))
+		if err != nil {
+			writeDinnerError(w, r, logger, "list dinners", err)
+			return
+		}
+		writeJSON(w, r, logger, http.StatusOK, dinnerList{Dinners: list})
+	}
+}
+
+// postDinner adds a Regular, recording the session's actor as updated_by.
+func postDinner(logger *slog.Logger, svc *dinners.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		actor, ok := actorOrFail(w, r, logger)
+		if !ok {
+			return
+		}
+		body, err := decodePatch[dinnerCreate](http.MaxBytesReader(w, r.Body, maxDinnerBody))
+		if err != nil {
+			writeError(w, r, logger, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		d, err := svc.CreateRegular(r.Context(), dinners.NewRegular(body), actor.Subject)
+		if err != nil {
+			writeDinnerError(w, r, logger, "create dinner", err)
+			return
+		}
+		writeJSON(w, r, logger, http.StatusCreated, d)
+	}
+}
+
+// patchDinner edits a dinner, recording the session's actor as updated_by.
+func patchDinner(logger *slog.Logger, svc *dinners.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		actor, ok := actorOrFail(w, r, logger)
+		if !ok {
+			return
+		}
+		patch, err := decodePatch[dinnerPatch](http.MaxBytesReader(w, r.Body, maxDinnerBody))
+		if err != nil {
+			writeError(w, r, logger, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		d, err := svc.Update(r.Context(), chi.URLParam(r, "id"), dinners.Patch(patch), actor.Subject)
+		if err != nil {
+			writeDinnerError(w, r, logger, "update dinner", err)
+			return
+		}
+		writeJSON(w, r, logger, http.StatusOK, d)
+	}
+}
+
+// deleteDinner archives a dinner; the row is never deleted.
+func deleteDinner(logger *slog.Logger, svc *dinners.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		actor, ok := actorOrFail(w, r, logger)
+		if !ok {
+			return
+		}
+		d, err := svc.Archive(r.Context(), chi.URLParam(r, "id"), actor.Subject)
+		if err != nil {
+			writeDinnerError(w, r, logger, "archive dinner", err)
+			return
+		}
+		writeJSON(w, r, logger, http.StatusOK, d)
+	}
+}
+
+// postDinnerFavorite toggles a dinner's is_favorite.
+func postDinnerFavorite(logger *slog.Logger, svc *dinners.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		actor, ok := actorOrFail(w, r, logger)
+		if !ok {
+			return
+		}
+		d, err := svc.ToggleFavorite(r.Context(), chi.URLParam(r, "id"), actor.Subject)
+		if err != nil {
+			writeDinnerError(w, r, logger, "toggle dinner favorite", err)
+			return
+		}
+		writeJSON(w, r, logger, http.StatusOK, d)
+	}
+}
+
+// actorOrFail returns the session's actor, or answers 500 when the request
+// has none, which behind requireSession is a wiring bug.
+func actorOrFail(w http.ResponseWriter, r *http.Request, logger *slog.Logger) (auth.Actor, bool) {
+	actor, ok := auth.ActorFrom(r.Context())
+	if !ok {
+		logger.ErrorContext(r.Context(), r.Method+" "+r.URL.Path+" without a session")
+		writeError(w, r, logger, http.StatusInternalServerError, "internal", "internal error")
+	}
+	return actor, ok
+}
+
+// writeDinnerError maps a dinners.Service error to its API error.
+func writeDinnerError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, action string, err error) {
+	var invalid *dinners.ValidationError
+	var dup *dinners.DuplicateError
+	switch {
+	case errors.As(err, &invalid):
+		writeError(w, r, logger, http.StatusBadRequest, "invalid_dinner", invalid.Error())
+	case errors.As(err, &dup):
+		writeError(w, r, logger, http.StatusConflict, "duplicate_dinner", dup.Error())
+	case errors.Is(err, dinners.ErrNotFound):
+		writeError(w, r, logger, http.StatusNotFound, "not_found", "dinner not found")
+	default:
+		logger.ErrorContext(r.Context(), action, "error", err)
+		writeError(w, r, logger, http.StatusInternalServerError, "internal", "internal error")
+	}
+}

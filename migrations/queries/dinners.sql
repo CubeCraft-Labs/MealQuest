@@ -1,12 +1,12 @@
 -- name: CreateDinner :one
 INSERT INTO dinners (
 	id, name, normalized_name, status, origin, method, minutes_total,
-	difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status,
-	updated_by, created_at, updated_at
+	difficulty, cuisine, is_favorite, recipe_id, recipe_url, photo_id,
+	grounding_status, updated_by, created_at, updated_at
 ) VALUES (
 	?, ?, ?, ?, ?, ?, ?,
 	?, ?, ?, ?, ?, ?,
-	?, ?, ?
+	?, ?, ?, ?
 )
 RETURNING *;
 
@@ -18,6 +18,12 @@ WHERE id = ?;
 SELECT * FROM dinners
 WHERE status = ?
 ORDER BY normalized_name, id;
+
+-- name: ListUnarchivedDinners :many
+-- Every dinner a new or renamed dinner must not repeat.
+SELECT * FROM dinners
+WHERE status <> 'archived'
+ORDER BY id;
 
 -- name: UpdateDinner :one
 -- An unknown id returns sql.ErrNoRows.
@@ -51,6 +57,15 @@ RETURNING *;
 -- An unknown id returns sql.ErrNoRows.
 UPDATE dinners
 SET is_favorite = ?,
+	updated_by = ?,
+	updated_at = ?
+WHERE id = ?
+RETURNING *;
+
+-- name: ToggleDinnerFavorite :one
+-- An unknown id returns sql.ErrNoRows.
+UPDATE dinners
+SET is_favorite = 1 - is_favorite,
 	updated_by = ?,
 	updated_at = ?
 WHERE id = ?

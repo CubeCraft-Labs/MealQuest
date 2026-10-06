@@ -106,13 +106,22 @@ func TestDinners(t *testing.T) {
 		Cuisine:         str("Mexican"),
 		IsFavorite:      0,
 		RecipeID:        str(recipe.ID),
+		RecipeUrl:       str("https://example.com/tacos"),
 		PhotoID:         str(photo.ID),
 		GroundingStatus: "grounded",
 		UpdatedBy:       str("alex@example.com"),
 		CreatedAt:       created,
 		UpdatedAt:       created,
 	}
-	want := db.Dinner(create)
+	want := db.Dinner{
+		ID: create.ID, Name: create.Name, NormalizedName: create.NormalizedName,
+		Status: create.Status, Origin: create.Origin, Method: create.Method,
+		MinutesTotal: create.MinutesTotal, Difficulty: create.Difficulty,
+		Cuisine: create.Cuisine, IsFavorite: create.IsFavorite, RecipeID: create.RecipeID,
+		PhotoID: create.PhotoID, GroundingStatus: create.GroundingStatus,
+		UpdatedBy: create.UpdatedBy, CreatedAt: created, UpdatedAt: created,
+		RecipeUrl: create.RecipeUrl,
+	}
 	got, err := q.CreateDinner(ctx, create)
 	if err != nil {
 		t.Fatalf("CreateDinner: %v", err)
@@ -197,6 +206,7 @@ func TestDinners(t *testing.T) {
 		Cuisine: update.Cuisine, IsFavorite: 0, RecipeID: update.RecipeID,
 		PhotoID: update.PhotoID, GroundingStatus: update.GroundingStatus,
 		UpdatedBy: update.UpdatedBy, CreatedAt: created, UpdatedAt: updated,
+		RecipeUrl: create.RecipeUrl, // UpdateDinner leaves the recipe link
 	}
 	if got != want {
 		t.Fatalf("UpdateDinner returned %+v, want %+v", got, want)
@@ -227,6 +237,17 @@ func TestDinners(t *testing.T) {
 	_, err = q.SetDinnerFavorite(ctx, db.SetDinnerFavoriteParams{ID: "missing", IsFavorite: 1, UpdatedAt: updated})
 	mustNoRows(t, "SetDinnerFavorite missing", err)
 
+	for _, wantFav := range []int64{1, 0} {
+		got, err = q.ToggleDinnerFavorite(ctx, db.ToggleDinnerFavoriteParams{
+			ID: create.ID, UpdatedBy: str("alex@example.com"), UpdatedAt: updated,
+		})
+		if err != nil || got.IsFavorite != wantFav || got.UpdatedBy != str("alex@example.com") {
+			t.Fatalf("ToggleDinnerFavorite = %+v, %v; want is_favorite %d", got, err, wantFav)
+		}
+	}
+	_, err = q.ToggleDinnerFavorite(ctx, db.ToggleDinnerFavoriteParams{ID: "missing", UpdatedAt: updated})
+	mustNoRows(t, "ToggleDinnerFavorite missing", err)
+
 	const archivedAt = "2026-10-05T12:00:00.000Z"
 	got, err = q.ArchiveDinner(ctx, db.ArchiveDinnerParams{
 		ID: create.ID, UpdatedBy: str("alex@example.com"), UpdatedAt: archivedAt,
@@ -240,6 +261,15 @@ func TestDinners(t *testing.T) {
 	}
 	assertIDs(t, "archived", listIDs("archived"), create.ID)
 	assertIDs(t, "tried after archive", listIDs("tried"))
+	unarchived, err := q.ListUnarchivedDinners(ctx)
+	if err != nil {
+		t.Fatalf("ListUnarchivedDinners: %v", err)
+	}
+	var unarchivedIDs []string
+	for _, d := range unarchived {
+		unarchivedIDs = append(unarchivedIDs, d.ID)
+	}
+	assertIDs(t, "unarchived", unarchivedIDs, other.ID, third.ID)
 	_, err = q.ArchiveDinner(ctx, db.ArchiveDinnerParams{ID: "missing", UpdatedAt: archivedAt})
 	mustNoRows(t, "ArchiveDinner missing", err)
 }

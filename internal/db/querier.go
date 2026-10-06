@@ -60,11 +60,15 @@ type Querier interface {
 	ListRecentDeclinedNames(ctx context.Context, limit int64) ([]string, error)
 	ListRecipeIngredients(ctx context.Context, recipeID string) ([]RecipeIngredient, error)
 	ListRecipeSteps(ctx context.Context, recipeID string) ([]RecipeStep, error)
+	// Every dinner a new or renamed dinner must not repeat.
+	ListUnarchivedDinners(ctx context.Context) ([]Dinner, error)
 	// Stores a partial result of a running job.
 	PublishJobResult(ctx context.Context, arg PublishJobResultParams) (int64, error)
 	// An unknown id returns sql.ErrNoRows.
 	SetDinnerFavorite(ctx context.Context, arg SetDinnerFavoriteParams) (Dinner, error)
 	SucceedJob(ctx context.Context, arg SucceedJobParams) (int64, error)
+	// An unknown id returns sql.ErrNoRows.
+	ToggleDinnerFavorite(ctx context.Context, arg ToggleDinnerFavoriteParams) (Dinner, error)
 	// An unknown id returns sql.ErrNoRows.
 	UpdateDinner(ctx context.Context, arg UpdateDinnerParams) (Dinner, error)
 	// Creates the single row (id 1) or replaces every column except id and

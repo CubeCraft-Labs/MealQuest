@@ -16,7 +16,7 @@ SET status = 'archived',
 	updated_by = ?,
 	updated_at = ?
 WHERE id = ?
-RETURNING id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at
+RETURNING id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url
 `
 
 type ArchiveDinnerParams struct {
@@ -46,6 +46,7 @@ func (q *Queries) ArchiveDinner(ctx context.Context, arg ArchiveDinnerParams) (D
 		&i.UpdatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RecipeUrl,
 	)
 	return i, err
 }
@@ -53,14 +54,14 @@ func (q *Queries) ArchiveDinner(ctx context.Context, arg ArchiveDinnerParams) (D
 const createDinner = `-- name: CreateDinner :one
 INSERT INTO dinners (
 	id, name, normalized_name, status, origin, method, minutes_total,
-	difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status,
-	updated_by, created_at, updated_at
+	difficulty, cuisine, is_favorite, recipe_id, recipe_url, photo_id,
+	grounding_status, updated_by, created_at, updated_at
 ) VALUES (
 	?, ?, ?, ?, ?, ?, ?,
 	?, ?, ?, ?, ?, ?,
-	?, ?, ?
+	?, ?, ?, ?
 )
-RETURNING id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at
+RETURNING id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url
 `
 
 type CreateDinnerParams struct {
@@ -75,6 +76,7 @@ type CreateDinnerParams struct {
 	Cuisine         sql.NullString
 	IsFavorite      int64
 	RecipeID        sql.NullString
+	RecipeUrl       sql.NullString
 	PhotoID         sql.NullString
 	GroundingStatus string
 	UpdatedBy       sql.NullString
@@ -95,6 +97,7 @@ func (q *Queries) CreateDinner(ctx context.Context, arg CreateDinnerParams) (Din
 		arg.Cuisine,
 		arg.IsFavorite,
 		arg.RecipeID,
+		arg.RecipeUrl,
 		arg.PhotoID,
 		arg.GroundingStatus,
 		arg.UpdatedBy,
@@ -119,12 +122,13 @@ func (q *Queries) CreateDinner(ctx context.Context, arg CreateDinnerParams) (Din
 		&i.UpdatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RecipeUrl,
 	)
 	return i, err
 }
 
 const getDinner = `-- name: GetDinner :one
-SELECT id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at FROM dinners
+SELECT id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url FROM dinners
 WHERE id = ?
 `
 
@@ -148,12 +152,13 @@ func (q *Queries) GetDinner(ctx context.Context, id string) (Dinner, error) {
 		&i.UpdatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RecipeUrl,
 	)
 	return i, err
 }
 
 const listDinnersByStatus = `-- name: ListDinnersByStatus :many
-SELECT id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at FROM dinners
+SELECT id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url FROM dinners
 WHERE status = ?
 ORDER BY normalized_name, id
 `
@@ -184,6 +189,55 @@ func (q *Queries) ListDinnersByStatus(ctx context.Context, status string) ([]Din
 			&i.UpdatedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RecipeUrl,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUnarchivedDinners = `-- name: ListUnarchivedDinners :many
+SELECT id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url FROM dinners
+WHERE status <> 'archived'
+ORDER BY id
+`
+
+// Every dinner a new or renamed dinner must not repeat.
+func (q *Queries) ListUnarchivedDinners(ctx context.Context) ([]Dinner, error) {
+	rows, err := q.db.QueryContext(ctx, listUnarchivedDinners)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Dinner
+	for rows.Next() {
+		var i Dinner
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.NormalizedName,
+			&i.Status,
+			&i.Origin,
+			&i.Method,
+			&i.MinutesTotal,
+			&i.Difficulty,
+			&i.Cuisine,
+			&i.IsFavorite,
+			&i.RecipeID,
+			&i.PhotoID,
+			&i.GroundingStatus,
+			&i.UpdatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.RecipeUrl,
 		); err != nil {
 			return nil, err
 		}
@@ -204,7 +258,7 @@ SET is_favorite = ?,
 	updated_by = ?,
 	updated_at = ?
 WHERE id = ?
-RETURNING id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at
+RETURNING id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url
 `
 
 type SetDinnerFavoriteParams struct {
@@ -240,6 +294,48 @@ func (q *Queries) SetDinnerFavorite(ctx context.Context, arg SetDinnerFavoritePa
 		&i.UpdatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RecipeUrl,
+	)
+	return i, err
+}
+
+const toggleDinnerFavorite = `-- name: ToggleDinnerFavorite :one
+UPDATE dinners
+SET is_favorite = 1 - is_favorite,
+	updated_by = ?,
+	updated_at = ?
+WHERE id = ?
+RETURNING id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url
+`
+
+type ToggleDinnerFavoriteParams struct {
+	UpdatedBy sql.NullString
+	UpdatedAt string
+	ID        string
+}
+
+// An unknown id returns sql.ErrNoRows.
+func (q *Queries) ToggleDinnerFavorite(ctx context.Context, arg ToggleDinnerFavoriteParams) (Dinner, error) {
+	row := q.db.QueryRowContext(ctx, toggleDinnerFavorite, arg.UpdatedBy, arg.UpdatedAt, arg.ID)
+	var i Dinner
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.NormalizedName,
+		&i.Status,
+		&i.Origin,
+		&i.Method,
+		&i.MinutesTotal,
+		&i.Difficulty,
+		&i.Cuisine,
+		&i.IsFavorite,
+		&i.RecipeID,
+		&i.PhotoID,
+		&i.GroundingStatus,
+		&i.UpdatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.RecipeUrl,
 	)
 	return i, err
 }
@@ -260,7 +356,7 @@ SET name = ?,
 	updated_by = ?,
 	updated_at = ?
 WHERE id = ?
-RETURNING id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at
+RETURNING id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url
 `
 
 type UpdateDinnerParams struct {
@@ -316,6 +412,7 @@ func (q *Queries) UpdateDinner(ctx context.Context, arg UpdateDinnerParams) (Din
 		&i.UpdatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RecipeUrl,
 	)
 	return i, err
 }

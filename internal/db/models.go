@@ -67,6 +67,7 @@ type Dinner struct {
 	UpdatedBy       sql.NullString
 	CreatedAt       string
 	UpdatedAt       string
+	RecipeUrl       sql.NullString
 }
 
 type HouseholdSetting struct {

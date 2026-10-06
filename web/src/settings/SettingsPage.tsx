@@ -8,18 +8,31 @@ import { ErrorBanner } from '../ui/ErrorBanner.tsx'
 import { Icon } from '../ui/Icon.tsx'
 import { Skeleton } from '../ui/Skeleton.tsx'
 import { Tag } from '../ui/Tag.tsx'
-import { aiProviderLabels, formatClockTime, useAISettings, useHouseholdSettings } from './api.ts'
+import {
+  aiStatus,
+  calendarStatus,
+  formatClockTime,
+  notificationsStatus,
+  regularDinnersStatus,
+  useAISettings,
+  useCalendarStatus,
+  useHouseholdSettings,
+  useNotificationsStatus,
+  useRegularDinnersCount,
+} from './api.ts'
 import styles from './SettingsPage.module.css'
 
-// Settings home (handoff mock 1p). Each row opens its settings page.
-//
-// Regular dinners, Google Calendar and Notifications & Google Chat show no
-// status line yet: the server has no dinners, Google Calendar or
-// notification endpoint to read one from.
+// Settings home (handoff mock 1p). Each row opens its settings page and
+// shows a live status line. Regular dinners, Google Calendar and
+// Notifications & Google Chat read endpoints their features have not served
+// yet; until then each shows its not-yet-available state (see api.ts).
 export function SettingsPage() {
   const household = useHouseholdSettings()
   const ai = useAISettings()
-  const failed = [household, ai].filter((query) => query.isError)
+  const regulars = useRegularDinnersCount()
+  const calendar = useCalendarStatus()
+  const notifications = useNotificationsStatus()
+  const failed = [regulars, calendar, household, notifications, ai].filter((query) => query.isError)
 
   return (
     <div className={styles.page}>
@@ -41,8 +54,18 @@ export function SettingsPage() {
         </div>
       )}
       <Group label="Household">
-        <SettingsRow to="/settings/regulars" icon={Heart} title="Regular dinners" />
-        <SettingsRow to="/settings/calendar" icon={Calendar} title="Google Calendar" />
+        <SettingsRow
+          to="/settings/regulars"
+          icon={Heart}
+          title="Regular dinners"
+          status={status(regulars, regularDinnersStatus)}
+        />
+        <SettingsRow
+          to="/settings/calendar"
+          icon={Calendar}
+          title="Google Calendar"
+          status={status(calendar, calendarStatus)}
+        />
         <SettingsRow
           to="/settings/household"
           icon={House}
@@ -51,14 +74,19 @@ export function SettingsPage() {
         />
       </Group>
       <Group label="Alerts">
-        <SettingsRow to="/settings/notifications" icon={Bell} title="Notifications & Google Chat" />
+        <SettingsRow
+          to="/settings/notifications"
+          icon={Bell}
+          title="Notifications & Google Chat"
+          status={status(notifications, notificationsStatus)}
+        />
       </Group>
       <Group label="Admin" admin>
         <SettingsRow
           to="/settings/ai"
           icon={Crosshair}
           title="AI assistant"
-          status={status(ai, (s) => `${aiProviderLabels[s.provider]} · ${s.model}`)}
+          status={status(ai, aiStatus)}
           tag={<Tag className={styles.tag}>Admin</Tag>}
         />
       </Group>

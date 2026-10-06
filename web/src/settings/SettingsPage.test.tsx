@@ -4,10 +4,11 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
+import { SETTINGS_API } from '../test/ApiProviders.tsx'
 import { declaredStyle } from '../test/cssRules.ts'
 import { errorResponse, fakeLocation, jsonResponse, stubFetchByPath } from '../test/fetchStub.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
-import { formatClockTime } from './api.ts'
+import { formatClockTime, modelDisplayName } from './api.ts'
 import { SettingsPage } from './SettingsPage.tsx'
 
 const HOUSEHOLD = { timezone: 'America/New_York', dinner_time: '17:30' }
@@ -17,8 +18,19 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-function stubSettings(household = () => jsonResponse(200, HOUSEHOLD), ai = () => jsonResponse(200, AI)) {
-  return stubFetchByPath({ '/api/v1/settings/household': household, '/api/v1/settings/ai': ai })
+const REGULARS_PATH = '/api/v1/dinners?status=regular'
+const CALENDAR_PATH = '/api/v1/settings/calendar'
+const NOTIFICATIONS_PATH = '/api/v1/settings/notifications'
+
+// stubSettings answers as today's server does (see SETTINGS_API), with
+// overrides for the paths a test changes.
+function stubSettings(overrides: Record<string, () => Response> = {}) {
+  return stubFetchByPath({
+    ...SETTINGS_API,
+    '/api/v1/settings/household': () => jsonResponse(200, HOUSEHOLD),
+    '/api/v1/settings/ai': () => jsonResponse(200, AI),
+    ...overrides,
+  })
 }
 
 function CurrentPath() {
@@ -52,7 +64,7 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'Settings' })).toBeInTheDocument()
     expect(screen.getByText('Our kitchen')).toBeInTheDocument()
     expect(screen.getByText('Shared household · changes apply to everyone')).toBeInTheDocument()
-    expect(await screen.findByText('Anthropic · claude-sonnet-4-5')).toBeInTheDocument()
+    expect(await screen.findByText('Anthropic · Claude Sonnet')).toBeInTheDocument()
   })
 
   it('groups the rows under Household, Alerts and Admin', async () => {
@@ -66,34 +78,88 @@ describe('SettingsPage', () => {
     ])
     expect(group('Alerts').getByRole('link')).toHaveAttribute('href', '/settings/notifications')
     expect(group('Admin').getByRole('link')).toHaveAttribute('href', '/settings/ai')
-    await screen.findByText('Anthropic · claude-sonnet-4-5')
+    await screen.findByText('Anthropic · Claude Sonnet')
   })
 
-  it('shows the live household and AI assistant status lines', async () => {
+  it('reads every status line from the server', async () => {
     const fetchMock = stubSettings()
     renderSettings()
     expect(await screen.findByText('America/New_York · Dinner at 5:30 pm')).toBeInTheDocument()
-    expect(within(row('AI assistant')).getByText('Anthropic · claude-sonnet-4-5')).toBeInTheDocument()
+    expect(within(row('AI assistant')).getByText('Anthropic · Claude Sonnet')).toBeInTheDocument()
     expect(within(row('Household')).getByText('America/New_York · Dinner at 5:30 pm')).toBeInTheDocument()
     expect(fetchMock.mock.calls.map(([input]) => String(input)).sort()).toEqual([
+      REGULARS_PATH,
       '/api/v1/settings/ai',
+      CALENDAR_PATH,
       '/api/v1/settings/household',
+      NOTIFICATIONS_PATH,
     ])
   })
 
+  it('shows the not-yet-available states while the server has no endpoint for them', async () => {
+    stubSettings()
+    renderSettings()
+    expect(await within(row('Regular dinners')).findByText('Rotation count unavailable')).toBeInTheDocument()
+    expect(await within(row('Google Calendar')).findByText('Not connected')).toBeInTheDocument()
+    expect(
+      await within(row('Notifications & Google Chat')).findByText('Push off · Google Chat not connected'),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('shows the Regulars on rotation, the connected calendar and the notifications once served', async () => {
+    stubSettings({
+      [REGULARS_PATH]: () => jsonResponse(200, { dinners: Array.from({ length: 7 }, (_, i) => ({ id: `d${i}` })) }),
+      [CALENDAR_PATH]: () => jsonResponse(200, { connected: true, calendar_name: 'Dinners calendar' }),
+      [NOTIFICATIONS_PATH]: () => jsonResponse(200, { push: true, chat_space: 'Dinner Crew space' }),
+    })
+    renderSettings()
+    expect(await within(row('Regular dinners')).findByText('7 on rotation')).toBeInTheDocument()
+    expect(await within(row('Google Calendar')).findByText('Connected · Dinners calendar')).toBeInTheDocument()
+    expect(
+      await within(row('Notifications & Google Chat')).findByText('Push on · Dinner Crew space'),
+    ).toBeInTheDocument()
+  })
+
+  it('shows no Regulars, a disconnected calendar and push off with no Google Chat space', async () => {
+    stubSettings({
+      [REGULARS_PATH]: () => jsonResponse(200, { dinners: [] }),
+      [CALENDAR_PATH]: () => jsonResponse(200, { connected: false }),
+      [NOTIFICATIONS_PATH]: () => jsonResponse(200, { push: false, chat_space: null }),
+    })
+    renderSettings()
+    expect(await within(row('Regular dinners')).findByText('None on rotation yet')).toBeInTheDocument()
+    expect(await within(row('Google Calendar')).findByText('Not connected')).toBeInTheDocument()
+    expect(
+      await within(row('Notifications & Google Chat')).findByText('Push off · Google Chat not connected'),
+    ).toBeInTheDocument()
+  })
+
+  it('reports a status endpoint failure other than a missing endpoint', async () => {
+    stubSettings({ [CALENDAR_PATH]: () => errorResponse(500, 'internal') })
+    renderSettings()
+    expect(await screen.findByRole('alert')).toHaveTextContent('Settings could not load: internal message')
+    expect(row('Google Calendar')).toHaveAccessibleName('Google Calendar')
+  })
+
+  it('refuses a connected calendar without a name', async () => {
+    stubSettings({ [CALENDAR_PATH]: () => jsonResponse(200, { connected: true }) })
+    renderSettings()
+    expect(await screen.findByRole('alert')).toHaveTextContent('response is not a calendar status')
+  })
+
   it('shows another provider and model as the settings name them', async () => {
-    stubSettings(undefined, () => jsonResponse(200, { provider: 'openai_compatible', model: 'llama3.1:8b' }))
+    stubSettings({
+      '/api/v1/settings/ai': () => jsonResponse(200, { provider: 'openai_compatible', model: 'llama3.1:8b' }),
+    })
     renderSettings()
     expect(await screen.findByText('OpenAI-compatible · llama3.1:8b')).toBeInTheDocument()
   })
 
-  it('shows no status line for rows the server has no endpoint for yet', async () => {
-    stubSettings()
+  it('says no model is chosen for the seeded AI settings', async () => {
+    stubSettings({ '/api/v1/settings/ai': () => jsonResponse(200, { provider: 'anthropic', model: '' }) })
     renderSettings()
-    await screen.findByText('Anthropic · claude-sonnet-4-5')
-    expect(row('Regular dinners')).toHaveAccessibleName('Regular dinners')
-    expect(row('Google Calendar')).toHaveAccessibleName('Google Calendar')
-    expect(row('Notifications & Google Chat')).toHaveAccessibleName('Notifications & Google Chat')
+    expect(await within(row('AI assistant')).findByText('Anthropic · No model chosen')).toBeInTheDocument()
   })
 
   it('marks the AI assistant row Admin and rings its card in grape-300', async () => {
@@ -104,7 +170,7 @@ describe('SettingsPage', () => {
     expect(declaredStyle(adminCard).boxShadow).toBe('inset 0 0 0 2px var(--color-accent-300)')
     const householdCard = screen.getByRole('region', { name: 'Household' }).querySelector('ul')!.parentElement!
     expect(declaredStyle(householdCard).boxShadow).toBe('')
-    await screen.findByText('Anthropic · claude-sonnet-4-5')
+    await screen.findByText('Anthropic · Claude Sonnet')
   })
 
   it.each([
@@ -116,7 +182,7 @@ describe('SettingsPage', () => {
   ])('the %s row navigates to %s', async (name, path) => {
     stubSettings()
     renderSettings()
-    await screen.findByText('Anthropic · claude-sonnet-4-5')
+    await screen.findByText('Anthropic · Claude Sonnet')
     fireEvent.click(row(name))
     expect(screen.getByTestId('path')).toHaveTextContent(path)
   })
@@ -124,19 +190,21 @@ describe('SettingsPage', () => {
   it('gives every row a tap target of at least 44 px', async () => {
     stubSettings()
     renderSettings()
-    await screen.findByText('Anthropic · claude-sonnet-4-5')
+    await screen.findByText('Anthropic · Claude Sonnet')
     for (const link of screen.getAllByRole('link')) expectMinHitArea(link)
   })
 
   it('reports a failed status with a retry that loads it', async () => {
     let householdCalls = 0
-    stubSettings(() => {
-      householdCalls += 1
-      return householdCalls === 1 ? errorResponse(500, 'internal') : jsonResponse(200, HOUSEHOLD)
+    stubSettings({
+      '/api/v1/settings/household': () => {
+        householdCalls += 1
+        return householdCalls === 1 ? errorResponse(500, 'internal') : jsonResponse(200, HOUSEHOLD)
+      },
     })
     renderSettings()
     expect(await screen.findByRole('alert')).toHaveTextContent('Settings could not load: internal message')
-    expect(screen.getByText('Anthropic · claude-sonnet-4-5')).toBeInTheDocument()
+    expect(screen.getByText('Anthropic · Claude Sonnet')).toBeInTheDocument()
     expect(row('Household')).toHaveAccessibleName('Household')
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
@@ -145,16 +213,31 @@ describe('SettingsPage', () => {
   })
 
   it('refuses an AI provider it has no name for', async () => {
-    stubSettings(undefined, () => jsonResponse(200, { provider: 'mystery', model: 'm1' }))
+    stubSettings({ '/api/v1/settings/ai': () => jsonResponse(200, { provider: 'mystery', model: 'm1' }) })
     renderSettings()
     expect(await screen.findByRole('alert')).toHaveTextContent('unknown AI provider "mystery"')
     expect(row('AI assistant')).toHaveAccessibleName('AI assistant Admin')
   })
 
   it('refuses a dinner time that is not HH:MM', async () => {
-    stubSettings(() => jsonResponse(200, { timezone: 'UTC', dinner_time: '5:30pm' }))
+    stubSettings({
+      '/api/v1/settings/household': () => jsonResponse(200, { timezone: 'UTC', dinner_time: '5:30pm' }),
+    })
     renderSettings()
     expect(await screen.findByRole('alert')).toHaveTextContent('dinner_time "5:30pm" is not HH:MM')
+  })
+})
+
+describe('modelDisplayName', () => {
+  it.each([
+    ['claude-sonnet-4-5', 'Claude Sonnet'],
+    ['claude-opus-4-1-20250805', 'Claude Opus'],
+    ['claude-3-5-haiku-20241022', 'Claude Haiku'],
+    ['claude-fable-5-1', 'Claude Fable'],
+    ['gpt-4o', 'gpt-4o'],
+    ['anthropic/claude-sonnet-4.5', 'anthropic/claude-sonnet-4.5'],
+  ])('names %s %s', (model, name) => {
+    expect(modelDisplayName(model)).toBe(name)
   })
 })
 

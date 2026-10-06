@@ -6,6 +6,7 @@ import { createNetworkStatus } from './pwa/networkStatus.ts'
 import { mockViewport } from './test/matchMedia.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME, request, stubFetch, stubFetchByPath } from './test/fetchStub.ts'
 import App, { routes } from './App.tsx'
+import { SETTINGS_API } from './test/ApiProviders.tsx'
 
 afterEach(() => {
   Reflect.deleteProperty(window, 'matchMedia')
@@ -62,13 +63,12 @@ describe('App routes', () => {
     mockViewport(390)
     stubFetchByPath({
       '/api/v1/me': () => jsonResponse(200, ME),
-      '/api/v1/settings/household': () => jsonResponse(200, { timezone: 'America/New_York', dinner_time: '17:30' }),
-      '/api/v1/settings/ai': () => jsonResponse(200, { provider: 'anthropic', model: 'claude-sonnet-4-5' }),
+      ...SETTINGS_API,
     })
     renderAt('/settings')
     const heading = await screen.findByRole('heading', { level: 1, name: 'Settings' })
     expect(screen.getByRole('main')).toContainElement(heading)
-    expect(await screen.findByText('Anthropic · claude-sonnet-4-5')).toBeInTheDocument()
+    expect(await screen.findByText('Anthropic · Claude Sonnet')).toBeInTheDocument()
   })
 })
 

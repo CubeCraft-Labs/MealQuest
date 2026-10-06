@@ -2,10 +2,15 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { useState, type ReactNode } from 'react'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
-import { fakeLocation, jsonResponse } from './fetchStub.ts'
+import { errorResponse, fakeLocation, jsonResponse } from './fetchStub.ts'
 
-// SETTINGS_API answers the settings home's requests, for stubFetchByPath.
+// SETTINGS_API answers the settings home's requests, for stubFetchByPath, as
+// today's server does: the dinners, Google Calendar and notifications status
+// endpoints do not exist yet.
 export const SETTINGS_API = {
+  '/api/v1/dinners?status=regular': () => errorResponse(404, 'not_found'),
+  '/api/v1/settings/calendar': () => errorResponse(404, 'not_found'),
+  '/api/v1/settings/notifications': () => errorResponse(404, 'not_found'),
   '/api/v1/settings/household': () => jsonResponse(200, { timezone: 'America/New_York', dinner_time: '17:30' }),
   '/api/v1/settings/ai': () => jsonResponse(200, { provider: 'anthropic', model: 'claude-sonnet-4-5' }),
 }

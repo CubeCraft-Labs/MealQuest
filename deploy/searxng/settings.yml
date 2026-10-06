@@ -1,0 +1,61 @@
+# SearXNG settings for the MealQuest recipe-search sidecar (Feature 10).
+# Mounted read-only at /etc/searxng/settings.yml by deploy/compose.yaml.
+#
+# Internal use only: SearXNG is reachable on the compose network
+# `mealquest` and nowhere else, and its only client is the mealquest
+# service. That is why the public limiter and bot detection are off.
+#
+# The secret key is not in this file. SearXNG reads it from SEARXNG_SECRET,
+# set from deploy/secrets/searxng.env (never committed). Without it the
+# default "ultrasecretkey" stays in place and SearXNG refuses to start.
+#
+# Settings reference: https://docs.searxng.org/admin/settings/
+
+use_default_settings:
+  engines:
+    # General web search engines only; every other default engine is
+    # dropped.
+    keep_only:
+      - duckduckgo
+      - brave
+      - google
+      - bing
+      - mojeek
+      - startpage
+
+general:
+  instance_name: MealQuest search
+
+server:
+  # Internal use: no public limiter and no bot detection.
+  limiter: false
+  public_instance: false
+  image_proxy: false
+
+search:
+  safe_search: 0
+  # No autocomplete: the mealquest service never asks for suggestions.
+  autocomplete: ""
+  # json is the format the mealquest service reads; html stays for
+  # debugging through deploy/compose.dev.yaml.
+  formats:
+    - html
+    - json
+
+# Some general web engines are disabled or inactive by default; enable all
+# of the kept ones.
+engines:
+  - name: duckduckgo
+    disabled: false
+  - name: brave
+    disabled: false
+  - name: google
+    disabled: false
+  - name: bing
+    disabled: false
+  - name: mojeek
+    disabled: false
+    inactive: false
+  - name: startpage
+    disabled: false
+    inactive: false

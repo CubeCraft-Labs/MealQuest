@@ -5,10 +5,12 @@
 -- DeleteRecipeIngredients/DeleteRecipeSteps then the Create queries.
 INSERT INTO recipes (
 	id, source_url, site_name, title, total_minutes, prep_minutes,
-	cook_minutes, yield, raw_jsonld, fetched_at, created_at, updated_at
+	cook_minutes, yield, raw_jsonld, photo_id, method, difficulty,
+	minutes_total, fetched_at, created_at, updated_at
 ) VALUES (
 	?, ?, ?, ?, ?, ?,
-	?, ?, ?, ?, ?, ?
+	?, ?, ?, ?, ?, ?,
+	?, ?, ?, ?
 )
 ON CONFLICT (source_url) DO UPDATE SET
 	site_name = excluded.site_name,
@@ -18,6 +20,10 @@ ON CONFLICT (source_url) DO UPDATE SET
 	cook_minutes = excluded.cook_minutes,
 	yield = excluded.yield,
 	raw_jsonld = excluded.raw_jsonld,
+	photo_id = excluded.photo_id,
+	method = excluded.method,
+	difficulty = excluded.difficulty,
+	minutes_total = excluded.minutes_total,
 	fetched_at = excluded.fetched_at,
 	updated_at = excluded.updated_at
 RETURNING *;

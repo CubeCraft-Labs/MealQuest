@@ -11,7 +11,8 @@
 # Configuration comes from deploy/.env (copy deploy/.env.example) and secrets
 # from deploy/secrets/; neither is committed. Compose bind-mounts file secrets
 # with their host owner and mode, so each file in deploy/secrets/ must be
-# owned by the container user 10001:10001 with mode 0600.
+# owned by the container user 10001:10001 with mode 0600 (except
+# searxng.env, read by compose itself; see the searxng service).
 name: mealquest
 
 services:
@@ -31,6 +32,7 @@ services:
       MEALQUEST_DATA_DIR: /data
       MEALQUEST_SECRET_KEY_FILE: /run/secrets/secret_key
       MEALQUEST_OIDC_CLIENT_SECRET_FILE: /run/secrets/oidc_client_secret
+      MEALQUEST_SEARXNG_URL: http://searxng:8080
     secrets:
       - secret_key
       - oidc_client_secret
@@ -80,6 +82,42 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  # SearXNG, the recipe-search sidecar (Feature 10; settings:
+  # deploy/searxng/settings.yml). It sits on the mealquest network only and
+  # publishes no port: the mealquest service reaches it at
+  # http://searxng:8080 and nothing outside the compose network can.
+  # deploy/compose.dev.yaml publishes it on 127.0.0.1 for development.
+  #
+  # The secret key comes from deploy/secrets/searxng.env as SEARXNG_SECRET.
+  # Compose itself reads that file (it is not mounted), so unlike the other
+  # secrets it is owned by overseer, mode 0600. It runs as the image's
+  # searxng user (977) with a read-only root filesystem.
+  searxng:
+    image: searxng/searxng:2026.10.4-d48c4b555@sha256:76b0bf285aca014c7191fc4d9234c4bfb358624ac33d8883833d496c059ec072
+    user: "977:977"
+    restart: "no"
+    env_file:
+      - path: ./secrets/searxng.env
+        required: true
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    networks:
+      - mealquest
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 3s
+      start_period: 15s
+      retries: 3
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/searxng:uid=977,gid=977
     security_opt:
       - no-new-privileges:true
     cap_drop:

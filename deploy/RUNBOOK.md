@@ -44,7 +44,8 @@ Elsewhere:
 
 The compose stack is `deploy/compose.yaml`: the `mealquest` service (built
 from the repository `Dockerfile`, runs as uid/gid 10001, listens on 8080 in
-the container) and the `litestream` service. Data lives in the named volume
+the container), the `litestream` service and the `searxng` recipe-search
+sidecar (see "Recipe search (SearXNG)"). Data lives in the named volume
 `mealquest-data`.
 
 ### 1. Choose and check the port
@@ -146,15 +147,20 @@ service refuses to start.
 | `secret_key` | base64 of 32 random bytes; encrypts stored secrets (AES-256-GCM) | `/run/secrets/secret_key` |
 | `oidc_client_secret` | Client Secret of the Authentik provider `mealquest` | `/run/secrets/oidc_client_secret` |
 | `litestream_key` | dedicated SSH private key for the NAS (see "Backups") | `/etc/litestream/sftp_key` |
+| `searxng.env` | `SEARXNG_SECRET=<64 hex characters>`; SearXNG's secret key | not mounted; compose passes it as an environment variable |
+
+`searxng.env` is the one exception to the owner rule: compose itself reads
+it (as `env_file`), so it is owned by `overseer`, mode 0600.
 
 ```sh
 mkdir -p deploy/secrets && chmod 700 deploy/secrets
 head -c 32 /dev/urandom | base64 > deploy/secrets/secret_key
 printf '%s\n' '<Authentik client secret>' > deploy/secrets/oidc_client_secret
 # litestream_key: see "Backups" > "Database — Litestream"
-sudo chown 10001:10001 deploy/secrets/*
+sudo chown 10001:10001 deploy/secrets/secret_key deploy/secrets/oidc_client_secret deploy/secrets/litestream_key
 sudo chmod 600 deploy/secrets/*
-sudo ls -la deploy/secrets   # three files, mealquest mealquest, -rw-------
+(umask 077; printf 'SEARXNG_SECRET=%s\n' "$(openssl rand -hex 32)" > deploy/secrets/searxng.env)
+sudo ls -la deploy/secrets   # three files mealquest mealquest, searxng.env overseer overseer; all -rw-------
 ```
 
 The `mealquest` host user (uid/gid 10001) is created in "Media — nightly
@@ -169,7 +175,7 @@ directory (see "Media — nightly rsync"), then build and start:
 ```sh
 docker compose -f deploy/compose.yaml build
 sudo systemctl enable --now mealquest   # starts mealquest-firewall first
-docker compose -f deploy/compose.yaml ps   # mealquest healthy, litestream up
+docker compose -f deploy/compose.yaml ps   # mealquest healthy, litestream up, searxng healthy
 curl -fsS http://10.60.1.14:8090/health
 curl -s -o /dev/null -w "%{http_code}\n" https://mealquest.cubecraftlabs.com/health   # 200
 ```
@@ -191,6 +197,12 @@ sed -i '/^deploy\/\(compose.yaml\|.env.example\)$/d' .git/info/exclude
 git clean -n deploy      # dry run: must not list .env or secrets/ (both git-ignored)
 git clean -f deploy
 ```
+
+On 2026-10-06 `deploy/compose.yaml` was replaced and
+`deploy/compose.dev.yaml` and `deploy/searxng/settings.yml` were copied in
+from the Feature 10 branch (task 641f468b) to start the SearXNG sidecar;
+they too must go before that checkout (`git clean -n -d deploy` lists
+them).
 
 Then follow "Routine deploy"; the checkout brings the tracked copies back.
 
@@ -399,6 +411,71 @@ mealquest`, never with `docker compose up` or `down`. Per-service compose
 commands (`stop mealquest`, `up -d --force-recreate litestream`) are fine
 while the unit is active, because the firewall is already in place.
 
+## Recipe search (SearXNG)
+
+The `searxng` service in `deploy/compose.yaml` is a private SearXNG
+instance for recipe search. On the compose network it is reachable at
+`http://searxng:8080`; that is the address to configure in the app.
+
+Starting the sidecar does not connect the app to it. The service does not
+read `MEALQUEST_SEARXNG_URL`: `deploy/compose.yaml` sets it for a future
+wiring, and today it does nothing. The recipe-search provider and base URL
+live in the `recipe_search_settings` row and are set through
+`GET`/`PATCH /api/v1/settings/recipe-search` (the API behind the Settings
+screen's recipe search; the screen itself is not built yet). Until that row
+exists, recipe search answers 409 `not_configured`.
+
+After the first deploy, from a signed-in session (every non-`GET` request
+needs the `X-MealQuest-CSRF` header set to `csrfToken` from
+`GET /api/v1/me`):
+
+1. `PATCH /api/v1/settings/recipe-search` with
+   `{"provider": "searxng", "base_url": "http://searxng:8080"}`.
+2. `GET /api/v1/settings/recipe-search` shows `"provider": "searxng"` and
+   `"base_url": "http://searxng:8080"`.
+3. `POST /api/v1/settings/recipe-search/test` searches
+   "chicken tikka masala" and must answer 200 with
+   `{"query": "chicken tikka masala", "count": <n>}`. A 502
+   `search_failed` carries SearXNG's error.
+
+| Item | Value |
+| --- | --- |
+| Image | `searxng/searxng:2026.10.4-d48c4b555`, pinned by digest `sha256:76b0bf285aca014c7191fc4d9234c4bfb358624ac33d8883833d496c059ec072` |
+| Settings | `deploy/searxng/settings.yml`, mounted read-only at `/etc/searxng/settings.yml` |
+| Secret | `deploy/secrets/searxng.env` (`SEARXNG_SECRET`), see "Secrets" |
+| Network | `mealquest` only; **no published port** |
+| Health | `wget http://127.0.0.1:8080/healthz` inside the container |
+
+The settings enable the `json` output format, turn off the public limiter
+and bot detection (the only client is the `mealquest` service), and keep
+only the general web search engines DuckDuckGo, Brave, Google, Bing,
+Mojeek and Startpage. Engines that block the host (CAPTCHA, "too many
+requests") are suspended by SearXNG for a while and listed under
+`unresponsive_engines` in the JSON; the others still answer.
+
+Check from inside the app container (the only place it is reachable):
+
+```sh
+docker compose -f deploy/compose.yaml exec mealquest \
+  wget -qO- 'http://searxng:8080/search?q=chicken+tikka+masala+recipe&format=json'
+docker compose -f deploy/compose.yaml port searxng 8080   # prints ":0": nothing published
+```
+
+On 2026-10-06 that query returned 17 results. From this host four of the
+six engines were blocked (Brave, DuckDuckGo, Google and Startpage were
+rate-limited or served a CAPTCHA), so the results came from Bing and
+Mojeek. SearXNG retries suspended engines after their suspension ends, so
+the set that answers can change. From 10.60.1.85 nothing on 10.60.1.14 answered as SearXNG:
+8888 refused the connection and 8080 is NestQuest's API.
+
+For development, `deploy/compose.dev.yaml` publishes SearXNG on the
+dev machine's loopback only (`127.0.0.1:8888`). It is never used on
+office-srvr.
+
+To move to a newer image, pull the new tag, take its digest from
+`docker image inspect --format '{{json .RepoDigests}}' searxng/searxng:<tag>`,
+update both in `deploy/compose.yaml`, then deploy as usual.
+
 ## Routine deploy and rollback
 
 Production runs `main` (a release); only `overseer` merges `dev` → `main`.
@@ -413,7 +490,7 @@ git rev-parse --short HEAD          # the SHA being replaced: note it for rollba
 git checkout --detach origin/main   # or a release tag
 docker compose -f deploy/compose.yaml build
 sudo systemctl restart mealquest    # applies the firewall, then down + up -d
-docker compose -f deploy/compose.yaml ps   # mealquest healthy, litestream up
+docker compose -f deploy/compose.yaml ps   # mealquest healthy, litestream up, searxng healthy
 curl -fsS http://10.60.1.14:8090/health
 curl -s -o /dev/null -w "%{http_code}\n" https://mealquest.cubecraftlabs.com/health   # 200
 git rev-parse HEAD                  # the deployed SHA
@@ -867,6 +944,17 @@ notifications on again (`/settings/notifications`) before it receives
 pushes. Rotate only when the private key may have leaked, write both
 halves, recreate the service with `--force-recreate mealquest`, and tell
 the household to re-enable notifications on each device.
+
+### SearXNG secret (`deploy/secrets/searxng.env`)
+
+Only signs SearXNG's own cookies and image-proxy links; nothing stored
+depends on it. Replace it and recreate the service:
+
+```sh
+(umask 077; printf 'SEARXNG_SECRET=%s\n' "$(openssl rand -hex 32)" > deploy/secrets/searxng.env)
+docker compose -f deploy/compose.yaml up -d --force-recreate searxng
+docker compose -f deploy/compose.yaml ps searxng   # healthy
+```
 
 ### Litestream / NAS key (`deploy/secrets/litestream_key`)
 

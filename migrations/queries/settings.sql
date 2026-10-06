@@ -70,14 +70,15 @@ WHERE id = 1;
 -- Creates the single row (id 1) or replaces every column except id and
 -- created_at.
 INSERT INTO recipe_search_settings (
-	id, provider, base_url, api_key_ct, created_at, updated_at
+	id, provider, base_url, api_key_ct, api_key_last4, created_at, updated_at
 ) VALUES (
-	1, ?, ?, ?, ?, ?
+	1, ?, ?, ?, ?, ?, ?
 )
 ON CONFLICT (id) DO UPDATE SET
 	provider = excluded.provider,
 	base_url = excluded.base_url,
 	api_key_ct = excluded.api_key_ct,
+	api_key_last4 = excluded.api_key_last4,
 	updated_at = excluded.updated_at
 RETURNING *;
 

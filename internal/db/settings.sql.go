@@ -109,7 +109,7 @@ func (q *Queries) GetIntegrationsGoogle(ctx context.Context) (IntegrationsGoogle
 }
 
 const getRecipeSearchSettings = `-- name: GetRecipeSearchSettings :one
-SELECT id, provider, base_url, api_key_ct, created_at, updated_at FROM recipe_search_settings
+SELECT id, provider, base_url, api_key_ct, created_at, updated_at, api_key_last4 FROM recipe_search_settings
 WHERE id = 1
 `
 
@@ -124,6 +124,7 @@ func (q *Queries) GetRecipeSearchSettings(ctx context.Context) (RecipeSearchSett
 		&i.ApiKeyCt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ApiKeyLast4,
 	)
 	return i, err
 }
@@ -390,24 +391,26 @@ func (q *Queries) UpsertIntegrationsGoogle(ctx context.Context, arg UpsertIntegr
 
 const upsertRecipeSearchSettings = `-- name: UpsertRecipeSearchSettings :one
 INSERT INTO recipe_search_settings (
-	id, provider, base_url, api_key_ct, created_at, updated_at
+	id, provider, base_url, api_key_ct, api_key_last4, created_at, updated_at
 ) VALUES (
-	1, ?, ?, ?, ?, ?
+	1, ?, ?, ?, ?, ?, ?
 )
 ON CONFLICT (id) DO UPDATE SET
 	provider = excluded.provider,
 	base_url = excluded.base_url,
 	api_key_ct = excluded.api_key_ct,
+	api_key_last4 = excluded.api_key_last4,
 	updated_at = excluded.updated_at
-RETURNING id, provider, base_url, api_key_ct, created_at, updated_at
+RETURNING id, provider, base_url, api_key_ct, created_at, updated_at, api_key_last4
 `
 
 type UpsertRecipeSearchSettingsParams struct {
-	Provider  string
-	BaseUrl   sql.NullString
-	ApiKeyCt  []byte
-	CreatedAt string
-	UpdatedAt string
+	Provider    string
+	BaseUrl     sql.NullString
+	ApiKeyCt    []byte
+	ApiKeyLast4 sql.NullString
+	CreatedAt   string
+	UpdatedAt   string
 }
 
 // Creates the single row (id 1) or replaces every column except id and
@@ -417,6 +420,7 @@ func (q *Queries) UpsertRecipeSearchSettings(ctx context.Context, arg UpsertReci
 		arg.Provider,
 		arg.BaseUrl,
 		arg.ApiKeyCt,
+		arg.ApiKeyLast4,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
@@ -428,6 +432,7 @@ func (q *Queries) UpsertRecipeSearchSettings(ctx context.Context, arg UpsertReci
 		&i.ApiKeyCt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ApiKeyLast4,
 	)
 	return i, err
 }

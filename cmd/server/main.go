@@ -19,6 +19,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secretbox"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/server"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
@@ -49,7 +50,8 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if _, err := openSecretBox(cfg.SecretKey); err != nil {
+	box, err := openSecretBox(cfg.SecretKey)
+	if err != nil {
 		return err
 	}
 
@@ -72,6 +74,15 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
+	photos, err := recipes.NewPhotoCache(recipes.NewFetcher(), db, cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	search, err := recipes.NewSearchSettingsService(db, box)
+	if err != nil {
+		return err
+	}
+
 	sessions, err := auth.NewSessionManager(db, cfg.SessionIdle, cfg.SessionMax)
 	if err != nil {
 		return err
@@ -88,7 +99,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, runner, frontend.Assets())
+	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, search, runner, photos, frontend.Assets())
 	if err != nil {
 		return err
 	}

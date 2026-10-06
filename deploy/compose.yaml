@@ -1,0 +1,100 @@
+# Production stack for MealQuest on 10.60.1.14 (D-018). Build on the host,
+# then start through systemd:
+#
+#   docker compose -f deploy/compose.yaml build
+#   sudo systemctl restart mealquest
+#
+# The services use restart: "no" on purpose: Docker must not start them
+# before the DOCKER-USER firewall is applied. deploy/systemd/mealquest.service
+# owns start and stop and requires mealquest-firewall.service first.
+#
+# Configuration comes from deploy/.env (copy deploy/.env.example) and secrets
+# from deploy/secrets/; neither is committed. Compose bind-mounts file secrets
+# with their host owner and mode, so each file in deploy/secrets/ must be
+# owned by the container user 10001:10001 with mode 0600.
+name: mealquest
+
+services:
+  mealquest:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    user: "10001:10001"
+    restart: "no"
+    env_file:
+      - path: .env
+        required: true
+    # Fixed by this file's container shape (listen port, volume, secret
+    # mounts); deploy/.env must not set them.
+    environment:
+      MEALQUEST_HTTP_ADDR: ":8080"
+      MEALQUEST_DATA_DIR: /data
+      MEALQUEST_SECRET_KEY_FILE: /run/secrets/secret_key
+      MEALQUEST_OIDC_CLIENT_SECRET_FILE: /run/secrets/oidc_client_secret
+    secrets:
+      - secret_key
+      - oidc_client_secret
+    volumes:
+      - mealquest-data:/data
+    ports:
+      - "${MEALQUEST_BIND_ADDRESS:?set MEALQUEST_BIND_ADDRESS in deploy/.env}:8090:8080"
+    networks:
+      - mealquest
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  # Litestream streams the database to the Synology NAS over SFTP
+  # (config: deploy/litestream.yml). The SFTP private key
+  # deploy/secrets/litestream_key is a dedicated keypair, owned by
+  # 10001:10001 with mode 0600 like the other secrets.
+  #
+  # The data volume is mounted read-write on purpose: Litestream writes its
+  # tracking tables into the database and checkpoints the WAL. It runs as
+  # the app's own user (owner of the volume) with a read-only root
+  # filesystem, no privilege escalation and no Linux capabilities.
+  #
+  # Restore: follow "Restore the database" in deploy/RUNBOOK.md (stop the
+  # stack, move the database with its -wal and -shm aside, restore, check).
+  litestream:
+    image: litestream/litestream:0.5.17
+    user: "10001:10001"
+    restart: "no"
+    command: ["replicate", "-config", "/etc/litestream.yml"]
+    depends_on:
+      mealquest:
+        condition: service_healthy
+    volumes:
+      - mealquest-data:/data
+      - ./litestream.yml:/etc/litestream.yml:ro
+      - ./secrets/litestream_key:/etc/litestream/sftp_key:ro
+    networks:
+      - mealquest
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+secrets:
+  secret_key:
+    file: ./secrets/secret_key
+  oidc_client_secret:
+    file: ./secrets/oidc_client_secret
+
+volumes:
+  mealquest-data:
+    name: mealquest-data
+
+networks:
+  mealquest:
+    name: mealquest

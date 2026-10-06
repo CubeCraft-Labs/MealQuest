@@ -1,0 +1,31 @@
+# Litestream continuous backup of the MealQuest SQLite database (Feature
+# 07). The ``litestream`` compose service mounts the same named volume as
+# the app and streams every committed change to the Synology NAS over
+# SFTP, so the backup lives outside the Docker host.
+#
+# Nothing here is secret. The SFTP private key is a dedicated, git-ignored
+# keypair (deploy/secrets/litestream_key) mounted read-only by compose at
+# /etc/litestream/sftp_key; its public half is in
+# joshua@10.60.1.50:~/.ssh/authorized_keys. ``host-key`` pins the NAS's
+# ECDSA host key, the algorithm Litestream's SSH client negotiates with
+# this NAS.
+#
+# The Synology SFTP server is chrooted to the shared folders, so the
+# directory seen over SSH as /volume1/homes/Joshua/mealquest-backups is
+# /homes/Joshua/mealquest-backups over SFTP.
+
+# Take a full snapshot daily and keep a week of snapshots plus the
+# incremental changes between them (point-in-time restore window).
+snapshot:
+  interval: 24h
+  retention: 168h
+
+dbs:
+  - path: /data/mealquest.db
+    replicas:
+      - type: sftp
+        host: 10.60.1.50
+        user: joshua
+        path: /homes/Joshua/mealquest-backups
+        key-path: /etc/litestream/sftp_key
+        host-key: ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBNujay9nYEiXuRQf4wDRDU1gp+CDvpeMdhuhC2XypIihzKGEtB654kwrUGfA2kDWAoSPGlmojeS3OIRtHPkj6GY=

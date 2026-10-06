@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { Route, Routes } from 'react-router'
 import { ApiProvider, createQueryClient, type ApiClient } from './api/index.ts'
@@ -6,6 +6,7 @@ import { AuthBootstrap } from './AuthBootstrap.tsx'
 import { PlaceholderPage } from './pages/PlaceholderPage.tsx'
 import { OfflinePill } from './pwa/OfflinePill.tsx'
 import { UpdatePrompt, type UpdateContainer } from './pwa/UpdatePrompt.tsx'
+import { SettingsPage } from './settings/SettingsPage.tsx'
 import { AppShell } from './shell/AppShell.tsx'
 
 // Every route the app serves, with the heading its placeholder page shows.
@@ -27,13 +28,18 @@ export const routes = [
   { path: '/settings/calendar', title: 'Calendar' },
 ] as const
 
+// The screens built so far; every other route shows its placeholder page.
+const screens: Partial<Record<(typeof routes)[number]['path'], ReactNode>> = {
+  '/settings': <SettingsPage />,
+}
+
 // AppRoutes is the shell and its pages, shown once /api/v1/me has loaded.
 export function AppRoutes() {
   return (
     <Routes>
       <Route element={<AppShell />}>
         {routes.map(({ path, title }) => (
-          <Route key={path} path={path} element={<PlaceholderPage title={title} />} />
+          <Route key={path} path={path} element={screens[path] ?? <PlaceholderPage title={title} />} />
         ))}
       </Route>
     </Routes>

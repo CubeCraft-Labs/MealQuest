@@ -134,15 +134,17 @@ WHERE id = ?
 	AND grounding_revision = ?;
 
 -- name: FailOrphanedPendingDinnerGroundings :execrows
--- Fails every dinner still pending whose grounding job for its current
--- grounding_revision is no longer queued or running: the process stopped
--- before the job, or before its handler recorded a result. Run at boot,
--- after the job runner fails the jobs a previous process left running.
+-- Fails every unarchived dinner still pending whose grounding job for its
+-- current grounding_revision is no longer queued or running: the process
+-- stopped before the job, or before its handler recorded a result. An
+-- archived dinner is left as it is; archiving stopped its grounding. Run at
+-- boot, after the job runner fails the jobs a previous process left running.
 UPDATE dinners
 SET grounding_status = 'failed',
 	grounding_error = sqlc.arg(grounding_error),
 	updated_at = sqlc.arg(updated_at)
 WHERE grounding_status = 'pending'
+	AND status <> 'archived'
 	AND NOT EXISTS (
 		SELECT 1 FROM jobs
 		WHERE jobs.kind = sqlc.arg(kind)

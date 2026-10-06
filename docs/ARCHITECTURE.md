@@ -226,7 +226,7 @@ automatic** (D-021).
   method, minutes_total or difficulty a member saved while the dinner was
   `pending` is kept; grounding fills only those left empty. At boot, after
   the job runner fails the jobs a previous process left running, every
-  dinner still `pending` with no `ground_dinner` job for its revision
+  unarchived dinner still `pending` with no `ground_dinner` job for its revision
   queued or running is set `failed` with `interrupted`, so no dinner stays
   pending with nothing left to ground it.
   `GET /api/v1/dinners/{id}/recipe-candidates`

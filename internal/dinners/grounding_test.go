@@ -946,12 +946,64 @@ func TestRestartFailsInterruptedGrounding(t *testing.T) {
 	}
 }
 
+// TestRestartKeepsArchivedPendingDinner: a pending Regular archived while
+// its job runs stays pending, its job succeeded; the boot cleanup leaves it
+// as it is rather than failing it as interrupted.
+func TestRestartKeepsArchivedPendingDinner(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	e.search.Gate = make(chan struct{})
+	c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr("Chicken curry")}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.waitQuery(t, "Chicken curry")
+	if _, err := e.svc.Archive(t.Context(), c.ID, member); err != nil {
+		t.Fatal(err)
+	}
+	job := e.waitJob(t, *c.GroundingJobID)
+	close(e.search.Gate)
+	if job.Status != jobs.StatusSucceeded {
+		t.Fatalf("job = %+v, want succeeded", job)
+	}
+
+	// The database is now as the next boot finds it.
+	n, err := e.svc.FailInterruptedGroundings(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("failed %d dinners, want 0", n)
+	}
+	if row := e.dinner(t, c.ID); row.Status != dinners.StatusArchived ||
+		row.GroundingStatus != dinners.GroundingPending || row.GroundingError.Valid {
+		t.Errorf("dinner = %s, %s (%s), want archived and pending with no error",
+			row.Status, row.GroundingStatus, row.GroundingError.String)
+	}
+}
+
 // TestUpgradeKeepsLegacyQueuedGrounding: a pending Regular whose
 // ground_dinner job was queued before migration 0010, so its payload has
 // no revision, is not failed as interrupted at the first boot after the
-// upgrade; its job still grounds it.
+// upgrade; its job still grounds it. The upgrade starts either from 0009
+// or from a database that has already applied 0010.
 func TestUpgradeKeepsLegacyQueuedGrounding(t *testing.T) {
 	t.Parallel()
+	for name, below := range map[string]string{
+		"from 0009": "0010",
+		"from 0010": "0011",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			upgradeWithLegacyQueuedGrounding(t, below)
+		})
+	}
+}
+
+// upgradeWithLegacyQueuedGrounding migrates a database to every migration
+// named before below, adds a pending Regular with a queued ground_dinner
+// job whose payload has no revision, then boots on the latest migrations.
+func upgradeWithLegacyQueuedGrounding(t *testing.T, below string) {
 	ctx := t.Context()
 	dataDir := t.TempDir()
 	st := openStore(t, dataDir)
@@ -961,7 +1013,7 @@ func TestUpgradeKeepsLegacyQueuedGrounding(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range files {
-		if name >= "0010" {
+		if name >= below {
 			continue
 		}
 		body, err := fs.ReadFile(migrations.FS, name)

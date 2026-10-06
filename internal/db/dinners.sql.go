@@ -150,6 +150,7 @@ SET grounding_status = 'failed',
 	grounding_error = ?1,
 	updated_at = ?2
 WHERE grounding_status = 'pending'
+	AND status <> 'archived'
 	AND NOT EXISTS (
 		SELECT 1 FROM jobs
 		WHERE jobs.kind = ?3
@@ -165,10 +166,11 @@ type FailOrphanedPendingDinnerGroundingsParams struct {
 	Kind           string
 }
 
-// Fails every dinner still pending whose grounding job for its current
-// grounding_revision is no longer queued or running: the process stopped
-// before the job, or before its handler recorded a result. Run at boot,
-// after the job runner fails the jobs a previous process left running.
+// Fails every unarchived dinner still pending whose grounding job for its
+// current grounding_revision is no longer queued or running: the process
+// stopped before the job, or before its handler recorded a result. An
+// archived dinner is left as it is; archiving stopped its grounding. Run at
+// boot, after the job runner fails the jobs a previous process left running.
 func (q *Queries) FailOrphanedPendingDinnerGroundings(ctx context.Context, arg FailOrphanedPendingDinnerGroundingsParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, failOrphanedPendingDinnerGroundings, arg.GroundingError, arg.UpdatedAt, arg.Kind)
 	if err != nil {

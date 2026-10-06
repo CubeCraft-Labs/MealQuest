@@ -227,10 +227,11 @@ func (s *Service) stopGroundings(dinnerID string, below int64) {
 	}
 }
 
-// FailInterruptedGroundings fails, with ReasonInterrupted, every dinner
-// still pending whose KindGroundDinner job is no longer queued or running:
-// a previous process stopped before enqueuing the job or before its
-// handler recorded a result. Call it once at boot, after the job runner's
+// FailInterruptedGroundings fails, with ReasonInterrupted, every unarchived
+// dinner still pending whose KindGroundDinner job is no longer queued or
+// running: a previous process stopped before enqueuing the job or before
+// its handler recorded a result. An archived dinner is left pending, since
+// archiving, not a restart, stopped its grounding. Call it once at boot, after the job runner's
 // Start has failed the jobs that process left running, so no dinner stays
 // pending with nothing left to ground it. It returns how many it failed.
 func (s *Service) FailInterruptedGroundings(ctx context.Context) (int64, error) {

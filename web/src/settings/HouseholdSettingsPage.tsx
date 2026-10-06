@@ -29,21 +29,37 @@ const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 
 // reminders and weekly AI runs happen at. Every field is edited as a draft
 // and saved together; only the changed fields are sent.
 export function HouseholdSettingsPage() {
-  const settings = useHouseholdSettings()
   const [dirty, setDirty] = useState(false)
   return (
     <div className={styles.page}>
       <Header />
       <p className={styles.shared}>Changes apply to everyone in the household.</p>
+      <HouseholdSettingsSections onDirtyChange={setDirty} />
+      <LeaveGuard dirty={dirty} />
+    </div>
+  )
+}
+
+type HouseholdSettingsProps = {
+  // Called with whether the form holds unsaved changes.
+  onDirtyChange: (dirty: boolean) => void
+}
+
+// HouseholdSettingsSections is the screen's form once its settings load,
+// without the screen's header, so the desktop settings (mock 2e) can embed
+// it.
+export function HouseholdSettingsSections({ onDirtyChange }: HouseholdSettingsProps) {
+  const settings = useHouseholdSettings()
+  return (
+    <>
       {settings.isPending && <Skeleton className={styles.loading} />}
       {settings.isError && (
         <ErrorBanner onRetry={() => void settings.refetch()}>
           Household settings could not load: {settings.error.message}
         </ErrorBanner>
       )}
-      {settings.isSuccess && <HouseholdSettingsForm saved={settings.data} onDirtyChange={setDirty} />}
-      <LeaveGuard dirty={dirty} />
-    </div>
+      {settings.isSuccess && <HouseholdSettingsForm saved={settings.data} onDirtyChange={onDirtyChange} />}
+    </>
   )
 }
 
@@ -71,10 +87,8 @@ function patchOf(saved: HouseholdSettings, draft: HouseholdSettings): HouseholdS
   return patch as HouseholdSettingsPatch
 }
 
-type HouseholdSettingsFormProps = {
+type HouseholdSettingsFormProps = HouseholdSettingsProps & {
   saved: HouseholdSettings
-  // Called with whether the form holds unsaved changes.
-  onDirtyChange: (dirty: boolean) => void
 }
 
 function HouseholdSettingsForm({ saved, onDirtyChange }: HouseholdSettingsFormProps) {

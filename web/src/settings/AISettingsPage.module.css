@@ -281,3 +281,26 @@
 .cardActions > button {
   min-height: 52px;
 }
+
+.cardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+/* AI assistant card on the desktop settings (mock 2e): the card grows to
+   fill its column and the system prompt grows to fill the card. */
+.fill {
+  flex: 1;
+  gap: 18px;
+}
+
+.fill .prompt,
+.fill .textarea {
+  flex: 1;
+}
+
+.fill .textarea {
+  resize: none;
+}

@@ -1,11 +1,12 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, within } from '@testing-library/react'
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
+import { Route, Routes, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
 import { AI_SETTINGS, HOUSEHOLD_SETTINGS, SETTINGS_API } from '../test/ApiProviders.tsx'
 import { declaredStyle } from '../test/cssRules.ts'
+import { InDataRouter } from '../test/dataRouter.tsx'
 import { errorResponse, fakeLocation, jsonResponse, stubFetchByPath } from '../test/fetchStub.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
 import { mockViewport } from '../test/matchMedia.ts'
@@ -39,7 +40,8 @@ function CurrentPath() {
   return <p data-testid="path">{useLocation().pathname}</p>
 }
 
-// renderSettings renders the settings home on a 390 px phone (mock 1p);
+// renderSettings renders the settings home on a 390 px phone (mock 1p) in a
+// data router (the hidden sub-tabs' leave guard needs one);
 // SettingsTabs.test.tsx covers 768 px and up.
 function renderSettings() {
   mockViewport(390)
@@ -47,12 +49,12 @@ function renderSettings() {
   return render(
     <ApiProvider client={api}>
       <QueryClientProvider client={createQueryClient()}>
-        <MemoryRouter initialEntries={['/settings']}>
+        <InDataRouter path="/settings">
           <Routes>
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<CurrentPath />} />
           </Routes>
-        </MemoryRouter>
+        </InDataRouter>
       </QueryClientProvider>
     </ApiProvider>,
   )
@@ -95,9 +97,11 @@ describe('SettingsPage', () => {
     expect(fetchMock.mock.calls.map(([input]) => String(input)).sort()).toEqual([
       REGULARS_PATH,
       '/api/v1/settings/ai',
+      '/api/v1/settings/ai/models',
       CALENDAR_PATH,
       '/api/v1/settings/household',
       NOTIFICATIONS_PATH,
+      '/api/v1/settings/recipe-search',
     ])
   })
 

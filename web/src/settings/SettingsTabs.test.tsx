@@ -1,16 +1,14 @@
 import { QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
-import { AI_SETTINGS, HOUSEHOLD_SETTINGS, RECIPE_SEARCH_SETTINGS } from '../test/ApiProviders.tsx'
+import { AI_MODELS, AI_SETTINGS, HOUSEHOLD_SETTINGS, RECIPE_SEARCH_SETTINGS } from '../test/ApiProviders.tsx'
 import { InDataRouter } from '../test/dataRouter.tsx'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
 import { mockViewport } from '../test/matchMedia.ts'
 import { SettingsPage } from './SettingsPage.tsx'
-
-const MODELS = { models: [{ id: 'claude-sonnet-4-5', display_name: 'Claude Sonnet' }] }
 
 type Responder = (body: unknown) => Response
 
@@ -22,7 +20,7 @@ function stubAPI(responders: Record<string, Responder> = {}): Mock<typeof fetch>
     'GET /api/v1/me': () => jsonResponse(200, ME),
     'GET /api/v1/settings/household': () => jsonResponse(200, HOUSEHOLD_SETTINGS),
     'GET /api/v1/settings/ai': () => jsonResponse(200, AI_SETTINGS),
-    'GET /api/v1/settings/ai/models': () => jsonResponse(200, MODELS),
+    'GET /api/v1/settings/ai/models': () => jsonResponse(200, AI_MODELS),
     'GET /api/v1/settings/recipe-search': () => jsonResponse(200, RECIPE_SEARCH_SETTINGS),
     ...responders,
   }
@@ -166,5 +164,30 @@ describe('SettingsPage across the 768 px breakpoint', () => {
     resize(768)
     expect(screen.getByRole('tablist', { name: 'Settings sections' })).toBeInTheDocument()
     expect(screen.queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  it('keeps an unsaved draft and its leave guard across 1180 px, 390 px and back', async () => {
+    stubAPI({
+      'GET /api/v1/dinners?status=regular': () => errorResponse(404, 'not_found'),
+      'GET /api/v1/settings/calendar': () => errorResponse(404, 'not_found'),
+      'GET /api/v1/settings/notifications': () => errorResponse(404, 'not_found'),
+    })
+    const resize = await renderAt(1180)
+    fireEvent.change(await screen.findByRole('textbox', { name: 'System prompt' }), {
+      target: { value: 'A draft' },
+    })
+
+    resize(390)
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('link', { name: /^AI assistant/ }))
+    const confirm = await screen.findByRole('dialog', { name: 'Leave without saving?' })
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Keep editing' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    resize(1180)
+    expect(screen.getByRole('textbox', { name: 'System prompt' })).toHaveValue('A draft')
+    const unload = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(unload)
+    expect(unload.defaultPrevented).toBe(true)
   })
 })

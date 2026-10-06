@@ -16,6 +16,10 @@ export const AI_SETTINGS = {
   updated_at: '2026-10-01T15:00:00.000Z',
 }
 
+// AI_MODELS is a GET /api/v1/settings/ai/models body: the model AI_SETTINGS
+// chooses.
+export const AI_MODELS = { models: [{ id: 'claude-sonnet-4-5', display_name: 'Claude Sonnet' }] }
+
 // HOUSEHOLD_SETTINGS is a GET /api/v1/settings/household body: the seed
 // times in New York.
 export const HOUSEHOLD_SETTINGS = {
@@ -49,13 +53,15 @@ export const RECIPE_SEARCH_SETTINGS = {
 
 // SETTINGS_API answers the settings home's requests, for stubFetchByPath, as
 // today's server does: the dinners, Google Calendar and notifications status
-// endpoints do not exist yet.
+// endpoints do not exist yet. The home's sub-tabs stay mounted on mobile, so
+// it also reads the AI models and recipe search settings.
 export const SETTINGS_API = {
   '/api/v1/dinners?status=regular': () => errorResponse(404, 'not_found'),
   '/api/v1/settings/calendar': () => errorResponse(404, 'not_found'),
   '/api/v1/settings/notifications': () => errorResponse(404, 'not_found'),
   '/api/v1/settings/household': () => jsonResponse(200, HOUSEHOLD_SETTINGS),
   '/api/v1/settings/ai': () => jsonResponse(200, AI_SETTINGS),
+  '/api/v1/settings/ai/models': () => jsonResponse(200, AI_MODELS),
   '/api/v1/settings/recipe-search': () => jsonResponse(200, RECIPE_SEARCH_SETTINGS),
 }
 

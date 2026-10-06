@@ -25,9 +25,17 @@ import styles from './SettingsPage.module.css'
 import { SettingsTabs } from './SettingsTabs.tsx'
 
 // Settings home: the list of settings pages on mobile (mock 1p), one page
-// with sub-tabs from 768 px (mock 2e).
+// with sub-tabs from 768 px (mock 2e). The sub-tabs stay mounted, hidden, on
+// mobile, so an unsaved draft survives the viewport crossing 768 px and its
+// leave guard keeps asking before the list navigates away.
 export function SettingsPage() {
-  return useBreakpoint() === 'mobile' ? <SettingsList /> : <SettingsTabs />
+  const mobile = useBreakpoint() === 'mobile'
+  return (
+    <>
+      {mobile && <SettingsList />}
+      <SettingsTabs hidden={mobile} />
+    </>
+  )
 }
 
 // The mobile settings list (handoff mock 1p). Each row opens its settings

@@ -59,7 +59,8 @@
   color: var(--color-bg);
 }
 
-/* A panel's display would override the hidden attribute. */
+/* A page's or panel's display would override the hidden attribute. */
+.page[hidden],
 .single[hidden],
 .columns[hidden] {
   display: none;

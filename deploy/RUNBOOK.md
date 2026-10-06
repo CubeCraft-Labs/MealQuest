@@ -283,7 +283,7 @@ curl -s -o /dev/null -w "%{http_code}\n" https://mealquest.cubecraftlabs.com/hea
 
 | Where | Record |
 | --- | --- |
-| Cloudflare, zone `cubecraftlabs.com` | `A mealquest` (`mealquest.cubecraftlabs.com`), **proxied** (orange cloud), pointing at the site's public origin address. Because it is proxied, public resolvers answer with Cloudflare's anycast addresses, A and AAAA (AAAA on 2026-10-05: `2606:4700:3032::6815:34ed`, `2606:4700:3035::ac43:cd75`), never the origin. The origin address itself is not recorded in this runbook or in CTXD; read it from the Cloudflare dashboard |
+| Cloudflare, zone `cubecraftlabs.com` | `CNAME mealquest.cubecraftlabs.com` → `cubecraftlabs.com`, **proxied = true** (orange cloud). Because it is proxied, public resolvers answer with Cloudflare's anycast addresses, A and AAAA (AAAA on 2026-10-05: `2606:4700:3032::6815:34ed`, `2606:4700:3035::ac43:cd75`), never the origin |
 | Pi-hole primary 10.60.1.101 (`dns.ccl`), Local DNS records | `A mealquest.cubecraftlabs.com` → `10.60.1.33` (Traefik) |
 | Pi-hole secondary 10.60.1.85 (`dns2.ccl`), Local DNS records | `A mealquest.cubecraftlabs.com` → `10.60.1.33` (Traefik) |
 

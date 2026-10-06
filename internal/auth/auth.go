@@ -327,8 +327,13 @@ func (a *Auth) callback(w http.ResponseWriter, r *http.Request) {
 
 // logout ends the session, clears the cookie and sends the browser to the
 // provider's end_session_endpoint to end the provider session as well.
+// Clear-Site-Data wipes this origin's storage and caches — the PWA's
+// verified-session marker in localStorage and the service worker's cached API
+// and media responses — so an offline visit after logout cannot reopen
+// household data.
 func (a *Auth) logout(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Clear-Site-Data", `"storage", "cache"`)
 	if err := a.sessions.EndSession(w, r); err != nil {
 		a.logger.ErrorContext(r.Context(), "end session", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)

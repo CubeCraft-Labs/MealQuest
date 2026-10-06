@@ -1,0 +1,22 @@
+# Owns the MealQuest compose stack (deploy/compose.yaml). The services use
+# restart: "no", so Docker never starts them on its own; this unit is the
+# only start path.
+#
+# Requires= and After=mealquest-firewall.service start the stack only after
+# the DOCKER-USER rules are applied, and not at all if that unit fails.
+# PartOf=docker.service propagates a Docker stop or restart here, so a
+# Docker restart re-applies the firewall before the stack comes back.
+[Unit]
+Description=MealQuest compose stack
+Requires=mealquest-firewall.service
+After=mealquest-firewall.service docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/docker compose -f /home/overseer/mealquest/deploy/compose.yaml up -d
+ExecStop=/usr/bin/docker compose -f /home/overseer/mealquest/deploy/compose.yaml down
+
+[Install]
+WantedBy=multi-user.target

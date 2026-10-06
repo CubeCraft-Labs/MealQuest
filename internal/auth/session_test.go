@@ -440,6 +440,9 @@ func TestLogout(t *testing.T) {
 	if !strings.HasPrefix(raw, SessionCookieName+"=;") || !strings.Contains(raw, "Max-Age=0") {
 		t.Errorf("logout Set-Cookie = %q, want the cookie cleared", raw)
 	}
+	if got := resp.Header.Get("Clear-Site-Data"); got != `"storage", "cache"` {
+		t.Errorf("logout Clear-Site-Data = %q, want the PWA's storage and caches cleared", got)
+	}
 
 	rows := h.rows(t)
 	if len(rows) != 1 || rows[0].idHash != sha256Hex(other.Value) {
@@ -461,6 +464,9 @@ func TestLogoutWithoutSession(t *testing.T) {
 		t.Errorf("logout = %d to %q, want 303 to the end session endpoint", resp.StatusCode, resp.Header.Get("Location"))
 	}
 	assertSessionCookieAttributes(t, sessionSetCookie(t, resp))
+	if got := resp.Header.Get("Clear-Site-Data"); got != `"storage", "cache"` {
+		t.Errorf("logout Clear-Site-Data = %q, want the PWA's storage and caches cleared", got)
+	}
 }
 
 func TestLogoutIsPostOnly(t *testing.T) {

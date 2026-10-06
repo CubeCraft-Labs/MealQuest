@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"strings"
 	"unicode/utf8"
 
@@ -20,6 +21,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secretbox"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secureurl"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 )
 
@@ -134,9 +136,10 @@ func (s *Service) Get(ctx context.Context) (Settings, error) {
 	return settingsFrom(row), nil
 }
 
-// Update applies patch and returns the settings it leaves. Changing the
-// provider or base URL clears key_verified_at. Every problem is reported
-// in an *ValidationError and nothing changes.
+// Update applies patch and returns the settings it leaves. The provider
+// and base URL cannot change while an API key is stored, so the key never
+// reaches an endpoint it was not stored for. Every problem is reported in
+// a *ValidationError and nothing changes.
 func (s *Service) Update(ctx context.Context, patch Patch) (Settings, error) {
 	return s.change(ctx, func(row db.AiSetting) (db.AiSetting, error) {
 		return applyPatch(row, patch)
@@ -144,7 +147,9 @@ func (s *Service) Update(ctx context.Context, patch Patch) (Settings, error) {
 }
 
 // SetAPIKey seals key and records its last four characters, clearing
-// key_verified_at. An empty key removes the stored one.
+// key_verified_at. An empty key removes the stored one. A preset without
+// a fixed base URL takes a key only when its base URL is secure (see
+// secureurl.Check).
 func (s *Service) SetAPIKey(ctx context.Context, key string) (Settings, error) {
 	return s.change(ctx, func(row db.AiSetting) (db.AiSetting, error) {
 		row.ApiKeyCt, row.ApiKeyLast4, row.KeyVerifiedAt = nil, sql.NullString{}, sql.NullString{}
@@ -156,6 +161,8 @@ func (s *Service) SetAPIKey(ctx context.Context, key string) (Settings, error) {
 		switch {
 		case p.Key == presets.KeyNone:
 			reason = row.Provider + " takes no API key"
+		case p.BaseURL == "" && !secureBaseURL(row.BaseUrl):
+			reason = "is sent only over https://, or http:// to localhost: set such a base_url first"
 		case !validHeaderValue(key):
 			reason = "has a character not allowed in a header"
 		case len(key) < MinKeyLength:
@@ -392,15 +399,20 @@ func applyPatch(row db.AiSetting, patch Patch) (db.AiSetting, error) {
 				fail("base_url", err.Error())
 			}
 		}
-		if p.Key == presets.KeyNone && len(row.ApiKeyCt) > 0 {
-			fail("provider", p.Name+" takes no API key: remove the stored key first")
+	}
+	// The stored key is only ever sent where it was stored for: moving it
+	// to another provider or server would let a changed base URL receive
+	// it. Remove the key, change the endpoint, then store the new key.
+	if len(problems) == 0 && len(row.ApiKeyCt) > 0 {
+		if row.Provider != before.Provider {
+			fail("provider", "cannot change while an API key is stored: remove the key first")
+		}
+		if row.BaseUrl != before.BaseUrl {
+			fail("base_url", "cannot change while an API key is stored: remove the key first")
 		}
 	}
 	if len(problems) > 0 {
 		return db.AiSetting{}, &ValidationError{Problems: problems}
-	}
-	if row.Provider != before.Provider || row.BaseUrl != before.BaseUrl {
-		row.KeyVerifiedAt = sql.NullString{}
 	}
 	return row, nil
 }
@@ -423,6 +435,12 @@ func nullString(s sql.NullString) *string {
 		return nil
 	}
 	return &s.String
+}
+
+// secureBaseURL reports whether base is a URL a key may be sent to.
+func secureBaseURL(base string) bool {
+	u, err := url.Parse(base)
+	return base != "" && err == nil && secureurl.Check(u) == nil
 }
 
 // validHeaderValue reports whether value has no control character other

@@ -157,11 +157,13 @@ automatic** (D-021).
   `api_key_last4` and `key_verified_at`. PATCH requires a preset name as
   provider, temperature 0–1 in 0.1 steps, a non-empty model and a
   system_prompt of at most 8000 characters; a fixed-URL preset's base_url
-  must be empty or its own. Changing provider or base_url clears
-  `key_verified_at`.
+  must be empty or its own. Provider and base_url cannot change while a
+  key is stored (remove the key first), so a stored key is never sent to
+  an endpoint it was not stored for.
   `PUT /api/v1/settings/ai/api-key` takes `{api_key}` (write-only, at least
   8 characters, sealed with the secret box; an empty string removes it) and
-  clears `key_verified_at`. `POST /api/v1/settings/ai/verify` calls
+  clears `key_verified_at`; a preset without a fixed base_url takes a key
+  only when its base_url passes `secureurl.Check`. `POST /api/v1/settings/ai/verify` calls
   `Provider.Verify` and records `key_verified_at`;
   `GET /api/v1/settings/ai/models` returns `{models: [{id, display_name}]}`
   live from the provider. Both work before a model is chosen

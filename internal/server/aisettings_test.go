@@ -194,14 +194,18 @@ func TestAISettingsAPI(t *testing.T) {
 		t.Errorf("POST reset-prompt = %d %v", rec.Code, body)
 	}
 
-	// Pointing the key at another server voids its verification.
-	rec, body = call(http.MethodPatch, aiPath, `{"base_url":"https://llm.example/v1"}`)
-	if rec.Code != http.StatusOK || body["key_verified_at"] != nil || body["api_key_last4"] != "7d21" {
-		t.Errorf("PATCH base_url = %d %v", rec.Code, body)
+	// The stored key is never pointed at another server or provider.
+	for _, patch := range []string{`{"base_url":"https://attacker.example/v1"}`, `{"provider":"openai","base_url":""}`} {
+		if rec, body := call(http.MethodPatch, aiPath, patch); rec.Code != http.StatusBadRequest || errorCode(body) != "invalid_settings" {
+			t.Errorf("PATCH %s with a key stored = %d %v, want 400 invalid_settings", patch, rec.Code, body)
+		}
 	}
-
-	if rec, body := call(http.MethodPut, aiKeyPath, `{"api_key":""}`); rec.Code != http.StatusOK || body["api_key_last4"] != nil {
+	if rec, body := call(http.MethodPut, aiKeyPath, `{"api_key":""}`); rec.Code != http.StatusOK || body["api_key_last4"] != nil || body["key_verified_at"] != nil {
 		t.Errorf("PUT empty key = %d %v", rec.Code, body)
+	}
+	rec, body = call(http.MethodPatch, aiPath, `{"base_url":"https://llm.example/v1"}`)
+	if rec.Code != http.StatusOK || body["base_url"] != "https://llm.example/v1" {
+		t.Errorf("PATCH base_url without a key = %d %v", rec.Code, body)
 	}
 
 	if len(bodies) < 30 {

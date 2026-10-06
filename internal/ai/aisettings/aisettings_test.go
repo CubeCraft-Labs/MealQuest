@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -223,37 +224,89 @@ func TestUpdateAccepts(t *testing.T) {
 	}
 }
 
-// Changing the provider or base URL voids the key's verification; the
-// model, temperature and system prompt do not.
-func TestVerificationVoidedByProviderChange(t *testing.T) {
+// While a key is stored the provider and base URL cannot change, so the
+// key never reaches an endpoint it was not stored for; the model,
+// temperature and system prompt can, keeping the verification.
+func TestEndpointLockedWhileKeyStored(t *testing.T) {
 	ctx := context.Background()
 	s, _ := newService(t)
 	f := &llm.Fake{}
 	useFake(s, f)
+	if _, err := s.Update(ctx, Patch{Provider: ptr("openai_compatible"), BaseURL: ptr("https://llm.example/v1")}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.SetAPIKey(ctx, testKey); err != nil {
 		t.Fatal(err)
 	}
-	verify := func() {
-		t.Helper()
-		f.QueueVerify(nil)
-		got, err := s.Verify(ctx)
-		if err != nil || got.KeyVerifiedAt == nil {
-			t.Fatalf("Verify = %+v, %v", got, err)
-		}
+	f.QueueVerify(nil)
+	if got, err := s.Verify(ctx); err != nil || got.KeyVerifiedAt == nil {
+		t.Fatalf("Verify = %+v, %v", got, err)
 	}
-	verify()
 	got, err := s.Update(ctx, Patch{Model: ptr("m"), Temperature: ptr(0.5), SystemPrompt: ptr("p")})
 	if err != nil || got.KeyVerifiedAt == nil {
-		t.Errorf("model change voided verification: %+v, %v", got, err)
+		t.Errorf("model change = %+v, %v; want verification kept", got, err)
 	}
-	got, err = s.Update(ctx, Patch{Provider: ptr("openai")})
-	if err != nil || got.KeyVerifiedAt != nil || got.APIKeyLast4 == nil {
-		t.Errorf("provider change = %+v, %v; want key kept, verification voided", got, err)
+	before, err := s.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
 	}
-	verify()
+	for _, c := range []struct {
+		patch Patch
+		field string
+	}{
+		{Patch{BaseURL: ptr("https://attacker.example/v1")}, "base_url"},
+		{Patch{Provider: ptr("openai"), BaseURL: ptr("")}, "provider"},
+		{Patch{Provider: ptr("ollama"), BaseURL: ptr("http://localhost:11434")}, "provider"},
+	} {
+		var invalid *ValidationError
+		_, err := s.Update(ctx, c.patch)
+		if !errors.As(err, &invalid) || !slices.ContainsFunc(invalid.Problems, func(p Problem) bool { return p.Field == c.field }) {
+			t.Errorf("Update(%+v) with a key stored = %v, want a %s problem", c.patch, err, c.field)
+		}
+	}
+	if after, err := s.Get(ctx); err != nil || !reflect.DeepEqual(after, before) {
+		t.Errorf("refused endpoint change altered the settings: %+v, %v", after, err)
+	}
+
+	// Removing the key frees the endpoint; a new key is unverified.
+	if _, err := s.SetAPIKey(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Update(ctx, Patch{Provider: ptr("openai"), BaseURL: ptr("")}); err != nil {
+		t.Fatal(err)
+	}
 	got, err = s.SetAPIKey(ctx, "sk-another-key-9999")
 	if err != nil || got.KeyVerifiedAt != nil || *got.APIKeyLast4 != "9999" {
-		t.Errorf("new key = %+v, %v; want verification voided", got, err)
+		t.Errorf("new key = %+v, %v; want it unverified", got, err)
+	}
+}
+
+// A key is never stored for a base URL it would cross the network to in
+// plain text.
+func TestSetAPIKeyNeedsSecureBaseURL(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		base string
+		ok   bool
+	}{
+		{"", false},
+		{"http://llm.lan:8080/v1", false},
+		{"http://127.0.0.1:8080/v1", true},
+		{"https://llm.example/v1", true},
+	} {
+		s, _ := newService(t)
+		patch := Patch{Provider: ptr("openai_compatible")}
+		if c.base != "" {
+			patch.BaseURL = ptr(c.base)
+		}
+		if _, err := s.Update(ctx, patch); err != nil {
+			t.Fatal(err)
+		}
+		_, err := s.SetAPIKey(ctx, testKey)
+		var invalid *ValidationError
+		if c.ok != (err == nil) || (!c.ok && !errors.As(err, &invalid)) {
+			t.Errorf("SetAPIKey with base URL %q = %v, want ok %v", c.base, err, c.ok)
+		}
 	}
 }
 

@@ -22,7 +22,7 @@ const (
 func newRecipeSearchRouter(t *testing.T, search *recipes.SearchSettingsService) http.Handler {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	r, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), search, newTestRunner(t),
+	r, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), search, newTestAI(t), newTestRunner(t),
 		newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
 	if err != nil {
 		t.Fatal(err)
@@ -46,7 +46,7 @@ func TestRecipeSearchSettingsAPI(t *testing.T) {
 	}
 
 	rec, body := call(http.MethodGet, recipeSearchPath, "")
-	if rec.Code != http.StatusOK || body["provider"] != nil || body["api_key_set"] != false {
+	if def, ok := body["default_base_url"]; rec.Code != http.StatusOK || body["provider"] != nil || body["api_key_set"] != false || !ok || def != nil {
 		t.Errorf("GET unconfigured = %d %v", rec.Code, body)
 	}
 	rec, body = call(http.MethodPost, recipeSearchTestPath, "")

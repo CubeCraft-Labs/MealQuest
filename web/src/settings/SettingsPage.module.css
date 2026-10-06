@@ -1,0 +1,153 @@
+/* Settings home, handoff mock 1p. */
+.page {
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+}
+
+.title {
+  margin: 0;
+  padding-top: 6px;
+  font-family: var(--font-heading);
+  font-size: 28px;
+  font-weight: 400;
+}
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 14px 16px;
+  border-radius: 26px;
+  background: var(--color-accent-2-100);
+  color: var(--color-accent-2-900);
+}
+
+.avatar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--color-accent-2-300);
+  color: var(--color-accent-2-900);
+  font-family: var(--font-heading);
+  font-size: 18px;
+}
+
+.bannerText {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.bannerTitle {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.alert {
+  margin-top: 14px;
+}
+
+.groupLabel {
+  margin: 0;
+  padding: 18px 4px 8px;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-neutral-700);
+}
+
+.group {
+  padding: 0;
+  border-radius: 26px;
+}
+
+.admin {
+  box-shadow: inset 0 0 0 2px var(--color-accent-300);
+}
+
+.rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Rows in one card are split by a hairline inset to the row padding. */
+.item + .item {
+  border-top: 1px solid var(--color-neutral-300);
+  margin: 0 16px;
+}
+
+.item + .item .row {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.row {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 14px 16px;
+  border-radius: 26px;
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+.icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--color-bg);
+}
+
+.icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-body);
+}
+
+.rowTitle {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.status {
+  font-size: 12px;
+  color: var(--color-neutral-700);
+}
+
+.statusSkeleton {
+  width: 60%;
+  height: 12px;
+  margin-top: 3px;
+  background: var(--color-neutral-300);
+}
+
+.tag {
+  flex: none;
+}

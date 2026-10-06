@@ -1,8 +1,10 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { AppRoutes } from '../App.tsx'
+import { ApiProviders, SETTINGS_API } from '../test/ApiProviders.tsx'
 import { declaredStyle } from '../test/cssRules.ts'
+import { InDataRouter } from '../test/dataRouter.tsx'
+import { stubFetchByPath } from '../test/fetchStub.ts'
 import { mockViewport } from '../test/matchMedia.ts'
 import styles from './BottomBar.module.css'
 
@@ -65,14 +67,18 @@ afterEach(() => {
   vi.restoreAllMocks()
   Reflect.deleteProperty(Element.prototype, 'animate')
   Reflect.deleteProperty(window, 'matchMedia')
+  vi.unstubAllGlobals()
 })
 
 function renderAt(path: string, reducedMotion = false) {
   mockViewport(MOBILE, { reducedMotion })
+  stubFetchByPath(SETTINGS_API)
   render(
-    <MemoryRouter initialEntries={[path]}>
-      <AppRoutes />
-    </MemoryRouter>,
+    <InDataRouter path={path}>
+      <ApiProviders>
+        <AppRoutes />
+      </ApiProviders>
+    </InDataRouter>,
   )
 }
 

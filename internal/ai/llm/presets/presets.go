@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"regexp"
 	"slices"
@@ -115,6 +116,11 @@ func Lookup(name string) (Preset, bool) {
 	return p, ok
 }
 
+// Names returns every preset's name, sorted.
+func Names() []string {
+	return slices.Sorted(maps.Keys(all))
+}
+
 // all is every preset, by Settings.Provider name.
 var all = map[string]Preset{
 	"anthropic": {
@@ -181,19 +187,40 @@ var all = map[string]Preset{
 // preset's OmitTemperature matches. It is wrapped in llm.NewRetrying, so
 // Generate retries transient vendor failures and has the default timeout.
 func FromSettings(s llm.Settings, key string) (llm.Provider, error) {
-	cp, err := fromSettings(s, key)
+	cp, err := fromSettings(s, key, true)
 	if err != nil {
 		return nil, redact(err, key)
 	}
 	return llm.NewRetrying(cp), nil
 }
 
-func fromSettings(s llm.Settings, key string) (*configured, error) {
+// Account is what a provider offers before a model is chosen: the live
+// model list and a check of the credentials.
+type Account interface {
+	ListModels(ctx context.Context) ([]llm.Model, error)
+	Verify(ctx context.Context) error
+}
+
+// ForAccount returns the Account s describes, using key as its API key. It
+// checks s and key as FromSettings does except that s.Model may be empty,
+// so the household can verify its key and pick from the live model list
+// before it has chosen a model. Neither call is retried.
+func ForAccount(s llm.Settings, key string) (Account, error) {
+	cp, err := fromSettings(s, key, false)
+	if err != nil {
+		return nil, redact(err, key)
+	}
+	return cp, nil
+}
+
+// fromSettings builds the provider s describes; needModel is whether
+// s.Model is required.
+func fromSettings(s llm.Settings, key string, needModel bool) (*configured, error) {
 	p, ok := Lookup(s.Provider)
 	if !ok {
 		return nil, llm.ErrUnknownProvider
 	}
-	if err := check(p, s, key); err != nil {
+	if err := check(p, s, key, needModel); err != nil {
 		return nil, fmt.Errorf("%s: %w", p.Name, err)
 	}
 	base := p.BaseURL
@@ -233,8 +260,9 @@ func fromSettings(s llm.Settings, key string) (*configured, error) {
 	return cp, nil
 }
 
-// check validates s and key against p. Its errors never quote a value.
-func check(p Preset, s llm.Settings, key string) error {
+// check validates s and key against p, and that s names a model when
+// needModel is set. Its errors never quote a value.
+func check(p Preset, s llm.Settings, key string, needModel bool) error {
 	switch {
 	case p.Key == KeyRequired && key == "":
 		return llm.ErrMissingKey
@@ -249,7 +277,7 @@ func check(p Preset, s llm.Settings, key string) error {
 	case p.BaseURL != "" && s.BaseURL != "" && s.BaseURL != p.BaseURL:
 		return fmt.Errorf("%w: base URL is fixed by the preset", llm.ErrInvalidSetting)
 	}
-	if s.Model == "" {
+	if needModel && s.Model == "" {
 		return llm.ErrMissingModel
 	}
 	if p.RequiresPublicURL && s.PublicURL == "" {

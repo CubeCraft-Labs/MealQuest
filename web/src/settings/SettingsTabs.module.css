@@ -1,0 +1,118 @@
+/* Settings at tablet and desktop widths, handoff mock 2e. */
+.page {
+  box-sizing: border-box;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px;
+}
+
+.heading {
+  flex: 1;
+  min-width: 0;
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 40px;
+  font-weight: 400;
+  line-height: 1.1;
+}
+
+.shared {
+  margin: 6px 0 0;
+  font-family: var(--font-body);
+  font-size: 14px;
+  color: var(--color-neutral-800);
+}
+
+.tabs {
+  display: flex;
+  gap: 6px;
+}
+
+.tab {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.selected {
+  background: var(--color-text);
+  color: var(--color-bg);
+}
+
+/* A page's or panel's display would override the hidden attribute. */
+.page[hidden],
+.single[hidden],
+.columns[hidden] {
+  display: none;
+}
+
+.single {
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* Notifications on the left; the AI assistant and Recipe search on the
+   right, the AI assistant card growing to fill the column. */
+.columns {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  align-items: stretch;
+  gap: 20px;
+}
+
+.column {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* Mock 2e's cards: 24 px padding, 30 px corners. */
+.column > * {
+  padding: 24px;
+  border-radius: 30px;
+}
+
+.placeholder {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.cardTitle {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 22px;
+  font-weight: 400;
+}
+
+.hint {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--color-neutral-700);
+}

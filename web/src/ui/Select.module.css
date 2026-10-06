@@ -1,0 +1,50 @@
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.label {
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-neutral-700);
+}
+
+.control {
+  position: relative;
+  display: block;
+}
+
+.select {
+  appearance: none;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 44px;
+  height: 56px;
+  padding: 0 36px 0 16px;
+  border: 1px solid var(--color-neutral-300);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: 15px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* The chevron sits over the select's right padding and lets taps through. */
+.chevron {
+  position: absolute;
+  top: 50%;
+  right: 14px;
+  transform: translateY(-50%);
+  pointer-events: none;
+}

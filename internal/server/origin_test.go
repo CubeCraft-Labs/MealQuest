@@ -45,7 +45,7 @@ func newOriginRouter(t *testing.T, logs io.Writer) http.Handler {
 	}
 	logger := slog.New(forwarded.LogHandler(slog.NewJSONHandler(logs, nil)))
 	r, err := NewRouter(logger, "dev", trusted, probeAuth{}, stubSessions{}, newTestSettings(t),
-		newTestSearch(t), newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
+		newTestSearch(t), newTestAI(t), newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -152,6 +152,26 @@ automatic** (D-021).
   `POST /api/v1/settings/recipe-search/test` searches "chicken tikka
   masala" and returns `{query, count}`, 409 `not_configured`, or 502
   `search_failed` with the provider's error.
+- `GET`/`PATCH /api/v1/settings/ai` (`aisettings.Service`) — provider,
+  base_url, model, temperature, system_prompt, plus the read-only
+  `api_key_last4` and `key_verified_at`. PATCH requires a preset name as
+  provider, temperature 0–1 in 0.1 steps, a non-empty model and a
+  system_prompt of at most 8000 characters; a fixed-URL preset's base_url
+  must be empty or its own. Changing provider or base_url clears
+  `key_verified_at`.
+  `PUT /api/v1/settings/ai/api-key` takes `{api_key}` (write-only, at least
+  8 characters, sealed with the secret box; an empty string removes it) and
+  clears `key_verified_at`. `POST /api/v1/settings/ai/verify` calls
+  `Provider.Verify` and records `key_verified_at`;
+  `GET /api/v1/settings/ai/models` returns `{models: [{id, display_name}]}`
+  live from the provider. Both work before a model is chosen
+  (`presets.ForAccount`), answer 409 `not_configured` when the settings
+  cannot build a provider, and 502 with the provider's typed error
+  (`auth_failed`, `rate_limited`, `bad_output`, `provider_error`; 504
+  `timeout`) when the call fails. `POST /api/v1/settings/ai/reset-prompt`
+  restores `household.DefaultPersonaPrompt` (CTXD PROMPTS.MD §4). No
+  response holds the key. `Service.HarnessConfig` reads the settings for
+  each skill run, so a saved change applies to the next run.
 - `/health` — liveness.
 - Everything else serves the embedded PWA with SPA fallback.
 

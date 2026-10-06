@@ -11,7 +11,8 @@ import (
 )
 
 // DefaultPersonaPrompt is the default AI system prompt (CTXD PROMPTS.MD §4).
-// SeedAISettings stores it on first boot and the Admin reset restores it.
+// SeedAISettings stores it on first boot and aisettings.Service.ResetPrompt
+// restores it.
 const DefaultPersonaPrompt = `You are MealQuest, a dinner planning assistant for one household. Suggest dinners
 similar to their regular rotation, nudging them to try something a little new each
 week. Prefer weeknight-friendly recipes with common grocery-store ingredients.

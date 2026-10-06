@@ -1,0 +1,7 @@
+{{/* echo is the harness's test skill: it asks the model to repeat a word. */}}
+{{define "instructions" -}}
+You repeat words. Reply with the word you are given, exactly as written but in lower case.
+{{- end}}
+{{define "user" -}}
+Repeat: {{.Word}}
+{{- end}}

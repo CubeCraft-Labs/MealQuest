@@ -4,6 +4,8 @@ import { Route, Routes } from 'react-router'
 import { ApiProvider, createQueryClient, type ApiClient } from './api/index.ts'
 import { AuthBootstrap } from './AuthBootstrap.tsx'
 import { PlaceholderPage } from './pages/PlaceholderPage.tsx'
+import { OfflinePill } from './pwa/OfflinePill.tsx'
+import { UpdatePrompt, type UpdateContainer } from './pwa/UpdatePrompt.tsx'
 import { AppShell } from './shell/AppShell.tsx'
 
 // Every route the app serves, with the heading its placeholder page shows.
@@ -40,11 +42,17 @@ export function AppRoutes() {
 
 export type AppProps = {
   api: ApiClient
+  // navigator.serviceWorker, or undefined where there is none (and in tests).
+  serviceWorker: UpdateContainer | undefined
+}
+
+function reloadPage() {
+  window.location.reload()
 }
 
 // App expects to be rendered inside a router (BrowserRouter in main.tsx,
 // MemoryRouter in tests).
-export default function App({ api }: AppProps) {
+export default function App({ api, serviceWorker }: AppProps) {
   const [queryClient] = useState(createQueryClient)
   return (
     <ApiProvider client={api}>
@@ -52,6 +60,8 @@ export default function App({ api }: AppProps) {
         <AuthBootstrap>
           <AppRoutes />
         </AuthBootstrap>
+        <OfflinePill />
+        <UpdatePrompt container={serviceWorker} reload={reloadPage} />
       </QueryClientProvider>
     </ApiProvider>
   )

@@ -9,21 +9,45 @@
 #
 # The rules must sit at the top of DOCKER-USER, ahead of any other project's
 # rules (an earlier RETURN or DROP would decide MealQuest traffic first).
-# Every run deletes all rules tagged with the mealquest-firewall comment and
-# re-inserts them at positions 1-3, so re-runs leave the same ordered rules
-# and no duplicates. Installed as /usr/local/sbin/mealquest-firewall.
+# The port is never left open while the rules are updated:
+#
+#   1. If the chain already starts with exactly the three rules below and
+#      holds no other mealquest-firewall rule, change nothing.
+#   2. Otherwise insert the DROP at position 1 first, so the port is closed
+#      to every source (including Traefik, briefly) from here on.
+#   3. Delete every other rule tagged mealquest-firewall, by rule number,
+#      highest first.
+#   4. Insert the two RETURN rules above the DROP.
+#
+# Re-runs leave the same ordered rules at positions 1-3 and no duplicates.
+# Installed as /usr/local/sbin/mealquest-firewall.
 set -eu
 
+chain=DOCKER-USER
 tag="-m comment --comment mealquest-firewall"
 match="-m conntrack --ctorigdst 10.60.1.14 --ctorigdstport 8090 --ctdir ORIGINAL"
 
-rules=$(iptables -w -S DOCKER-USER)
-printf '%s\n' "$rules" | while read -r _ chain spec; do
-	case " $spec " in
-	*" --comment mealquest-firewall "*) iptables -w -D "$chain" $spec ;;
-	esac
+# The three rules as iptables -S prints them, in their required order.
+want="-A $chain -s 10.60.1.33/32 $match $tag -j RETURN
+-A $chain -s 10.60.1.14/32 $match $tag -j RETURN
+-A $chain $match $tag -j DROP"
+
+rules=$(iptables -w -S "$chain" | grep -e '^-A ' || true)
+head=$(printf '%s\n' "$rules" | head -n 3)
+tagged=$(printf '%s\n' "$rules" | grep -c -e '--comment mealquest-firewall ' || true)
+if [ "$head" = "$want" ] && [ "$tagged" -eq 3 ]; then
+	exit 0
+fi
+
+iptables -w -I "$chain" 1 $match $tag -j DROP
+
+iptables -w -S "$chain" | grep -e '^-A ' |
+	awk '/--comment mealquest-firewall / { print NR }' |
+	sort -rn | while read -r num; do
+	if [ "$num" -ne 1 ]; then
+		iptables -w -D "$chain" "$num"
+	fi
 done
 
-iptables -w -I DOCKER-USER 1 -s 10.60.1.33/32 $match $tag -j RETURN
-iptables -w -I DOCKER-USER 2 -s 10.60.1.14/32 $match $tag -j RETURN
-iptables -w -I DOCKER-USER 3 $match $tag -j DROP
+iptables -w -I "$chain" 1 -s 10.60.1.14/32 $match $tag -j RETURN
+iptables -w -I "$chain" 1 -s 10.60.1.33/32 $match $tag -j RETURN

@@ -162,13 +162,13 @@ rsync"; until it exists `ls` shows the numeric ids.
 
 ### 5. Firewall, then the stack
 
-Install the firewall unit first (see "Host firewall"), so port 8090 is
-never open to the LAN. Create the media directory (see "Media — nightly
-rsync"), then build and start:
+Install the firewall unit and the stack unit first (see "Host firewall"
+and "Stack unit"), so port 8090 is never open to the LAN. Create the media
+directory (see "Media — nightly rsync"), then build and start:
 
 ```sh
-sudo systemctl start mealquest-firewall
-docker compose -f deploy/compose.yaml up -d --build
+docker compose -f deploy/compose.yaml build
+sudo systemctl enable --now mealquest   # starts mealquest-firewall first
 docker compose -f deploy/compose.yaml ps   # mealquest healthy, litestream up
 curl -fsS http://10.60.1.14:8090/health
 curl -s -o /dev/null -w "%{http_code}\n" https://mealquest.cubecraftlabs.com/health   # 200
@@ -314,9 +314,12 @@ Docker DNATs the published port to the container address and port 8080
 **before** `DOCKER-USER`, so a plain `-p tcp --dport 8090` rule never
 matches. The rules match the original destination `10.60.1.14:8090` with
 conntrack (`--ctorigdst 10.60.1.14 --ctorigdstport 8090 --ctdir ORIGINAL`)
-and are tagged with the comment `mealquest-firewall`. The script deletes
-its own tagged rules and re-inserts them at positions 1–3, so re-runs are
-idempotent. NestQuest's 8080/8081 rules below them are left untouched.
+and are tagged with the comment `mealquest-firewall`. The port is never
+open while the rules change: if the chain does not already start with
+exactly the three rules, the script first inserts the DROP at position 1,
+then deletes its other tagged rules and inserts the two RETURN rules above
+the DROP. A re-run on a correct chain changes nothing. NestQuest's
+8080/8081 rules below them are left untouched.
 
 | Repository file | Installed as |
 | --- | --- |
@@ -356,6 +359,46 @@ Expected head of the chain (recorded 2026-10-05; NestQuest's rules follow):
 From any other LAN machine, `curl -m 5 http://10.60.1.14:8090/health` must
 time out; from 10.60.1.33 and 10.60.1.14 it returns 200.
 
+## Stack unit
+
+`deploy/systemd/mealquest.service` owns the compose stack and is the only
+way it starts. Both compose services use `restart: "no"`, so Docker never
+starts them on its own; the unit has `Requires=` and
+`After=mealquest-firewall.service`, so the stack starts only after the
+firewall rules are applied, and not at all if that unit fails. It is
+`PartOf=docker.service`, so restarting Docker (which recreates
+`DOCKER-USER` empty) stops the stack, re-applies the firewall, then starts
+the stack again. `ExecStart` is `docker compose … up -d` and `ExecStop` is
+`docker compose … down`; neither builds, so build before starting.
+
+Containers no longer restart after a crash; `systemctl restart mealquest`
+brings them back.
+
+| Repository file | Installed as |
+| --- | --- |
+| `deploy/systemd/mealquest.service` | `/etc/systemd/system/mealquest.service` (root, 0644) |
+
+Install (done on 10.60.1.14 on 2026-10-05):
+
+```sh
+cd /home/overseer/mealquest
+sudo install -o root -g root -m 0644 deploy/systemd/mealquest.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now mealquest
+```
+
+Check:
+
+```sh
+systemctl is-enabled mealquest; systemctl is-active mealquest   # enabled, active
+systemctl show mealquest -p Requires -p After                    # both list mealquest-firewall.service
+```
+
+Start, stop and restart the whole stack with `sudo systemctl start|stop|restart
+mealquest`, never with `docker compose up` or `down`. Per-service compose
+commands (`stop mealquest`, `up -d --force-recreate litestream`) are fine
+while the unit is active, because the firewall is already in place.
+
 ## Routine deploy and rollback
 
 Production runs `main` (a release); only `overseer` merges `dev` → `main`.
@@ -368,7 +411,8 @@ cd /home/overseer/mealquest
 git fetch origin
 git rev-parse --short HEAD          # the SHA being replaced: note it for rollback
 git checkout --detach origin/main   # or a release tag
-docker compose -f deploy/compose.yaml up -d --build
+docker compose -f deploy/compose.yaml build
+sudo systemctl restart mealquest    # applies the firewall, then down + up -d
 docker compose -f deploy/compose.yaml ps   # mealquest healthy, litestream up
 curl -fsS http://10.60.1.14:8090/health
 curl -s -o /dev/null -w "%{http_code}\n" https://mealquest.cubecraftlabs.com/health   # 200
@@ -380,14 +424,15 @@ for the release. Migrations run at start-up; the service refuses to start
 if the database has an applied migration it does not know.
 
 If `deploy/.env.example` gained a variable, add it to `deploy/.env` before
-`up`; the service fails fast at boot naming any missing required variable.
+the restart; the service fails fast at boot naming any missing required variable.
 
 ### Rollback to a previous SHA
 
 ```sh
 cd /home/overseer/mealquest
 git checkout --detach <previous SHA>
-docker compose -f deploy/compose.yaml up -d --build
+docker compose -f deploy/compose.yaml build
+sudo systemctl restart mealquest
 docker compose -f deploy/compose.yaml ps
 curl -fsS http://10.60.1.14:8090/health
 ```
@@ -491,7 +536,7 @@ A=/var/tmp/mealquest-restore-aside-$(date +%Y%m%d%H%M)
 
 # 1. Stop the whole stack (app and Litestream). Nothing may hold the
 #    database open; a clean close checkpoints the WAL into mealquest.db.
-docker compose -f deploy/compose.yaml down
+sudo systemctl stop mealquest
 
 # 2. Move the database, its -wal and -shm files and Litestream's state
 #    aside — all of them, every time. Keep the directory until the
@@ -511,7 +556,7 @@ sudo ls -la "$D"   # mealquest.db only: no -wal, no -shm
 # 4. Check the restored file before starting the app (see "Count check").
 
 # 5. Start the stack and check health.
-docker compose -f deploy/compose.yaml up -d
+sudo systemctl start mealquest
 docker compose -f deploy/compose.yaml ps
 curl -s -o /dev/null -w "health %{http_code}\n" http://10.60.1.14:8090/health
 ```
@@ -750,7 +795,7 @@ D=/var/lib/docker/volumes/mealquest-data/_data
 
 # 1. Stop the whole stack (app and Litestream) and leave it stopped until
 #    step 4. Nothing may hold the database open.
-docker compose -f deploy/compose.yaml down
+sudo systemctl stop mealquest
 sudo ls -la "$D"   # mealquest.db and media/ only: no -wal, no -shm; if
                    # either exists, the close was not clean — stop here
 
@@ -766,7 +811,7 @@ for t, col in (("ai_settings", "api_key_ct"), ("recipe_search_settings", "api_ke
 PY
 rm -rf /tmp/mqcheck
 # every count must be 0; otherwise start the stack again on the current
-# key (docker compose -f deploy/compose.yaml up -d) and stop here
+# key (sudo systemctl start mealquest) and stop here
 
 # 3. Replace the key, still with the stack stopped.
 sudo cp -a deploy/secrets/secret_key /var/tmp/secret_key.old   # keep until verified, then shred
@@ -775,7 +820,7 @@ sudo chown 10001:10001 deploy/secrets/secret_key
 sudo chmod 600 deploy/secrets/secret_key
 
 # 4. Start the stack on the new key and check health.
-docker compose -f deploy/compose.yaml up -d
+sudo systemctl start mealquest
 docker compose -f deploy/compose.yaml ps
 curl -fsS http://10.60.1.14:8090/health
 ```

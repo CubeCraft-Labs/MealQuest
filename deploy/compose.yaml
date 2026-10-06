@@ -1,7 +1,12 @@
-# Production stack for MealQuest on 10.60.1.14 (D-018). Build and start on
-# the host with:
+# Production stack for MealQuest on 10.60.1.14 (D-018). Build on the host,
+# then start through systemd:
 #
-#   docker compose -f deploy/compose.yaml up -d --build
+#   docker compose -f deploy/compose.yaml build
+#   sudo systemctl restart mealquest
+#
+# The services use restart: "no" on purpose: Docker must not start them
+# before the DOCKER-USER firewall is applied. deploy/systemd/mealquest.service
+# owns start and stop and requires mealquest-firewall.service first.
 #
 # Configuration comes from deploy/.env (copy deploy/.env.example) and secrets
 # from deploy/secrets/; neither is committed. Compose bind-mounts file secrets
@@ -15,7 +20,7 @@ services:
       context: ..
       dockerfile: Dockerfile
     user: "10001:10001"
-    restart: unless-stopped
+    restart: "no"
     env_file:
       - path: .env
         required: true
@@ -61,7 +66,7 @@ services:
   litestream:
     image: litestream/litestream:0.5.17
     user: "10001:10001"
-    restart: unless-stopped
+    restart: "no"
     command: ["replicate", "-config", "/etc/litestream.yml"]
     depends_on:
       mealquest:

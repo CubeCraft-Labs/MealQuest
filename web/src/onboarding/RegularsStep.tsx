@@ -1,7 +1,8 @@
-import { useRef, useState, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { Plus } from 'lucide-react'
 import { useNavigate } from 'react-router'
 import { useAddRegular, useRegulars, useRemoveRegular, type Regular } from '../dinners/api.ts'
+import { useRefusals } from '../dinners/useRefusals.ts'
 import { Button } from '../ui/Button.tsx'
 import { Chip } from '../ui/Chip.tsx'
 import { ErrorBanner } from '../ui/ErrorBanner.tsx'
@@ -31,12 +32,6 @@ function sameName(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase()
 }
 
-// Refusal is one add or removal the server turned down. key is unique to
-// that attempt, so two attempts of the same change in flight each keep their
-// own refusal. change names what was tried, so trying it again once it has
-// been refused clears the earlier refusal and no other.
-type Refusal = { key: number; change: string; text: string }
-
 // RegularsStep is onboarding step 2, handoff mock 1h: the household adds
 // the dinners it makes on repeat. Each add and remove shows at once and is
 // undone if the server refuses it.
@@ -46,11 +41,7 @@ export function RegularsStep() {
   const add = useAddRegular()
   const remove = useRemoveRegular()
   const [draft, setDraft] = useState('')
-  // Each change keeps its own refusal: the mutation hooks only report their
-  // latest change, which would hide a refusal while another change is in
-  // flight.
-  const [refusals, setRefusals] = useState<Refusal[]>([])
-  const attempts = useRef(0)
+  const { refusals, track } = useRefusals()
   const list = regulars.data ?? []
   const picks = commonPicks.filter((pick) => !list.some((regular) => sameName(regular.name, pick)))
   // Next waits for every add to be answered, so a refused add's error shows
@@ -58,16 +49,8 @@ export function RegularsStep() {
   const adding = list.some((regular) => regular.pending)
   const saved = list.filter((regular) => !regular.pending).length
 
-  function track(change: string, what: string, answer: Promise<unknown>) {
-    const key = ++attempts.current
-    setRefusals((all) => all.filter((refusal) => refusal.change !== change))
-    answer.catch((error: Error) => {
-      setRefusals((all) => [...all, { key, change, text: `Could not ${what}: ${error.message}` }])
-    })
-  }
-
   function addRegular(name: string) {
-    track(`add:${name.toLowerCase()}`, `add ${name}`, add.mutateAsync(name))
+    track(`add:${name.toLowerCase()}`, `add ${name}`, add.mutateAsync({ name }))
   }
 
   function removeRegular(regular: Regular) {

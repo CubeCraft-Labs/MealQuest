@@ -96,8 +96,27 @@ cp deploy/.env.example deploy/.env
 chmod 600 deploy/.env
 ```
 
-Values in use (the client id is not a secret but is read from the
-Authentik provider, not repeated here):
+Then edit `deploy/.env` to the values below. In particular
+**`MEALQUEST_BIND_ADDRESS` must be changed**: `.env.example` ships
+`127.0.0.1` (a dev machine), and left as is the service listens only on
+the host's loopback, which Traefik cannot reach. Set it to the LAN address
+and check:
+
+```sh
+sed -i 's/^MEALQUEST_BIND_ADDRESS=.*/MEALQUEST_BIND_ADDRESS=10.60.1.14/' deploy/.env
+grep '^MEALQUEST_BIND_ADDRESS=' deploy/.env      # MEALQUEST_BIND_ADDRESS=10.60.1.14
+docker compose -f deploy/compose.yaml config | grep -A4 'ports:'
+#   host_ip: 10.60.1.14, target: 8080, published: "8090"
+```
+
+After step 5 the listener is `10.60.1.14:8090` (container port 8080):
+
+```sh
+docker compose -f deploy/compose.yaml port mealquest 8080   # 10.60.1.14:8090
+sudo ss -ltnp 'sport = :8090'                               # 10.60.1.14:8090 only, no 0.0.0.0 or 127.0.0.1
+```
+
+Values in use:
 
 | Variable | Value |
 | --- | --- |
@@ -107,7 +126,7 @@ Authentik provider, not repeated here):
 | `MEALQUEST_TRUSTED_PROXY` | `10.60.1.33` |
 | `MEALQUEST_DEFAULT_TZ` | `America/New_York` |
 | `MEALQUEST_OIDC_ISSUER` | `https://auth.cubecraftlabs.com/application/o/mealquest/` |
-| `MEALQUEST_OIDC_CLIENT_ID` | the Client ID of the Authentik provider `mealquest` |
+| `MEALQUEST_OIDC_CLIENT_ID` | `i6zraqmWsF552b8nmte070LXz0SI5pRdArBxFxeq` (not a secret) |
 | `MEALQUEST_OIDC_ALLOWED_GROUPS` | `mealquest-admin` |
 | `MEALQUEST_SESSION_IDLE` / `MEALQUEST_SESSION_MAX` | `720h` / `4320h` |
 
@@ -188,7 +207,7 @@ Sign-in is OpenID Connect against Authentik at
 | Scopes | MealQuest requests `openid profile email groups offline_access`; the provider's scope mappings include openid, profile, email and offline_access, and the `groups` claim is delivered by a property mapping (the default profile mapping carries `groups`) |
 | Application | name MealQuest, slug `mealquest`, provider `mealquest` |
 | Group | `mealquest-admin`, bound to the application; household members are added to it |
-| Client ID | in `deploy/.env` as `MEALQUEST_OIDC_CLIENT_ID` |
+| Client ID | `i6zraqmWsF552b8nmte070LXz0SI5pRdArBxFxeq` (not a secret; in `deploy/.env` as `MEALQUEST_OIDC_CLIENT_ID`) |
 | Client Secret | in `deploy/secrets/oidc_client_secret` only |
 
 MealQuest refuses a sign-in unless the user's `groups` claim (from the ID
@@ -264,9 +283,9 @@ curl -s -o /dev/null -w "%{http_code}\n" https://mealquest.cubecraftlabs.com/hea
 
 | Where | Record |
 | --- | --- |
-| Cloudflare, zone `cubecraftlabs.com` | `A mealquest` → the public address, **proxied** (public resolvers answer with Cloudflare addresses) |
-| Pi-hole primary 10.60.1.101 (`dns.ccl`), Local DNS records | `mealquest.cubecraftlabs.com` → `10.60.1.33` |
-| Pi-hole secondary 10.60.1.85 (`dns2.ccl`), Local DNS records | `mealquest.cubecraftlabs.com` → `10.60.1.33` |
+| Cloudflare, zone `cubecraftlabs.com` | `A mealquest` (`mealquest.cubecraftlabs.com`), **proxied** (orange cloud), pointing at the site's public origin address. Because it is proxied, public resolvers answer with Cloudflare's anycast addresses, A and AAAA (AAAA on 2026-10-05: `2606:4700:3032::6815:34ed`, `2606:4700:3035::ac43:cd75`), never the origin. The origin address itself is not recorded in this runbook or in CTXD; read it from the Cloudflare dashboard |
+| Pi-hole primary 10.60.1.101 (`dns.ccl`), Local DNS records | `A mealquest.cubecraftlabs.com` → `10.60.1.33` (Traefik) |
+| Pi-hole secondary 10.60.1.85 (`dns2.ccl`), Local DNS records | `A mealquest.cubecraftlabs.com` → `10.60.1.33` (Traefik) |
 
 The local record must be on **both** Pi-holes, or clients using the
 secondary go out through Cloudflare. Check:
@@ -451,15 +470,8 @@ sudo systemctl start mealquest-media-backup.service
 journalctl -u mealquest-media-backup --no-pager -n 30
 ```
 
-Restore media by reversing the copy into the (empty or stale) media
-directory as uid 10001:
-
-```sh
-sudo rsync -a --chown=10001:10001 \
-  -e "ssh -i deploy/secrets/litestream_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/etc/mealquest/known_hosts -o StrictHostKeyChecking=yes" \
-  joshua@10.60.1.50:/volume1/homes/Joshua/mealquest-backups/media/ \
-  /var/lib/docker/volumes/mealquest-data/_data/media/
-```
+To restore media, follow "Restore photos (media)" — never copy back while
+the timer or the service can still run.
 
 ## Restore the database
 
@@ -541,34 +553,57 @@ Before and after must match exactly.
 
 Recipe and dinner photos live in `media/` in the data volume and are
 backed up nightly to `joshua@10.60.1.50:/volume1/homes/Joshua/mealquest-backups/media/`
-(see "Media — nightly rsync"). The nightly job mirrors with `--delete`:
-**stop the timer first**, or a run against an emptied or partial `media/`
-would delete the NAS copy you are about to restore from.
+(see "Media — nightly rsync"). The backup service mirrors with
+`rsync --delete`. **An `rsync --delete` run must never see an empty or
+partial `media/`**: it would delete the NAS copy you are about to restore
+from. Stopping the timer is not enough — it does not stop a run that is
+already in flight, and the service can still be started by hand. So stop
+**both** the timer and the service, confirm no rsync is running, and do
+not start the service until the restore is verified.
 
 Run from `/home/overseer/mealquest`:
 
 ```sh
 M=/var/lib/docker/volumes/mealquest-data/_data/media
+NAS=/volume1/homes/Joshua/mealquest-backups/media
+SSH="ssh -i deploy/secrets/litestream_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/etc/mealquest/known_hosts -o StrictHostKeyChecking=yes"
 
-# 1. Stop the nightly mirror and the app (no writes into media/ meanwhile).
-sudo systemctl stop mealquest-media-backup.timer
+# 1. Stop the nightly mirror: the timer AND any run in flight.
+sudo systemctl stop mealquest-media-backup.timer mealquest-media-backup.service
+
+# 2. Pre-check — all three must hold before media/ is touched. If any
+#    fails, stop here and find out why.
+systemctl is-active mealquest-media-backup.timer     # inactive
+systemctl is-active mealquest-media-backup.service   # inactive (or failed)
+pgrep -a -u mealquest rsync || echo "no rsync"       # no rsync
+sudo $SSH joshua@10.60.1.50 "find $NAS -type f | wc -l"
+#    ^ note this NAS file count; it must be non-zero and is the target below.
+
+# 3. Stop the app (no writes into media/ meanwhile).
 docker compose -f deploy/compose.yaml stop mealquest
 
-# 2. Recreate the directory if it is gone, owned by the app user.
+# 4. Recreate the directory if it is gone, owned by the app user.
 sudo install -d -o 10001 -g 10001 -m 0755 "$M"
 
-# 3. Copy back from the NAS as uid 10001's files.
-sudo rsync -a --stats --chown=10001:10001 \
-  -e "ssh -i deploy/secrets/litestream_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/etc/mealquest/known_hosts -o StrictHostKeyChecking=yes" \
-  joshua@10.60.1.50:/volume1/homes/Joshua/mealquest-backups/media/ \
-  "$M/"
-sudo find "$M" -type f | wc -l   # compare with the file count on the NAS
+# 5. Copy back from the NAS as uid 10001's files. No --delete in this
+#    direction: the NAS copy is the source and is only read.
+sudo rsync -a --stats --chown=10001:10001 -e "$SSH" "joshua@10.60.1.50:$NAS/" "$M/"
 
-# 4. Start the app and the timer again.
+# 6. Post-condition — before anything can mirror again:
+sudo find "$M" -type f | wc -l                            # >= the NAS count from step 2
+sudo $SSH joshua@10.60.1.50 "find $NAS -type f | wc -l"   # unchanged from step 2
+
+# 7. Start the app, then the timer again. Only now may the service run.
 docker compose -f deploy/compose.yaml up -d
 curl -fsS http://10.60.1.14:8090/health
 sudo systemctl start mealquest-media-backup.timer
+systemctl is-active mealquest-media-backup.timer          # active
 ```
+
+The local count may exceed the NAS count only if `media/` still held
+files the NAS never received (photos added since the last nightly run);
+the next nightly run then copies them up. If the local count is lower,
+the copy did not complete: leave the timer stopped and re-run step 5.
 
 When the database is restored too, restore it first ("Restore the
 database"), then the media, so every photo the database refers to is
@@ -675,16 +710,45 @@ this file.
 
 ### App key (`deploy/secrets/secret_key`)
 
-The app key encrypts every stored secret (the `_ct` columns: the LLM API
-key, the recipe-search API key, the Google Calendar refresh token and the
-Google Chat webhook URL).
-**Rotating it re-encrypts nothing.** Values encrypted with the old key can
-no longer be read and must be entered again in the app. A
-`mealquest rotate-key` helper that re-encrypts in place is planned but does
-not exist yet.
+The app key encrypts every stored secret: the `_ct` columns
+`ai_settings.api_key_ct` (LLM API key), `recipe_search_settings.api_key_ct`
+(recipe-search API key), `integrations_google.refresh_token_ct` (Google
+Calendar refresh token) and `chat_settings.webhook_url_ct` (Google Chat
+webhook URL). **Rotating it re-encrypts nothing**: a value encrypted with
+the old key can no longer be read. A `mealquest rotate-key` helper that
+re-encrypts in place is planned but does not exist yet.
+
+**What is recoverable today.** The service currently exposes only
+household settings; no shipped flow writes or re-enters any of these four
+secrets. The re-entry flows are planned: the LLM key in Settings → AI
+assistant (the AI settings feature), the recipe-search key (Feature 10),
+Google Calendar reconnect (Feature 16) and the Google Chat webhook
+(Feature 19). So today the rotation is safe **only if no `_ct` value is
+stored**, which the pre-check below proves. If the pre-check finds a
+stored value, do not rotate: it could not be re-entered afterwards. Keep
+the current key and wait for the matching flow (or the `rotate-key`
+helper).
+
+Pre-check, on a **copy** of the database (as in "Count check"):
 
 ```sh
-cd /home/overseer/mealquest
+D=/var/lib/docker/volumes/mealquest-data/_data
+rm -rf /tmp/mqcheck && mkdir /tmp/mqcheck
+sudo sh -c "cp -a $D/mealquest.db* /tmp/mqcheck/" && sudo chown -R "$USER" /tmp/mqcheck
+python3 - /tmp/mqcheck/mealquest.db <<'PY'
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+for t, col in (("ai_settings", "api_key_ct"), ("recipe_search_settings", "api_key_ct"),
+               ("integrations_google", "refresh_token_ct"), ("chat_settings", "webhook_url_ct")):
+    print(t, col, c.execute(f"select count(*) from {t} where {col} is not null").fetchone()[0])
+PY
+rm -rf /tmp/mqcheck
+# every count must be 0; otherwise stop here
+```
+
+Rotate, from `/home/overseer/mealquest`:
+
+```sh
 sudo cp -a deploy/secrets/secret_key /var/tmp/secret_key.old   # keep until verified, then shred
 head -c 32 /dev/urandom | base64 | sudo tee deploy/secrets/secret_key >/dev/null
 sudo chown 10001:10001 deploy/secrets/secret_key
@@ -693,10 +757,10 @@ docker compose -f deploy/compose.yaml up -d --force-recreate mealquest
 curl -fsS http://10.60.1.14:8090/health
 ```
 
-Then re-enter every stored secret (the LLM key in Settings → AI assistant,
-the recipe-search key, reconnect Google Calendar, the Google Chat webhook)
-and confirm each works.
-Finally `sudo shred -u /var/tmp/secret_key.old`.
+Then sign in and open household settings to confirm the service runs on
+the new key. Finally `sudo shred -u /var/tmp/secret_key.old`. Once the
+planned flows ship, this section gains a step per secret to re-enter it
+and confirm it works.
 
 ### OIDC client secret (`deploy/secrets/oidc_client_secret`)
 

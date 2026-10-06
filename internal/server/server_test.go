@@ -17,10 +17,12 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/aisettings"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/llm"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes/recipestest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secretbox"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/migrations"
@@ -140,10 +142,22 @@ func newTestSearch(t *testing.T) *recipes.SearchSettingsService {
 	return search
 }
 
-// newTestDinners returns a dinners service over a migrated temp database.
+// newTestDinners returns a dinners service over a migrated temp database,
+// with its own unstarted job runner and a grounder that finds nothing.
 func newTestDinners(t *testing.T) *dinners.Service {
 	t.Helper()
-	return dinners.NewService(newTestStore(t))
+	st := newTestStore(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	runner, err := jobs.NewRunner(st, logger, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := recipestest.NewGrounder(t, st, t.TempDir(), &recipestest.Search{}, &recipestest.Pages{}, &recipestest.Images{}, &llm.Fake{})
+	svc, err := dinners.NewService(st, g, runner, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return svc
 }
 
 // newTestBox returns a secret box under a random key.

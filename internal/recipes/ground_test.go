@@ -516,3 +516,38 @@ func TestGroundManyLimitsConcurrency(t *testing.T) {
 		t.Errorf("max in flight %d of %d calls, want %d of 5", search.maxActive, search.callCount(), GroundConcurrency)
 	}
 }
+
+func TestCandidatesOffersBestFirstUpToN(t *testing.T) {
+	t.Parallel()
+	var cands []Candidate
+	pages := map[string][]byte{}
+	for i, title := range []string{"Fish Tacos", "Fish Taco Bowls", "Baja Fish Tacos", "Tacos"} {
+		u := fmt.Sprintf("https://site%d.example/tacos", i)
+		cands = append(cands, Candidate{URL: u})
+		pages[u] = groundPage(title, "/img/tacos.jpg")
+	}
+	search := &fakeSearch{results: map[string][]Candidate{"fish tacos": cands}}
+	env := newGroundEnv(t, pages, nil, search)
+
+	got, err := env.g.Candidates(t.Context(), "Fish Tacos", "fish tacos", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0].URL != cands[0].URL || got[0].Title != "Fish Tacos" || got[0].SiteName != "Example Kitchen" ||
+		got[0].PhotoID != "" || got[0].Minutes == nil || *got[0].Minutes != 40 {
+		t.Fatalf("Candidates = %+v, want 3 with Fish Tacos first", got)
+	}
+	if env.images.requests.Load() != 0 || len(env.llm.Requests()) != 0 {
+		t.Errorf("Candidates downloaded a photo or ran the model")
+	}
+}
+
+func TestCandidatesSearchFailureWrapsErrSearchFailed(t *testing.T) {
+	t.Parallel()
+	search := &fakeSearch{errs: map[string]error{"stew": ErrSearchRateLimited}}
+	env := newGroundEnv(t, nil, nil, search)
+	_, err := env.g.Candidates(t.Context(), "Stew", "stew", 3)
+	if !errors.Is(err, ErrSearchFailed) || !errors.Is(err, ErrSearchRateLimited) {
+		t.Errorf("err = %v, want ErrSearchFailed wrapping ErrSearchRateLimited", err)
+	}
+}

@@ -68,6 +68,7 @@ type Dinner struct {
 	CreatedAt       string
 	UpdatedAt       string
 	RecipeUrl       sql.NullString
+	GroundingError  sql.NullString
 }
 
 type HouseholdSetting struct {

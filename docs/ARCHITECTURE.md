@@ -96,7 +96,7 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 | `recipe_ingredients` | recipe_id, position, raw_text, name, qty, unit, note. |
 | `recipe_steps` | recipe_id, position, text. |
 | `photos` | source_url, local_path, width, height, sha256, fetched_at. |
-| `dinners` | The meal record and its lifecycle: name, normalized_name, status (`suggested` / `quest_log` / `tried` / `regular` / `archived`), origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, recipe_url (a pasted recipe link awaiting grounding), photo_id, grounding_status, updated_by. |
+| `dinners` | The meal record and its lifecycle: name, normalized_name, status (`suggested` / `quest_log` / `tried` / `regular` / `archived`), origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, recipe_url (a pasted recipe link awaiting grounding), photo_id, grounding_status (`pending` / `grounded` / `failed` / `manual`), grounding_error (why grounding failed), updated_by. |
 | `suggestion_batches` | trigger, status, ai_run_id. |
 | `suggestions` | dinner_id, batch_id, reason, cited_regular_ids (JSON), status, decided_at. |
 | `week_plans` | week_start (unique), status (`draft` / `synced` / `changed`), ai_note, ai_run_id, calendar_synced_at. |
@@ -200,6 +200,34 @@ automatic** (D-021).
   sets status `archived` and keeps the row; `POST
   /api/v1/dinners/{id}/favorite` toggles `is_favorite`. Every write records
   the session's subject as `updated_by`; an unknown id is 404.
+- Dinner grounding. `POST /api/v1/dinners` also enqueues a `ground_dinner`
+  job and answers with its `grounding_job_id` without waiting for it
+  (`GET /api/v1/jobs/{id}` reports it). The job grounds the dinner's
+  `recipe_url` directly with `GroundURL`, else its name with `Ground`
+  (see Recipe grounding), and sets grounding_status `grounded` with the
+  recipe's recipe_id, photo_id, method, minutes_total and difficulty, or
+  `failed` with `grounding_error` — also the job's failure code — one of
+  `no_recipe_found`, `recipe_unusable` (the pasted link), `search_not_configured`,
+  `search_failed`, `ai_failed`, `interrupted` (the server stopped) or
+  `grounding_error`. It only writes a dinner still `pending`, so a fix-up
+  made meanwhile wins. `GET /api/v1/dinners/{id}/recipe-candidates`
+  searches for the dinner's name and returns `{candidates: [{candidate_id,
+  title, site_name, photo_url, minutes}]}`, at most 3, ranked as `Ground`
+  ranks them; it fetches pages but downloads no photo and runs no model,
+  so `photo_url` is set only for a page already stored, and `candidate_id`
+  is the page's URL. `POST /api/v1/dinners/{id}/ground` takes exactly one
+  of `{candidate_id}`, `{recipe_url}` (both grounded with `GroundURL`,
+  setting `grounded`) or `{manual: {ingredients[], steps[], minutes,
+  method}}` (1–100 ingredient lines, up to 100 steps, each non-blank and at
+  most 500 characters; minutes 1–1440). A manual recipe is stored as typed
+  — no model runs — as a `recipes` row whose source_url is
+  `mealquest:manual:{recipe_id}` and whose raw_jsonld is a schema.org
+  Recipe built from it, and sets `manual` with its method and minutes, no
+  photo and the dinner's difficulty unchanged. It answers 200 with the
+  dinner; an invalid body is 400, an unknown dinner 404, a page that cannot
+  ground it 422 `ungroundable` (the dinner is unchanged), recipe search not
+  set up 409 `not_configured`, and a search or model failure 502
+  `search_failed` / `ai_failed`.
 - `/health` — liveness.
 - Everything else serves the embedded PWA with SPA fallback.
 
@@ -368,7 +396,10 @@ automatic** (D-021).
   Rank's per-candidate reasons, photo or normalize failures). Failures
   that are not the candidates' — search, model provider, database — are
   returned as they are. `GroundURL(ctx, url)` does the same for one pasted
-  URL. `GroundMany` grounds items 3 at a time and returns one result per
+  URL. `Candidates(ctx, dishName, query, n)` returns the first n of the
+  candidates `Ground` would try, without grounding any. Search failures
+  wrap `recipes.ErrSearchFailed` and model provider failures
+  `recipes.ErrNormalizeFailed`. `GroundMany` grounds items 3 at a time and returns one result per
   item, so one failure never affects its siblings. A recipe is usable only
   with ingredients, an image and, if given, a positive total time.
 

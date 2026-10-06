@@ -10,24 +10,78 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/llm"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes/recipestest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 )
 
 const dinnersPath = "/api/v1/dinners"
 
 // newDinnersRouter returns a router whose dinners service runs over the
-// returned store.
+// returned store. Its job runner is not started, so grounding jobs stay
+// queued.
 func newDinnersRouter(t *testing.T) (http.Handler, *store.Store) {
 	t.Helper()
+	e := newDinnersEnv(t)
+	return e.h, e.st
+}
+
+// dinnersEnv is a router whose dinners service, job runner and grounder
+// share one store, grounding with fake search, pages, images and model.
+type dinnersEnv struct {
+	h      http.Handler
+	st     *store.Store
+	runner *jobs.Runner
+	search *recipestest.Search
+	pages  *recipestest.Pages
+	images *recipestest.Images
+	model  *llm.Fake
+}
+
+func newDinnersEnv(t *testing.T) *dinnersEnv {
+	t.Helper()
 	st := newTestStore(t)
+	e := &dinnersEnv{
+		st:     st,
+		search: &recipestest.Search{Results: map[string][]recipes.Candidate{}},
+		pages:  &recipestest.Pages{Bodies: map[string][]byte{}},
+		images: &recipestest.Images{JPEGs: map[string][]byte{}},
+		model:  &llm.Fake{},
+	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	r, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t),
-		dinners.NewService(st), newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
+	runner, err := jobs.NewRunner(st, logger, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return r, st
+	e.runner = runner
+	g := recipestest.NewGrounder(t, st, t.TempDir(), e.search, e.pages, e.images, e.model)
+	svc, err := dinners.NewService(st, g, runner, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.h, err = NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t),
+		svc, runner, newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
+// start starts the env's job runner, stopping it when the test ends.
+func (e *dinnersEnv) start(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := e.runner.Start(ctx); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		e.runner.Wait()
+	})
 }
 
 // callDinners sends a signed-in request with body (none when empty).

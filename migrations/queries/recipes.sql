@@ -69,3 +69,15 @@ ORDER BY position, id;
 -- name: DeleteRecipeSteps :exec
 DELETE FROM recipe_steps
 WHERE recipe_id = ?;
+
+-- name: CreateManualRecipe :one
+-- A recipe the household typed in. Its source_url is a mealquest:manual:
+-- URN rather than a page, so it never matches a fetched page.
+INSERT INTO recipes (
+	id, source_url, title, total_minutes, raw_jsonld, method,
+	minutes_total, fetched_at, created_at, updated_at
+) VALUES (
+	?, ?, ?, ?, ?, ?,
+	?, ?, ?, ?
+)
+RETURNING *;

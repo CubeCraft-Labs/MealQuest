@@ -176,7 +176,7 @@ func (s *Service) CreateRegular(ctx context.Context, r NewRegular, updatedBy str
 	if err != nil {
 		return Created{}, err
 	}
-	jobID, err := s.enqueueGrounding(ctx, d.ID, harness.Normalize(d.Name))
+	jobID, err := s.enqueueGrounding(ctx, d.ID, d.GroundingRevision)
 	if err != nil {
 		return Created{}, err
 	}
@@ -187,60 +187,59 @@ func (s *Service) CreateRegular(ctx context.Context, r NewRegular, updatedBy str
 		}
 		return Created{Dinner: fromRow(row)}, nil
 	}
-	return Created{Dinner: d, GroundingJobID: jobID}, nil
+	return Created{Dinner: fromRow(d), GroundingJobID: jobID}, nil
 }
 
-// enqueueGrounding enqueues the KindGroundDinner job for pending dinner id,
-// whose normalized name is normalizedName, and returns its id. When the job
-// cannot be enqueued, the dinner's grounding is failed with
-// ReasonGroundingError, so it is not left pending with no job, and the id
-// is nil.
-func (s *Service) enqueueGrounding(ctx context.Context, id, normalizedName string) (*string, error) {
-	jobID, err := s.groundJob.Enqueue(ctx, GroundJob{DinnerID: id})
+// enqueueGrounding enqueues the KindGroundDinner job for pending dinner id
+// at grounding_revision revision and returns its id. When the job cannot be
+// enqueued, the dinner's grounding is failed with ReasonGroundingError, so
+// it is not left pending with no job, and the id is nil.
+func (s *Service) enqueueGrounding(ctx context.Context, id string, revision int64) (*string, error) {
+	jobID, err := s.groundJob.Enqueue(ctx, GroundJob{DinnerID: id, Revision: revision})
 	if err == nil {
 		return &jobID, nil
 	}
 	// The error is a database error, never a dependency's text.
 	s.logger.ErrorContext(ctx, "dinner grounding not enqueued", "dinner_id", id, "error", err)
 	if _, err := db.New(s.st.Writer).FailPendingDinnerGrounding(context.WithoutCancel(ctx), db.FailPendingDinnerGroundingParams{
-		GroundingError: sql.NullString{String: ReasonGroundingError, Valid: true},
-		UpdatedAt:      store.Now().String(),
-		ID:             id,
-		NormalizedName: normalizedName,
+		GroundingError:    sql.NullString{String: ReasonGroundingError, Valid: true},
+		UpdatedAt:         store.Now().String(),
+		ID:                id,
+		GroundingRevision: revision,
 	}); err != nil {
 		return nil, fmt.Errorf("dinners: record failed grounding of %s: %w", id, err)
 	}
 	return nil, nil
 }
 
-func (s *Service) createRegular(ctx context.Context, r NewRegular, updatedBy string) (Dinner, error) {
+func (s *Service) createRegular(ctx context.Context, r NewRegular, updatedBy string) (db.Dinner, error) {
 	if updatedBy == "" {
-		return Dinner{}, errors.New("dinners: create: no member to record as updated_by")
+		return db.Dinner{}, errors.New("dinners: create: no member to record as updated_by")
 	}
 	var name string
 	var recipeURL sql.NullString
 	switch {
 	case r.Name != nil && r.RecipeURL != nil:
-		return Dinner{}, invalid("name", "give a name or a recipe_url, not both")
+		return db.Dinner{}, invalid("name", "give a name or a recipe_url, not both")
 	case r.Name != nil:
 		n, err := checkName(*r.Name)
 		if err != nil {
-			return Dinner{}, err
+			return db.Dinner{}, err
 		}
 		name = n
 	case r.RecipeURL != nil:
 		u, err := checkRecipeURL(*r.RecipeURL)
 		if err != nil {
-			return Dinner{}, err
+			return db.Dinner{}, err
 		}
 		n, ok := nameFromURL(u)
 		if !ok {
-			return Dinner{}, invalid("recipe_url", "the link does not name a dinner; add it by name instead")
+			return db.Dinner{}, invalid("recipe_url", "the link does not name a dinner; add it by name instead")
 		}
 		name = n
 		recipeURL = sql.NullString{String: u.String(), Valid: true}
 	default:
-		return Dinner{}, invalid("name", "give a name or a recipe_url")
+		return db.Dinner{}, invalid("name", "give a name or a recipe_url")
 	}
 
 	var row db.Dinner
@@ -269,9 +268,9 @@ func (s *Service) createRegular(ctx context.Context, r NewRegular, updatedBy str
 		return nil
 	})
 	if err != nil {
-		return Dinner{}, err
+		return db.Dinner{}, err
 	}
-	return fromRow(row), nil
+	return row, nil
 }
 
 // List returns the dinners with status, which must be regular or
@@ -294,9 +293,10 @@ func (s *Service) List(ctx context.Context, status string) ([]Dinner, error) {
 // Update applies p to dinner id, recording updatedBy. An invalid patch is a
 // *ValidationError and a new name repeating another unarchived dinner a
 // *DuplicateError; either changes nothing. Renaming a dinner still pending
-// clears its recipe_url and enqueues a fresh KindGroundDinner job that
-// grounds the new name: the job already running was for the old name or
-// link, and its result no longer applies.
+// clears its recipe_url, raises its grounding_revision and enqueues a fresh
+// KindGroundDinner job that grounds the new name: a job queued or running
+// for the old name or link carries the old revision, so it can no longer
+// write the dinner.
 func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy string) (Dinner, error) {
 	if updatedBy == "" {
 		return Dinner{}, errors.New("dinners: update: no member to record as updated_by")
@@ -318,21 +318,22 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 			return fmt.Errorf("dinners: read %s: %w", id, err)
 		}
 		params := db.UpdateDinnerParams{
-			ID:              cur.ID,
-			Name:            cur.Name,
-			NormalizedName:  cur.NormalizedName,
-			Status:          cur.Status,
-			Origin:          cur.Origin,
-			Method:          cur.Method,
-			MinutesTotal:    cur.MinutesTotal,
-			Difficulty:      cur.Difficulty,
-			Cuisine:         cur.Cuisine,
-			RecipeID:        cur.RecipeID,
-			RecipeUrl:       cur.RecipeUrl,
-			PhotoID:         cur.PhotoID,
-			GroundingStatus: cur.GroundingStatus,
-			UpdatedBy:       sql.NullString{String: updatedBy, Valid: true},
-			UpdatedAt:       store.Now().String(),
+			ID:                cur.ID,
+			Name:              cur.Name,
+			NormalizedName:    cur.NormalizedName,
+			Status:            cur.Status,
+			Origin:            cur.Origin,
+			Method:            cur.Method,
+			MinutesTotal:      cur.MinutesTotal,
+			Difficulty:        cur.Difficulty,
+			Cuisine:           cur.Cuisine,
+			RecipeID:          cur.RecipeID,
+			RecipeUrl:         cur.RecipeUrl,
+			PhotoID:           cur.PhotoID,
+			GroundingStatus:   cur.GroundingStatus,
+			GroundingRevision: cur.GroundingRevision,
+			UpdatedBy:         sql.NullString{String: updatedBy, Valid: true},
+			UpdatedAt:         store.Now().String(),
 		}
 		if p.Name != nil {
 			if err := checkUnique(ctx, q, cur.ID, name, sql.NullString{}); err != nil {
@@ -344,6 +345,7 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 				// The link was the old dinner's recipe; the new name is
 				// grounded by name, and a link can be given by hand.
 				params.RecipeUrl = sql.NullString{}
+				params.GroundingRevision++
 			}
 		}
 		if p.Method != nil {
@@ -359,14 +361,14 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 		if err != nil {
 			return fmt.Errorf("dinners: update %s: %w", id, err)
 		}
-		regrounding = row.GroundingStatus == GroundingPending && row.NormalizedName != cur.NormalizedName
+		regrounding = row.GroundingRevision != cur.GroundingRevision
 		return nil
 	})
 	if err != nil {
 		return Dinner{}, err
 	}
 	if regrounding {
-		jobID, err := s.enqueueGrounding(ctx, row.ID, row.NormalizedName)
+		jobID, err := s.enqueueGrounding(ctx, row.ID, row.GroundingRevision)
 		if err != nil {
 			return Dinner{}, err
 		}
@@ -514,18 +516,24 @@ func nameFromURL(u *url.URL) (name string, ok bool) {
 }
 
 // checkUnique returns a *DuplicateError when name is harness.Similar to an
-// unarchived dinner other than self, or recipeURL is one's recipe link.
+// unarchived dinner other than self, or recipeURL is one's recipe link: the
+// source_url of the recipe it is grounded in, else the recipe_url still
+// awaiting grounding.
 func checkUnique(ctx context.Context, q *db.Queries, self, name string, recipeURL sql.NullString) error {
 	rows, err := q.ListUnarchivedDinners(ctx)
 	if err != nil {
 		return fmt.Errorf("dinners: list for dedupe: %w", err)
 	}
 	for _, row := range rows {
-		if row.ID == self {
+		if row.Dinner.ID == self {
 			continue
 		}
-		if harness.Similar(name, row.Name) || (recipeURL.Valid && row.RecipeUrl == recipeURL) {
-			return &DuplicateError{Existing: fromRow(row)}
+		link := row.Dinner.RecipeUrl
+		if row.RecipeSourceUrl.Valid {
+			link = row.RecipeSourceUrl
+		}
+		if harness.Similar(name, row.Dinner.Name) || (recipeURL.Valid && link == recipeURL) {
+			return &DuplicateError{Existing: fromRow(row.Dinner)}
 		}
 	}
 	return nil

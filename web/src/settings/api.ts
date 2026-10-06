@@ -441,6 +441,18 @@ export function householdSettingsProblems(error: Error): HouseholdSettingsProble
   return problems
 }
 
+// needsMoreRegulars reports whether error is the server refusing to finish
+// onboarding because the household has fewer than three Regulars
+// (internal/household MinRegulars) — the only refusal of
+// {"onboarding_completed": true}.
+export function needsMoreRegulars(error: Error): boolean {
+  return (
+    error instanceof ApiError &&
+    error.code === 'invalid_settings' &&
+    error.message.startsWith(`${invalidHouseholdPrefix}onboarding_completed: `)
+  )
+}
+
 // aiStatus is the AI assistant row's status line: the provider and the
 // model's display name, or that no model is chosen yet (the seed).
 export function aiStatus(settings: Pick<AISettings, 'provider' | 'model'>): string {

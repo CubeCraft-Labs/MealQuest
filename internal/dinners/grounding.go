@@ -76,14 +76,17 @@ var groundTimeout = GroundTimeout
 // runs past GroundTimeout; the dinner is left as it was.
 var ErrGroundTimeout = errors.New("dinners: grounding the recipe took too long")
 
-// GroundJob is the KindGroundDinner payload.
+// GroundJob is the KindGroundDinner payload: the dinner to ground and its
+// grounding_revision when the job was enqueued.
 type GroundJob struct {
 	DinnerID string `json:"dinner_id"`
+	Revision int64  `json:"revision"`
 }
 
 // groundResult is the KindGroundDinner result: the dinner's grounding
-// status once the job ends. It is not grounded when the dinner was
-// grounded by hand before the job finished.
+// status once the job ends. It is not grounded by this job when the dinner
+// was grounded by hand before the job finished, renamed (a later job
+// grounds it) or archived; the job then reports the status it found.
 type groundResult struct {
 	DinnerID        string `json:"dinner_id"`
 	GroundingStatus string `json:"grounding_status"`
@@ -93,18 +96,21 @@ func (r groundResult) PublicJSON() ([]byte, error) { return json.Marshal(r) }
 
 // runGroundJob grounds a pending dinner as its creation asked: its
 // recipe_url with GroundURL, else its name with Ground. Success records
-// the recipe, photo, method, minutes and difficulty with grounding_status
-// grounded; failure records grounding_status failed with its Reason, which
-// is also the job's failure code. Either is recorded only while the dinner
-// is still pending under the normalized name read here: a dinner grounded
-// by hand meanwhile is left as it is, and one renamed meanwhile is left
-// pending for the job its rename enqueued.
+// the recipe and photo with grounding_status grounded, and the recipe's
+// method, minutes and difficulty where a member has not set them; failure
+// records grounding_status failed with its Reason, which is also the job's
+// failure code. A dinner archived, no longer pending, or at a
+// grounding_revision other than p.Revision is not grounded at all, and
+// either result is recorded only while the dinner is still unarchived,
+// pending and at p.Revision: a dinner grounded by hand meanwhile is left as
+// it is, and one renamed or archived meanwhile is left pending — for the
+// job its rename enqueued, or for none.
 func (s *Service) runGroundJob(ctx context.Context, p GroundJob, _ func(groundResult) error) (groundResult, error) {
 	row, err := db.New(s.st.Reader).GetDinner(ctx, p.DinnerID)
 	if err != nil {
 		return groundResult{}, fmt.Errorf("dinners: ground: read %s: %w", p.DinnerID, err)
 	}
-	if row.GroundingStatus != GroundingPending {
+	if row.Status == StatusArchived || row.GroundingStatus != GroundingPending || row.GroundingRevision != p.Revision {
 		return groundResult{DinnerID: row.ID, GroundingStatus: row.GroundingStatus}, nil
 	}
 
@@ -124,10 +130,10 @@ func (s *Service) runGroundJob(ctx context.Context, p GroundJob, _ func(groundRe
 		s.logger.InfoContext(ctx, "dinner grounding failed", "dinner_id", row.ID, "reason", reason)
 		write := context.WithoutCancel(ctx)
 		if _, failErr := db.New(s.st.Writer).FailPendingDinnerGrounding(write, db.FailPendingDinnerGroundingParams{
-			GroundingError: sql.NullString{String: reason, Valid: true},
-			UpdatedAt:      store.Now().String(),
-			ID:             row.ID,
-			NormalizedName: row.NormalizedName,
+			GroundingError:    sql.NullString{String: reason, Valid: true},
+			UpdatedAt:         store.Now().String(),
+			ID:                row.ID,
+			GroundingRevision: p.Revision,
 		}); failErr != nil {
 			return groundResult{}, fmt.Errorf("dinners: ground: record failure of %s: %w", row.ID, failErr)
 		}
@@ -138,14 +144,14 @@ func (s *Service) runGroundJob(ctx context.Context, p GroundJob, _ func(groundRe
 	}
 
 	n, err := db.New(s.st.Writer).GroundPendingDinner(ctx, db.GroundPendingDinnerParams{
-		RecipeID:       sql.NullString{String: gr.RecipeID, Valid: true},
-		PhotoID:        sql.NullString{String: gr.PhotoID, Valid: true},
-		Method:         sql.NullString{String: gr.Method, Valid: true},
-		MinutesTotal:   nullInt(gr.MinutesTotal),
-		Difficulty:     sql.NullString{String: gr.Difficulty, Valid: true},
-		UpdatedAt:      store.Now().String(),
-		ID:             row.ID,
-		NormalizedName: row.NormalizedName,
+		RecipeID:          sql.NullString{String: gr.RecipeID, Valid: true},
+		PhotoID:           sql.NullString{String: gr.PhotoID, Valid: true},
+		Method:            sql.NullString{String: gr.Method, Valid: true},
+		MinutesTotal:      nullInt(gr.MinutesTotal),
+		Difficulty:        sql.NullString{String: gr.Difficulty, Valid: true},
+		UpdatedAt:         store.Now().String(),
+		ID:                row.ID,
+		GroundingRevision: p.Revision,
 	})
 	if err != nil {
 		return groundResult{}, fmt.Errorf("dinners: ground: record %s: %w", row.ID, err)

@@ -229,6 +229,11 @@
   color: var(--color-accent-700);
 }
 
+/* Step 3: back to step 2 when the server wants more Regulars. */
+.recover {
+  margin-top: var(--space-3);
+}
+
 .status {
   margin-top: 10px;
 }

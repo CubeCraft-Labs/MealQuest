@@ -1,9 +1,44 @@
 package harness
 
 import (
+	"encoding/json"
+	"os"
 	"testing"
 	"unicode"
 )
+
+// TestSharedDedupeCases runs testdata/dedupe_cases.json, which the PWA's
+// copy of Normalize and Similar (web/src/dinners/names.ts) runs too, so the
+// two cannot drift apart on these names.
+func TestSharedDedupeCases(t *testing.T) {
+	raw, err := os.ReadFile("testdata/dedupe_cases.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases struct {
+		Normalize []struct{ Name, Want string }
+		Similar   []struct {
+			A, B string
+			Want bool
+		}
+	}
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatal(err)
+	}
+	if len(cases.Normalize) == 0 || len(cases.Similar) == 0 {
+		t.Fatal("dedupe_cases.json has no cases")
+	}
+	for _, c := range cases.Normalize {
+		if got := Normalize(c.Name); got != c.Want {
+			t.Errorf("Normalize(%q) = %q, want %q", c.Name, got, c.Want)
+		}
+	}
+	for _, c := range cases.Similar {
+		if got := Similar(c.A, c.B); got != c.Want {
+			t.Errorf("Similar(%q, %q) = %v, want %v", c.A, c.B, got, c.Want)
+		}
+	}
+}
 
 func TestNormalize(t *testing.T) {
 	tests := []struct {

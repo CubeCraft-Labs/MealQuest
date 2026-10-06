@@ -268,7 +268,7 @@ func TestDinners(t *testing.T) {
 	}
 	var unarchivedIDs []string
 	for _, d := range unarchived {
-		unarchivedIDs = append(unarchivedIDs, d.ID)
+		unarchivedIDs = append(unarchivedIDs, d.Dinner.ID)
 	}
 	assertIDs(t, "unarchived", unarchivedIDs, other.ID, third.ID)
 	_, err = q.ArchiveDinner(ctx, db.ArchiveDinnerParams{ID: "missing", UpdatedAt: archivedAt})

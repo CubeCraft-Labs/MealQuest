@@ -51,24 +51,25 @@ type ChatSetting struct {
 }
 
 type Dinner struct {
-	ID              string
-	Name            string
-	NormalizedName  string
-	Status          string
-	Origin          string
-	Method          sql.NullString
-	MinutesTotal    sql.NullInt64
-	Difficulty      sql.NullString
-	Cuisine         sql.NullString
-	IsFavorite      int64
-	RecipeID        sql.NullString
-	PhotoID         sql.NullString
-	GroundingStatus string
-	UpdatedBy       sql.NullString
-	CreatedAt       string
-	UpdatedAt       string
-	RecipeUrl       sql.NullString
-	GroundingError  sql.NullString
+	ID                string
+	Name              string
+	NormalizedName    string
+	Status            string
+	Origin            string
+	Method            sql.NullString
+	MinutesTotal      sql.NullInt64
+	Difficulty        sql.NullString
+	Cuisine           sql.NullString
+	IsFavorite        int64
+	RecipeID          sql.NullString
+	PhotoID           sql.NullString
+	GroundingStatus   string
+	UpdatedBy         sql.NullString
+	CreatedAt         string
+	UpdatedAt         string
+	RecipeUrl         sql.NullString
+	GroundingError    sql.NullString
+	GroundingRevision int64
 }
 
 type HouseholdSetting struct {

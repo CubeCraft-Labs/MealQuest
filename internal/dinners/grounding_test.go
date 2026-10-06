@@ -286,6 +286,120 @@ func TestManualFixWhilePendingIsKept(t *testing.T) {
 	}
 }
 
+// TestRenameWhilePendingGroundsNewName: a Regular renamed while its job is
+// still grounding the old name never gets the old name's result, whether
+// that job succeeds or fails; the job the rename enqueues grounds the new
+// name.
+func TestRenameWhilePendingGroundsNewName(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		oldName string
+		replies []llm.GenerateResult
+	}{
+		{"old name found", "Chicken curry", []llm.GenerateResult{
+			recipestest.NormalizedReply("stovetop", 40), recipestest.NormalizedReply("oven", 150),
+		}},
+		{"old name not found", "Unknown dish", []llm.GenerateResult{recipestest.NormalizedReply("oven", 150)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			e := newEnv(t)
+			e.search.Results["Beef stew"] = []recipes.Candidate{{URL: stew}}
+			e.search.Gate = make(chan struct{})
+			for _, r := range tt.replies {
+				e.model.QueueGenerate(r)
+			}
+
+			c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr(tt.oldName)}, member)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Rename only once the job has read the old name and is searching it.
+			e.waitQuery(t, tt.oldName)
+			d, err := e.svc.Update(t.Context(), c.ID, dinners.Patch{Name: ptr("Beef stew")}, member)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if d.GroundingStatus != dinners.GroundingPending {
+				t.Fatalf("renamed = %+v, want still pending", d)
+			}
+			close(e.search.Gate)
+
+			first := e.waitJob(t, *c.GroundingJobID)
+			if string(first.Result) == `{"dinner_id":"`+c.ID+`","grounding_status":"grounded"}` {
+				t.Fatalf("old name's job reported grounded: %+v (result %s)", first, first.Result)
+			}
+			row := e.waitGrounding(t, c.ID)
+			if row.GroundingStatus != dinners.GroundingGrounded {
+				t.Fatalf("dinner = %+v, want grounded for the new name", row)
+			}
+			rec, err := db.New(e.st.Reader).GetRecipe(t.Context(), row.RecipeID.String)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rec.SourceUrl != stew || rec.PhotoID != row.PhotoID || row.Method.String != "oven" || row.MinutesTotal.Int64 != 150 {
+				t.Errorf("dinner = %+v recipe %s, want grounded in %s", row, rec.SourceUrl, stew)
+			}
+			if got := e.search.Queries(); !slices.Equal(got, []string{tt.oldName, "Beef stew"}) {
+				t.Errorf("searched %q, want the old name then the new", got)
+			}
+		})
+	}
+}
+
+// TestRenameWhilePendingEnqueueFailure: a pending Regular renamed when the
+// job for its new name cannot be enqueued is failed, not left pending.
+func TestRenameWhilePendingEnqueueFailure(t *testing.T) {
+	t.Parallel()
+	e := newUnstartedEnv(t)
+	c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr("Chicken curry")}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.st.Writer.ExecContext(t.Context(),
+		`CREATE TRIGGER refuse_jobs BEFORE INSERT ON jobs BEGIN SELECT RAISE(ABORT, 'no jobs'); END`); err != nil {
+		t.Fatal(err)
+	}
+	d, err := e.svc.Update(t.Context(), c.ID, dinners.Patch{Name: ptr("Beef stew")}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Name != "Beef stew" || d.GroundingStatus != dinners.GroundingFailed ||
+		d.GroundingError == nil || *d.GroundingError != dinners.ReasonGroundingError {
+		t.Fatalf("renamed = %+v, want Beef stew failed (grounding_error)", d)
+	}
+}
+
+// waitQuery waits until the fake search has been asked query.
+func (e *env) waitQuery(t *testing.T, query string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !slices.Contains(e.search.Queries(), query) {
+		if time.Now().After(deadline) {
+			t.Fatalf("search never asked %q; asked %q", query, e.search.Queries())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// waitGrounding waits for dinner id to be no longer pending and returns it.
+func (e *env) waitGrounding(t *testing.T, id string) db.Dinner {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		row := e.dinner(t, id)
+		if row.GroundingStatus != dinners.GroundingPending {
+			return row
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("dinner %s still pending", id)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // failedDinner creates a Regular whose background grounding fails.
 func failedDinner(t *testing.T, e *env, name string) string {
 	t.Helper()

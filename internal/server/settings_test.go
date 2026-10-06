@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/auth"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/migrations"
@@ -115,16 +117,60 @@ func TestPatchHouseholdSettings(t *testing.T) {
 	}
 }
 
+// newOnboardingRouter returns a router whose settings store holds regulars
+// Regulars.
+func newOnboardingRouter(t *testing.T, regulars int) http.Handler {
+	t.Helper()
+	st := newTestStore(t)
+	if err := household.SeedSettings(context.Background(), st, "America/New_York"); err != nil {
+		t.Fatal(err)
+	}
+	for i := range regulars {
+		now := store.Now().String()
+		if _, err := db.New(st.Writer).CreateDinner(context.Background(), db.CreateDinnerParams{
+			ID: store.NewID(), Name: fmt.Sprintf("Dinner %d", i), NormalizedName: fmt.Sprintf("dinner %d", i),
+			Status: "regular", Origin: "regular", GroundingStatus: "pending", CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return newTestRouterWith(t, "dev", household.NewSettingsService(st), newTestRunner(t))
+}
+
 func TestPatchHouseholdSettingsCompletesOnboarding(t *testing.T) {
 	t.Parallel()
 
-	rec, body := serve(t, newTestRouter(t, "dev"), signedIn(http.MethodPatch, settingsPath,
+	rec, body := serve(t, newOnboardingRouter(t, household.MinRegulars), signedIn(http.MethodPatch, settingsPath,
 		strings.NewReader(`{"onboarding_completed":true}`)))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
 	}
 	if at, ok := body["onboarding_completed_at"].(string); !ok || at != body["updated_at"] {
 		t.Errorf("onboarding_completed_at = %#v, want the update time %#v", body["onboarding_completed_at"], body["updated_at"])
+	}
+}
+
+// TestPatchHouseholdSettingsOnboardingNeedsRegulars: completing onboarding
+// with fewer than three Regulars is refused and leaves it incomplete.
+func TestPatchHouseholdSettingsOnboardingNeedsRegulars(t *testing.T) {
+	t.Parallel()
+
+	for regulars := range household.MinRegulars {
+		t.Run(fmt.Sprintf("%d Regulars", regulars), func(t *testing.T) {
+			t.Parallel()
+			router := newOnboardingRouter(t, regulars)
+			rec, _ := serve(t, router, signedIn(http.MethodPatch, settingsPath,
+				strings.NewReader(`{"onboarding_completed":true}`)))
+			if rec.Code != http.StatusBadRequest ||
+				!strings.Contains(rec.Body.String(), `"code":"invalid_settings"`) ||
+				!strings.Contains(rec.Body.String(), "onboarding_completed: add at least 3 Regulars first") {
+				t.Fatalf("PATCH = %d %s, want 400 invalid_settings on onboarding_completed", rec.Code, rec.Body)
+			}
+			_, body := serve(t, router, signedIn(http.MethodGet, settingsPath, nil))
+			if body["onboarding_completed_at"] != nil {
+				t.Errorf("onboarding_completed_at = %#v after a refused completion, want null", body["onboarding_completed_at"])
+			}
+		})
 	}
 }
 

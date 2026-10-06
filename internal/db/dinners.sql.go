@@ -52,6 +52,19 @@ func (q *Queries) ArchiveDinner(ctx context.Context, arg ArchiveDinnerParams) (D
 	return i, err
 }
 
+const countRegularDinners = `-- name: CountRegularDinners :one
+SELECT COUNT(*) FROM dinners
+WHERE status = 'regular'
+`
+
+// How many Regulars the household has; archived dinners are not counted.
+func (q *Queries) CountRegularDinners(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countRegularDinners)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createDinner = `-- name: CreateDinner :one
 INSERT INTO dinners (
 	id, name, normalized_name, status, origin, method, minutes_total,
@@ -166,19 +179,26 @@ UPDATE dinners
 SET grounding_status = 'failed',
 	grounding_error = ?,
 	updated_at = ?
-WHERE id = ? AND grounding_status = 'pending'
+WHERE id = ? AND grounding_status = 'pending' AND normalized_name = ?
 `
 
 type FailPendingDinnerGroundingParams struct {
 	GroundingError sql.NullString
 	UpdatedAt      string
 	ID             string
+	NormalizedName string
 }
 
-// Records why the background grounding of a dinner still pending failed; a
-// dinner grounded some other way meanwhile is left as it is (0 rows).
+// Records why the background grounding of a dinner still pending under the
+// normalized name it was grounded for failed; a dinner grounded some other
+// way or renamed meanwhile is left as it is (0 rows).
 func (q *Queries) FailPendingDinnerGrounding(ctx context.Context, arg FailPendingDinnerGroundingParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, failPendingDinnerGrounding, arg.GroundingError, arg.UpdatedAt, arg.ID)
+	result, err := q.db.ExecContext(ctx, failPendingDinnerGrounding,
+		arg.GroundingError,
+		arg.UpdatedAt,
+		arg.ID,
+		arg.NormalizedName,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -291,21 +311,23 @@ SET recipe_id = ?,
 	grounding_status = 'grounded',
 	grounding_error = NULL,
 	updated_at = ?
-WHERE id = ? AND grounding_status = 'pending'
+WHERE id = ? AND grounding_status = 'pending' AND normalized_name = ?
 `
 
 type GroundPendingDinnerParams struct {
-	RecipeID     sql.NullString
-	PhotoID      sql.NullString
-	Method       sql.NullString
-	MinutesTotal sql.NullInt64
-	Difficulty   sql.NullString
-	UpdatedAt    string
-	ID           string
+	RecipeID       sql.NullString
+	PhotoID        sql.NullString
+	Method         sql.NullString
+	MinutesTotal   sql.NullInt64
+	Difficulty     sql.NullString
+	UpdatedAt      string
+	ID             string
+	NormalizedName string
 }
 
-// Records the background grounding of a dinner still pending; a dinner
-// grounded some other way meanwhile is left as it is (0 rows).
+// Records the background grounding of a dinner still pending under the
+// normalized name it was grounded for; a dinner grounded some other way or
+// renamed meanwhile is left as it is (0 rows).
 func (q *Queries) GroundPendingDinner(ctx context.Context, arg GroundPendingDinnerParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, groundPendingDinner,
 		arg.RecipeID,
@@ -315,6 +337,7 @@ func (q *Queries) GroundPendingDinner(ctx context.Context, arg GroundPendingDinn
 		arg.Difficulty,
 		arg.UpdatedAt,
 		arg.ID,
+		arg.NormalizedName,
 	)
 	if err != nil {
 		return 0, err

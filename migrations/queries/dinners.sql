@@ -19,6 +19,11 @@ SELECT * FROM dinners
 WHERE status = ?
 ORDER BY normalized_name, id;
 
+-- name: CountRegularDinners :one
+-- How many Regulars the household has; archived dinners are not counted.
+SELECT COUNT(*) FROM dinners
+WHERE status = 'regular';
+
 -- name: ListUnarchivedDinners :many
 -- Every dinner a new or renamed dinner must not repeat.
 SELECT * FROM dinners
@@ -88,8 +93,9 @@ WHERE id = ?
 RETURNING *;
 
 -- name: GroundPendingDinner :execrows
--- Records the background grounding of a dinner still pending; a dinner
--- grounded some other way meanwhile is left as it is (0 rows).
+-- Records the background grounding of a dinner still pending under the
+-- normalized name it was grounded for; a dinner grounded some other way or
+-- renamed meanwhile is left as it is (0 rows).
 UPDATE dinners
 SET recipe_id = ?,
 	photo_id = ?,
@@ -99,16 +105,17 @@ SET recipe_id = ?,
 	grounding_status = 'grounded',
 	grounding_error = NULL,
 	updated_at = ?
-WHERE id = ? AND grounding_status = 'pending';
+WHERE id = ? AND grounding_status = 'pending' AND normalized_name = ?;
 
 -- name: FailPendingDinnerGrounding :execrows
--- Records why the background grounding of a dinner still pending failed; a
--- dinner grounded some other way meanwhile is left as it is (0 rows).
+-- Records why the background grounding of a dinner still pending under the
+-- normalized name it was grounded for failed; a dinner grounded some other
+-- way or renamed meanwhile is left as it is (0 rows).
 UPDATE dinners
 SET grounding_status = 'failed',
 	grounding_error = ?,
 	updated_at = ?
-WHERE id = ? AND grounding_status = 'pending';
+WHERE id = ? AND grounding_status = 'pending' AND normalized_name = ?;
 
 -- name: FailOrphanedPendingDinnerGroundings :execrows
 -- Fails every dinner still pending whose grounding job is no longer queued

@@ -95,8 +95,10 @@ func (r groundResult) PublicJSON() ([]byte, error) { return json.Marshal(r) }
 // recipe_url with GroundURL, else its name with Ground. Success records
 // the recipe, photo, method, minutes and difficulty with grounding_status
 // grounded; failure records grounding_status failed with its Reason, which
-// is also the job's failure code. A dinner no longer pending (grounded by
-// hand meanwhile) is left as it is.
+// is also the job's failure code. Either is recorded only while the dinner
+// is still pending under the normalized name read here: a dinner grounded
+// by hand meanwhile is left as it is, and one renamed meanwhile is left
+// pending for the job its rename enqueued.
 func (s *Service) runGroundJob(ctx context.Context, p GroundJob, _ func(groundResult) error) (groundResult, error) {
 	row, err := db.New(s.st.Reader).GetDinner(ctx, p.DinnerID)
 	if err != nil {
@@ -125,6 +127,7 @@ func (s *Service) runGroundJob(ctx context.Context, p GroundJob, _ func(groundRe
 			GroundingError: sql.NullString{String: reason, Valid: true},
 			UpdatedAt:      store.Now().String(),
 			ID:             row.ID,
+			NormalizedName: row.NormalizedName,
 		}); failErr != nil {
 			return groundResult{}, fmt.Errorf("dinners: ground: record failure of %s: %w", row.ID, failErr)
 		}
@@ -135,13 +138,14 @@ func (s *Service) runGroundJob(ctx context.Context, p GroundJob, _ func(groundRe
 	}
 
 	n, err := db.New(s.st.Writer).GroundPendingDinner(ctx, db.GroundPendingDinnerParams{
-		RecipeID:     sql.NullString{String: gr.RecipeID, Valid: true},
-		PhotoID:      sql.NullString{String: gr.PhotoID, Valid: true},
-		Method:       sql.NullString{String: gr.Method, Valid: true},
-		MinutesTotal: nullInt(gr.MinutesTotal),
-		Difficulty:   sql.NullString{String: gr.Difficulty, Valid: true},
-		UpdatedAt:    store.Now().String(),
-		ID:           row.ID,
+		RecipeID:       sql.NullString{String: gr.RecipeID, Valid: true},
+		PhotoID:        sql.NullString{String: gr.PhotoID, Valid: true},
+		Method:         sql.NullString{String: gr.Method, Valid: true},
+		MinutesTotal:   nullInt(gr.MinutesTotal),
+		Difficulty:     sql.NullString{String: gr.Difficulty, Valid: true},
+		UpdatedAt:      store.Now().String(),
+		ID:             row.ID,
+		NormalizedName: row.NormalizedName,
 	})
 	if err != nil {
 		return groundResult{}, fmt.Errorf("dinners: ground: record %s: %w", row.ID, err)

@@ -176,27 +176,41 @@ func (s *Service) CreateRegular(ctx context.Context, r NewRegular, updatedBy str
 	if err != nil {
 		return Created{}, err
 	}
-	jobID, err := s.groundJob.Enqueue(ctx, GroundJob{DinnerID: d.ID})
-	if err == nil {
-		return Created{Dinner: d, GroundingJobID: &jobID}, nil
+	jobID, err := s.enqueueGrounding(ctx, d.ID, harness.Normalize(d.Name))
+	if err != nil {
+		return Created{}, err
 	}
-	// The dinner is stored; record that it will not be grounded so it is
-	// not left pending with no job. The error is a database error, never a
-	// dependency's text.
-	s.logger.ErrorContext(ctx, "dinner grounding not enqueued", "dinner_id", d.ID, "error", err)
-	write := context.WithoutCancel(ctx)
-	if _, err := db.New(s.st.Writer).FailPendingDinnerGrounding(write, db.FailPendingDinnerGroundingParams{
+	if jobID == nil {
+		row, err := db.New(s.st.Reader).GetDinner(context.WithoutCancel(ctx), d.ID)
+		if err != nil {
+			return Created{}, fmt.Errorf("dinners: read %s: %w", d.ID, err)
+		}
+		return Created{Dinner: fromRow(row)}, nil
+	}
+	return Created{Dinner: d, GroundingJobID: jobID}, nil
+}
+
+// enqueueGrounding enqueues the KindGroundDinner job for pending dinner id,
+// whose normalized name is normalizedName, and returns its id. When the job
+// cannot be enqueued, the dinner's grounding is failed with
+// ReasonGroundingError, so it is not left pending with no job, and the id
+// is nil.
+func (s *Service) enqueueGrounding(ctx context.Context, id, normalizedName string) (*string, error) {
+	jobID, err := s.groundJob.Enqueue(ctx, GroundJob{DinnerID: id})
+	if err == nil {
+		return &jobID, nil
+	}
+	// The error is a database error, never a dependency's text.
+	s.logger.ErrorContext(ctx, "dinner grounding not enqueued", "dinner_id", id, "error", err)
+	if _, err := db.New(s.st.Writer).FailPendingDinnerGrounding(context.WithoutCancel(ctx), db.FailPendingDinnerGroundingParams{
 		GroundingError: sql.NullString{String: ReasonGroundingError, Valid: true},
 		UpdatedAt:      store.Now().String(),
-		ID:             d.ID,
+		ID:             id,
+		NormalizedName: normalizedName,
 	}); err != nil {
-		return Created{}, fmt.Errorf("dinners: record failed grounding of %s: %w", d.ID, err)
+		return nil, fmt.Errorf("dinners: record failed grounding of %s: %w", id, err)
 	}
-	row, err := db.New(s.st.Reader).GetDinner(write, d.ID)
-	if err != nil {
-		return Created{}, fmt.Errorf("dinners: read %s: %w", d.ID, err)
-	}
-	return Created{Dinner: fromRow(row)}, nil
+	return nil, nil
 }
 
 func (s *Service) createRegular(ctx context.Context, r NewRegular, updatedBy string) (Dinner, error) {
@@ -279,7 +293,9 @@ func (s *Service) List(ctx context.Context, status string) ([]Dinner, error) {
 
 // Update applies p to dinner id, recording updatedBy. An invalid patch is a
 // *ValidationError and a new name repeating another unarchived dinner a
-// *DuplicateError; either changes nothing.
+// *DuplicateError; either changes nothing. Renaming a dinner still pending
+// enqueues a fresh KindGroundDinner job for the new name: the job already
+// running was for the old name, and its result no longer applies.
 func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy string) (Dinner, error) {
 	if updatedBy == "" {
 		return Dinner{}, errors.New("dinners: update: no member to record as updated_by")
@@ -290,6 +306,7 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 	}
 
 	var row db.Dinner
+	var regrounding bool
 	err = s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		q := db.New(tx)
 		cur, err := q.GetDinner(ctx, id)
@@ -335,10 +352,23 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 		if err != nil {
 			return fmt.Errorf("dinners: update %s: %w", id, err)
 		}
+		regrounding = row.GroundingStatus == GroundingPending && row.NormalizedName != cur.NormalizedName
 		return nil
 	})
 	if err != nil {
 		return Dinner{}, err
+	}
+	if regrounding {
+		jobID, err := s.enqueueGrounding(ctx, row.ID, row.NormalizedName)
+		if err != nil {
+			return Dinner{}, err
+		}
+		if jobID == nil {
+			row, err = db.New(s.st.Reader).GetDinner(context.WithoutCancel(ctx), row.ID)
+			if err != nil {
+				return Dinner{}, fmt.Errorf("dinners: read %s: %w", id, err)
+			}
+		}
 	}
 	return fromRow(row), nil
 }

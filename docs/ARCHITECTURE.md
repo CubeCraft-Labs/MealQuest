@@ -489,7 +489,14 @@ First run: while `household_settings.onboarding_completed_at` (read from
 `/onboarding`. Onboarding is a full screen outside the app shell, in three
 steps: the welcome (`/onboarding`), the Regulars (`/onboarding/regulars`,
 mock 1h, adding and archiving through the dinners API optimistically) and
-notifications (`/onboarding/notifications`). Offline on the saved pages the
+notifications (`/onboarding/notifications`: what MealQuest notifies about,
+the iOS install hint, "Turn on notifications" and "Maybe later"). Either
+button sends `PATCH /api/v1/settings/household` with
+`{"onboarding_completed": true}`; the server sets `onboarding_completed_at`
+to the time of that update (keeping the first time if it is already set;
+the field itself is read-only and `false` is refused) and the app goes Home.
+Notification permission is never asked for on page load; until Feature 19
+wires Web Push, "Turn on notifications" asks for nothing. Offline on the saved pages the
 settings cannot be read (the service worker never caches `/api/v1/settings`),
 so the saved pages open as they are.
 

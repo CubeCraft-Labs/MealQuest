@@ -1,0 +1,129 @@
+import { useState } from 'react'
+import { CalendarDays, ShoppingBasket, Sparkles, UtensilsCrossed, type LucideIcon } from 'lucide-react'
+import { useNavigate } from 'react-router'
+import { InstallHint } from '../pwa/InstallHint.tsx'
+import { useCompleteOnboarding } from '../settings/api.ts'
+import { Button } from '../ui/Button.tsx'
+import { Icon } from '../ui/Icon.tsx'
+import { OnboardingStep } from './OnboardingStep.tsx'
+import styles from './Onboarding.module.css'
+
+// NotificationsResult is how asking to turn on notifications ended.
+export type NotificationsResult = 'enabled' | 'denied' | 'unavailable'
+
+export type EnableNotifications = () => Promise<NotificationsResult>
+
+// TODO(Feature 19): Web Push. Until it is wired, notifications cannot be
+// turned on, and nothing asks the browser for permission.
+export function notificationsUnavailable(): Promise<NotificationsResult> {
+  return Promise.resolve('unavailable')
+}
+
+const topics: { icon: LucideIcon; name: string; meaning: string }[] = [
+  {
+    icon: CalendarDays,
+    name: 'Plan ready',
+    meaning: "The week's Draft board is ready for the household to adjust.",
+  },
+  {
+    icon: ShoppingBasket,
+    name: 'Supply run ready',
+    meaning: "The week's shopping list, grouped by dinner, is ready to shop.",
+  },
+  {
+    icon: UtensilsCrossed,
+    name: "Tonight's dinner",
+    meaning: "A reminder before dinner of what's on the plan tonight.",
+  },
+  {
+    icon: Sparkles,
+    name: 'New Side quests',
+    meaning: 'Fresh dinners to Try it or Pass, picked from your Regulars.',
+  },
+]
+
+export type NotificationsStepProps = {
+  // Asks to turn on notifications when the household taps "Turn on
+  // notifications" — never on render.
+  enableNotifications?: EnableNotifications
+}
+
+// NotificationsStep is onboarding step 3: what MealQuest notifies about, the
+// iOS install hint, and finishing onboarding. Either button records that
+// onboarding is finished and goes Home.
+export function NotificationsStep({ enableNotifications = notificationsUnavailable }: NotificationsStepProps) {
+  const navigate = useNavigate()
+  const complete = useCompleteOnboarding()
+  const [enabling, setEnabling] = useState(false)
+  const [problem, setProblem] = useState<string | null>(null)
+  const busy = enabling || complete.isPending
+
+  async function finish() {
+    try {
+      await complete.mutateAsync()
+    } catch (error) {
+      setProblem(`Could not finish setting up: ${(error as Error).message}`)
+      return
+    }
+    void navigate('/', { replace: true })
+  }
+
+  async function turnOn() {
+    setProblem(null)
+    setEnabling(true)
+    try {
+      await enableNotifications()
+    } catch (error) {
+      setProblem(`Could not turn on notifications: ${(error as Error).message}`)
+      return
+    } finally {
+      setEnabling(false)
+    }
+    await finish()
+  }
+
+  function later() {
+    setProblem(null)
+    void finish()
+  }
+
+  return (
+    <OnboardingStep
+      step={3}
+      title="Stay in the loop"
+      action={
+        <div className={styles.actions}>
+          <Button className={styles.action} disabled={busy} onClick={() => void turnOn()}>
+            Turn on notifications
+          </Button>
+          <Button variant="outline" className={styles.action} disabled={busy} onClick={later}>
+            Maybe later
+          </Button>
+        </div>
+      }
+    >
+      <p className={styles.helper}>MealQuest can let the household know when there&apos;s something to look at:</p>
+      <ul className={styles.terms}>
+        {topics.map(({ icon, name, meaning }) => (
+          <li key={name} className={styles.term}>
+            <span className={styles.termIcon}>
+              <Icon icon={icon} size="nav" />
+            </span>
+            <p className={styles.termText}>
+              <span className={styles.termName}>{name}</span>
+              {meaning}
+            </p>
+          </li>
+        ))}
+      </ul>
+      <div className={styles.hint}>
+        <InstallHint />
+      </div>
+      {problem && (
+        <p role="alert" className={styles.problem}>
+          {problem}
+        </p>
+      )}
+    </OnboardingStep>
+  )
+}

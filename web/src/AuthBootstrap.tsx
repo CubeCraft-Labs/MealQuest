@@ -41,6 +41,11 @@ export function AuthBootstrap({ children }: { children: ReactNode }) {
       </main>
     )
   }
+  return <LoadingScreen />
+}
+
+// LoadingScreen is the full-screen skeleton shown while MealQuest loads.
+export function LoadingScreen() {
   return (
     <main className={styles.screen} aria-busy="true" aria-label="Loading MealQuest">
       <div className={styles.loading}>

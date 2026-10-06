@@ -27,7 +27,14 @@ function renderAppAt(path: string, location = fakeLocation(path)) {
 }
 
 // The routes that render a built screen rather than a placeholder page.
-const SCREENS = { '/settings': true, '/settings/ai': true, '/settings/household': true }
+const SCREENS = { '/onboarding': true, '/settings': true, '/settings/ai': true, '/settings/household': true }
+
+// SIGNED_IN answers what every route reads first: the session, then the
+// household settings, onboarding finished.
+const SIGNED_IN = {
+  '/api/v1/me': () => jsonResponse(200, ME),
+  '/api/v1/settings/household': () => jsonResponse(200, HOUSEHOLD_SETTINGS),
+}
 
 describe('App routes', () => {
   it('registers every handoff route plus the extra settings pages', () => {
@@ -54,7 +61,7 @@ describe('App routes', () => {
     '%s renders its placeholder page inside the shell',
     async (path, title) => {
       mockViewport(390)
-      stubFetch(jsonResponse(200, ME))
+      stubFetchByPath(SIGNED_IN)
       renderAt(path)
       const heading = await screen.findByRole('heading', { level: 1, name: title })
       expect(screen.getByRole('main')).toContainElement(heading)
@@ -77,7 +84,7 @@ describe('App routes', () => {
   it('/settings/ai renders the AI assistant screen inside the shell', async () => {
     mockViewport(390)
     stubFetchByPath({
-      '/api/v1/me': () => jsonResponse(200, ME),
+      ...SIGNED_IN,
       '/api/v1/settings/ai': () => jsonResponse(200, AI_SETTINGS),
       '/api/v1/settings/ai/models': () => jsonResponse(200, { models: [] }),
       '/api/v1/settings/recipe-search': () => jsonResponse(200, RECIPE_SEARCH_SETTINGS),
@@ -90,10 +97,7 @@ describe('App routes', () => {
 
   it('/settings/household renders the household settings screen inside the shell', async () => {
     mockViewport(390)
-    stubFetchByPath({
-      '/api/v1/me': () => jsonResponse(200, ME),
-      '/api/v1/settings/household': () => jsonResponse(200, HOUSEHOLD_SETTINGS),
-    })
+    stubFetchByPath(SIGNED_IN)
     renderAt('/settings/household')
     const heading = await screen.findByRole('heading', { level: 1, name: 'Household' })
     expect(screen.getByRole('main')).toContainElement(heading)
@@ -101,10 +105,53 @@ describe('App routes', () => {
   })
 })
 
+describe('App first-run redirect', () => {
+  const FIRST_RUN = {
+    '/api/v1/me': () => jsonResponse(200, ME),
+    '/api/v1/settings/household': () => jsonResponse(200, { ...HOUSEHOLD_SETTINGS, onboarding_completed_at: null }),
+  }
+
+  it.each(routes.filter(({ path }) => path !== '/onboarding').map(({ path }) => path.replace(':id', 'abc123')))(
+    '%s redirects to /onboarding while onboarding is not finished',
+    async (path) => {
+      mockViewport(390)
+      stubFetchByPath(FIRST_RUN)
+      renderAt(path)
+      expect(await screen.findByRole('heading', { level: 1, name: 'Welcome to MealQuest' })).toBeInTheDocument()
+      expect(screen.queryByRole('navigation', { name: 'Primary' })).not.toBeInTheDocument()
+    },
+  )
+
+  it('stays on an onboarding step', async () => {
+    mockViewport(390)
+    stubFetchByPath({ ...FIRST_RUN, '/api/v1/dinners?status=regular': () => jsonResponse(200, { dinners: [] }) })
+    renderAt('/onboarding/regulars')
+    expect(await screen.findByRole('heading', { level: 1, name: "What's on your usual rotation?" })).toBeInTheDocument()
+  })
+
+  it('opens the routes once onboarding is finished', async () => {
+    mockViewport(390)
+    stubFetchByPath(SIGNED_IN)
+    renderAt('/plan')
+    expect(await screen.findByRole('heading', { level: 1, name: 'Plan' })).toBeInTheDocument()
+  })
+
+  it('reports a household settings failure with a retry instead of rendering the routes', async () => {
+    mockViewport(390)
+    stubFetch(jsonResponse(200, ME), errorResponse(500, 'internal'), jsonResponse(200, HOUSEHOLD_SETTINGS))
+    renderAt('/plan')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('MealQuest could not load: internal message')
+    expect(screen.queryByRole('navigation', { name: 'Primary' })).not.toBeInTheDocument()
+    screen.getByRole('button', { name: 'Retry' }).click()
+    expect(await screen.findByRole('heading', { level: 1, name: 'Plan' })).toBeInTheDocument()
+  })
+})
+
 describe('App bootstrap', () => {
   it('shows the skeleton until /me loads, then the routes', async () => {
     mockViewport(390)
-    const fetchMock = stubFetch(jsonResponse(200, ME))
+    const fetchMock = stubFetch(jsonResponse(200, ME), jsonResponse(200, HOUSEHOLD_SETTINGS))
     renderAt('/plan')
 
     expect(screen.getByRole('main', { name: 'Loading MealQuest' })).toHaveAttribute('aria-busy', 'true')
@@ -138,7 +185,7 @@ describe('App bootstrap', () => {
 
   it('reports a /me failure with a retry instead of rendering the routes', async () => {
     mockViewport(390)
-    stubFetch(errorResponse(500, 'internal'), jsonResponse(200, ME))
+    stubFetch(errorResponse(500, 'internal'), jsonResponse(200, ME), jsonResponse(200, HOUSEHOLD_SETTINGS))
     renderAt('/')
 
     expect(await screen.findByRole('alert')).toHaveTextContent('MealQuest could not load: internal message')
@@ -158,7 +205,7 @@ describe('App offline bootstrap', () => {
   // visitOnline is an earlier online visit on this device: /me answers with a
   // member, then the app is closed.
   async function visitOnline() {
-    stubFetch(jsonResponse(200, ME))
+    stubFetchByPath(SIGNED_IN)
     const { unmount } = renderAt('/')
     expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument()
     unmount()
@@ -226,12 +273,17 @@ describe('App offline bootstrap', () => {
     expect(await screen.findByRole('heading', { level: 1, name: 'Plan' })).toBeInTheDocument()
     await expect(api.apiFetch('/api/v1/plans', { method: 'POST', body: {} })).rejects.toThrow(/no CSRF token/)
 
-    const fetchMock = stubFetch(jsonResponse(200, ME))
+    const fetchMock = stubFetchByPath(SIGNED_IN)
     onLine = true
     act(() => {
       window.dispatchEvent(new Event('online'))
     })
-    await vi.waitFor(() => expect(request(fetchMock, 0)).toMatchObject({ path: '/api/v1/me', method: 'GET' }))
+    await vi.waitFor(() =>
+      expect(fetchMock.mock.calls.map(([input]) => String(input)).sort()).toEqual([
+        '/api/v1/me',
+        '/api/v1/settings/household',
+      ]),
+    )
     await vi.waitFor(() => expect(screen.queryByRole('status')).toBeNull())
     expect(screen.getByRole('heading', { level: 1, name: 'Plan' })).toBeInTheDocument()
   })

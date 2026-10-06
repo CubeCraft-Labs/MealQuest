@@ -484,6 +484,15 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
 `/settings/household`, `/settings/regulars` and `/settings/calendar` come from
 CTXD; the other routes are defined in the UI handoff.
 
+First run: while `household_settings.onboarding_completed_at` (read from
+`GET /api/v1/settings/household`) is null, every route redirects to
+`/onboarding`. Onboarding is a full screen outside the app shell, in three
+steps: the welcome (`/onboarding`), the Regulars (`/onboarding/regulars`,
+mock 1h, adding and archiving through the dinners API optimistically) and
+notifications (`/onboarding/notifications`). Offline on the saved pages the
+settings cannot be read (the service worker never caches `/api/v1/settings`),
+so the saved pages open as they are.
+
 ## Boundaries and gotchas
 
 - **Secrets never reach the client** — API keys, OAuth tokens and the Chat

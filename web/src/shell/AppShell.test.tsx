@@ -21,7 +21,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-function renderAt(path: string, width: number) {
+async function renderAt(path: string, width: number) {
   const resize = mockViewport(width)
   stubFetchByPath(SETTINGS_API)
   render(
@@ -31,6 +31,8 @@ function renderAt(path: string, width: number) {
       </ApiProviders>
     </InDataRouter>,
   )
+  // The routes wait for the household settings (OnboardingGate).
+  await screen.findByRole('navigation', { name: 'Primary' })
   return resize
 }
 
@@ -49,8 +51,8 @@ function current() {
 }
 
 describe('AppShell', () => {
-  it.each([MOBILE, TABLET, DESKTOP])('orders the nav Home · Plan · Discover · Quick · Settings at %i px', (width) => {
-    renderAt('/', width)
+  it.each([MOBILE, TABLET, DESKTOP])('orders the nav Home · Plan · Discover · Quick · Settings at %i px', async (width) => {
+    await renderAt('/', width)
     expect(navLinks().map((link) => link.textContent)).toEqual(ORDER)
     expect(navLinks().map((link) => link.getAttribute('href'))).toEqual([
       '/',
@@ -61,8 +63,8 @@ describe('AppShell', () => {
     ])
   })
 
-  it('shows only the mobile bottom bar below 768 px', () => {
-    renderAt('/', 767)
+  it('shows only the mobile bottom bar below 768 px', async () => {
+    await renderAt('/', 767)
     expect(screen.getAllByRole('navigation')).toHaveLength(1)
     expect(nav()).toHaveClass(bottomBarStyles.bar!)
     expect(screen.queryByText('M')).not.toBeInTheDocument()
@@ -80,8 +82,8 @@ describe('AppShell', () => {
     expect(bar.borderRadius).toBe('var(--radius-pill)')
   })
 
-  it('shows the active mobile item as icon and label over the one grape pill, inactive items as neutral icons', () => {
-    renderAt('/discover', MOBILE)
+  it('shows the active mobile item as icon and label over the one grape pill, inactive items as neutral icons', async () => {
+    await renderAt('/discover', MOBILE)
     const pills = nav().querySelectorAll(`.${bottomBarStyles.pill}`)
     expect(pills).toHaveLength(1)
     const pill = declaredStyle(pills[0]!)
@@ -101,24 +103,24 @@ describe('AppShell', () => {
     expect(within(inactive).getByText('Plan')).toHaveClass(bottomBarStyles.hiddenLabel!)
   })
 
-  it('makes the full 62 px bar height the mobile tap target', () => {
-    renderAt('/', MOBILE)
+  it('makes the full 62 px bar height the mobile tap target', async () => {
+    await renderAt('/', MOBILE)
     for (const link of navLinks()) {
       expect(declaredStyle(link).height).toBe('62px')
       expectMinHitArea(link)
     }
   })
 
-  it('reserves at least 100 px below the mobile scroll area', () => {
-    renderAt('/', MOBILE)
+  it('reserves at least 100 px below the mobile scroll area', async () => {
+    await renderAt('/', MOBILE)
     const padding = declaredStyle(screen.getByRole('main')).paddingBottom
     const reserved = /^calc\((\d+)px \+ env\(safe-area-inset-bottom\)\)$/.exec(padding)
     expect(reserved, `padding-bottom ${JSON.stringify(padding)}`).not.toBeNull()
     expect(Number(reserved![1])).toBeGreaterThanOrEqual(100)
   })
 
-  it.each([768, TABLET, 1199])('shows only the tablet rail with the "M" mark at %i px', (width) => {
-    renderAt('/plan', width)
+  it.each([768, TABLET, 1199])('shows only the tablet rail with the "M" mark at %i px', async (width) => {
+    await renderAt('/plan', width)
     expect(screen.getAllByRole('navigation')).toHaveLength(1)
     expect(nav()).toHaveClass(railStyles.rail!)
     expect(declaredStyle(nav()).width).toBe('96px')
@@ -146,8 +148,8 @@ describe('AppShell', () => {
     expect(screen.getByRole('link', { name: 'Home' }).firstElementChild).not.toHaveClass(railStyles.active!)
   })
 
-  it.each([1200, DESKTOP])('shows only the desktop sidebar with wordmark and household card at %i px', (width) => {
-    renderAt('/quick', width)
+  it.each([1200, DESKTOP])('shows only the desktop sidebar with wordmark and household card at %i px', async (width) => {
+    await renderAt('/quick', width)
     expect(screen.getAllByRole('navigation')).toHaveLength(1)
     const sidebar = nav().closest('aside')!
     expect(sidebar).toHaveClass(sidebarStyles.sidebar!)
@@ -176,8 +178,8 @@ describe('AppShell', () => {
     for (const link of navLinks()) expect(declaredStyle(link).minHeight).toBe('44px')
   })
 
-  it('switches layout when the viewport crosses a breakpoint', () => {
-    const resize = renderAt('/', MOBILE)
+  it('switches layout when the viewport crosses a breakpoint', async () => {
+    const resize = await renderAt('/', MOBILE)
     expect(nav()).toHaveClass(bottomBarStyles.bar!)
     resize(TABLET)
     expect(nav()).toHaveClass(railStyles.rail!)
@@ -206,11 +208,10 @@ describe('AppShell', () => {
       ['/settings/household', ['Settings']],
       ['/settings/regulars', ['Settings']],
       ['/settings/calendar', ['Settings']],
-      ['/onboarding', []],
       ['/cook-from-pantry', []],
       ['/dinner/abc123', []],
-    ])('%s marks %j current', (path, expected) => {
-      renderAt(path, width)
+    ])('%s marks %j current', async (path, expected) => {
+      await renderAt(path, width)
       expect(current()).toEqual(expected)
     })
   })

@@ -3,6 +3,8 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { Route, Routes } from 'react-router'
 import { ApiProvider, createQueryClient, type ApiClient } from './api/index.ts'
 import { AuthBootstrap } from './AuthBootstrap.tsx'
+import { ONBOARDING_PATH, OnboardingGate } from './onboarding/OnboardingGate.tsx'
+import { OnboardingPage } from './onboarding/OnboardingPage.tsx'
 import { PlaceholderPage } from './pages/PlaceholderPage.tsx'
 import { OfflinePill } from './pwa/OfflinePill.tsx'
 import { UpdatePrompt, type UpdateContainer } from './pwa/UpdatePrompt.tsx'
@@ -38,13 +40,20 @@ const screens: Partial<Record<(typeof routes)[number]['path'], ReactNode>> = {
 }
 
 // AppRoutes is the shell and its pages, shown once /api/v1/me has loaded.
+// Onboarding is a full screen of its own, outside the shell; until it is
+// finished, OnboardingGate sends every other route to it.
 export function AppRoutes() {
   return (
     <Routes>
-      <Route element={<AppShell />}>
-        {routes.map(({ path, title }) => (
-          <Route key={path} path={path} element={screens[path] ?? <PlaceholderPage title={title} />} />
-        ))}
+      <Route element={<OnboardingGate />}>
+        <Route path={`${ONBOARDING_PATH}/*`} element={<OnboardingPage />} />
+        <Route element={<AppShell />}>
+          {routes
+            .filter(({ path }) => path !== ONBOARDING_PATH)
+            .map(({ path, title }) => (
+              <Route key={path} path={path} element={screens[path] ?? <PlaceholderPage title={title} />} />
+            ))}
+        </Route>
       </Route>
     </Routes>
   )

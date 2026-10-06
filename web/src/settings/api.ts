@@ -37,13 +37,17 @@ export type HouseholdSettings = {
   suggestions_time: string
   chat_autosend_dow: number
   chat_autosend_time: string
+  // When the household finished onboarding; null until it has, and every
+  // app route sends it to /onboarding. Not editable in settings.
+  onboarding_completed_at: string | null
 }
+
+// HouseholdSettingsField is a household setting the settings pages edit.
+export type HouseholdSettingsField = Exclude<keyof HouseholdSettings, 'onboarding_completed_at'>
 
 // HouseholdSettingsPatch is the PATCH /api/v1/settings/household body: only
 // the fields that change.
-export type HouseholdSettingsPatch = Partial<HouseholdSettings>
-
-export type HouseholdSettingsField = keyof HouseholdSettings
+export type HouseholdSettingsPatch = Partial<Pick<HouseholdSettings, HouseholdSettingsField>>
 
 const householdTimeFields = [
   'dinner_time',
@@ -355,10 +359,13 @@ function parseHouseholdSettings(where: string, body: unknown): HouseholdSettings
     }
     days[field] = value
   }
-  return { timezone: body.timezone, ...times, ...days }
+  if (!isStringOrNull(body.onboarding_completed_at)) {
+    throw new Error(`${where}: onboarding_completed_at ${JSON.stringify(body.onboarding_completed_at)} is not a time or null`)
+  }
+  return { timezone: body.timezone, ...times, ...days, onboarding_completed_at: body.onboarding_completed_at }
 }
 
-const HOUSEHOLD_SETTINGS_KEY = ['settings', 'household'] as const
+export const HOUSEHOLD_SETTINGS_KEY = ['settings', 'household'] as const
 
 export function useHouseholdSettings() {
   const { apiFetch } = useApi()

@@ -3,6 +3,7 @@ import { useEffect, useId, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import { ApiError } from '../api/index.ts'
 import { Button } from '../ui/Button.tsx'
+import { Card } from '../ui/Card.tsx'
 import { ErrorBanner } from '../ui/ErrorBanner.tsx'
 import { Icon } from '../ui/Icon.tsx'
 import { IconButton } from '../ui/IconButton.tsx'
@@ -10,6 +11,7 @@ import { Select } from '../ui/Select.tsx'
 import { Sheet } from '../ui/Sheet.tsx'
 import { Skeleton } from '../ui/Skeleton.tsx'
 import { Slider } from '../ui/Slider.tsx'
+import { Tag } from '../ui/Tag.tsx'
 import { TextInput } from '../ui/TextInput.tsx'
 import {
   aiKeyPolicy,
@@ -39,22 +41,53 @@ const TYPE_MODEL = '\u0000type'
 // sees the key's last four characters. Recipe search is its own card, saved
 // on its own.
 export function AISettingsPage() {
-  const settings = useAISettings()
   const [aiDirty, setAIDirty] = useState(false)
   const [recipeSearchDirty, setRecipeSearchDirty] = useState(false)
   return (
     <div className={styles.page}>
       <Header />
+      <AIAssistantSettings onDirtyChange={setAIDirty} />
+      <RecipeSearchCard onDirtyChange={setRecipeSearchDirty} />
+      <LeaveGuard dirty={aiDirty || recipeSearchDirty} />
+    </div>
+  )
+}
+
+type AISettingsProps = {
+  // Called with whether the form holds unsaved changes.
+  onDirtyChange: (dirty: boolean) => void
+}
+
+// AIAssistantCard is the AI assistant's fields as a card, for the desktop
+// settings (handoff mock 2e): the system prompt grows to fill the card.
+export function AIAssistantCard({ onDirtyChange }: AISettingsProps) {
+  const titleId = useId()
+  return (
+    <Card className={`${styles.card} ${styles.fill}`} aria-labelledby={titleId} role="region">
+      <div className={styles.cardHeader}>
+        <h2 id={titleId} className={styles.cardTitle}>
+          AI assistant
+        </h2>
+        <Tag>Admin</Tag>
+      </div>
+      <AIAssistantSettings onDirtyChange={onDirtyChange} />
+    </Card>
+  )
+}
+
+// AIAssistantSettings is the AI assistant's form once its settings load.
+function AIAssistantSettings({ onDirtyChange }: AISettingsProps) {
+  const settings = useAISettings()
+  return (
+    <>
       {settings.isPending && <Skeleton className={styles.loading} />}
       {settings.isError && (
         <ErrorBanner onRetry={() => void settings.refetch()}>
           AI settings could not load: {settings.error.message}
         </ErrorBanner>
       )}
-      {settings.isSuccess && <AISettingsForm saved={settings.data} onDirtyChange={setAIDirty} />}
-      <RecipeSearchCard onDirtyChange={setRecipeSearchDirty} />
-      <LeaveGuard dirty={aiDirty || recipeSearchDirty} />
-    </div>
+      {settings.isSuccess && <AISettingsForm saved={settings.data} onDirtyChange={onDirtyChange} />}
+    </>
   )
 }
 
@@ -103,10 +136,8 @@ function patchOf(saved: AISettings, draft: Draft): AISettingsPatch {
   return patch
 }
 
-type AISettingsFormProps = {
+type AISettingsFormProps = AISettingsProps & {
   saved: AISettings
-  // Called with whether the form holds unsaved changes.
-  onDirtyChange: (dirty: boolean) => void
 }
 
 function AISettingsForm({ saved, onDirtyChange }: AISettingsFormProps) {

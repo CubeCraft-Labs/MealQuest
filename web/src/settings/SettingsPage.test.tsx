@@ -8,6 +8,7 @@ import { AI_SETTINGS, HOUSEHOLD_SETTINGS, SETTINGS_API } from '../test/ApiProvid
 import { declaredStyle } from '../test/cssRules.ts'
 import { errorResponse, fakeLocation, jsonResponse, stubFetchByPath } from '../test/fetchStub.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
+import { mockViewport } from '../test/matchMedia.ts'
 import { formatClockTime, modelDisplayName } from './api.ts'
 import { SettingsPage } from './SettingsPage.tsx'
 
@@ -16,6 +17,7 @@ const AI = AI_SETTINGS
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  Reflect.deleteProperty(window, 'matchMedia')
 })
 
 const REGULARS_PATH = '/api/v1/dinners?status=regular'
@@ -37,7 +39,10 @@ function CurrentPath() {
   return <p data-testid="path">{useLocation().pathname}</p>
 }
 
+// renderSettings renders the settings home on a 390 px phone (mock 1p);
+// SettingsTabs.test.tsx covers 768 px and up.
 function renderSettings() {
+  mockViewport(390)
   const api = createApiClient(fakeLocation('/settings'), createNetworkStatus(window), createVerifiedSession(localStorage))
   return render(
     <ApiProvider client={api}>

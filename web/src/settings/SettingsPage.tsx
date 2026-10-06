@@ -8,6 +8,7 @@ import { ErrorBanner } from '../ui/ErrorBanner.tsx'
 import { Icon } from '../ui/Icon.tsx'
 import { Skeleton } from '../ui/Skeleton.tsx'
 import { Tag } from '../ui/Tag.tsx'
+import { useBreakpoint } from '../shell/useBreakpoint.ts'
 import {
   aiStatus,
   calendarStatus,
@@ -21,12 +22,19 @@ import {
   useRegularDinnersCount,
 } from './api.ts'
 import styles from './SettingsPage.module.css'
+import { SettingsTabs } from './SettingsTabs.tsx'
 
-// Settings home (handoff mock 1p). Each row opens its settings page and
-// shows a live status line. Regular dinners, Google Calendar and
+// Settings home: the list of settings pages on mobile (mock 1p), one page
+// with sub-tabs from 768 px (mock 2e).
+export function SettingsPage() {
+  return useBreakpoint() === 'mobile' ? <SettingsList /> : <SettingsTabs />
+}
+
+// The mobile settings list (handoff mock 1p). Each row opens its settings
+// page and shows a live status line. Regular dinners, Google Calendar and
 // Notifications & Google Chat read endpoints their features have not served
 // yet; until then each shows its not-yet-available state (see api.ts).
-export function SettingsPage() {
+function SettingsList() {
   const household = useHouseholdSettings()
   const ai = useAISettings()
   const regulars = useRegularDinnersCount()

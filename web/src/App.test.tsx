@@ -5,7 +5,7 @@ import { createNetworkStatus } from './pwa/networkStatus.ts'
 import { mockViewport } from './test/matchMedia.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME, request, stubFetch, stubFetchByPath } from './test/fetchStub.ts'
 import App, { routes } from './App.tsx'
-import { AI_SETTINGS, SETTINGS_API } from './test/ApiProviders.tsx'
+import { AI_SETTINGS, RECIPE_SEARCH_SETTINGS, SETTINGS_API } from './test/ApiProviders.tsx'
 import { InDataRouter } from './test/dataRouter.tsx'
 
 afterEach(() => {
@@ -80,6 +80,7 @@ describe('App routes', () => {
       '/api/v1/me': () => jsonResponse(200, ME),
       '/api/v1/settings/ai': () => jsonResponse(200, AI_SETTINGS),
       '/api/v1/settings/ai/models': () => jsonResponse(200, { models: [] }),
+      '/api/v1/settings/recipe-search': () => jsonResponse(200, RECIPE_SEARCH_SETTINGS),
     })
     renderAt('/settings/ai')
     const heading = await screen.findByRole('heading', { level: 1, name: 'AI assistant' })

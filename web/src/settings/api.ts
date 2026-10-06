@@ -8,6 +8,8 @@ export const AI_MODELS_PATH = '/api/v1/settings/ai/models'
 export const AI_KEY_PATH = '/api/v1/settings/ai/api-key'
 export const AI_VERIFY_PATH = '/api/v1/settings/ai/verify'
 export const AI_RESET_PROMPT_PATH = '/api/v1/settings/ai/reset-prompt'
+export const RECIPE_SEARCH_PATH = '/api/v1/settings/recipe-search'
+export const RECIPE_SEARCH_TEST_PATH = '/api/v1/settings/recipe-search/test'
 // TODO(Feature 12): GET /api/v1/dinners?status=regular is Feature 12's
 // dinners read API. Until it lands the server answers 404 and the Regular
 // dinners row says the count is unavailable.
@@ -192,6 +194,105 @@ export function useResetAIPrompt() {
   return useAISettingsMutation(AI_RESET_PROMPT_PATH, 'POST', () => undefined)
 }
 
+// recipeSearchProviderLabels names every recipe search provider the server
+// accepts (internal/recipes/searchsettings.go).
+export const recipeSearchProviderLabels = {
+  searxng: 'SearXNG',
+  brave: 'Brave',
+} as const
+
+export type RecipeSearchProvider = keyof typeof recipeSearchProviderLabels
+
+// RecipeSearchSettings is GET /api/v1/settings/recipe-search. The Brave API
+// key itself is never sent: only whether one is stored and its last four
+// characters.
+export type RecipeSearchSettings = {
+  // Null until recipe search is first set up.
+  provider: RecipeSearchProvider | null
+  // The SearXNG instance's URL, null when none is set.
+  base_url: string | null
+  api_key_set: boolean
+  api_key_last4: string | null
+  updated_at: string | null
+}
+
+// RecipeSearchSettingsPatch is the PATCH /api/v1/settings/recipe-search
+// body: only the fields that change. api_key is the Brave key in plain text.
+export type RecipeSearchSettingsPatch = {
+  provider?: RecipeSearchProvider
+  base_url?: string
+  api_key?: string
+}
+
+// RecipeSearchTest is POST /api/v1/settings/recipe-search/test: how many
+// recipes the saved provider found for query.
+export type RecipeSearchTest = { query: string; count: number }
+
+function isRecipeSearchProvider(value: string): value is RecipeSearchProvider {
+  return Object.hasOwn(recipeSearchProviderLabels, value)
+}
+
+function parseRecipeSearchSettings(where: string, body: unknown): RecipeSearchSettings {
+  if (
+    !isRecord(body) ||
+    !isStringOrNull(body.provider) ||
+    !isStringOrNull(body.base_url) ||
+    typeof body.api_key_set !== 'boolean' ||
+    !isStringOrNull(body.api_key_last4) ||
+    !isStringOrNull(body.updated_at)
+  ) {
+    throw new Error(`${where}: response is not the recipe search settings`)
+  }
+  if (body.provider !== null && !isRecipeSearchProvider(body.provider)) {
+    throw new Error(`${where}: unknown recipe search provider "${body.provider}"`)
+  }
+  return {
+    provider: body.provider,
+    base_url: body.base_url,
+    api_key_set: body.api_key_set,
+    api_key_last4: body.api_key_last4,
+    updated_at: body.updated_at,
+  }
+}
+
+const RECIPE_SEARCH_KEY = ['settings', 'recipe-search'] as const
+
+export function useRecipeSearchSettings() {
+  const { apiFetch } = useApi()
+  return useQuery({
+    queryKey: RECIPE_SEARCH_KEY,
+    queryFn: async () =>
+      parseRecipeSearchSettings(`GET ${RECIPE_SEARCH_PATH}`, await apiFetch<unknown>(RECIPE_SEARCH_PATH)),
+  })
+}
+
+export function useSaveRecipeSearchSettings() {
+  const { apiFetch } = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (patch: RecipeSearchSettingsPatch) =>
+      parseRecipeSearchSettings(
+        `PATCH ${RECIPE_SEARCH_PATH}`,
+        await apiFetch<unknown>(RECIPE_SEARCH_PATH, { method: 'PATCH', body: patch }),
+      ),
+    onSuccess: (settings) => queryClient.setQueryData(RECIPE_SEARCH_KEY, settings),
+  })
+}
+
+// useTestRecipeSearch searches with the saved settings.
+export function useTestRecipeSearch() {
+  const { apiFetch } = useApi()
+  return useMutation({
+    mutationFn: async () => {
+      const body = await apiFetch<unknown>(RECIPE_SEARCH_TEST_PATH, { method: 'POST' })
+      if (!isRecord(body) || typeof body.query !== 'string' || typeof body.count !== 'number') {
+        throw new Error(`POST ${RECIPE_SEARCH_TEST_PATH}: response is not a search test result`)
+      }
+      return { query: body.query, count: body.count } satisfies RecipeSearchTest
+    },
+  })
+}
+
 const clockTime = /^([01][0-9]|2[0-3]):([0-5][0-9])$/
 
 // useHouseholdSettings refuses a dinner time that is not HH:MM, so
@@ -319,6 +420,12 @@ export function useNotificationsStatus() {
 export function notificationsStatus(status: NotificationsStatus | null): string {
   const push = status?.push === true ? 'Push on' : 'Push off'
   return `${push} · ${status?.chat_space ?? 'Google Chat not connected'}`
+}
+
+// maskedKey shows a stored key as dots and its last four characters, all
+// the client ever knows of it.
+export function maskedKey(last4: string): string {
+  return `••••••••${last4}`
 }
 
 // formatClockTime turns a 24-hour HH:MM time into the handoff's "5:30 pm".

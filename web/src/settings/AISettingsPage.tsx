@@ -14,6 +14,7 @@ import { TextInput } from '../ui/TextInput.tsx'
 import {
   aiKeyPolicy,
   aiProviderLabels,
+  maskedKey,
   providersWithBaseURL,
   useAIModels,
   useAISettings,
@@ -26,6 +27,7 @@ import {
   type AISettingsPatch,
 } from './api.ts'
 import styles from './AISettingsPage.module.css'
+import { RecipeSearchCard } from './RecipeSearchCard.tsx'
 
 // TYPE_MODEL is the Model dropdown's "Type a model id" option.
 const TYPE_MODEL = '\u0000type'
@@ -33,9 +35,12 @@ const TYPE_MODEL = '\u0000type'
 // Admin · AI assistant (handoff mock 1o). Provider, model, temperature and
 // system prompt are edited as a draft and saved together; the API key is
 // stored (and verified) on its own, straight away. The client only ever
-// sees the key's last four characters.
+// sees the key's last four characters. Recipe search is its own card, saved
+// on its own.
 export function AISettingsPage() {
   const settings = useAISettings()
+  const [aiDirty, setAIDirty] = useState(false)
+  const [recipeSearchDirty, setRecipeSearchDirty] = useState(false)
   return (
     <div className={styles.page}>
       <Header />
@@ -45,8 +50,35 @@ export function AISettingsPage() {
           AI settings could not load: {settings.error.message}
         </ErrorBanner>
       )}
-      {settings.isSuccess && <AISettingsForm saved={settings.data} />}
+      {settings.isSuccess && <AISettingsForm saved={settings.data} onDirtyChange={setAIDirty} />}
+      <RecipeSearchCard onDirtyChange={setRecipeSearchDirty} />
+      <LeaveGuard dirty={aiDirty || recipeSearchDirty} />
     </div>
+  )
+}
+
+// LeaveGuard asks before leaving the screen with unsaved changes.
+function LeaveGuard({ dirty }: { dirty: boolean }) {
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) => dirty && currentLocation.pathname !== nextLocation.pathname,
+  )
+  useEffect(() => {
+    if (!dirty) return
+    const onBeforeUnload = (event: BeforeUnloadEvent) => event.preventDefault()
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [dirty])
+  return (
+    <Confirm
+      open={blocker.state === 'blocked'}
+      title="Leave without saving?"
+      confirmLabel="Leave"
+      cancelLabel="Keep editing"
+      onCancel={() => blocker.reset?.()}
+      onConfirm={() => blocker.proceed?.()}
+    >
+      Your changes on this screen have not been saved.
+    </Confirm>
   )
 }
 
@@ -95,7 +127,13 @@ function patchOf(saved: AISettings, draft: Draft): AISettingsPatch {
   return patch
 }
 
-function AISettingsForm({ saved }: { saved: AISettings }) {
+type AISettingsFormProps = {
+  saved: AISettings
+  // Called with whether the form holds unsaved changes.
+  onDirtyChange: (dirty: boolean) => void
+}
+
+function AISettingsForm({ saved, onDirtyChange }: AISettingsFormProps) {
   const [draft, setDraft] = useState(() => draftOf(saved))
   const [typingModel, setTypingModel] = useState(false)
   const [confirmingReset, setConfirmingReset] = useState(false)
@@ -116,15 +154,10 @@ function AISettingsForm({ saved }: { saved: AISettings }) {
   const listed = canList && models.isSuccess ? models.data : []
   const typedModel = typingModel || !(draft.model === '' || listed.some((m) => m.id === draft.model))
 
-  const blocker = useBlocker(
-    ({ currentLocation, nextLocation }) => dirty && currentLocation.pathname !== nextLocation.pathname,
-  )
   useEffect(() => {
-    if (!dirty) return
-    const onBeforeUnload = (event: BeforeUnloadEvent) => event.preventDefault()
-    window.addEventListener('beforeunload', onBeforeUnload)
-    return () => window.removeEventListener('beforeunload', onBeforeUnload)
-  }, [dirty])
+    onDirtyChange(dirty)
+  }, [dirty, onDirtyChange])
+  useEffect(() => () => onDirtyChange(false), [onDirtyChange])
 
   function edit(change: Partial<Draft>) {
     save.reset()
@@ -285,24 +318,8 @@ function AISettingsForm({ saved }: { saved: AISettings }) {
       >
         This restores MealQuest's default system prompt for everyone in the household.
       </Confirm>
-      <Confirm
-        open={blocker.state === 'blocked'}
-        title="Leave without saving?"
-        confirmLabel="Leave"
-        cancelLabel="Keep editing"
-        onCancel={() => blocker.reset?.()}
-        onConfirm={() => blocker.proceed?.()}
-      >
-        Your changes to the AI assistant have not been saved.
-      </Confirm>
     </>
   )
-}
-
-// maskedKey shows the stored key as dots and its last four characters, all
-// the client ever knows of it.
-export function maskedKey(last4: string): string {
-  return `••••••••${last4}`
 }
 
 // formatVerifiedDate turns key_verified_at into the handoff's "Oct 1".

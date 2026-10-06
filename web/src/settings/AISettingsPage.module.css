@@ -251,3 +251,33 @@
   justify-content: flex-end;
   gap: 10px;
 }
+
+/* Recipe search card, below the AI assistant's actions. */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  border: 1px solid var(--color-neutral-300);
+}
+
+.cardTitle {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 22px;
+  font-weight: 400;
+}
+
+.cardLoading {
+  height: 160px;
+  border-radius: var(--radius-lg);
+}
+
+.cardActions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: 10px;
+}
+
+.cardActions > button {
+  min-height: 52px;
+}

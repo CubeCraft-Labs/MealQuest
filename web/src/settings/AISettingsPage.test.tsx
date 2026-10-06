@@ -657,6 +657,29 @@ describe('Recipe search card', () => {
     expect(await screen.findByRole('dialog', { name: 'Leave without saving?' })).toBeInTheDocument()
   })
 
+  it('does not count the suggested SearXNG URL as an unsaved change until it is edited', async () => {
+    stubAPI({ 'GET /api/v1/settings/recipe-search': () => jsonResponse(200, UNCONFIGURED) })
+    await renderCard()
+    const unload = () => {
+      const event = new Event('beforeunload', { cancelable: true })
+      act(() => void window.dispatchEvent(event))
+      return event.defaultPrevented
+    }
+    expect(saveSearch()).toBeEnabled()
+    expect(unload()).toBe(false)
+    fireEvent.change(url(), { target: { value: 'https://search.example' } })
+    expect(unload()).toBe(true)
+    fireEvent.change(url(), { target: { value: 'http://searxng:8080' } })
+    expect(unload()).toBe(false)
+  })
+
+  it('leaves the untouched first-use card without asking', async () => {
+    stubAPI({ 'GET /api/v1/settings/recipe-search': () => jsonResponse(200, UNCONFIGURED) })
+    await renderCard()
+    fireEvent.click(screen.getByRole('button', { name: 'Back to Settings' }))
+    expect(await screen.findByTestId('path')).toHaveTextContent('/settings')
+  })
+
   it('keeps 44 px tap targets', async () => {
     stubAPI({ 'GET /api/v1/settings/recipe-search': () => jsonResponse(200, BRAVE_SETTINGS) })
     await renderCard()

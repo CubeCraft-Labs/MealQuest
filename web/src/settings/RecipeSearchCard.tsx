@@ -81,16 +81,24 @@ function patchOf(saved: RecipeSearchSettings, draft: Draft): RecipeSearchSetting
   return patch
 }
 
+function sameDraft(a: Draft, b: Draft): boolean {
+  return a.provider === b.provider && a.base_url === b.base_url && a.api_key === b.api_key
+}
+
 function RecipeSearchForm({ saved, onDirtyChange }: { saved: RecipeSearchSettings } & RecipeSearchCardProps) {
   const [draft, setDraft] = useState(() => draftOf(saved))
   const save = useSaveRecipeSearchSettings()
   const test = useTestRecipeSearch()
   const patch = patchOf(saved, draft)
   const dirty = Object.keys(patch).length > 0
+  // Only the household's own edits are unsaved changes. Before recipe search
+  // is set up the untouched draft already differs from what is saved — it
+  // suggests SearXNG and the deployment's URL — but leaving it loses nothing.
+  const edited = dirty && !sameDraft(draft, draftOf(saved))
 
   useEffect(() => {
-    onDirtyChange(dirty)
-  }, [dirty, onDirtyChange])
+    onDirtyChange(edited)
+  }, [edited, onDirtyChange])
   useEffect(() => () => onDirtyChange(false), [onDirtyChange])
 
   // An edit clears the last save and test results: they describe the saved

@@ -206,6 +206,16 @@
   color: var(--color-neutral-900);
 }
 
+/* The shade Pass darkens the card with as it folds. */
+.shade {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--color-text);
+  opacity: 0;
+  pointer-events: none;
+}
+
 /* Pass and Try it: IconButtons with their 11 px labels shown. */
 .actions {
   display: flex;

@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApiClient, createVerifiedSession } from './api/index.ts'
 import { createNetworkStatus } from './pwa/networkStatus.ts'
@@ -236,6 +236,13 @@ describe('App offline bootstrap', () => {
     vi.spyOn(navigator, 'onLine', 'get').mockImplementation(() => onLine)
   })
 
+  // A test that emits an offline event leaves TanStack Query's online
+  // manager, shared by every test, offline until an online event.
+  afterEach(() => {
+    cleanup()
+    window.dispatchEvent(new Event('online'))
+  })
+
   it.each([
     ['/plan', 'Plan'],
     ['/dinner/01J9ZK', 'Dinner'],
@@ -246,6 +253,31 @@ describe('App offline bootstrap', () => {
 
     expect(await screen.findByRole('heading', { level: 1, name: title })).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Primary' })).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Offline — showing saved data')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('opens the saved page when the browser has emitted an offline event', async () => {
+    await visitOnline()
+    // /me is still loading, with the app mounted, when the browser emits
+    // its offline event; only then does /me fail.
+    let failMe!: () => void
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>().mockImplementationOnce(
+        () => new Promise((_, reject) => (failMe = () => reject(new TypeError('Failed to fetch')))),
+      ).mockRejectedValue(new TypeError('Failed to fetch')),
+    )
+    renderAt('/plan')
+    await vi.waitFor(() => expect(failMe).toBeDefined())
+    onLine = false
+    act(() => {
+      window.dispatchEvent(new Event('offline'))
+    })
+    act(() => failMe())
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'Plan' })).toBeInTheDocument()
+    expect(screen.queryByRole('main', { name: 'Loading MealQuest' })).not.toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveTextContent('Offline — showing saved data')
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })

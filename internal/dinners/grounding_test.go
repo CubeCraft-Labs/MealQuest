@@ -804,8 +804,8 @@ func wantStaleCandidate(t *testing.T, e *env, id, cid string) {
 }
 
 // TestGroundingOrArchivingClearsCandidates: once a dinner is grounded by
-// hand — by candidate, link or manual recipe — or archived, the service
-// holds none of its candidates' URLs and none of them grounds it.
+// hand — by candidate, link or manual recipe — renamed or archived, the
+// service holds none of its candidates' URLs and none of them grounds it.
 func TestGroundingOrArchivingClearsCandidates(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -831,6 +831,11 @@ func TestGroundingOrArchivingClearsCandidates(t *testing.T) {
 		{"manual", func(t *testing.T, e *env, id, _ string) {
 			m := &dinners.ManualRecipe{Ingredients: []string{"1 chicken"}, Minutes: ptr(40), Method: ptr("stovetop")}
 			if _, err := e.svc.Ground(t.Context(), id, dinners.Fix{Manual: m}, member); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"rename", func(t *testing.T, e *env, id, _ string) {
+			if _, err := e.svc.Update(t.Context(), id, dinners.Patch{Name: ptr("Beef stew")}, member); err != nil {
 				t.Fatal(err)
 			}
 		}, false},
@@ -860,9 +865,56 @@ func TestGroundingOrArchivingClearsCandidates(t *testing.T) {
 	}
 }
 
+// TestRenamePendingRefusesOldCandidates: candidates offered for a pending
+// dinner's old name no longer ground it once it is renamed — Ground refuses
+// them and leaves the old recipe off it — while candidates for the new name
+// do.
+func TestRenamePendingRefusesOldCandidates(t *testing.T) {
+	t.Parallel()
+	// Unstarted, so the dinner stays pending with its jobs queued.
+	e := newUnstartedEnv(t)
+	e.search.Results["Beef stew"] = []recipes.Candidate{{URL: stew}}
+	c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr("Chicken curry")}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := candidateID(t, e, c.ID, "Chicken Curry")
+
+	d, err := e.svc.Update(t.Context(), c.ID, dinners.Patch{Name: ptr("Beef stew")}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.GroundingStatus != dinners.GroundingPending {
+		t.Fatalf("renamed = %+v, want still pending", d)
+	}
+	if e.svc.HasOffers(c.ID) {
+		t.Errorf("service still holds the old name's candidates of dinner %s", c.ID)
+	}
+	wantStaleCandidate(t, e, c.ID, old)
+	if row := e.dinner(t, c.ID); row.RecipeID.Valid || row.GroundingStatus != dinners.GroundingPending {
+		t.Fatalf("dinner = %+v, want pending with no recipe", row)
+	}
+
+	e.model.QueueGenerate(recipestest.NormalizedReply("oven", 150))
+	g, err := e.svc.Ground(t.Context(), c.ID, dinners.Fix{CandidateID: ptr(candidateID(t, e, c.ID, "Beef Stew"))}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.GroundingStatus != dinners.GroundingGrounded || g.RecipeID == nil {
+		t.Fatalf("dinner = %+v, want grounded for the new name", g)
+	}
+	rec, err := db.New(e.st.Reader).GetRecipe(t.Context(), *g.RecipeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.SourceUrl != stew {
+		t.Errorf("recipe source = %s, want %s", rec.SourceUrl, stew)
+	}
+}
+
 // TestCandidatesRunningWhenCleared: a candidate search still running when
-// its dinner is grounded by hand or archived stores none of the candidates
-// it returns, so none of them grounds the dinner.
+// its dinner is grounded by hand, renamed or archived stores none of the
+// candidates it returns, so none of them grounds the dinner.
 func TestCandidatesRunningWhenCleared(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -874,6 +926,11 @@ func TestCandidatesRunningWhenCleared(t *testing.T) {
 		{"manual", func(t *testing.T, e *env, id string) {
 			m := &dinners.ManualRecipe{Ingredients: []string{"1 chicken"}, Minutes: ptr(40), Method: ptr("stovetop")}
 			if _, err := e.svc.Ground(t.Context(), id, dinners.Fix{Manual: m}, member); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"rename", func(t *testing.T, e *env, id string) {
+			if _, err := e.svc.Update(t.Context(), id, dinners.Patch{Name: ptr("Beef stew")}, member); err != nil {
 				t.Fatal(err)
 			}
 		}, false},

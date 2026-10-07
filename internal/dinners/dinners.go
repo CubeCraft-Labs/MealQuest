@@ -309,7 +309,8 @@ func (s *Service) List(ctx context.Context, status string) ([]Dinner, error) {
 // clears its recipe_url, raises its grounding_revision and enqueues a fresh
 // KindGroundDinner job that grounds the new name: a job queued or running
 // for the old name or link carries the old revision, so it can no longer
-// write the dinner, and one running is stopped.
+// write the dinner, and one running is stopped. Renaming any dinner drops
+// the candidates offered for its old name: none of them grounds it.
 func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy string) (Dinner, error) {
 	if updatedBy == "" {
 		return Dinner{}, errors.New("dinners: update: no member to record as updated_by")
@@ -320,7 +321,7 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 	}
 
 	var row db.Dinner
-	var regrounding bool
+	var renamed, regrounding bool
 	err = s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		q := db.New(tx)
 		cur, err := q.GetDinner(ctx, id)
@@ -374,11 +375,15 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 		if err != nil {
 			return fmt.Errorf("dinners: update %s: %w", id, err)
 		}
+		renamed = row.NormalizedName != cur.NormalizedName
 		regrounding = row.GroundingRevision != cur.GroundingRevision
 		return nil
 	})
 	if err != nil {
 		return Dinner{}, err
+	}
+	if renamed {
+		s.clearOffers(row.ID)
 	}
 	if regrounding {
 		s.stopGroundings(row.ID, row.GroundingRevision)

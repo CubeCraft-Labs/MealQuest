@@ -367,12 +367,16 @@ function parseHouseholdSettings(where: string, body: unknown): HouseholdSettings
 
 export const HOUSEHOLD_SETTINGS_KEY = ['settings', 'household'] as const
 
+// useHouseholdSettings runs even while the browser reports offline, like
+// /me: OnboardingGate reads it before every page, so offline it must fail
+// into the saved pages instead of waiting for the network.
 export function useHouseholdSettings() {
   const { apiFetch } = useApi()
   return useQuery({
     queryKey: HOUSEHOLD_SETTINGS_KEY,
     queryFn: async () =>
       parseHouseholdSettings(`GET ${HOUSEHOLD_SETTINGS_PATH}`, await apiFetch<unknown>(HOUSEHOLD_SETTINGS_PATH)),
+    networkMode: 'always',
   })
 }
 

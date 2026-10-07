@@ -328,4 +328,117 @@ describe('DiscoverPage', () => {
     fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
     await screen.findByRole('article', { name: 'Korean beef bowls' })
   })
+
+  it('opens and closes the Quest log from its pill, a keyboard-reachable button', async () => {
+    stubServer([BOWLS], {}, 2)
+    await renderPage()
+    const pill = await screen.findByRole('button', { name: 'Quest log · 2' })
+    expect(pill).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('list', { name: 'Quest log' })).not.toBeInTheDocument()
+    expectMinHitArea(pill)
+    pill.focus()
+    expect(pill).toHaveFocus()
+
+    fireEvent.click(pill)
+    expect(pill).toHaveAttribute('aria-expanded', 'true')
+    const list = screen.getByRole('list', { name: 'Quest log' })
+    expect(pill).toHaveAttribute('aria-controls', list.parentElement!.id)
+    expect(within(list).getAllByRole('listitem').map((item) => item.textContent)).toEqual(['Quest 0', 'Quest 1'])
+
+    fireEvent.click(pill)
+    expect(pill).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('list', { name: 'Quest log' })).not.toBeInTheDocument()
+  })
+
+  it('says so when the Quest log it opens is empty', async () => {
+    stubServer([BOWLS], {}, 0)
+    await renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Quest log · 0' }))
+    expect(screen.getByText('No dinners in the Quest log yet. Try it on a Side quest to add one.')).toBeInTheDocument()
+  })
+
+  it('sends one decision for presses made before the page re-renders', async () => {
+    const accept = deferred()
+    const server = stubServer([BOWLS, TIKKA], { 'POST /api/v1/suggestions/s1/accept': () => accept.promise })
+    await renderPage()
+    await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+    fireEvent.keyDown(window, { key: 'ArrowRight' })
+    fireEvent.keyDown(window, { key: 'ArrowLeft' })
+    fireEvent.click(screen.getByRole('button', { name: 'Pass' }))
+    await waitFor(() => expect(sent(server.fetchMock)).toContain('POST /api/v1/suggestions/s1/accept'))
+    expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept'])
+    expect(screen.getByRole('button', { name: 'Try it' })).toBeDisabled()
+
+    server.deck = [TIKKA]
+    accept.resolve(jsonResponse(200, { suggestion: { ...BOWLS, status: 'accepted' }, replenish_job_id: null }))
+    await screen.findByRole('article', { name: 'Crock pot chicken tikka masala' })
+    fireEvent.keyDown(window, { key: 'ArrowLeft' })
+    await waitFor(() =>
+      expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept', 'POST /api/v1/suggestions/s2/decline']),
+    )
+  })
+
+  it.each([
+    ['not a decision', {}],
+    ['another suggestion', { suggestion: { ...TIKKA, status: 'accepted' }, replenish_job_id: null }],
+    ['not accepted', { suggestion: { ...BOWLS, status: 'pending' }, replenish_job_id: null }],
+  ])('shows a decision answered with %s as unsaved, keeping the card', async (_, answer) => {
+    stubServer([BOWLS], { 'POST /api/v1/suggestions/s1/accept': () => jsonResponse(200, answer) })
+    await renderPage()
+    await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't save that choice. POST /api/v1/suggestions/s1/accept: response is not the accepted suggestion")
+    expect(within(alert).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    expect(screen.getByRole('article', { name: 'Korean beef bowls' })).toBeInTheDocument()
+  })
+
+  it('shows a batch whose job cannot be polled with a retry, keeping the skeleton cards', async () => {
+    let failPoll = true
+    const server = stubServer([], {
+      'POST /api/v1/suggestions/batches': () =>
+        jsonResponse(202, { batch_id: 'b1', job_id: 'j1', trigger: 'manual', status: 'pending' }),
+      'GET /api/v1/jobs/j1': () => {
+        if (failPoll) return errorResponse(500, 'internal')
+        server.deck = [BOWLS]
+        return jsonResponse(200, {
+          id: 'j1',
+          kind: 'suggestion_batch',
+          status: 'succeeded',
+          result: { batch_id: 'b1', stage: 'done', suggestion_ids: ['s1'], dropped: 0 },
+          error: null,
+        })
+      },
+    })
+    await renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Get more now' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't check on new side quests.")
+    expect(screen.getAllByTestId('skeleton-card')).toHaveLength(3)
+
+    failPoll = false
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+    await screen.findByRole('article', { name: 'Korean beef bowls' })
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/batches', 'POST /api/v1/suggestions/batches'])
+  })
+
+  it('shows a batch whose job result is unreadable with a retry', async () => {
+    stubServer([], {
+      'POST /api/v1/suggestions/batches': () =>
+        jsonResponse(202, { batch_id: 'b1', job_id: 'j1', trigger: 'manual', status: 'pending' }),
+      'GET /api/v1/jobs/j1': () =>
+        jsonResponse(200, { id: 'j1', kind: 'suggestion_batch', status: 'succeeded', result: { batch_id: 'b1' }, error: null }),
+    })
+    await renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Get more now' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't find new side quests. GET /api/v1/jobs/j1: result is not a suggestion batch")
+    expect(within(alert).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'All caught up' })).toBeInTheDocument()
+  })
 })

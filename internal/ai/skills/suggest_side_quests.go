@@ -182,6 +182,9 @@ func (s suggestSideQuests) Validate(out SideQuests) []string {
 				problems = append(problems, fmt.Sprintf("suggestion %d has an empty %s; give one", i+1, f.field))
 			}
 		}
+		if strings.TrimSpace(q.Name) != "" && harness.Normalize(q.Name) == "" {
+			problems = append(problems, fmt.Sprintf("suggestion %d name %q has only filler words; name the dish", i+1, q.Name))
+		}
 		if !slices.Contains(methods, q.Method) {
 			problems = append(problems, fmt.Sprintf("suggestion %d method %q is not one of %s", i+1, q.Method, strings.Join(methods, ", ")))
 		}
@@ -199,12 +202,10 @@ func (s suggestSideQuests) Validate(out SideQuests) []string {
 // the household does, and moves each one that breaks a rule to Dropped
 // (see drop).
 func (s suggestSideQuests) PostProcess(out SideQuests) (SideQuests, error) {
-	regulars := map[string]string{} // normalized name -> name
+	regulars := regularNames{exact: map[string][]string{}, normalized: map[string][]string{}}
 	var names []string
 	for _, r := range s.in.Context.Regulars {
-		if n := harness.Normalize(r.Name); n != "" {
-			regulars[n] = r.Name
-		}
+		regulars.add(r.Name)
 		names = append(names, r.Name)
 	}
 	known := harness.NewDeduper(harness.DedupeSources{
@@ -236,12 +237,48 @@ func (s suggestSideQuests) PostProcess(out SideQuests) (SideQuests, error) {
 	return result, nil
 }
 
+// regularNames finds the Regular a cited name means. Names need not be
+// unique, even ignoring case, so each key holds every Regular with it.
+type regularNames struct {
+	// exact is keyed by the name in lower case on one line.
+	exact map[string][]string
+	// normalized is keyed by harness.Normalize of the name.
+	normalized map[string][]string
+}
+
+func exactName(name string) string { return strings.ToLower(oneLine(name)) }
+
+func (r regularNames) add(name string) {
+	r.exact[exactName(name)] = append(r.exact[exactName(name)], name)
+	if n := harness.Normalize(name); n != "" {
+		r.normalized[n] = append(r.normalized[n], name)
+	}
+}
+
+// find returns the one Regular cited means, or "" and why there is none.
+// A Regular named exactly cited, ignoring case and spacing, comes first;
+// failing that, cited may name a Regular by its normalized name.
+func (r regularNames) find(cited string) (string, string) {
+	matches := r.exact[exactName(cited)]
+	if len(matches) == 0 {
+		matches = r.normalized[harness.Normalize(cited)]
+	}
+	switch len(matches) {
+	case 0:
+		return "", fmt.Sprintf("cites %q, which is not a Regular", cited)
+	case 1:
+		return matches[0], ""
+	default:
+		return "", fmt.Sprintf("cites %q, which could be any of the Regulars %q", cited, matches)
+	}
+}
+
 // drop returns why q must be dropped, or "" and its cited Regulars as the
 // household writes them when it may be kept. q is dropped when it repeats
-// a known dinner or a Side quest already kept, cites no Regular or one not
-// in regulars (keyed by normalized name), or has a reason over ReasonLimit
+// a known dinner or a Side quest already kept, cites no Regular or one
+// regulars finds no single Regular for, or has a reason over ReasonLimit
 // characters or naming none of its cited Regulars.
-func drop(q SideQuest, regulars map[string]string, known *harness.Deduper, kept []SideQuest) ([]string, string) {
+func drop(q SideQuest, regulars regularNames, known *harness.Deduper, kept []SideQuest) ([]string, string) {
 	if known.IsDuplicate(q.Name) {
 		return nil, "repeats a Regular, Quest log dinner, pending or passed Side quest"
 	}
@@ -255,9 +292,9 @@ func drop(q SideQuest, regulars map[string]string, known *harness.Deduper, kept 
 	}
 	var cited []string
 	for _, c := range q.CitedRegulars {
-		name, ok := regulars[harness.Normalize(c)]
-		if !ok {
-			return nil, fmt.Sprintf("cites %q, which is not a Regular", c)
+		name, why := regulars.find(c)
+		if why != "" {
+			return nil, why
 		}
 		cited = append(cited, name)
 	}

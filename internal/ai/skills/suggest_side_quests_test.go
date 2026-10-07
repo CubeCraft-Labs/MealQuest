@@ -176,6 +176,30 @@ func TestSuggestSideQuestsInventedRegularDropped(t *testing.T) {
 	})
 }
 
+func TestSuggestSideQuestsSharedNormalizedRegularNotRewritten(t *testing.T) {
+	in := household
+	in.Context.Regulars = append(slices.Clone(household.Context.Regulars),
+		harness.RegularDinner{Name: "Easy Beef Chili", Cuisine: "Tex-Mex", Method: "stovetop", Minutes: 30})
+	plain := sideQuest("Chili Verde", "Your Beef Chili gone green, with pork and tomatillos.", "beef chili")
+	easy := sideQuest("Frito Pie", "Your Easy Beef Chili over corn chips.", "EASY  beef chili")
+	either := sideQuest("Tamale Bake", "Your Beef Chili under a cornbread crust.", "Beef Chili!")
+	var f llm.Fake
+	f.QueueGenerate(reply(batch(plain, easy, either)))
+	out, _, err := suggest(t, &f, in, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSideQuests(t, out, SideQuests{
+		Suggestions: []SideQuest{
+			want("Chili Verde", "Your Beef Chili gone green, with pork and tomatillos.", "Beef Chili"),
+			want("Frito Pie", "Your Easy Beef Chili over corn chips.", "Easy Beef Chili"),
+		},
+		Dropped: []DroppedSideQuest{
+			{Name: "Tamale Bake", Why: `cites "Beef Chili!", which could be any of the Regulars ["Beef Chili" "Easy Beef Chili"]`},
+		},
+	})
+}
+
 func TestSuggestSideQuestsDuplicatesDropped(t *testing.T) {
 	declined := sideQuest("The Best Homemade Chicken Tikka-Masala", "Spiced like your Chicken Fajitas.", "Chicken Fajitas")
 	oldDeclined := sideQuest("Fish Tacos!", "Tortillas like your Chicken Fajitas.", "Chicken Fajitas")
@@ -273,6 +297,30 @@ func TestSuggestSideQuestsMalformedRepairedOnce(t *testing.T) {
 				t.Fatalf("repair message = %q, want it to contain %q", repair[2].Content, tc.want)
 			}
 		})
+	}
+}
+
+func TestSuggestSideQuestsFillerNameRepaired(t *testing.T) {
+	filler := sideQuest("The.", "Like your Beef Chili.", "Beef Chili")
+	first := batch(filler, filler)
+	var f llm.Fake
+	f.QueueGenerate(reply(first), reply(batch(shawarma, ragu)))
+	out, reqs, err := suggest(t, &f, household, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSideQuests(t, out, SideQuests{Suggestions: []SideQuest{wantShawarma, wantRagu}})
+	repair := reqs[1].Messages
+	if len(repair) != 3 || repair[1].Content != first {
+		t.Fatalf("repair turn does not quote the first reply: %+v", repair)
+	}
+	for _, want := range []string{
+		`suggestion 1 name "The." has only filler words; name the dish`,
+		`suggestion 2 name "The." has only filler words; name the dish`,
+	} {
+		if !strings.Contains(repair[2].Content, want) {
+			t.Fatalf("repair message = %q, want it to contain %q", repair[2].Content, want)
+		}
 	}
 }
 

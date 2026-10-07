@@ -135,8 +135,9 @@ export function useStartBatch() {
 }
 
 // Decided is the context a decision's optimistic update leaves for its
-// rollback: the Side quest taken off the deck.
-type Decided = { quest: SideQuest }
+// rollback: the Side quest taken off the deck, and whether its dinner was
+// added to the Quest log.
+type Decided = { quest: SideQuest; added: boolean }
 
 // useDecide records Try it (POST /api/v1/suggestions/{id}/accept) or Pass
 // (POST /api/v1/suggestions/{id}/decline). The answer must be that
@@ -144,10 +145,11 @@ type Decided = { quest: SideQuest }
 // replenish job the decision started, or null.
 //
 // The decision is applied at once: the Side quest leaves the deck and, on
-// Try it, its dinner joins the Quest log. A refused decision puts the Side
-// quest back on top of the deck and takes its dinner out of the Quest log
-// again. A saved one reads the Quest log again, and the deck too once fewer
-// than REFILL_BELOW Side quests are left in it.
+// Try it, its dinner joins the Quest log unless it is there already. A
+// refused decision puts the Side quest back on top of the deck and takes
+// out of the Quest log only the dinner it added. A saved one reads the Quest
+// log again, and the deck too once fewer than REFILL_BELOW Side quests are
+// left in it or a read of the deck started before the decision was saved.
 export function useDecide() {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
@@ -176,28 +178,30 @@ export function useDecide() {
       const quest = queryClient.getQueryData<SideQuest[]>(DECK_KEY)?.find((q) => q.id === id)
       if (quest === undefined) throw new Error(`suggestion ${id} is not in the deck`)
       queryClient.setQueryData<SideQuest[]>(DECK_KEY, (deck) => deck?.filter((q) => q.id !== id))
-      if (choice === 'try') {
-        queryClient.setQueryData<QuestLogDinner[]>(QUEST_LOG_KEY, (dinners) =>
-          dinners?.concat({ id: quest.dinner_id, name: quest.name }),
-        )
-      }
-      return { quest }
+      // A stale deck can offer a Side quest whose dinner a read of the Quest
+      // log already has.
+      const dinners = queryClient.getQueryData<QuestLogDinner[]>(QUEST_LOG_KEY)
+      const added = choice === 'try' && dinners !== undefined && !dinners.some((d) => d.id === quest.dinner_id)
+      if (added) queryClient.setQueryData<QuestLogDinner[]>(QUEST_LOG_KEY, dinners.concat({ id: quest.dinner_id, name: quest.name }))
+      return { quest, added }
     },
-    onError: (_error, { choice }, context) => {
+    onError: (_error, _variables, context) => {
       // onMutate refusing leaves nothing to undo.
       if (context === undefined) return
-      const { quest } = context
+      const { quest, added } = context
       queryClient.setQueryData<SideQuest[]>(DECK_KEY, (deck) => deck && [quest, ...deck.filter((q) => q.id !== quest.id)])
-      if (choice === 'try') {
+      if (added) {
         queryClient.setQueryData<QuestLogDinner[]>(QUEST_LOG_KEY, (dinners) => dinners?.filter((d) => d.id !== quest.dinner_id))
       }
     },
     onSuccess: async (_replenishJobId, { id }) => {
       // A read that landed while the decision was in flight may have put
-      // the Side quest back.
+      // the Side quest back, and one still under way may yet: invalidating
+      // cancels it for a read made after the decision was saved.
+      const reading = queryClient.isFetching({ queryKey: DECK_KEY }) > 0
       const deck = queryClient.setQueryData<SideQuest[]>(DECK_KEY, (current) => current?.filter((q) => q.id !== id))
       await Promise.all([
-        deck !== undefined && deck.length < REFILL_BELOW ? queryClient.invalidateQueries({ queryKey: DECK_KEY }) : undefined,
+        reading || (deck !== undefined && deck.length < REFILL_BELOW) ? queryClient.invalidateQueries({ queryKey: DECK_KEY }) : undefined,
         queryClient.invalidateQueries({ queryKey: QUEST_LOG_KEY }),
       ])
     },

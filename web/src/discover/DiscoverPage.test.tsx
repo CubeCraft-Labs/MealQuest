@@ -8,6 +8,7 @@ import { declaredStyle } from '../test/cssRules.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
 import { mockViewport } from '../test/matchMedia.ts'
+import { DECK_KEY } from './api.ts'
 import { DiscoverPage } from './DiscoverPage.tsx'
 
 const DECK = '/api/v1/suggestions/deck'
@@ -102,13 +103,13 @@ async function finishRunning(animations: FakeAnimation[]) {
 }
 
 // renderPage loads /me (for the CSRF token every write needs) and renders
-// the Discover page.
-async function renderPage() {
+// the Discover page with queryClient.
+async function renderPage(queryClient = createQueryClient()) {
   const api = createApiClient(fakeLocation('/discover'), createNetworkStatus(window), createVerifiedSession(localStorage))
   await api.loadMe()
   return render(
     <ApiProvider client={api}>
-      <QueryClientProvider client={createQueryClient()}>
+      <QueryClientProvider client={queryClient}>
         <DiscoverPage />
       </QueryClientProvider>
     </ApiProvider>,
@@ -608,6 +609,92 @@ describe('DiscoverPage', () => {
       expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept', 'POST /api/v1/suggestions/s1/accept'])
       expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
       expect(screen.getByText('Quest log · 7')).toBeInTheDocument()
+    })
+
+    it('keeps a saved decision off the deck when a read started during it answers late', async () => {
+      const decline = deferred()
+      let late: ReturnType<typeof deferred> | null = null
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], {
+        'POST /api/v1/suggestions/s1/decline': () => decline.promise,
+        [`GET ${DECK}`]: () => late?.promise ?? jsonResponse(200, { suggestions: server.deck }),
+      })
+      const queryClient = createQueryClient()
+      await renderPage(queryClient)
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Pass' }))
+      await waitFor(() => expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/decline']))
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+
+      // A read of the deck starts before the decision is saved, and answers
+      // only after: with the Side quest still pending.
+      late = deferred()
+      const stale = late
+      await act(async () => void queryClient.invalidateQueries({ queryKey: DECK_KEY }))
+      expect(deckReads(server.fetchMock)).toBe(2)
+      late = null
+      server.deck = [TIKKA, ORZO, PAELLA]
+      decline.resolve(declined(BOWLS))
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Pass' })).toBeEnabled())
+      await act(async () => stale.resolve(jsonResponse(200, { suggestions: [BOWLS, TIKKA, ORZO, PAELLA] })))
+
+      // The late answer is dropped, and the deck is read again after the save.
+      await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)))
+      expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument()
+      await waitFor(() => expect(deckReads(server.fetchMock)).toBe(3))
+      expect(screen.getAllByRole('article', { hidden: true }).map((card) => card.querySelector('h2')!.textContent)).toEqual([
+        'Crock pot chicken tikka masala',
+        'Lemon garlic shrimp orzo',
+        'Sheet pan paella',
+      ])
+    })
+
+    it('leaves the Quest log count alone for a dinner already in it, on Try it and on its refusal', async () => {
+      const accept = deferred()
+      stubServer([BOWLS, TIKKA, ORZO, PAELLA], {
+        'POST /api/v1/suggestions/s1/accept': () => accept.promise,
+        // A read of the Quest log already has the dinner the stale deck offers.
+        [`GET ${QUEST_LOG}`]: () =>
+          jsonResponse(200, {
+            dinners: [
+              { id: 'q0', name: 'Quest 0' },
+              { id: 'dinner-s1', name: 'Korean beef bowls' },
+            ],
+          }),
+      })
+      await renderPage()
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+      await screen.findByText('Quest log · 2')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+      await waitFor(() => expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala'))
+      expect(screen.getByText('Quest log · 2')).toBeInTheDocument()
+
+      accept.resolve(errorResponse(500, 'internal'))
+      await screen.findByRole('alert')
+      expect(topCard()).toHaveAccessibleName('Korean beef bowls')
+      expect(screen.getByText('Quest log · 2')).toBeInTheDocument()
+    })
+
+    it('shows a decision refused because the deck changed during the exit, with Retry', async () => {
+      const server = stubServer([BOWLS])
+      const queryClient = createQueryClient()
+      const animations = stubAnimate({ autoFinish: false })
+      await renderPage(queryClient)
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      // While the card leaves, a read of the deck takes the last card away.
+      fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+      server.deck = []
+      await act(async () => await queryClient.invalidateQueries({ queryKey: DECK_KEY }))
+      await screen.findByRole('heading', { name: 'All caught up' })
+
+      await finishRunning(animations)
+      await finishRunning(animations)
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent("Couldn't save that choice. suggestion s1 is not in the deck")
+      expect(within(alert).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+      expect(sent(server.fetchMock)).toEqual([])
     })
 
     it('reads the deck again once a saved decision leaves fewer than 3 cards', async () => {

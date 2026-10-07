@@ -362,11 +362,6 @@ export function DiscoverPage() {
             <Icon icon={Heart} size="nav" />
           </IconButton>
         </div>
-        {decision.isError && (
-          <ErrorBanner onRetry={() => submit(decision.variables!)}>
-            Couldn't save that choice. {decision.error.message}
-          </ErrorBanner>
-        )}
       </>
     )
   }
@@ -384,6 +379,10 @@ export function DiscoverPage() {
         <ErrorBanner onRetry={() => void questLog.refetch()}>Couldn't load the Quest log. {questLog.error.message}</ErrorBanner>
       )}
       {body}
+      {/* A refused decision is shown whatever the deck has come to since. */}
+      {decision.isError && (
+        <ErrorBanner onRetry={() => submit(decision.variables!)}>Couldn't save that choice. {decision.error.message}</ErrorBanner>
+      )}
     </div>
   )
 }

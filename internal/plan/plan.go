@@ -5,6 +5,10 @@
 // replacing any draft before it unless the household edited the plan
 // while draft_week ran. A plan is draft until Push to Calendar
 // syncs it (Feature 16); an edit of a synced plan makes it changed.
+//
+// The Rotation check follows a plan day: MarkTried moves the Quest log
+// dinners planned on it to tried, and the household answers "Keep it in
+// rotation?" for each (D-021). Only their keep makes a dinner a Regular.
 package plan
 
 import (

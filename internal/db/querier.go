@@ -34,11 +34,15 @@ type Querier interface {
 	CreatePhoto(ctx context.Context, arg CreatePhotoParams) (Photo, error)
 	CreateRecipeIngredient(ctx context.Context, arg CreateRecipeIngredientParams) error
 	CreateRecipeStep(ctx context.Context, arg CreateRecipeStepParams) error
+	CreateRotationReview(ctx context.Context, arg CreateRotationReviewParams) error
 	// name is the name the dish is suggested under, kept whatever its dinner is
 	// later renamed.
 	CreateSuggestion(ctx context.Context, arg CreateSuggestionParams) error
 	CreateSuggestionBatch(ctx context.Context, arg CreateSuggestionBatchParams) (SuggestionBatch, error)
 	CreateWeekPlan(ctx context.Context, arg CreateWeekPlanParams) error
+	// Records the household's decision on a pending Rotation check; one
+	// already decided is left as it is (0 rows).
+	DecideRotationReview(ctx context.Context, arg DecideRotationReviewParams) (int64, error)
 	// Records the household's decision on a pending suggestion; one already
 	// decided is left as it is (0 rows).
 	DecideSuggestion(ctx context.Context, arg DecideSuggestionParams) (int64, error)
@@ -87,6 +91,10 @@ type Querier interface {
 	// The newest batch, whatever its status. Returns sql.ErrNoRows when there
 	// is none.
 	GetLatestSuggestionBatch(ctx context.Context) (SuggestionBatch, error)
+	// The pending Rotation check of dinner_id. MarkTried makes one only for a
+	// dinner in the Quest log, which it moves to tried, so a dinner has at
+	// most one. Returns sql.ErrNoRows when there is none.
+	GetPendingRotationReview(ctx context.Context, dinnerID string) (RotationReview, error)
 	GetPhoto(ctx context.Context, id string) (Photo, error)
 	// Finds stored image bytes by content hash. The schema does not make sha256
 	// unique, so the earliest-created (lowest id) match is returned.
@@ -121,14 +129,19 @@ type Querier interface {
 	// The pending suggestions whose dinner is still suggested, oldest first,
 	// with their dinners.
 	ListDeck(ctx context.Context) ([]ListDeckRow, error)
-	// The name every declined suggestion was suggested under, oldest decision
-	// first; renaming its dinner does not change it.
-	ListDeclinedSuggestionNames(ctx context.Context) ([]string, error)
 	ListDinnersByStatus(ctx context.Context, status string) ([]Dinner, error)
 	// The dinners a draft of the week starting week_start may plan: every
 	// Regular, and every Quest log dinner no other plan for the week starting
 	// from_week_start or later has on any day.
 	ListDraftPool(ctx context.Context, arg ListDraftPoolParams) ([]Dinner, error)
+	// Every name the household turned down, oldest decision first: the name
+	// each declined suggestion was suggested under, which renaming its dinner
+	// does not change, and the name of each dinner a Rotation check dropped
+	// ("Not for us"), which archiving keeps.
+	ListPassedNames(ctx context.Context) ([]string, error)
+	// The pending Rotation checks whose dinner is still tried, oldest plan
+	// date first, with their dinners.
+	ListPendingRotationReviews(ctx context.Context) ([]ListPendingRotationReviewsRow, error)
 	// The days of plan plan_id with their dinners, Monday first. A day with
 	// no dinner is left out.
 	ListPlanDays(ctx context.Context, planID string) ([]ListPlanDaysRow, error)
@@ -136,11 +149,14 @@ type Querier interface {
 	// to_date, oldest first. Days with no dinner are left out.
 	ListPlannedDinners(ctx context.Context, arg ListPlannedDinnersParams) ([]ListPlannedDinnersRow, error)
 	// Reads for the AI household context block (internal/ai/harness).
-	// The names the most recently declined suggestions were suggested under,
-	// newest first; renaming their dinners does not change them.
-	ListRecentDeclinedNames(ctx context.Context, limit int64) ([]string, error)
+	// The most recent names the household turned down, newest first, as
+	// ListPassedNames has them.
+	ListRecentPassedNames(ctx context.Context, limit int64) ([]string, error)
 	ListRecipeIngredients(ctx context.Context, recipeID string) ([]RecipeIngredient, error)
 	ListRecipeSteps(ctx context.Context, recipeID string) ([]RecipeStep, error)
+	// The ids of the dinners with status quest_log planned on date, on a plan
+	// of any status, that have no Rotation check for date yet.
+	ListTriedCandidates(ctx context.Context, date string) ([]string, error)
 	// Every dinner a new or renamed dinner must not repeat, with the
 	// source_url of the recipe it is grounded in (NULL while it has none).
 	ListUnarchivedDinners(ctx context.Context) ([]ListUnarchivedDinnersRow, error)
@@ -150,6 +166,9 @@ type Querier interface {
 	// The ids of the dinners planned in the week starting week_start, Monday
 	// first.
 	ListWeekPlanDinnerIDs(ctx context.Context, weekStart string) ([]sql.NullString, error)
+	// Moves a dinner still in the Quest log to tried; a dinner with any other
+	// status is left as it is (0 rows).
+	MarkDinnerTried(ctx context.Context, arg MarkDinnerTriedParams) (int64, error)
 	// Records an edit of plan id, raising its revision: a synced plan becomes
 	// changed, any other keeps its status.
 	MarkWeekPlanEdited(ctx context.Context, arg MarkWeekPlanEditedParams) error
@@ -157,6 +176,10 @@ type Querier interface {
 	// recording updated_by; a dinner no longer suggested is left as it is
 	// (0 rows).
 	MoveSuggestedDinner(ctx context.Context, arg MoveSuggestedDinnerParams) (int64, error)
+	// Moves a dinner still tried to status (regular, archived or quest_log)
+	// by a Rotation check decision, recording updated_by; its origin is kept.
+	// A dinner no longer tried is left as it is (0 rows).
+	MoveTriedDinner(ctx context.Context, arg MoveTriedDinnerParams) (int64, error)
 	// Stores a partial result of a running job.
 	PublishJobResult(ctx context.Context, arg PublishJobResultParams) (int64, error)
 	// Plans dinner_id on date of plan_id, keeping the day's calendar event id

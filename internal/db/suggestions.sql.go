@@ -348,17 +348,26 @@ func (q *Queries) ListDeck(ctx context.Context) ([]ListDeckRow, error) {
 	return items, nil
 }
 
-const listDeclinedSuggestionNames = `-- name: ListDeclinedSuggestionNames :many
-SELECT name
-FROM suggestions
-WHERE status = 'declined'
+const listPassedNames = `-- name: ListPassedNames :many
+SELECT name FROM (
+	SELECT name, decided_at, id
+	FROM suggestions
+	WHERE status = 'declined'
+	UNION ALL
+	SELECT dinners.name, rotation_reviews.decided_at, rotation_reviews.id
+	FROM rotation_reviews
+	JOIN dinners ON dinners.id = rotation_reviews.dinner_id
+	WHERE rotation_reviews.decision = 'drop'
+)
 ORDER BY decided_at, id
 `
 
-// The name every declined suggestion was suggested under, oldest decision
-// first; renaming its dinner does not change it.
-func (q *Queries) ListDeclinedSuggestionNames(ctx context.Context) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, listDeclinedSuggestionNames)
+// Every name the household turned down, oldest decision first: the name
+// each declined suggestion was suggested under, which renaming its dinner
+// does not change, and the name of each dinner a Rotation check dropped
+// ("Not for us"), which archiving keeps.
+func (q *Queries) ListPassedNames(ctx context.Context) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listPassedNames)
 	if err != nil {
 		return nil, err
 	}

@@ -646,7 +646,7 @@ func TestDeclineIsIdempotent(t *testing.T) {
 	if got := e.dinnerStatus(t, s.DinnerID); got != "archived" {
 		t.Errorf("dinner status after refused accept = %s, want archived", got)
 	}
-	names, err := db.New(e.st.Reader).ListDeclinedSuggestionNames(t.Context())
+	names, err := db.New(e.st.Reader).ListPassedNames(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

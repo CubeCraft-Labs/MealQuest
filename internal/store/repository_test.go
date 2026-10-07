@@ -95,7 +95,7 @@ func TestRepositoryInsertReadUpdate(t *testing.T) {
 			parents: []string{"dinners", "suggestion_batches"},
 			row: repoRow{"suggestions", map[string]any{
 				"id": "sugg-1", "dinner_id": "dinner-1", "batch_id": "batch-1",
-				"reason": "You make chili often.", "cited_regular_ids": `["dinner-1"]`,
+				"name": "White Chicken Chili", "reason": "You make chili often.", "cited_regular_ids": `["dinner-1"]`,
 				"status": "pending", "decided_at": nil,
 				"created_at": repoTime, "updated_at": repoTime,
 			}},

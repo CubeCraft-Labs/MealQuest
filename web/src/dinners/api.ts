@@ -79,7 +79,7 @@ export const REGULARS_KEY = ['dinners', 'regular'] as const
 const REGULARS_LIST_KEY = [...REGULARS_KEY, 'list'] as const
 const REGULARS_MUTATION_KEY = ['dinners', 'regular', 'change'] as const
 
-function oneOf<T extends string>(where: string, field: string, values: readonly T[], value: unknown): T {
+export function oneOf<T extends string>(where: string, field: string, values: readonly T[], value: unknown): T {
   if (typeof value !== 'string' || !(values as readonly string[]).includes(value)) {
     throw new Error(`${where}: ${field} ${JSON.stringify(value)} is not one of ${values.join(', ')}`)
   }
@@ -99,14 +99,15 @@ const PHOTO_URL = /^\/media\/photos\/([^/]+)-400\.jpg$/
 
 // photoId reads the photo id out of a photo_url, which the server always
 // sends as /media/photos/{id}-400.jpg or null.
-function photoId(where: string, value: unknown): string | undefined {
+export function photoId(where: string, value: unknown): string | undefined {
   if (value === null) return undefined
   const match = typeof value === 'string' ? PHOTO_URL.exec(value) : null
   if (!match?.[1]) throw new Error(`${where}: photo_url ${JSON.stringify(value)} is not a stored photo`)
   return decodeURIComponent(match[1])
 }
 
-function parseDinner(where: string, body: unknown): Regular {
+// parseDinner checks a dinner as the dinners API sends it.
+export function parseDinner(where: string, body: unknown): Regular {
   if (!isRecord(body) || typeof body.id !== 'string' || typeof body.name !== 'string') {
     throw new Error(`${where}: response is not a dinner`)
   }
@@ -141,7 +142,7 @@ function parseCandidate(where: string, body: unknown): RecipeCandidate {
   }
 }
 
-function dinnerPath(id: string): string {
+export function dinnerPath(id: string): string {
   return `${DINNERS_PATH}/${encodeURIComponent(id)}`
 }
 

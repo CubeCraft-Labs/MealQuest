@@ -30,6 +30,7 @@ function renderAppAt(path: string, location = fakeLocation(path)) {
 // The routes that render a built screen rather than a placeholder page.
 const SCREENS = {
   '/onboarding': true,
+  '/discover': true,
   '/settings': true,
   '/settings/ai': true,
   '/settings/household': true,
@@ -100,6 +101,19 @@ describe('App routes', () => {
     const heading = await screen.findByRole('heading', { level: 1, name: 'AI assistant' })
     expect(screen.getByRole('main')).toContainElement(heading)
     expect(await screen.findByText('••••••••3f9a')).toBeInTheDocument()
+  })
+
+  it('/discover renders the Side quests deck inside the shell', async () => {
+    mockViewport(390)
+    stubFetchByPath({
+      ...SIGNED_IN,
+      '/api/v1/suggestions/deck': () => jsonResponse(200, { suggestions: [], active_batch: null, failed_batch: null }),
+      '/api/v1/dinners?status=quest_log': () => jsonResponse(200, { dinners: [] }),
+    })
+    renderAt('/discover')
+    const heading = await screen.findByRole('heading', { level: 1, name: 'Side quests' })
+    expect(screen.getByRole('main')).toContainElement(heading)
+    expect(await screen.findByText('Quest log · 0')).toBeInTheDocument()
   })
 
   it('/settings/household renders the household settings screen inside the shell', async () => {

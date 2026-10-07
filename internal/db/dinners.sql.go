@@ -503,6 +503,63 @@ func (q *Queries) ListUnarchivedDinners(ctx context.Context) ([]ListUnarchivedDi
 	return items, nil
 }
 
+const listUnplannedQuestLogDinners = `-- name: ListUnplannedQuestLogDinners :many
+SELECT id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url, grounding_error, grounding_revision FROM dinners
+WHERE status = 'quest_log'
+  AND NOT EXISTS (
+	SELECT 1 FROM plan_days
+	JOIN week_plans ON week_plans.id = plan_days.plan_id
+	WHERE plan_days.dinner_id = dinners.id
+	  AND week_plans.week_start >= ?1
+  )
+ORDER BY normalized_name, id
+`
+
+// The Quest log: dinners with status quest_log that no plan for the week
+// starting from_week_start or later has on any day.
+func (q *Queries) ListUnplannedQuestLogDinners(ctx context.Context, fromWeekStart string) ([]Dinner, error) {
+	rows, err := q.db.QueryContext(ctx, listUnplannedQuestLogDinners, fromWeekStart)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Dinner
+	for rows.Next() {
+		var i Dinner
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.NormalizedName,
+			&i.Status,
+			&i.Origin,
+			&i.Method,
+			&i.MinutesTotal,
+			&i.Difficulty,
+			&i.Cuisine,
+			&i.IsFavorite,
+			&i.RecipeID,
+			&i.PhotoID,
+			&i.GroundingStatus,
+			&i.UpdatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.RecipeUrl,
+			&i.GroundingError,
+			&i.GroundingRevision,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const setDinnerFavorite = `-- name: SetDinnerFavorite :one
 UPDATE dinners
 SET is_favorite = ?,

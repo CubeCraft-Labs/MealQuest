@@ -82,9 +82,9 @@ func (s *seeder) pass(name, decidedAt string) {
 	batch := s.id("batch")
 	s.exec(`INSERT INTO suggestion_batches (id, trigger, status, created_at, updated_at)
 		VALUES (?, 'manual', 'done', ?, ?)`, batch, decidedAt, decidedAt)
-	s.exec(`INSERT INTO suggestions (id, dinner_id, batch_id, reason, cited_regular_ids, status,
-		decided_at, created_at, updated_at) VALUES (?, ?, ?, 'why', '[]', 'declined', ?, ?, ?)`,
-		s.id("suggestion"), s.dinner(name, "archived", "", "", 0, false), batch, decidedAt, decidedAt, decidedAt)
+	s.exec(`INSERT INTO suggestions (id, dinner_id, batch_id, name, reason, cited_regular_ids, status,
+		decided_at, created_at, updated_at) VALUES (?, ?, ?, ?, 'why', '[]', 'declined', ?, ?, ?)`,
+		s.id("suggestion"), s.dinner(name, "archived", "", "", 0, false), batch, name, decidedAt, decidedAt, decidedAt)
 }
 
 // plan inserts the week plan starting weekStart with one dinner per date;

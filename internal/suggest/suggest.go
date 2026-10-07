@@ -171,34 +171,47 @@ func (s *Service) StartBatch(ctx context.Context, trigger string) (Batch, error)
 	return b, nil
 }
 
-// startBatch does StartBatch's work in tx: the batch and the job that runs
-// it are committed together, so a batch is never seen without its job. A
-// batch still pending or running whose job is no longer queued or running
-// is failed first, so a batch whose job ended without recording its end
-// (the process stopped, or the write failed) never blocks a later one. The
-// caller wakes the job runner once tx has committed and Created is true.
-func (s *Service) startBatch(ctx context.Context, tx *sql.Tx, trigger string) (Batch, error) {
-	q := db.New(tx)
+// activeBatch returns the batch pending or running in q's transaction, or
+// nil when there is none. A batch still pending or running whose job is no
+// longer queued or running is failed first, so a batch whose job ended
+// without recording its end (the process stopped, or the write failed) is
+// never reported as active and never blocks a later one.
+func (s *Service) activeBatch(ctx context.Context, q *db.Queries) (*Batch, error) {
 	n, err := q.FailOrphanedSuggestionBatches(ctx, db.FailOrphanedSuggestionBatchesParams{
 		UpdatedAt: store.Now().String(),
 		Kind:      KindSuggestionBatch,
 	})
 	if err != nil {
-		return Batch{}, fmt.Errorf("suggest: fail orphaned batches: %w", err)
+		return nil, fmt.Errorf("suggest: fail orphaned batches: %w", err)
 	}
 	if n > 0 {
 		s.logger.WarnContext(ctx, "failed suggestion batches whose job ended", "count", n)
 	}
 	cur, err := q.GetActiveSuggestionBatch(ctx)
-	if err == nil {
-		jobID, err := q.GetSuggestionBatchJobID(ctx, db.GetSuggestionBatchJobIDParams{Kind: KindSuggestionBatch, BatchID: cur.ID})
-		if err != nil {
-			return Batch{}, fmt.Errorf("suggest: read job of batch %s: %w", cur.ID, err)
-		}
-		return Batch{ID: cur.ID, JobID: jobID, Trigger: cur.Trigger, Status: cur.Status}, nil
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return Batch{}, fmt.Errorf("suggest: read active batch: %w", err)
+	if err != nil {
+		return nil, fmt.Errorf("suggest: read active batch: %w", err)
+	}
+	jobID, err := q.GetSuggestionBatchJobID(ctx, db.GetSuggestionBatchJobIDParams{Kind: KindSuggestionBatch, BatchID: cur.ID})
+	if err != nil {
+		return nil, fmt.Errorf("suggest: read job of batch %s: %w", cur.ID, err)
+	}
+	return &Batch{ID: cur.ID, JobID: jobID, Trigger: cur.Trigger, Status: cur.Status}, nil
+}
+
+// startBatch does StartBatch's work in tx: the batch and the job that runs
+// it are committed together, so a batch is never seen without its job. The
+// caller wakes the job runner once tx has committed and Created is true.
+func (s *Service) startBatch(ctx context.Context, tx *sql.Tx, trigger string) (Batch, error) {
+	q := db.New(tx)
+	cur, err := s.activeBatch(ctx, q)
+	if err != nil {
+		return Batch{}, err
+	}
+	if cur != nil {
+		return *cur, nil
 	}
 	now := store.Now().String()
 	row, err := q.CreateSuggestionBatch(ctx, db.CreateSuggestionBatchParams{
@@ -269,40 +282,30 @@ type Deck struct {
 	ActiveBatch *Batch       `json:"active_batch"`
 }
 
-// Deck reads the deck and its active batch in one read transaction, so
-// both come from the same snapshot.
-func (s *Service) Deck(ctx context.Context) (deck Deck, err error) {
-	tx, err := s.st.Reader.BeginTx(ctx, nil)
-	if err != nil {
-		return Deck{}, fmt.Errorf("suggest: begin deck read: %w", err)
-	}
-	defer func() {
-		err = errors.Join(err, tx.Rollback())
-	}()
-	q := db.New(tx)
-	rows, err := q.ListDeck(ctx)
-	if err != nil {
-		return Deck{}, fmt.Errorf("suggest: list deck: %w", err)
-	}
-	deck.Suggestions = make([]Suggestion, len(rows))
-	for i, row := range rows {
-		deck.Suggestions[i], err = fromRow(row.Suggestion, row.Dinner)
+// Deck reads the deck and its active batch in one transaction, so both come
+// from the same snapshot. It is a write transaction because reading the
+// active batch first fails any batch whose job has ended (see activeBatch).
+func (s *Service) Deck(ctx context.Context) (Deck, error) {
+	var deck Deck
+	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		q := db.New(tx)
+		rows, err := q.ListDeck(ctx)
 		if err != nil {
-			return Deck{}, err
+			return fmt.Errorf("suggest: list deck: %w", err)
 		}
-	}
-	cur, err := q.GetActiveSuggestionBatch(ctx)
-	if errors.Is(err, sql.ErrNoRows) {
-		return deck, nil
-	}
+		deck.Suggestions = make([]Suggestion, len(rows))
+		for i, row := range rows {
+			deck.Suggestions[i], err = fromRow(row.Suggestion, row.Dinner)
+			if err != nil {
+				return err
+			}
+		}
+		deck.ActiveBatch, err = s.activeBatch(ctx, q)
+		return err
+	})
 	if err != nil {
-		return Deck{}, fmt.Errorf("suggest: read active batch: %w", err)
+		return Deck{}, err
 	}
-	jobID, err := q.GetSuggestionBatchJobID(ctx, db.GetSuggestionBatchJobIDParams{Kind: KindSuggestionBatch, BatchID: cur.ID})
-	if err != nil {
-		return Deck{}, fmt.Errorf("suggest: read job of batch %s: %w", cur.ID, err)
-	}
-	deck.ActiveBatch = &Batch{ID: cur.ID, JobID: jobID, Trigger: cur.Trigger, Status: cur.Status}
 	return deck, nil
 }
 

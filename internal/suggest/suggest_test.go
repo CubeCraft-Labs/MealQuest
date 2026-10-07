@@ -2,6 +2,7 @@ package suggest_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -476,6 +477,42 @@ func TestDeckReportsTheActiveBatch(t *testing.T) {
 	want := suggest.Batch{ID: b.ID, JobID: b.JobID, Trigger: suggest.TriggerManual, Status: suggest.BatchPending}
 	if deck.ActiveBatch == nil || *deck.ActiveBatch != want {
 		t.Errorf("active batch = %+v, want %+v", deck.ActiveBatch, want)
+	}
+}
+
+func TestDeckFailsBatchInterruptedByRestart(t *testing.T) {
+	e := newEnv(t)
+	e.seedDeck(t, "Pho")
+	b, err := e.svc.StartBatch(t.Context(), suggest.TriggerManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A previous process claimed the job and started the batch, then
+	// stopped before recording its end.
+	now := store.Now().String()
+	if _, err := db.New(e.st.Writer).ClaimNextJob(t.Context(), sql.NullString{String: now, Valid: true}); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := db.New(e.st.Writer).StartSuggestionBatch(t.Context(), db.StartSuggestionBatchParams{UpdatedAt: now, ID: b.ID}); err != nil || n != 1 {
+		t.Fatalf("start batch: %d rows, %v", n, err)
+	}
+	e.start(t) // fails the running job as interrupted
+	if job := e.waitJob(t, b.JobID); job.Status != jobs.StatusFailed {
+		t.Fatalf("job status = %s, want failed", job.Status)
+	}
+
+	deck, err := e.svc.Deck(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deck.ActiveBatch != nil {
+		t.Errorf("active batch = %+v after its job failed, want nil", deck.ActiveBatch)
+	}
+	if len(deck.Suggestions) != 1 {
+		t.Errorf("deck has %d suggestions, want 1", len(deck.Suggestions))
+	}
+	if got := e.batchStatus(t, b.ID); got != suggest.BatchFailed {
+		t.Errorf("interrupted batch status = %s, want failed", got)
 	}
 }
 

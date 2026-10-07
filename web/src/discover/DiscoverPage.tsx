@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Heart, X } from 'lucide-react'
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type Ref } from 'react'
 import { useJob } from '../api/index.ts'
 import { Card } from '../ui/Card.tsx'
 import { EmptyState } from '../ui/EmptyState.tsx'
@@ -127,6 +127,13 @@ export function DiscoverPage() {
   const exit = useRef<Exit | null>(null)
   const leaving = useRef<string | null>(null)
   const drag = useRef<Drag | null>(null)
+  // The top card's snap-back while it may still run; a new drag or a
+  // decision stops it so it does not fight the card's new motion.
+  const springing = useRef<Animation | null>(null)
+  const stopSpring = useCallback(() => {
+    springing.current?.cancel()
+    springing.current = null
+  }, [])
 
   const { mutate: mutateDecision } = decision
   const deciding = useRef(false)
@@ -168,6 +175,7 @@ export function DiscoverPage() {
   const decide = useCallback(
     (choice: Choice, from?: string) => {
       if (top === undefined || !lock()) return
+      stopSpring()
       const card = deckRef.current!.querySelector('article')!
       if (from === undefined && drag.current !== null) {
         drag.current = null
@@ -206,41 +214,54 @@ export function DiscoverPage() {
         },
       )
     },
-    [top, lock, send],
+    [top, lock, send, stopSpring],
   )
 
   // swipe drags the top card: it follows the pointer, captured from the
   // press, until the release decides past the threshold or springs it back
-  // short of it. Input while busy is ignored, and a drag held into a busy
-  // spell (a Retry) is put back on release.
+  // short of it. The release decides from where the pointer let go, which
+  // may differ from its last move. A cancel, or losing the capture before
+  // the release, springs it back from its last move. Input while busy is
+  // ignored, and a drag held into a busy spell (a Retry) is put back on
+  // release.
   const swipe = useMemo<SwipeHandlers>(() => {
-    function release(card: HTMLElement, pointerId: number, decides: boolean) {
+    function track(card: HTMLElement, current: Drag, event: PointerEvent<HTMLElement>) {
+      current.dx = event.clientX - current.x
+      current.transform = follow(card, current.dx, event.clientY - current.y)
+    }
+    function release(event: PointerEvent<HTMLElement>, decides: boolean) {
+      const card = event.currentTarget
       const current = drag.current
-      if (current === null || current.pointerId !== pointerId) return
+      if (current === null || current.pointerId !== event.pointerId) return
       drag.current = null
+      const moved = current.transform !== null || event.clientX !== current.x || event.clientY !== current.y
+      if (decides && moved && !deciding.current) track(card, current, event)
       if (current.transform === null) return
       if (deciding.current) unfollow(card)
       else if (decides && current.dx > SWIPE_THRESHOLD) decide('try', current.transform)
       else if (decides && current.dx < -SWIPE_THRESHOLD) decide('pass', current.transform)
       else if (prefersReducedMotion()) unfollow(card)
-      else snapBack(card, current.transform)
+      else springing.current = snapBack(card, current.transform)
     }
     return {
       onPointerDown: (event) => {
         if (deciding.current || !event.isPrimary || event.button !== 0) return
+        stopSpring()
         event.currentTarget.setPointerCapture(event.pointerId)
         drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, dx: 0, transform: null }
       },
       onPointerMove: (event) => {
         const current = drag.current
         if (current === null || current.pointerId !== event.pointerId || deciding.current) return
-        current.dx = event.clientX - current.x
-        current.transform = follow(event.currentTarget, current.dx, event.clientY - current.y)
+        track(event.currentTarget, current, event)
       },
-      onPointerUp: (event) => release(event.currentTarget, event.pointerId, true),
-      onPointerCancel: (event) => release(event.currentTarget, event.pointerId, false),
+      onPointerUp: (event) => release(event, true),
+      onPointerCancel: (event) => release(event, false),
+      // After a release the drag is already over, so this only ends a drag
+      // whose capture was lost before it.
+      onLostPointerCapture: (event) => release(event, false),
     }
-  }, [decide])
+  }, [decide, stopSpring])
 
   // Leaving the page stops an exit before its decision is sent.
   useEffect(() => () => exit.current?.cancel(), [])

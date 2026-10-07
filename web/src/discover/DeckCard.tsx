@@ -10,7 +10,10 @@ export const DECK_DEPTH = [0, 1, 2] as const
 const DIFFICULTY_LABEL: Record<Difficulty, string> = { easy: 'Easy', medium: 'Medium', hard: 'Hard' }
 
 // SwipeHandlers are the pointer handlers that drag the top card.
-export type SwipeHandlers = Pick<DOMAttributes<HTMLElement>, 'onPointerDown' | 'onPointerMove' | 'onPointerUp' | 'onPointerCancel'>
+export type SwipeHandlers = Pick<
+  DOMAttributes<HTMLElement>,
+  'onPointerDown' | 'onPointerMove' | 'onPointerUp' | 'onPointerCancel' | 'onLostPointerCapture'
+>
 
 export type DeckCardProps = {
   quest: SideQuest

@@ -25,12 +25,15 @@
 }
 
 .row {
+  box-sizing: border-box;
+  width: 100%;
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 10px;
   border-radius: 22px;
   background: var(--color-surface);
+  text-align: left;
 }
 
 /* The 48 px washed photo; Photo applies the washed filter. The placeholder's
@@ -168,4 +171,52 @@
   width: 28px;
   height: 28px;
   font-size: 0;
+}
+
+/* A row or a chip is a button dragged onto a day: by a pointer (no
+   scrolling or text selection under it) or with the keyboard. Its 2 px
+   border is clear until it is the ghost, inside its padding. */
+.draggable {
+  margin: 0;
+  border: 2px solid transparent;
+  font: inherit;
+  color: var(--color-text);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.row.draggable {
+  padding: 8px;
+}
+
+.chip.draggable {
+  padding: 3px 12px 3px 3px;
+}
+
+/* A dinner that cannot be picked up now: no grid to drop on, a swap
+   pending, or already this week. */
+.draggable[aria-disabled='true'] {
+  cursor: default;
+}
+
+/* The row or chip being dragged: a dashed ghost at 55% opacity. */
+.ghost {
+  border-style: dashed;
+  border-color: var(--color-neutral-500);
+  background: transparent;
+  opacity: 0.55;
+}
+
+/* The dragged copy floating under the pointer: lifted with the large
+   shadow and tilted -3deg. It lets the pointer through to the day under it. */
+.floating {
+  position: fixed;
+  z-index: 10;
+  box-sizing: border-box;
+  margin: 0;
+  box-shadow: var(--shadow-lg);
+  transform: rotate(-3deg);
+  pointer-events: none;
+  cursor: grabbing;
 }

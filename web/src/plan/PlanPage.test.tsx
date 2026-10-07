@@ -810,8 +810,8 @@ describe.each([
       const orzo = within(within(panel).getByRole('list', { name: 'Quest log' })).getByRole('listitem')
       expect(within(orzo).getByText('Lemon orzo').nextElementSibling).toHaveTextContent('Easy')
       expect(declaredStyle(within(orzo).getByRole('img', { hidden: true, name: 'Lemon orzo' })).width).toBe('48px')
-      // The 6-dot grip.
-      expect(orzo.lastElementChild!.children).toHaveLength(6)
+      // The 6-dot grip, last in the row's button.
+      expect(within(orzo).getByRole('button').lastElementChild!.children).toHaveLength(6)
 
       fireEvent.click(within(panel).getByRole('radio', { name: 'Regulars · 2' }))
       const regulars = within(within(panel).getByRole('list', { name: 'Regulars' })).getAllByRole('listitem')
@@ -971,6 +971,342 @@ describe.each([
     fireEvent.click(screen.getByRole('button', { name: 'Rebuild week' }))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     await waitFor(() => expect(posts(fetchMock)).toEqual([`${DRAFT} {}`]))
+  })
+})
+
+// Dragging a dinner from desktop's panel or tablet's strip onto a day swaps
+// it in, by pointer or keyboard.
+describe.each([
+  { width: 1180, layout: 'tablet' },
+  { width: 1440, layout: 'desktop' },
+])('PlanPage drag and drop at $width px', ({ width, layout }) => {
+  const FRIDAY = `${THIS_WEEK}/days/2026-10-09`
+  let capture: Mock<(pointerId: number) => void>
+  // The element document.elementFromPoint finds under the pointer.
+  let hovered: Element | null = null
+
+  // jsdom has no pointer capture and no layout to hit-test.
+  beforeEach(() => {
+    mockViewport(width)
+    capture = vi.fn()
+    Element.prototype.setPointerCapture = capture
+    hovered = null
+    document.elementFromPoint = () => hovered
+  })
+
+  afterEach(() => {
+    Reflect.deleteProperty(Element.prototype, 'setPointerCapture')
+    Reflect.deleteProperty(document, 'elementFromPoint')
+  })
+
+  // The Quest log has lemon orzo and miso salmon.
+  const dragLists = {
+    ...lists,
+    [`GET ${QUEST_LOG}`]: () =>
+      jsonResponse(200, { dinners: [dinner('q1', 'Lemon orzo', 'easy', 25), dinner('q2', 'Miso salmon', 'medium', 30)] }),
+  }
+
+  // swappedBody is the plan as the server answers a swap of Friday to lemon
+  // orzo, a Quest-log pick.
+  function swappedBody() {
+    const body = planBody('draft')
+    body.days[4] = { ...body.days[4]!, dinner: { ...body.days[4]!.dinner, id: 'q1', name: 'Lemon orzo' }, is_new: true }
+    return body
+  }
+
+  function puts(fetchMock: Mock<typeof fetch>) {
+    return fetchMock.mock.calls
+      .filter(([, init]) => init?.method === 'PUT')
+      .map(([input, init]) => `${String(input)} ${String(init?.body)}`)
+  }
+
+  function column(day: string) {
+    return within(screen.getByRole('list', { name: 'Dinners this week' })).getByRole('listitem', { name: day })
+  }
+
+  // quest is the Quest-log dinner's draggable: a row of the panel on
+  // desktop, a chip of the strip on tablet.
+  async function quest(name: string) {
+    const list = await screen.findByRole('list', { name: layout === 'desktop' ? 'Quest log' : 'Quest log dinners' })
+    return within(list).getByRole('button', { name: new RegExp(name) })
+  }
+
+  const announcer = () => screen.getByTestId('drag-announcer')
+  const float = () => screen.queryByTestId('drag-float')
+
+  // press, move and release drive pointer 3 on the draggable: down at
+  // (100, 100), moved over an element (or none), and let go there.
+  function press(draggable: Element) {
+    fireEvent.pointerDown(draggable, { pointerId: 3, isPrimary: true, button: 0, clientX: 100, clientY: 100 })
+  }
+  function move(draggable: Element, over: Element | null) {
+    hovered = over
+    fireEvent.pointerMove(draggable, { pointerId: 3, isPrimary: true, clientX: 160, clientY: 140 })
+  }
+  function release(draggable: Element) {
+    fireEvent.pointerUp(draggable, { pointerId: 3, isPrimary: true, button: 0, clientX: 160, clientY: 140 })
+  }
+
+  it('drops a dinner dragged onto a day, swapping it in at once and landing the plan the server answers', async () => {
+    let answer!: (response: Response) => void
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      ...dragLists,
+      [`PUT ${FRIDAY}`]: () => new Promise<Response>((resolve) => (answer = resolve)),
+    })
+    await renderPage()
+    await screen.findByText('Pizza night')
+    const orzo = await quest('Lemon orzo')
+    expect(declaredStyle(orzo).getPropertyValue('touch-action')).toBe('none')
+    expect(orzo).toHaveAccessibleDescription(
+      'Press Enter or Space to pick it up, the arrow keys to choose a day, Enter to drop it on that day and Escape to cancel.',
+    )
+
+    press(orzo)
+    expect(capture).toHaveBeenCalledExactlyOnceWith(3)
+    expect(capture.mock.contexts[0]).toBe(orzo)
+    // A press alone is no drag.
+    expect(float()).not.toBeInTheDocument()
+
+    // Over Friday: the source a dashed ghost at 55%, its copy floating with
+    // the large shadow at -3deg, and Friday the drop target.
+    move(orzo, within(column('Friday')).getByText('Pizza night'))
+    expect(declaredStyle(orzo).opacity).toBe('0.55')
+    expect(declaredStyle(orzo).borderStyle).toBe('dashed')
+    const copy = float()!
+    expect(copy).toHaveTextContent('Lemon orzo')
+    expect(copy).toHaveAttribute('aria-hidden', 'true')
+    expect(declaredStyle(copy).boxShadow).toBe('var(--shadow-lg)')
+    expect(declaredStyle(copy).transform).toBe('rotate(-3deg)')
+    expect(declaredStyle(copy).pointerEvents).toBe('none')
+    expect(announcer()).toHaveTextContent('Picked up Lemon orzo.')
+    const target = within(column('Friday')).getByText('Drop to swap').parentElement!
+    expect(target).toHaveTextContent('Drop to swapReplaces Pizza night')
+    expect(declaredStyle(target).border).toBe('2.5px dashed var(--color-accent)')
+    expect(declaredStyle(target).background).toBe('var(--color-accent-100)')
+    expect(within(column('Thursday')).queryByText('Drop to swap')).not.toBeInTheDocument()
+
+    // Moving on to Thursday moves the target.
+    move(orzo, column('Thursday'))
+    expect(within(column('Friday')).queryByText('Drop to swap')).not.toBeInTheDocument()
+    expect(within(column('Thursday')).getByText('Replaces Chicken stir-fry')).toBeInTheDocument()
+
+    move(orzo, within(column('Friday')).getByRole('button', { name: 'Swap Friday' }))
+    release(orzo)
+    expect(float()).not.toBeInTheDocument()
+    expect(screen.queryByText('Drop to swap')).not.toBeInTheDocument()
+    expect(declaredStyle(orzo).opacity).toBe('')
+    expect(announcer()).toHaveTextContent('Dropped Lemon orzo on Friday, replacing Pizza night.')
+
+    // Optimistic: Friday is the Side quest at once.
+    const friday = await waitFor(() => within(column('Friday')).getByText('Lemon orzo').parentElement!)
+    expect(within(friday).getByText('Side quest')).toBeInTheDocument()
+    await waitFor(() => expect(puts(fetchMock)).toEqual([`${FRIDAY} {"dinner_id":"q1"}`]))
+
+    await act(async () => answer(jsonResponse(200, swappedBody())))
+    expect(within(column('Friday')).getByText('Lemon orzo')).toBeInTheDocument()
+    expect(screen.queryByText('Pizza night')).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(puts(fetchMock)).toHaveLength(1)
+  })
+
+  it('cancels a drag let go over no day, or cancelled, with no swap', async () => {
+    const fetchMock = stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')), ...dragLists })
+    await renderPage()
+    await screen.findByText('Pizza night')
+    const orzo = await quest('Lemon orzo')
+
+    press(orzo)
+    move(orzo, column('Friday'))
+    expect(within(column('Friday')).getByText('Drop to swap')).toBeInTheDocument()
+    // Off the grid, onto the page around it.
+    move(orzo, document.body)
+    expect(screen.queryByText('Drop to swap')).not.toBeInTheDocument()
+    expect(float()).toBeInTheDocument()
+    release(orzo)
+    expect(float()).not.toBeInTheDocument()
+    expect(declaredStyle(orzo).opacity).toBe('')
+    expect(announcer()).toHaveTextContent('Cancelled. Lemon orzo was not swapped in.')
+
+    // A cancelled pointer, over a day, is no drop either.
+    press(orzo)
+    move(orzo, column('Monday'))
+    expect(within(column('Monday')).getByText('Replaces Beef tacos')).toBeInTheDocument()
+    fireEvent.pointerCancel(orzo, { pointerId: 3, isPrimary: true })
+    expect(screen.queryByText('Drop to swap')).not.toBeInTheDocument()
+    expect(float()).not.toBeInTheDocument()
+
+    // Nor is a drag Escape ends.
+    press(orzo)
+    move(orzo, column('Monday'))
+    fireEvent.keyDown(orzo, { key: 'Escape' })
+    expect(screen.queryByText('Drop to swap')).not.toBeInTheDocument()
+    release(orzo)
+
+    expect(within(column('Friday')).getByText('Pizza night')).toBeInTheDocument()
+    expect(within(column('Monday')).getByText('Beef tacos')).toBeInTheDocument()
+    expect(puts(fetchMock)).toEqual([])
+  })
+
+  it('puts the day back and shows the failure when the dropped swap is refused', async () => {
+    let refuse!: () => void
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      ...dragLists,
+      [`PUT ${FRIDAY}`]: () => new Promise<Response>((resolve) => (refuse = () => resolve(errorResponse(409, 'dinner_not_plannable')))),
+    })
+    await renderPage()
+    await screen.findByText('Pizza night')
+    const orzo = await quest('Lemon orzo')
+
+    press(orzo)
+    move(orzo, column('Friday'))
+    release(orzo)
+    await waitFor(() => expect(within(column('Friday')).getByText('Lemon orzo')).toBeInTheDocument())
+    await waitFor(() => expect(puts(fetchMock)).toHaveLength(1))
+
+    // While the swap is pending no other drag starts, by pointer or keyboard.
+    const salmon = await quest('Miso salmon')
+    expect(salmon).toHaveAttribute('aria-disabled', 'true')
+    press(salmon)
+    move(salmon, column('Monday'))
+    expect(screen.queryByText('Drop to swap')).not.toBeInTheDocument()
+    expect(float()).not.toBeInTheDocument()
+    release(salmon)
+    fireEvent.keyDown(salmon, { key: 'Enter' })
+    expect(announcer()).toHaveTextContent('A swap is still being saved. Pick Miso salmon up once it is done.')
+    expect(screen.queryByText('Drop to swap')).not.toBeInTheDocument()
+
+    await act(async () => refuse())
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't swap Friday's dinner. dinner_not_plannable message")
+    expect(within(column('Friday')).getByText('Pizza night')).toBeInTheDocument()
+    expect(within(column('Friday')).queryByText('Lemon orzo')).not.toBeInTheDocument()
+    expect(puts(fetchMock)).toHaveLength(1)
+    await waitFor(() => expect(salmon).not.toHaveAttribute('aria-disabled'))
+  })
+
+  it('swaps a dinner in with the keyboard, announcing each step', async () => {
+    let answer!: (response: Response) => void
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      ...dragLists,
+      [`PUT ${FRIDAY}`]: () => new Promise<Response>((resolve) => (answer = resolve)),
+    })
+    await renderPage()
+    await screen.findByText('Pizza night')
+    const orzo = await quest('Lemon orzo')
+    expect(announcer()).toHaveAttribute('aria-live', 'polite')
+
+    // Enter picks it up onto Monday.
+    orzo.focus()
+    fireEvent.keyDown(orzo, { key: 'Enter' })
+    expect(announcer()).toHaveTextContent(
+      'Picked up Lemon orzo. Monday: replaces Beef tacos. Use the arrow keys to choose a day, Enter to drop, Escape to cancel.',
+    )
+    expect(declaredStyle(orzo).opacity).toBe('0.55')
+    expect(within(column('Monday')).getByText('Replaces Beef tacos')).toBeInTheDocument()
+    // No pointer, so no floating copy.
+    expect(float()).not.toBeInTheDocument()
+
+    // The arrow keys choose the day, going no further than Monday.
+    fireEvent.keyDown(orzo, { key: 'ArrowLeft' })
+    expect(within(column('Monday')).getByText('Drop to swap')).toBeInTheDocument()
+    fireEvent.keyDown(orzo, { key: 'ArrowRight' })
+    expect(announcer()).toHaveTextContent('Tuesday: replaces Spaghetti bolognese.')
+    expect(within(column('Monday')).queryByText('Drop to swap')).not.toBeInTheDocument()
+    fireEvent.keyDown(orzo, { key: 'ArrowDown' })
+    fireEvent.keyDown(orzo, { key: 'ArrowRight' })
+    fireEvent.keyDown(orzo, { key: 'ArrowRight' })
+    fireEvent.keyDown(orzo, { key: 'ArrowRight' })
+    fireEvent.keyDown(orzo, { key: 'ArrowUp' })
+    expect(announcer()).toHaveTextContent('Friday: replaces Pizza night.')
+    expect(within(column('Friday')).getByText('Replaces Pizza night')).toBeInTheDocument()
+    expect(puts(fetchMock)).toEqual([])
+
+    // Enter drops it, swapping it in at once; focus moves to the day.
+    fireEvent.keyDown(orzo, { key: 'Enter' })
+    expect(announcer()).toHaveTextContent('Dropped Lemon orzo on Friday, replacing Pizza night.')
+    expect(screen.getByRole('button', { name: 'Swap Friday' })).toHaveFocus()
+    expect(screen.queryByText('Drop to swap')).not.toBeInTheDocument()
+    await waitFor(() => expect(within(column('Friday')).getByText('Lemon orzo')).toBeInTheDocument())
+    await waitFor(() => expect(puts(fetchMock)).toEqual([`${FRIDAY} {"dinner_id":"q1"}`]))
+    await act(async () => answer(jsonResponse(200, swappedBody())))
+    expect(within(column('Friday')).getByText('Lemon orzo')).toBeInTheDocument()
+    expect(puts(fetchMock)).toHaveLength(1)
+  })
+
+  it('cancels a keyboard drag with Escape, or by leaving it', async () => {
+    const fetchMock = stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')), ...dragLists })
+    await renderPage()
+    await screen.findByText('Pizza night')
+    const orzo = await quest('Lemon orzo')
+
+    // Space picks it up too, but does not drop it.
+    orzo.focus()
+    fireEvent.keyDown(orzo, { key: ' ' })
+    fireEvent.keyDown(orzo, { key: 'ArrowRight' })
+    fireEvent.keyDown(orzo, { key: ' ' })
+    expect(within(column('Tuesday')).getByText('Drop to swap')).toBeInTheDocument()
+    fireEvent.keyDown(orzo, { key: 'Escape' })
+    expect(announcer()).toHaveTextContent('Cancelled. Lemon orzo was not swapped in.')
+    expect(screen.queryByText('Drop to swap')).not.toBeInTheDocument()
+    expect(declaredStyle(orzo).opacity).toBe('')
+    expect(orzo).toHaveFocus()
+
+    // The arrow keys do nothing until it is picked up again; Enter does.
+    fireEvent.keyDown(orzo, { key: 'ArrowRight' })
+    expect(screen.queryByText('Drop to swap')).not.toBeInTheDocument()
+    fireEvent.keyDown(orzo, { key: 'Enter' })
+    expect(within(column('Monday')).getByText('Drop to swap')).toBeInTheDocument()
+    // Tabbing away cancels.
+    fireEvent.blur(orzo)
+    expect(announcer()).toHaveTextContent('Cancelled. Lemon orzo was not swapped in.')
+    expect(screen.queryByText('Drop to swap')).not.toBeInTheDocument()
+
+    expect(within(column('Monday')).getByText('Beef tacos')).toBeInTheDocument()
+    expect(puts(fetchMock)).toEqual([])
+  })
+
+  if (layout === 'desktop') {
+    it('does not pick up a Regular already this week', async () => {
+      const fetchMock = stubServer({
+        [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+        ...dragLists,
+        [`PUT ${THIS_WEEK}/days/2026-10-07`]: () => new Promise<Response>(() => undefined),
+      })
+      await renderPage()
+      await screen.findByText('Pizza night')
+      fireEvent.click(await screen.findByRole('radio', { name: 'Regulars · 2' }))
+      const regulars = screen.getByRole('list', { name: 'Regulars' })
+      const tacos = within(regulars).getByRole('button', { name: /Beef tacos/ })
+      expect(tacos).toHaveAttribute('aria-disabled', 'true')
+      fireEvent.keyDown(tacos, { key: 'Enter' })
+      expect(announcer()).toHaveTextContent('Beef tacos is already this week.')
+      expect(screen.queryByText('Drop to swap')).not.toBeInTheDocument()
+
+      // A Regular not this week is dragged in as one, not NEW.
+      const fish = within(regulars).getByRole('button', { name: /Fish tacos/ })
+      expect(fish).not.toHaveAttribute('aria-disabled')
+      press(fish)
+      move(fish, column('Wednesday'))
+      release(fish)
+      await waitFor(() => expect(within(column('Wednesday')).getByText('Fish tacos').parentElement).toHaveTextContent('Regular'))
+      await waitFor(() => expect(puts(fetchMock)).toEqual([`${THIS_WEEK}/days/2026-10-07 {"dinner_id":"r1"}`]))
+    })
+  }
+})
+
+// Mobile's Draft board has no drag: its tiles open the swap sheet.
+describe('PlanPage drag and drop on mobile', () => {
+  it('has no draggables, drop targets or drag announcements', async () => {
+    stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')), ...lists })
+    const { container } = await renderPage()
+
+    await screen.findByText('Pizza night')
+    expect(container.querySelector('[data-drop-date]')).toBeNull()
+    expect(screen.queryByTestId('drag-announcer')).not.toBeInTheDocument()
+    expect(screen.queryByText('Drag a dinner onto a day to swap it in.')).not.toBeInTheDocument()
   })
 })
 

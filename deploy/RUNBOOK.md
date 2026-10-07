@@ -568,13 +568,36 @@ the restart; the service fails fast at boot naming any missing required variable
 
 ### Rollback to a previous SHA
 
-First check whether the rollback crosses a migration: compare
-`migrations/` between the two SHAs.
+First check whether the rollback crosses a migration, with the rule the
+service applies at start-up (`internal/store/migrate.go`): the older build
+refuses a database holding a version in `schema_migrations` that is not one
+of its own migration files — the `*.sql` files directly in `migrations/`
+(`migrations/queries/` holds sqlc queries, not migrations). Compare the
+versions the live database has applied with the files the previous SHA has:
 
 ```sh
 cd /home/overseer/mealquest
-git diff --stat <previous SHA> HEAD -- migrations/   # empty: no migration crossed
+D=/var/lib/docker/volumes/mealquest-data/_data
+P=<previous SHA>
+rm -rf /tmp/mqcheck && mkdir /tmp/mqcheck
+sudo sh -c "cp -a $D/mealquest.db* /tmp/mqcheck/" && sudo chown -R "$USER" /tmp/mqcheck
+git ls-tree --name-only "$P" migrations/ > /tmp/mqcheck/known   # top level only
+python3 - /tmp/mqcheck/mealquest.db /tmp/mqcheck/known <<'PY'
+import sqlite3, sys
+applied = {v for (v,) in sqlite3.connect(sys.argv[1]).execute("select version from schema_migrations")}
+known = {n[len("migrations/"):-len(".sql")] for n in open(sys.argv[2]).read().split() if n.endswith(".sql")}
+if not applied or not known:
+    sys.exit("no versions read: check the database copy and the previous SHA, then run again")
+unknown = sorted(applied - known)
+print("unknown to the previous SHA:", " ".join(unknown) if unknown else "none")
+PY
+rm -rf /tmp/mqcheck
 ```
+
+It prints `none` when no migration crossed; otherwise it lists the versions
+the older build does not know, and the migration-crossing path below is
+required. If it exits with an error, stop and fix the cause — do not pick a
+path.
 
 **No migration crossed** — rebuild and restart the older SHA:
 

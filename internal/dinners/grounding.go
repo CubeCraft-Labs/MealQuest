@@ -296,11 +296,34 @@ type Candidate struct {
 	Minutes  *int    `json:"minutes"`
 }
 
+// offerLifetime is how long the candidates Candidates offers a dinner
+// ground it; tests shorten it.
+var offerLifetime = 30 * time.Minute
+
+// offerSet is the candidates last offered for a dinner: the page URL of
+// each candidate id, until expires.
+type offerSet struct {
+	urls    map[string]string
+	expires time.Time
+}
+
+// offerSearch is a Candidates search running for a dinner. It is stale
+// once the dinner's offers are cleared, and then stores none.
+type offerSearch struct {
+	stale bool
+}
+
 // Candidates searches for dinner id's name and returns up to MaxCandidates
 // recipe pages to ground it in, best first; the list may be empty. They
 // replace the dinner's earlier candidates: one not offered again no longer
-// grounds it. A search that fails wraps recipes.ErrSearchFailed.
+// grounds it. They ground it for offerLifetime, and not at all once it is
+// grounded by hand or archived, even while this search runs. A search that
+// fails wraps recipes.ErrSearchFailed.
 func (s *Service) Candidates(ctx context.Context, id string) ([]Candidate, error) {
+	// Tracked before the dinner is read: grounding or archiving it after
+	// the read makes this search stale.
+	keep, done := s.trackOffers(id)
+	defer done()
 	row, err := s.get(ctx, id)
 	if err != nil {
 		return nil, err
@@ -320,10 +343,58 @@ func (s *Service) Candidates(ctx context.Context, id string) ([]Candidate, error
 			out[i].PhotoURL = &u
 		}
 	}
-	s.offersMu.Lock()
-	s.offers[row.ID] = urls
-	s.offersMu.Unlock()
+	if row.Status != StatusArchived {
+		keep(urls)
+	}
 	return out, nil
+}
+
+// trackOffers registers a Candidates search for dinner id. It returns keep,
+// which stores urls as the dinner's offers unless clearOffers has run for
+// it since, and done, to call when the search ends. keep also drops every
+// dinner's expired offers, so offers holds only those still live.
+func (s *Service) trackOffers(id string) (keep func(urls map[string]string), done func()) {
+	search := &offerSearch{}
+	s.offersMu.Lock()
+	if s.offerSearches[id] == nil {
+		s.offerSearches[id] = make(map[*offerSearch]struct{})
+	}
+	s.offerSearches[id][search] = struct{}{}
+	s.offersMu.Unlock()
+	keep = func(urls map[string]string) {
+		now := time.Now()
+		s.offersMu.Lock()
+		defer s.offersMu.Unlock()
+		for dinnerID, set := range s.offers {
+			if !now.Before(set.expires) {
+				delete(s.offers, dinnerID)
+			}
+		}
+		if !search.stale {
+			s.offers[id] = offerSet{urls: urls, expires: now.Add(offerLifetime)}
+		}
+	}
+	done = func() {
+		s.offersMu.Lock()
+		delete(s.offerSearches[id], search)
+		if len(s.offerSearches[id]) == 0 {
+			delete(s.offerSearches, id)
+		}
+		s.offersMu.Unlock()
+	}
+	return keep, done
+}
+
+// clearOffers drops dinner id's offers and makes every Candidates search
+// running for it stale, so no candidate offered before grounds it. Call
+// it once the dinner is grounded by hand or archived.
+func (s *Service) clearOffers(id string) {
+	s.offersMu.Lock()
+	defer s.offersMu.Unlock()
+	delete(s.offers, id)
+	for search := range s.offerSearches[id] {
+		search.stale = true
+	}
 }
 
 // candidateID is the opaque id of the page at rawURL as a candidate for
@@ -336,14 +407,14 @@ func (s *Service) candidateID(id, rawURL string) string {
 }
 
 // candidateURL is the page URL of candidate cid last offered for dinner id.
-// A cid not among the dinner's candidates last offered since the service
-// started, or whose page is not a valid recipe link, is a
-// *ValidationError.
+// A cid not among the dinner's live offers, or whose page is not a valid
+// recipe link, is a *ValidationError.
 func (s *Service) candidateURL(id, cid string) (string, error) {
 	s.offersMu.Lock()
-	raw, ok := s.offers[id][cid]
+	set := s.offers[id]
+	raw, ok := set.urls[cid]
 	s.offersMu.Unlock()
-	if ok {
+	if ok && time.Now().Before(set.expires) {
 		if u, err := checkRecipeURL(raw); err == nil {
 			return u.String(), nil
 		}
@@ -443,9 +514,7 @@ func (s *Service) Ground(ctx context.Context, id string, f Fix, updatedBy string
 	if err != nil {
 		return Dinner{}, fmt.Errorf("%w: dinner %s: record: %w", ErrGroundFailed, id, err)
 	}
-	s.offersMu.Lock()
-	delete(s.offers, cur.ID)
-	s.offersMu.Unlock()
+	s.clearOffers(cur.ID)
 	return fromRow(row), nil
 }
 
@@ -467,9 +536,10 @@ func (s *Service) groundRejected(ctx context.Context, id string) error {
 }
 
 // groundManual stores m as dinner id's recipe, with its ingredients and
-// steps, and records it on the dinner, all in one transaction. A missing
-// or archived dinner is ErrNotFound or ErrArchived; any other failure
-// wraps ErrGroundFailed.
+// steps, and records it on the dinner, all in one transaction; the
+// dinner's candidates then no longer ground it. A missing or archived
+// dinner is ErrNotFound or ErrArchived; any other failure wraps
+// ErrGroundFailed.
 func (s *Service) groundManual(ctx context.Context, id string, m ManualRecipe, updatedBy string) (Dinner, error) {
 	var row db.Dinner
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
@@ -567,6 +637,7 @@ func (s *Service) groundManual(ctx context.Context, id string, m ManualRecipe, u
 	if err != nil {
 		return Dinner{}, fmt.Errorf("%w: dinner %s: %w", ErrGroundFailed, id, err)
 	}
+	s.clearOffers(row.ID)
 	return fromRow(row), nil
 }
 

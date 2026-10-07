@@ -668,4 +668,501 @@ describe('DiscoverPage', () => {
       expect(sent(server.fetchMock)).toEqual([])
     })
   })
+
+  describe('swipe', () => {
+    const accepted = (quest: typeof BOWLS) => jsonResponse(200, { suggestion: { ...quest, status: 'accepted' }, replenish_job_id: null })
+    const declined = (quest: typeof BOWLS) => jsonResponse(200, { suggestion: { ...quest, status: 'declined' }, replenish_job_id: null })
+    const on = (animations: FakeAnimation[], target: Element) => animations.filter((a) => a.target === target)
+    const SPRING = 'cubic-bezier(.34,1.4,.64,1)'
+    let capture: Mock<(pointerId: number) => void>
+
+    // jsdom has no pointer capture.
+    beforeEach(() => {
+      capture = vi.fn()
+      Element.prototype.setPointerCapture = capture
+    })
+
+    afterEach(() => {
+      Reflect.deleteProperty(Element.prototype, 'setPointerCapture')
+    })
+
+    // press, drag and release put a pointer down on the card at (200, 300),
+    // move it by dx, dy, and let go where it is, or dx, dy from the press.
+    let pointer = { dx: 0, dy: 0 }
+    function press(card: Element) {
+      pointer = { dx: 0, dy: 0 }
+      fireEvent.pointerDown(card, { pointerId: 7, isPrimary: true, button: 0, clientX: 200, clientY: 300 })
+    }
+    function drag(card: Element, dx: number, dy: number) {
+      pointer = { dx, dy }
+      fireEvent.pointerMove(card, { pointerId: 7, isPrimary: true, clientX: 200 + dx, clientY: 300 + dy })
+    }
+    function release(card: Element, dx = pointer.dx, dy = pointer.dy) {
+      fireEvent.pointerUp(card, { pointerId: 7, isPrimary: true, button: 0, clientX: 200 + dx, clientY: 300 + dy })
+    }
+    const stamps = (card: HTMLElement) => [within(card).getByText('Try it!'), within(card).getByText('Pass')]
+
+    it('makes the top card follow the pointer, captured, with the stamps showing how far it has gone', async () => {
+      stubServer([BOWLS, TIKKA])
+      const animations = stubAnimate({ autoFinish: false })
+      await renderPage()
+      const card = await screen.findByRole('article', { name: 'Korean beef bowls' })
+      const [tryStamp, passStamp] = stamps(card)
+      expect(declaredStyle(card).getPropertyValue('touch-action')).toBe('none')
+
+      press(card)
+      expect(capture).toHaveBeenCalledExactlyOnceWith(7)
+      expect(capture.mock.contexts[0]).toBe(card)
+
+      drag(card, 54, 20)
+      expect(card.style.transform).toBe('translate(54px,6px) rotate(3deg)')
+      expect(tryStamp!.style.opacity).toBe('0.54')
+      expect(passStamp!.style.opacity).toBe('0')
+
+      drag(card, -36, -10)
+      expect(card.style.transform).toBe('translate(-36px,-3px) rotate(-2deg)')
+      expect(tryStamp!.style.opacity).toBe('0')
+      expect(passStamp!.style.opacity).toBe('0.36')
+
+      drag(card, -180, 0)
+      expect(tryStamp!.style.opacity).toBe('0')
+      expect(passStamp!.style.opacity).toBe('1')
+      expect(animations).toEqual([])
+    })
+
+    it('Try it on a release past 110 px right: throws the card from where it was let go, in 340 ms with no wiggle, then records it', async () => {
+      const server = stubServer([BOWLS, TIKKA, ORZO], {
+        'POST /api/v1/suggestions/s1/accept': () => {
+          server.deck = [TIKKA, ORZO]
+          return accepted(BOWLS)
+        },
+      })
+      const animations = stubAnimate({ autoFinish: false })
+      await renderPage()
+      const card = await screen.findByRole('article', { name: 'Korean beef bowls' })
+      const pill = await screen.findByText('Quest log · 6')
+      const tryButton = screen.getByRole('button', { name: 'Try it' })
+
+      press(card)
+      drag(card, 126, 30)
+      release(card)
+      // No button bump, no wiggle: the stamp pops and the card flies.
+      expect(animations.map((a) => a.target)).toEqual([within(card).getByText('Try it!')])
+      await waitFor(() => expect(tryButton).toBeDisabled())
+      expect(animations).toHaveLength(2)
+      const fly = animations[1]!
+      expect(fly.target).toBe(card)
+      expect(fly.keyframes).toEqual([
+        { transform: 'translate(126px,9px) rotate(7deg)' },
+        { transform: 'translate(150%,-60px) rotate(28deg)', opacity: 0 },
+      ])
+      expect(fly.options).toEqual({ duration: 340, easing: 'cubic-bezier(.55,0,.8,.4)', fill: 'forwards' })
+      expect(sent(server.fetchMock)).toEqual([])
+
+      await finishRunning(animations)
+      expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept'])
+      expect(on(animations, pill)).toHaveLength(1)
+      const next = await screen.findByRole('article', { name: 'Crock pot chicken tikka masala' })
+      expect(on(animations, next).map((a) => a.options)).toEqual([{ duration: 300, easing: 'cubic-bezier(.2,.8,.2,1)' }])
+      await waitFor(() => expect(tryButton).toBeEnabled())
+      expect(next.style.transform).toBe('')
+    })
+
+    it('Pass on a release past 110 px left: folds the card from where it was let go, then records it', async () => {
+      const server = stubServer([BOWLS, TIKKA], {
+        'POST /api/v1/suggestions/s1/decline': () => {
+          server.deck = [TIKKA]
+          return declined(BOWLS)
+        },
+      })
+      const animations = stubAnimate({ autoFinish: false })
+      await renderPage()
+      const card = await screen.findByRole('article', { name: 'Korean beef bowls' })
+      const pill = await screen.findByText('Quest log · 6')
+      const shade = card.querySelector('[data-part="shade"]')!
+
+      press(card)
+      drag(card, -144, 20)
+      release(card)
+      expect(animations.map((a) => a.target)).toEqual([shade, card])
+      expect(animations[1]!.keyframes).toEqual([
+        { transformOrigin: '0% 50%', transform: 'translate(-144px,6px) rotate(-8deg) rotateY(0deg)', easing: 'cubic-bezier(.45,0,.85,.55)' },
+        { transformOrigin: '0% 50%', transform: 'translate(-144px,6px) rotate(-8deg) rotateY(-80deg)', offset: 0.45, easing: 'cubic-bezier(.4,0,.9,.6)' },
+        { transformOrigin: '0% 50%', transform: 'translate(-45%,560px) rotate(-35deg) rotateY(-90deg)', opacity: 0 },
+      ])
+      expect(animations[1]!.options).toEqual({ duration: 720, fill: 'forwards' })
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Pass' })).toBeDisabled())
+      expect(sent(server.fetchMock)).toEqual([])
+
+      await finishRunning(animations)
+      expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/decline'])
+      await screen.findByRole('article', { name: 'Crock pot chicken tikka masala' })
+      expect(on(animations, pill)).toEqual([])
+    })
+
+    it.each([
+      ['right', 110],
+      ['left', -110],
+    ])('springs the card back from a release of 110 px %s, resetting the stamps and deciding nothing', async (_, dx) => {
+      const server = stubServer([BOWLS, TIKKA])
+      const animations = stubAnimate({ autoFinish: false })
+      await renderPage()
+      const card = await screen.findByRole('article', { name: 'Korean beef bowls' })
+      const [tryStamp, passStamp] = stamps(card)
+
+      press(card)
+      drag(card, dx, 0)
+      expect([tryStamp!.style.opacity, passStamp!.style.opacity]).toContain('1')
+      release(card)
+      expect(animations).toHaveLength(1)
+      expect(animations[0]!.target).toBe(card)
+      expect(animations[0]!.keyframes).toEqual([{ transform: `translate(${dx}px,0px) rotate(${dx / 18}deg)` }, { transform: 'translate(0px,0px) rotate(0deg)' }])
+      expect(animations[0]!.options).toEqual({ duration: 420, easing: SPRING })
+      expect(card.style.transform).toBe('')
+      expect(tryStamp!.style.opacity).toBe('')
+      expect(passStamp!.style.opacity).toBe('')
+      expect(getComputedStyle(tryStamp!).opacity).toBe('0')
+      expect(getComputedStyle(passStamp!).opacity).toBe('0')
+
+      // A later move with the pointer up does nothing.
+      drag(card, 200, 0)
+      expect(card.style.transform).toBe('')
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(screen.getByRole('button', { name: 'Try it' })).toBeEnabled()
+      expect(sent(server.fetchMock)).toEqual([])
+    })
+
+    it.each([
+      ['Try it', 60, 130, 'accept'],
+      ['Pass', -60, -130, 'decline'],
+    ] as const)('%s from where a release past 110 px lets go, though the last move was short of it', async (_, moved, at, action) => {
+      const server = stubServer([BOWLS, TIKKA], {
+        [`POST /api/v1/suggestions/s1/${action}`]: () => {
+          server.deck = [TIKKA]
+          return action === 'accept' ? accepted(BOWLS) : declined(BOWLS)
+        },
+      })
+      const animations = stubAnimate({ autoFinish: false })
+      await renderPage()
+      const card = await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      press(card)
+      drag(card, moved, 0)
+      release(card, at, 20)
+      const from = `translate(${at}px,6px) rotate(${at / 18}deg)`
+      await waitFor(() => expect(on(animations, card)).toHaveLength(1))
+      expect(on(animations, card).map((a) => a.keyframes[0]!.transform)).toEqual([action === 'accept' ? from : `${from} rotateY(0deg)`])
+      await finishRunning(animations)
+      expect(sent(server.fetchMock)).toEqual([`POST /api/v1/suggestions/s1/${action}`])
+    })
+
+    it.each([
+      ['right', 150, 40],
+      ['left', -150, -40],
+    ])('springs the card back from where a release short of 110 px %s lets go, though the last move was past it', async (_, moved, at) => {
+      const server = stubServer([BOWLS, TIKKA])
+      const animations = stubAnimate({ autoFinish: false })
+      await renderPage()
+      const card = await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      press(card)
+      drag(card, moved, 0)
+      release(card, at, 0)
+      expect(animations.map((a) => [a.target, a.keyframes, a.options])).toEqual([
+        [card, [{ transform: `translate(${at}px,0px) rotate(${at / 18}deg)` }, { transform: 'translate(0px,0px) rotate(0deg)' }], { duration: 420, easing: SPRING }],
+      ])
+      expect(card.style.transform).toBe('')
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(sent(server.fetchMock)).toEqual([])
+    })
+
+    it('stops a snap-back when the card is grabbed again, so it follows the new drag', async () => {
+      stubServer([BOWLS, TIKKA])
+      const animations = stubAnimate({ autoFinish: false })
+      await renderPage()
+      const card = await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      press(card)
+      drag(card, 80, 0)
+      release(card)
+      const [spring] = animations
+      expect(spring!.playState).toBe('running')
+
+      press(card)
+      expect(spring!.playState).toBe('idle')
+      drag(card, 36, 0)
+      expect(card.style.transform).toBe('translate(36px,0px) rotate(2deg)')
+      expect(animations).toHaveLength(1)
+    })
+
+    it('stops a snap-back when a decision starts', async () => {
+      stubServer([BOWLS, TIKKA], { 'POST /api/v1/suggestions/s1/decline': () => declined(BOWLS) })
+      const animations = stubAnimate({ autoFinish: false })
+      await renderPage()
+      const card = await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      press(card)
+      drag(card, -80, 0)
+      release(card)
+      const [spring] = animations
+      fireEvent.click(screen.getByRole('button', { name: 'Pass' }))
+      expect(spring!.playState).toBe('idle')
+      expect(on(animations, card)).toHaveLength(2)
+    })
+
+    it('springs the card back when it loses the pointer capture before the release, deciding nothing', async () => {
+      const server = stubServer([BOWLS, TIKKA], { 'POST /api/v1/suggestions/s1/accept': () => accepted(BOWLS) })
+      const animations = stubAnimate({ autoFinish: false })
+      await renderPage()
+      const card = await screen.findByRole('article', { name: 'Korean beef bowls' })
+      const [tryStamp, passStamp] = stamps(card)
+
+      press(card)
+      drag(card, 150, 0)
+      fireEvent.lostPointerCapture(card, { pointerId: 7, isPrimary: true })
+      expect(animations.map((a) => [a.target, a.options])).toEqual([[card, { duration: 420, easing: SPRING }]])
+      expect(card.style.transform).toBe('')
+      expect(tryStamp!.style.opacity).toBe('')
+      expect(passStamp!.style.opacity).toBe('')
+
+      // The drag is over: later moves and the release do nothing.
+      drag(card, 180, 0)
+      release(card)
+      expect(card.style.transform).toBe('')
+      expect(animations).toHaveLength(1)
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(sent(server.fetchMock)).toEqual([])
+
+      // The capture going after a release leaves its decision alone.
+      press(card)
+      drag(card, 140, 0)
+      release(card)
+      await waitFor(() => expect(on(animations, card)).toHaveLength(2))
+      fireEvent.lostPointerCapture(card, { pointerId: 7, isPrimary: true })
+      expect(animations).toHaveLength(3)
+      expect(card.style.transform).toBe('translate(140px,0px) rotate(7.777777777777778deg)')
+      await finishRunning(animations)
+      expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept'])
+    })
+
+    it('springs the card back when the pointer is canceled, however far it went', async () => {
+      const server = stubServer([BOWLS])
+      const animations = stubAnimate({ autoFinish: false })
+      await renderPage()
+      const card = await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      press(card)
+      drag(card, 180, 0)
+      fireEvent.pointerCancel(card, { pointerId: 7, isPrimary: true })
+      expect(animations.map((a) => a.options)).toEqual([{ duration: 420, easing: SPRING }])
+      expect(card.style.transform).toBe('')
+      expect(sent(server.fetchMock)).toEqual([])
+    })
+
+    it('ignores a drag while busy', async () => {
+      const server = stubServer([BOWLS, TIKKA], { 'POST /api/v1/suggestions/s1/decline': () => declined(BOWLS) })
+      const animations = stubAnimate({ autoFinish: false })
+      await renderPage()
+      const card = await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Pass' }))
+      const started = animations.length
+      press(card)
+      drag(card, 160, 0)
+      release(card)
+      expect(capture).not.toHaveBeenCalled()
+      expect(card.style.transform).toBe('')
+      expect(animations).toHaveLength(started)
+      await finishRunning(animations)
+      expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/decline'])
+    })
+
+    it('puts a drag held while a Retry goes out back at once on release, deciding nothing', async () => {
+      const retry = deferred()
+      let calls = 0
+      const server = stubServer([BOWLS, TIKKA], {
+        'POST /api/v1/suggestions/s1/accept': () => (++calls === 1 ? errorResponse(500, 'internal') : retry.promise),
+      })
+      await renderPage()
+      const card = await screen.findByRole('article', { name: 'Korean beef bowls' })
+      fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+      const alert = await screen.findByRole('alert')
+
+      press(card)
+      drag(card, 60, 0)
+      fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Try it' })).toBeDisabled())
+      drag(card, -160, 0)
+      expect(card.style.transform).toBe('translate(60px,0px) rotate(3.3333333333333335deg)')
+      const started = vi.mocked(Element.prototype.animate).mock.calls.length
+      release(card)
+      expect(card.style.transform).toBe('')
+      expect(within(card).getByText('Try it!').style.opacity).toBe('')
+      expect(vi.mocked(Element.prototype.animate).mock.calls.length).toBe(started)
+      expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept', 'POST /api/v1/suggestions/s1/accept'])
+      retry.resolve(accepted(BOWLS))
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Try it' })).toBeEnabled())
+    })
+
+    it('drags only the top card', async () => {
+      const server = stubServer([BOWLS, TIKKA, ORZO])
+      const animations = stubAnimate({ autoFinish: false })
+      const { container } = await renderPage()
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+      const [, second, third] = container.querySelectorAll<HTMLElement>('article')
+
+      for (const card of [second!, third!]) {
+        expect(declaredStyle(card).getPropertyValue('touch-action')).toBe('')
+        press(card)
+        drag(card, 160, 0)
+        release(card)
+        expect(card.style.transform).toBe('')
+      }
+      expect(capture).not.toHaveBeenCalled()
+      expect(animations).toEqual([])
+      expect(sent(server.fetchMock)).toEqual([])
+    })
+
+    it('ignores a press that is not the primary button', async () => {
+      stubServer([BOWLS])
+      await renderPage()
+      const card = await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      fireEvent.pointerDown(card, { pointerId: 7, isPrimary: true, button: 2, clientX: 200, clientY: 300 })
+      drag(card, 160, 0)
+      expect(capture).not.toHaveBeenCalled()
+      expect(card.style.transform).toBe('')
+    })
+
+    it.each([
+      ['without moving', null],
+      ['after moving', 160],
+    ])('ignores a second primary pointer pressing and releasing %s mid-drag, then springs the card back clean', async (_, moves) => {
+      const server = stubServer([BOWLS, TIKKA])
+      const animations = stubAnimate({ autoFinish: false })
+      await renderPage()
+      const card = await screen.findByRole('article', { name: 'Korean beef bowls' })
+      const [tryStamp, passStamp] = stamps(card)
+      // A touch (id 7) drags; a mouse (id 1), also primary, comes and goes.
+      const mouse = (x: number) => ({ pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0, clientX: 400 + x, clientY: 300 })
+
+      press(card)
+      drag(card, 72, 0)
+      fireEvent.pointerDown(card, mouse(0))
+      if (moves !== null) fireEvent.pointerMove(card, mouse(moves))
+      fireEvent.pointerUp(card, mouse(moves ?? 0))
+      fireEvent.lostPointerCapture(card, mouse(moves ?? 0))
+      expect(capture).toHaveBeenCalledExactlyOnceWith(7)
+      expect(card.style.transform).toBe('translate(72px,0px) rotate(4deg)')
+      expect(animations).toEqual([])
+
+      release(card)
+      expect(animations.map((a) => [a.target, a.options])).toEqual([[card, { duration: 420, easing: SPRING }]])
+      expect(card.style.transform).toBe('')
+      expect(tryStamp!.style.opacity).toBe('')
+      expect(passStamp!.style.opacity).toBe('')
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(screen.getByRole('button', { name: 'Try it' })).toBeEnabled()
+      expect(sent(server.fetchMock)).toEqual([])
+
+      // The card can be dragged again.
+      press(card)
+      drag(card, 36, 0)
+      expect(card.style.transform).toBe('translate(36px,0px) rotate(2deg)')
+    })
+
+    it('a key decision mid-drag ends the drag and throws the card from rest', async () => {
+      const server = stubServer([BOWLS, TIKKA], {
+        'POST /api/v1/suggestions/s1/accept': () => {
+          server.deck = [TIKKA]
+          return accepted(BOWLS)
+        },
+      })
+      const animations = stubAnimate({ autoFinish: false })
+      await renderPage()
+      const card = await screen.findByRole('article', { name: 'Korean beef bowls' })
+      const [tryStamp] = stamps(card)
+
+      press(card)
+      drag(card, -60, 0)
+      fireEvent.keyDown(window, { key: 'ArrowRight' })
+      expect(card.style.transform).toBe('')
+      expect(tryStamp!.style.opacity).toBe('')
+      // The button bump, stamp pop and wiggle of a Try it from rest.
+      expect(animations.map((a) => a.target)).toEqual([screen.getByRole('button', { name: 'Try it' }), tryStamp, card])
+      release(card)
+      expect(animations).toHaveLength(3)
+      await finishRunning(animations)
+      await finishRunning(animations)
+      expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept'])
+    })
+
+    it('puts a swiped card back at rest when its decision is refused', async () => {
+      stubServer([BOWLS], { 'POST /api/v1/suggestions/s1/decline': () => errorResponse(500, 'internal') })
+      const animations = stubAnimate({ autoFinish: false })
+      await renderPage()
+      const card = await screen.findByRole('article', { name: 'Korean beef bowls' })
+      const [tryStamp, passStamp] = stamps(card)
+
+      press(card)
+      drag(card, -150, 0)
+      release(card)
+      await finishRunning(animations)
+      await screen.findByRole('alert')
+      expect(animations.map((a) => a.playState)).toEqual(['idle', 'idle'])
+      expect(card.style.transform).toBe('')
+      expect(tryStamp!.style.opacity).toBe('')
+      expect(passStamp!.style.opacity).toBe('')
+      expect(screen.getByRole('button', { name: 'Pass' })).toBeEnabled()
+    })
+
+    it.each([
+      ['Try it', 140, 'accept'],
+      ['Pass', -140, 'decline'],
+    ] as const)('%s by swipe with reduced motion fades the card where it was let go', async (_, dx, action) => {
+      mockViewport(390, { reducedMotion: true })
+      const server = stubServer([BOWLS, TIKKA], {
+        [`POST /api/v1/suggestions/s1/${action}`]: () => {
+          server.deck = [TIKKA]
+          return action === 'accept' ? accepted(BOWLS) : declined(BOWLS)
+        },
+      })
+      const animations = stubAnimate({ autoFinish: false })
+      await renderPage()
+      const card = await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      press(card)
+      drag(card, dx, 0)
+      release(card)
+      expect(animations.map((a) => [a.target, a.keyframes, a.options])).toEqual([[card, [{ opacity: 1 }, { opacity: 0 }], { duration: 200, fill: 'forwards' }]])
+      expect(card.style.transform).toBe(`translate(${dx}px,0px) rotate(${dx / 18}deg)`)
+      await finishRunning(animations)
+      expect(sent(server.fetchMock)).toEqual([`POST /api/v1/suggestions/s1/${action}`])
+      await screen.findByRole('article', { name: 'Crock pot chicken tikka masala' })
+      expect(animations).toHaveLength(1)
+    })
+
+    it('puts the card back at once, without the spring, from a short swipe with reduced motion', async () => {
+      mockViewport(390, { reducedMotion: true })
+      stubServer([BOWLS])
+      const animations = stubAnimate({ autoFinish: false })
+      await renderPage()
+      const card = await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      press(card)
+      drag(card, 80, 0)
+      release(card)
+      expect(animations).toEqual([])
+      expect(card.style.transform).toBe('')
+      expect(within(card).getByText('Try it!').style.opacity).toBe('')
+    })
+  })
 })

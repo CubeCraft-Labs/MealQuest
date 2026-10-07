@@ -1,7 +1,7 @@
 // The deck's motion, from the handoff's Motion §2 (Try it), §3 (Pass),
-// §5 (deck advance) and §6 (reduced motion), with the Web Animations API.
-// The exits take the card's starting transform so the swipe gesture can
-// throw a dragged card from where it was let go.
+// §4 (swipe), §5 (deck advance) and §6 (reduced motion), with the Web
+// Animations API. The exits take the card's starting transform so the swipe
+// gesture can throw a dragged card from where it was let go.
 
 const SPRING = 'cubic-bezier(.34,1.4,.64,1)'
 const THROW = 'cubic-bezier(.55,0,.8,.4)'
@@ -93,6 +93,38 @@ export function pass(card: HTMLElement, from: string = REST): Exit {
   return exit.done(finished)
 }
 
+// dragTransform is the top card's transform dragged dx, dy from where the
+// pointer went down.
+export function dragTransform(dx: number, dy: number): string {
+  return `translate(${dx}px,${dy * 0.3}px) rotate(${dx / 18}deg)`
+}
+
+// follow moves a dragged card to its drag transform and shows each stamp as
+// far as the drag has gone toward its side, fully at 100 px. It returns the
+// transform, for the exit or snap-back the release starts.
+export function follow(card: HTMLElement, dx: number, dy: number): string {
+  const transform = dragTransform(dx, dy)
+  card.style.transform = transform
+  part(card, 'try-stamp').style.opacity = String(clamp(dx / 100))
+  part(card, 'pass-stamp').style.opacity = String(clamp(-dx / 100))
+  return transform
+}
+
+// unfollow puts a dragged card and its stamps back where the stylesheet
+// places them, at once.
+export function unfollow(card: HTMLElement) {
+  card.style.removeProperty('transform')
+  part(card, 'try-stamp').style.removeProperty('opacity')
+  part(card, 'pass-stamp').style.removeProperty('opacity')
+}
+
+// snapBack springs a card let go short of a decision back to rest from its
+// drag transform, and hides its stamps.
+export function snapBack(card: HTMLElement, from: string): Animation {
+  unfollow(card)
+  return card.animate([{ transform: from }, { transform: REST }], { duration: 420, easing: SPRING })
+}
+
 // fadeOut is both exits under prefers-reduced-motion: reduce.
 export function fadeOut(card: HTMLElement): Exit {
   const exit = recorder()
@@ -108,6 +140,10 @@ export function promote(cards: HTMLElement[]): Animation[] {
       easing: SOFT,
     }),
   )
+}
+
+function clamp(value: number): number {
+  return Math.min(1, Math.max(0, value))
 }
 
 // part is the card's element marked data-part="name", which DeckCard renders.

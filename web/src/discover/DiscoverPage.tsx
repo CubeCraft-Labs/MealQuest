@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Heart, X } from 'lucide-react'
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type Ref } from 'react'
 import { useJob } from '../api/index.ts'
 import { Card } from '../ui/Card.tsx'
 import { EmptyState } from '../ui/EmptyState.tsx'
@@ -18,9 +18,29 @@ import {
   useStartBatch,
   type Choice,
 } from './api.ts'
-import { DeckCard, DECK_DEPTH } from './DeckCard.tsx'
-import { bump, fadeOut, isAbort, pass, prefersReducedMotion, promote, tryIt, type Exit } from './motion.ts'
+import { DeckCard, DECK_DEPTH, type SwipeHandlers } from './DeckCard.tsx'
+import {
+  bump,
+  fadeOut,
+  follow,
+  isAbort,
+  pass,
+  prefersReducedMotion,
+  promote,
+  snapBack,
+  tryIt,
+  unfollow,
+  type Exit,
+} from './motion.ts'
 import styles from './DiscoverPage.module.css'
+
+// SWIPE_THRESHOLD is how far, in px, the top card must be dragged left or
+// right for its release to Pass or Try it.
+const SWIPE_THRESHOLD = 110
+
+// A Drag is the pointer dragging the top card: where it went down, and the
+// card's drag transform so far.
+type Drag = { pointerId: number; x: number; y: number; dx: number; transform: string | null }
 
 // isEditable says whether a key press belongs to a field being typed in,
 // which the deck's ← / → keys leave alone.
@@ -66,12 +86,12 @@ function QuestLogPill({ dinners, ref }: { dinners: { id: string; name: string }[
 }
 
 // DiscoverPage is mock 1a: the deck of Side quests to Try it or Pass, one
-// at a time from the top card. A decision from the buttons or the ← / → keys
-// throws the top card out (motion.ts) and sends the decision once it is
-// gone; Retry sends a refused one again. Input is locked from the press
-// until the decision settles: the lock is a ref, set before anything
-// starts, so a second press before the next render does nothing, and busy
-// mirrors it to disable the buttons.
+// at a time from the top card. A decision from the buttons, the ← / → keys
+// or a swipe of the top card throws it out (motion.ts) and sends the
+// decision once it is gone; Retry sends a refused one again. Input is
+// locked from the press until the decision settles: the lock is a ref, set
+// before anything starts, so a second press before the next render does
+// nothing, and busy mirrors it to disable the buttons.
 export function DiscoverPage() {
   const queryClient = useQueryClient()
   const deck = useDeck()
@@ -106,6 +126,14 @@ export function DiscoverPage() {
   // Side quest the last decision sent was for, until the deck moves past it.
   const exit = useRef<Exit | null>(null)
   const leaving = useRef<string | null>(null)
+  const drag = useRef<Drag | null>(null)
+  // The top card's snap-back while it may still run; a new drag or a
+  // decision stops it so it does not fight the card's new motion.
+  const springing = useRef<Animation | null>(null)
+  const stopSpring = useCallback(() => {
+    springing.current?.cancel()
+    springing.current = null
+  }, [])
 
   const { mutate: mutateDecision } = decision
   const deciding = useRef(false)
@@ -141,17 +169,38 @@ export function DiscoverPage() {
   )
   // decide bumps the button, throws the top card out — or, motion reduced,
   // fades it — then sends the decision; Try it bumps the Quest log pill too.
+  // A swipe's decision comes from the card's drag transform: it is thrown
+  // from there without a bump or wiggle. A button or key decision ends a
+  // drag in progress, putting the card back first.
   const decide = useCallback(
-    (choice: Choice) => {
+    (choice: Choice, from?: string) => {
       if (top === undefined || !lock()) return
+      stopSpring()
       const card = deckRef.current!.querySelector('article')!
+      if (from === undefined && drag.current !== null) {
+        drag.current = null
+        unfollow(card)
+      }
       const reduced = prefersReducedMotion()
       let run: Exit
       if (reduced) {
         run = fadeOut(card)
-      } else {
+      } else if (from === undefined) {
         bump((choice === 'try' ? tryRef : passRef).current!)
         run = choice === 'try' ? tryIt(card) : pass(card)
+      } else {
+        run = choice === 'try' ? tryIt(card, from) : pass(card, from)
+      }
+      if (from !== undefined) {
+        // Putting a swiped card back puts it back at rest.
+        const thrown = run
+        run = {
+          finished: thrown.finished,
+          cancel: () => {
+            thrown.cancel()
+            unfollow(card)
+          },
+        }
       }
       exit.current = run
       run.finished.then(
@@ -165,15 +214,67 @@ export function DiscoverPage() {
         },
       )
     },
-    [top, lock, send],
+    [top, lock, send, stopSpring],
   )
+
+  // swipe drags the top card: it follows the pointer, captured from the
+  // press, until the release decides past the threshold or springs it back
+  // short of it. The release decides from where the pointer let go, which
+  // may differ from its last move. A cancel, or losing the capture before
+  // the release, springs it back from its last move. One pointer drags at
+  // a time: a press while a drag is in progress is ignored, as is input
+  // while busy, and a drag held into a busy spell (a Retry) is put back on
+  // release.
+  const swipe = useMemo<SwipeHandlers>(() => {
+    function track(card: HTMLElement, current: Drag, event: PointerEvent<HTMLElement>) {
+      current.dx = event.clientX - current.x
+      current.transform = follow(card, current.dx, event.clientY - current.y)
+    }
+    function release(event: PointerEvent<HTMLElement>, decides: boolean) {
+      const card = event.currentTarget
+      const current = drag.current
+      if (current === null || current.pointerId !== event.pointerId) return
+      drag.current = null
+      const moved = current.transform !== null || event.clientX !== current.x || event.clientY !== current.y
+      if (decides && moved && !deciding.current) track(card, current, event)
+      if (current.transform === null) return
+      if (deciding.current) unfollow(card)
+      else if (decides && current.dx > SWIPE_THRESHOLD) decide('try', current.transform)
+      else if (decides && current.dx < -SWIPE_THRESHOLD) decide('pass', current.transform)
+      else if (prefersReducedMotion()) unfollow(card)
+      else springing.current = snapBack(card, current.transform)
+    }
+    return {
+      onPointerDown: (event) => {
+        if (drag.current !== null || deciding.current || !event.isPrimary || event.button !== 0) return
+        stopSpring()
+        event.currentTarget.setPointerCapture(event.pointerId)
+        drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, dx: 0, transform: null }
+      },
+      onPointerMove: (event) => {
+        const current = drag.current
+        if (current === null || current.pointerId !== event.pointerId || deciding.current) return
+        track(event.currentTarget, current, event)
+      },
+      onPointerUp: (event) => release(event, true),
+      onPointerCancel: (event) => release(event, false),
+      // After a release the drag is already over, so this only ends a drag
+      // whose capture was lost before it.
+      onLostPointerCapture: (event) => release(event, false),
+    }
+  }, [decide, stopSpring])
 
   // Leaving the page stops an exit before its decision is sent.
   useEffect(() => () => exit.current?.cancel(), [])
 
+  const topId = top?.id
+  // A drag belongs to the card it started on, which a new top card ends.
+  useLayoutEffect(() => {
+    drag.current = null
+  }, [topId])
+
   // Once the deck moves past the card a decision was sent for, the cards
   // behind it move up a depth.
-  const topId = top?.id
   useLayoutEffect(() => {
     if (leaving.current === null || leaving.current === topId) return
     leaving.current = null
@@ -239,7 +340,7 @@ export function DiscoverPage() {
       <>
         <div ref={deckRef} className={styles.deck}>
           {deck.data.slice(0, DECK_DEPTH.length).map((quest, depth) => (
-            <DeckCard key={quest.id} quest={quest} depth={depth} />
+            <DeckCard key={quest.id} quest={quest} depth={depth} swipe={depth === 0 ? swipe : undefined} />
           ))}
         </div>
         <div className={styles.actions}>

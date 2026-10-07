@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { stubAnimate, type FakeAnimation } from '../test/animate.ts'
-import { bump, fadeOut, isAbort, pass, promote, tryIt } from './motion.ts'
+import { bump, dragTransform, fadeOut, follow, isAbort, pass, promote, snapBack, tryIt, unfollow } from './motion.ts'
 
 let animations: FakeAnimation[]
 
@@ -15,10 +15,11 @@ afterEach(() => {
 // card builds a deck card with the parts DeckCard marks.
 function card() {
   const article = document.createElement('article')
-  article.innerHTML = '<span data-part="try-stamp"></span><span data-part="shade"></span>'
+  article.innerHTML = '<span data-part="try-stamp"></span><span data-part="pass-stamp"></span><span data-part="shade"></span>'
   return {
     article,
-    stamp: article.querySelector('[data-part="try-stamp"]')!,
+    stamp: article.querySelector<HTMLElement>('[data-part="try-stamp"]')!,
+    passStamp: article.querySelector<HTMLElement>('[data-part="pass-stamp"]')!,
     shade: article.querySelector('[data-part="shade"]')!,
   }
 }
@@ -169,8 +170,52 @@ describe('motion', () => {
     expect(animations.map((a) => a.playState)).toEqual(['idle', 'idle'])
   })
 
+  it('drags: translate(dx, dy·0.3) rotate(dx/18 deg)', () => {
+    expect(dragTransform(90, 20)).toBe('translate(90px,6px) rotate(5deg)')
+    expect(dragTransform(-36, -10)).toBe('translate(-36px,-3px) rotate(-2deg)')
+  })
+
+  it.each([
+    [50, '0.5', '0'],
+    [-50, '0', '0.5'],
+    [160, '1', '0'],
+    [-160, '0', '1'],
+    [0, '0', '0'],
+  ])('follows a drag of %i px with the stamps at Try it! %s, Pass %s', (dx, tryOpacity, passOpacity) => {
+    const { article, stamp, passStamp } = card()
+    expect(follow(article, dx, 0)).toBe(dragTransform(dx, 0))
+    expect(article.style.transform).toBe(dragTransform(dx, 0))
+    expect(stamp.style.opacity).toBe(tryOpacity)
+    expect(passStamp.style.opacity).toBe(passOpacity)
+    expect(animations).toEqual([])
+  })
+
+  it('unfollows at once, back to the stylesheet', () => {
+    const { article, stamp, passStamp } = card()
+    follow(article, -80, 12)
+    unfollow(article)
+    expect(article.getAttribute('style')).toBe('')
+    expect(stamp.getAttribute('style')).toBe('')
+    expect(passStamp.getAttribute('style')).toBe('')
+    expect(animations).toEqual([])
+  })
+
+  it('snaps back from the drag transform to rest, 420 ms spring, and hides the stamps', () => {
+    const { article, stamp, passStamp } = card()
+    const from = follow(article, 70, 30)
+    snapBack(article, from)
+    expect(article.style.transform).toBe('')
+    expect(stamp.style.opacity).toBe('')
+    expect(passStamp.style.opacity).toBe('')
+    expect(animations).toHaveLength(1)
+    expect(animations[0]!.target).toBe(article)
+    expect(animations[0]!.keyframes).toEqual([{ transform: 'translate(70px,9px) rotate(3.888888888888889deg)' }, { transform: 'translate(0px,0px) rotate(0deg)' }])
+    expect(animations[0]!.options).toEqual({ duration: 420, easing: 'cubic-bezier(.34,1.4,.64,1)' })
+  })
+
   it('fails fast on a card without its parts', () => {
     expect(() => tryIt(document.createElement('article'))).toThrow('deck card has no try-stamp')
     expect(() => pass(document.createElement('article'))).toThrow('deck card has no shade')
+    expect(() => follow(document.createElement('article'), 10, 0)).toThrow('deck card has no try-stamp')
   })
 })

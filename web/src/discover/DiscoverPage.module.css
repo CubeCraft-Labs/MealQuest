@@ -104,6 +104,12 @@
   box-shadow: var(--shadow-lg);
 }
 
+/* The top card follows a drag instead of scrolling the page. */
+.draggable {
+  touch-action: none;
+  cursor: grab;
+}
+
 .depth1 {
   z-index: 2;
   transform: translateY(8px) scale(0.95);

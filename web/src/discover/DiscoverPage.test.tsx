@@ -948,6 +948,60 @@ describe('DiscoverPage', () => {
       )
     })
 
+    it('does not put a failed decision back on the deck when a later read, landing before it settles, has it decided', async () => {
+      let log: ReturnType<typeof deferred> | null = null
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], {
+        'POST /api/v1/suggestions/s1/accept': () => {
+          log = deferred()
+          return errorResponse(500, 'internal')
+        },
+        [`GET ${QUEST_LOG}`]: () => log?.promise ?? jsonResponse(200, { dinners: [] }),
+      })
+      const queryClient = createQueryClient()
+      await renderPage(queryClient)
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      // The decision fails; the deck read after it still has the Side quest
+      // pending, and the Quest log read after it is slow.
+      fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+      await waitFor(() => expect(log).not.toBeNull())
+      const slow = log!
+      log = null
+      await waitFor(() => expect(deckReads(server.fetchMock)).toBe(2))
+
+      // Another session decides it, and a read of the deck lands meanwhile.
+      server.deck = [TIKKA, ORZO, PAELLA]
+      await act(async () => await queryClient.refetchQueries({ queryKey: DECK_KEY }))
+      await act(async () => slow.resolve(jsonResponse(200, { dinners: [] })))
+
+      const alert = await screen.findByRole('alert')
+      expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument()
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+      expect(alert).toHaveTextContent('That side quest has been decided already.')
+      expect(within(alert).queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+    })
+
+    it('withdraws the Retry for a failed decision once a later read of the deck has it decided', async () => {
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], {
+        'POST /api/v1/suggestions/s1/accept': () => errorResponse(500, 'internal'),
+      })
+      const queryClient = createQueryClient()
+      await renderPage(queryClient)
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+      const alert = await screen.findByRole('alert')
+      expect(within(alert).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+      expect(topCard()).toHaveAccessibleName('Korean beef bowls')
+
+      // Another session decides it, and the next read of the deck says so.
+      server.deck = [TIKKA, ORZO, PAELLA]
+      await act(async () => await queryClient.refetchQueries({ queryKey: DECK_KEY }))
+      await waitFor(() => expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala'))
+      expect(screen.getByRole('alert')).toHaveTextContent('That side quest has been decided already.')
+      expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+    })
+
     it('reads the deck again after a 500 to a decision, rather than putting the card back', async () => {
       const decline = deferred()
       const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], {

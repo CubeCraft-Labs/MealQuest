@@ -130,18 +130,13 @@ export function useStartBatch() {
   })
 }
 
-// DecisionError is a failed decision, with what the deck read after it
-// found: pending is its Side quest while the server still has it pending,
-// null once it is decided, and undefined when that read failed too (the
-// deck query holds the read's error).
-export class DecisionError extends Error {
-  readonly pending: SideQuest | null | undefined
-
-  constructor(cause: unknown, pending: SideQuest | null | undefined) {
-    super(cause instanceof Error ? cause.message : String(cause), { cause })
-    this.name = 'DecisionError'
-    this.pending = pending
-  }
+// stillPending says whether the deck's newest read has the Side quest id
+// pending, after a failed decision on it: the Side quest when it does, null
+// when it does not, and undefined when that read failed, which says neither.
+// deck is the deck query's state, from the cache or useDeck.
+export function stillPending(deck: { status: string; data: SideQuest[] | undefined } | undefined, id: string): SideQuest | null | undefined {
+  if (deck?.status !== 'success') return undefined
+  return deck.data!.find((q) => q.id === id) ?? null
 }
 
 // useDecide records Try it (POST /api/v1/suggestions/{id}/accept) or Pass
@@ -158,9 +153,10 @@ export class DecisionError extends Error {
 // (which DiscoverPage locks out until then) cannot start under them. A read
 // under way when the decision ends is replaced by the read made after it,
 // and DiscoverPage's batch reads wait for that one rather than replace it.
-// A failed decision is a DecisionError, settled on the read it made and
-// waited for itself: a Side quest that read still has is still pending, and
-// goes back on top of the deck.
+// A failed decision waits for the deck read it makes itself. Whether its
+// Side quest is still pending is then the deck query's to say, from its
+// newest successful read: once the reads have landed, a Side quest the deck
+// still has goes back on top of it.
 export function useDecide() {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
@@ -184,21 +180,20 @@ export function useDecide() {
     return body.replenish_job_id
   }
 
-  return useMutation<string | null, DecisionError, { quest: SideQuest; choice: Choice }>({
+  return useMutation<string | null, Error, { quest: SideQuest; choice: Choice }>({
     mutationFn: async ({ quest, choice }) => {
       try {
         return await send(quest.id, choice)
       } catch (error) {
         // The deck is read again as the decision's own fetch, replacing any
-        // read already out; its answer, not the cache's, settles it.
-        let read: SideQuest[]
-        try {
-          read = await queryClient.getQueryCache().build<SideQuest[]>(queryClient, { queryKey: DECK_KEY }).fetch(undefined, { cancelRefetch: true })
-        } catch {
-          // The deck query holds the read's error, shown with the deck.
-          throw new DecisionError(error, undefined)
-        }
-        throw new DecisionError(error, read.find((q) => q.id === quest.id) ?? null)
+        // read already out. A failed read is the deck query's error, shown
+        // with the deck; the decision's own error is the one thrown.
+        await queryClient
+          .getQueryCache()
+          .build<SideQuest[]>(queryClient, { queryKey: DECK_KEY })
+          .fetch(undefined, { cancelRefetch: true })
+          .catch(() => undefined)
+        throw error
       }
     },
     onMutate: ({ quest, choice }) => {
@@ -209,16 +204,16 @@ export function useDecide() {
         dinners === undefined || dinners.some((d) => d.id === quest.dinner_id) ? dinners : dinners.concat({ id: quest.dinner_id, name: quest.name }),
       )
     },
-    onSettled: async (_replenishJobId, error) => {
+    onSettled: async (_replenishJobId, error, { quest }) => {
       if (error === null) {
         await Promise.all([queryClient.invalidateQueries({ queryKey: DECK_KEY }), queryClient.invalidateQueries({ queryKey: QUEST_LOG_KEY })])
         return
       }
-      // A failed decision has read the deck already.
+      // A failed decision has read the deck already; any read since is newer.
       await queryClient.invalidateQueries({ queryKey: QUEST_LOG_KEY })
-      const { pending } = error
+      const pending = stillPending(queryClient.getQueryState<SideQuest[]>(DECK_KEY), quest.id)
       if (pending === null || pending === undefined) return
-      queryClient.setQueryData<SideQuest[]>(DECK_KEY, (deck) => [pending, ...(deck ?? []).filter((q) => q.id !== pending.id)])
+      queryClient.setQueryData<SideQuest[]>(DECK_KEY, (deck) => [pending, ...deck!.filter((q) => q.id !== pending.id)])
     },
   })
 }

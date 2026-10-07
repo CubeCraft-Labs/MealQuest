@@ -12,6 +12,7 @@ import {
   BATCH_JOB_KIND,
   DECK_KEY,
   parseBatchResult,
+  stillPending,
   useDeck,
   useDecide,
   useQuestLog,
@@ -90,8 +91,8 @@ function QuestLogPill({ dinners, ref }: { dinners: { id: string; name: string }[
 // at a time from the top card. A decision from the buttons, the ← / → keys
 // or a swipe of the top card throws it out (motion.ts) and sends the
 // decision once it is gone, taking the card off the deck at once (see
-// useDecide); Retry sends a failed one again while the deck it read after
-// failing still had its Side quest pending. Input is locked from the press
+// useDecide); Retry sends a failed one again while the deck's newest read
+// still has its Side quest pending. Input is locked from the press
 // until the decision settles, which is once the deck and the Quest log have
 // been read again after it, so no decision starts under those reads. The lock is a
 // ref, set before anything starts, so a second press before the next render
@@ -322,10 +323,9 @@ export function DiscoverPage() {
       .then(() => (after ? queryClient.invalidateQueries({ queryKey: DECK_KEY }, { cancelRefetch: false }) : undefined))
   }, [queryClient, job.status, stored])
 
-  // A failed decision can be retried only while the deck it read after
-  // failing still has its Side quest pending: anything else decided it
-  // already.
-  const pending = decision.isError ? decision.error.pending : undefined
+  // A failed decision can be retried only while the deck's newest read
+  // still has its Side quest pending: anything else decided it already.
+  const pending = decision.isError ? stillPending(deck, decision.variables.quest.id) : undefined
   const retryable = pending !== undefined && pending !== null
 
   let body

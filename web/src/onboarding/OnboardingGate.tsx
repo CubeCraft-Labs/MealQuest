@@ -19,7 +19,8 @@ function inOnboarding(pathname: string): boolean {
 // The service worker never caches the settings, so offline on the saved
 // pages (see AuthBootstrap) they cannot be read: the saved pages open as they
 // are, since onboarding needs the server anyway, and the settings are read
-// again when the browser is back online.
+// again when the browser is back online. The read runs even while the
+// browser reports offline, so that case fails fast instead of waiting.
 export function OnboardingGate() {
   const api = useApi()
   const { pathname } = useLocation()

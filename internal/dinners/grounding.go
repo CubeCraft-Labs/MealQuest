@@ -303,13 +303,18 @@ var offerLifetime = 30 * time.Minute
 // now is the clock offer lifetimes are measured on; tests advance it.
 var now = time.Now
 
+// updateCommitted runs in Update once a rename is committed, before the
+// dinner's offers are cleared; tests use it to act in between.
+var updateCommitted = func() {}
+
 // offerSet is the candidates last offered for a dinner: the page URL of
-// each candidate id, found by searching the dinner's name, normalized as
-// name. They ground the dinner until deadline, and only while it still has
-// that name; expiry drops the set from offers once deadline has passed.
+// each candidate id, found by searching the dinner's name at its
+// grounding_revision revision. They ground the dinner until deadline, and
+// only while it is still at that revision, which every rename raises;
+// expiry drops the set from offers once deadline has passed.
 type offerSet struct {
 	urls     map[string]string
-	name     string
+	revision int64
 	deadline time.Time
 	expiry   *time.Timer
 }
@@ -351,16 +356,16 @@ func (s *Service) Candidates(ctx context.Context, id string) ([]Candidate, error
 		}
 	}
 	if row.Status != StatusArchived {
-		keep(urls, row.NormalizedName)
+		keep(urls, row.GroundingRevision)
 	}
 	return out, nil
 }
 
 // trackOffers registers a Candidates search for dinner id. It returns keep,
-// which stores urls, found for the normalized name, as the dinner's offers
-// for offerLifetime unless clearOffers has run for it since, and done, to
-// call when the search ends.
-func (s *Service) trackOffers(id string) (keep func(urls map[string]string, name string), done func()) {
+// which stores urls, found for the dinner at grounding_revision revision,
+// as its offers for offerLifetime unless clearOffers has run for it since,
+// and done, to call when the search ends.
+func (s *Service) trackOffers(id string) (keep func(urls map[string]string, revision int64), done func()) {
 	search := &offerSearch{}
 	s.offersMu.Lock()
 	if s.offerSearches[id] == nil {
@@ -368,14 +373,14 @@ func (s *Service) trackOffers(id string) (keep func(urls map[string]string, name
 	}
 	s.offerSearches[id][search] = struct{}{}
 	s.offersMu.Unlock()
-	keep = func(urls map[string]string, name string) {
+	keep = func(urls map[string]string, revision int64) {
 		s.offersMu.Lock()
 		defer s.offersMu.Unlock()
 		if search.stale {
 			return
 		}
 		s.dropOffers(id)
-		set := &offerSet{urls: urls, name: name, deadline: now().Add(offerLifetime)}
+		set := &offerSet{urls: urls, revision: revision, deadline: now().Add(offerLifetime)}
 		// expiry waits for offersMu, so it finds set stored even when it
 		// fires at once, and drops set only, never offers stored later.
 		set.expiry = time.AfterFunc(offerLifetime, func() {
@@ -431,12 +436,14 @@ func (s *Service) candidateID(id, rawURL string) string {
 // candidateURL is the page URL of candidate cid last offered for dinner d.
 // A cid not among the dinner's live offers, or whose page is not a valid
 // recipe link, is a *ValidationError. Offers past their deadline, or found
-// for a name d no longer has, are not live, even before they are dropped.
+// at a grounding_revision other than d's, are not live, even before they
+// are dropped: d was renamed since they were found, if only to its name
+// then.
 func (s *Service) candidateURL(d db.Dinner, cid string) (string, error) {
 	var raw string
 	var ok bool
 	s.offersMu.Lock()
-	if set := s.offers[d.ID]; set != nil && set.name == d.NormalizedName && now().Before(set.deadline) {
+	if set := s.offers[d.ID]; set != nil && set.revision == d.GroundingRevision && now().Before(set.deadline) {
 		raw, ok = set.urls[cid]
 	}
 	s.offersMu.Unlock()

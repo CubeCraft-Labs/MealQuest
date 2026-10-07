@@ -22,6 +22,15 @@ func SetOfferLifetime(t *testing.T, d time.Duration) {
 	t.Cleanup(func() { offerLifetime = old })
 }
 
+// SetUpdateCommitted runs f in Update once a rename is committed, before
+// the dinner's offers are cleared, until t ends. A test calling it must
+// not run in parallel.
+func SetUpdateCommitted(t *testing.T, f func()) {
+	old := updateCommitted
+	updateCommitted = f
+	t.Cleanup(func() { updateCommitted = old })
+}
+
 // AdvanceClock moves the service's clock d ahead of real time until t
 // ends, without firing any timer. A test calling it must not run in
 // parallel.

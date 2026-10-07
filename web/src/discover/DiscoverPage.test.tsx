@@ -68,6 +68,11 @@ function sent(fetchMock: Mock<typeof fetch>) {
     .map(([input, init]) => `${init?.method} ${String(input)}`)
 }
 
+// jobPolls counts the GET /api/v1/jobs/j1 requests.
+function jobPolls(fetchMock: Mock<typeof fetch>) {
+  return fetchMock.mock.calls.filter(([input, init]) => (init?.method ?? 'GET') === 'GET' && String(input) === '/api/v1/jobs/j1').length
+}
+
 afterEach(() => {
   vi.unstubAllGlobals()
 })
@@ -419,11 +424,50 @@ describe('DiscoverPage', () => {
     expect(alert).toHaveTextContent("Couldn't check on new side quests.")
     expect(screen.getAllByTestId('skeleton-card')).toHaveLength(3)
 
+    // Retry polls the job at once, well before the next poll is due; it
+    // does not ask for another batch.
     failPoll = false
+    const polls = jobPolls(server.fetchMock)
     fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(jobPolls(server.fetchMock)).toBe(polls + 1), { timeout: 200 })
     await screen.findByRole('article', { name: 'Korean beef bowls' })
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
-    expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/batches', 'POST /api/v1/suggestions/batches'])
+    expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/batches'])
+  })
+
+  it('shows a batch whose job answers with an unknown status as an error, and Retry polls the job again', async () => {
+    let status = 'stuck'
+    const server = stubServer([], {
+      'POST /api/v1/suggestions/batches': () =>
+        jsonResponse(202, { batch_id: 'b1', job_id: 'j1', trigger: 'manual', status: 'pending' }),
+      'GET /api/v1/jobs/j1': () => {
+        if (status === 'succeeded') server.deck = [BOWLS]
+        return jsonResponse(200, {
+          id: 'j1',
+          kind: 'suggestion_batch',
+          status,
+          result: { batch_id: 'b1', stage: 'done', suggestion_ids: ['s1'], dropped: 0 },
+          error: null,
+        })
+      },
+    })
+    await renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Get more now' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(
+      "Couldn't check on new side quests. GET /api/v1/jobs/j1: response is not the suggestion_batch job j1",
+    )
+    // Polling has stopped: nothing more is asked until Retry.
+    await new Promise((resolve) => setTimeout(resolve, 700))
+    expect(jobPolls(server.fetchMock)).toBe(1)
+
+    status = 'succeeded'
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+    await screen.findByRole('article', { name: 'Korean beef bowls' })
+    expect(jobPolls(server.fetchMock)).toBe(2)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/batches'])
   })
 
   it('shows a batch whose job result is unreadable with a retry', async () => {

@@ -29,6 +29,9 @@ export type Choice = 'try' | 'pass'
 // running it, which GET /api/v1/jobs/{id} reports on.
 export type Batch = { batch_id: string; job_id: string }
 
+// BATCH_JOB_KIND is the kind of the job running a suggestion batch.
+export const BATCH_JOB_KIND = 'suggestion_batch'
+
 // BatchResult is the suggestion batch job's result, published as it goes.
 export type BatchResult = { batch_id: string; stage: string; suggestion_ids: string[]; dropped: number }
 

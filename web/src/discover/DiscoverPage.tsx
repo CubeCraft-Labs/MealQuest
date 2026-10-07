@@ -9,6 +9,7 @@ import { Icon } from '../ui/Icon.tsx'
 import { IconButton } from '../ui/IconButton.tsx'
 import { Skeleton } from '../ui/Skeleton.tsx'
 import {
+  BATCH_JOB_KIND,
   DECK_KEY,
   parseBatchResult,
   useDeck,
@@ -73,7 +74,7 @@ export function DiscoverPage() {
   const questLog = useQuestLog()
   const decision = useDecide()
   const startBatch = useStartBatch()
-  const job = useJob<unknown>(startBatch.data?.job_id ?? null)
+  const job = useJob<unknown>(BATCH_JOB_KIND, startBatch.data?.job_id ?? null)
 
   const top = deck.data?.[0]
   const busy = decision.isPending
@@ -89,7 +90,8 @@ export function DiscoverPage() {
       return { stored: 0, error: error as Error }
     }
   }, [job.result, startBatch.data?.job_id])
-  // The job's failure, the latest poll's failure, or an unreadable result.
+  // The job's failure, the latest poll's failure, an answer that is not the
+  // batch's job, or an unreadable result.
   const batchError = job.error ?? batch.error
 
   const { mutate: mutateDecision } = decision
@@ -147,7 +149,7 @@ export function DiscoverPage() {
         </div>
         {finding && <p className={styles.finding}>Finding new side quests…</p>}
         {jobRunning && batchError !== null && (
-          <ErrorBanner onRetry={() => startBatch.mutate()}>Couldn't check on new side quests. {batchError.message}</ErrorBanner>
+          <ErrorBanner onRetry={job.poll}>Couldn't check on new side quests. {batchError.message}</ErrorBanner>
         )}
       </section>
     )

@@ -14,9 +14,19 @@ export type NotificationsResult = 'enabled' | 'denied' | 'unavailable'
 export type EnableNotifications = () => Promise<NotificationsResult>
 
 // TODO(Feature 19): Web Push. Until it is wired, notifications cannot be
-// turned on, and nothing asks the browser for permission.
+// turned on, and nothing asks the browser for permission. This placeholder
+// is the interim state: "Turn on notifications" answers 'unavailable', and
+// the step tells the household plainly that nothing was turned on.
 export function notificationsUnavailable(): Promise<NotificationsResult> {
   return Promise.resolve('unavailable')
+}
+
+// notOnReasons says why notifications are not on after asking, for each
+// result other than 'enabled'.
+const notOnReasons: Record<Exclude<NotificationsResult, 'enabled'>, string> = {
+  unavailable:
+    "Notifications aren't on yet: MealQuest can't send them until the notification feature ships, so nothing was turned on. You can finish setting up now.",
+  denied: "Notifications aren't on: this browser blocked them. You can allow them in the browser's settings later.",
 }
 
 const topics: { icon: LucideIcon; name: string; meaning: string }[] = [
@@ -49,16 +59,19 @@ export type NotificationsStepProps = {
 }
 
 // NotificationsStep is onboarding step 3: what MealQuest notifies about, the
-// iOS install hint, and finishing onboarding. Either button records that
-// onboarding is finished and goes Home. When the server refuses because the
-// household has fewer than three Regulars, the reason shows with a way back
-// to step 2 to add them.
+// iOS install hint, and finishing onboarding. "Maybe later", and "Turn on
+// notifications" once they are enabled, record that onboarding is finished
+// and go Home. When they are not enabled, the step says so and offers only
+// "Finish setting up". When the server refuses because the household has
+// fewer than three Regulars, the reason shows with a way back to step 2 to
+// add them.
 export function NotificationsStep({ enableNotifications = notificationsUnavailable }: NotificationsStepProps) {
   const navigate = useNavigate()
   const complete = useCompleteOnboarding()
   const [enabling, setEnabling] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
   const [fewRegulars, setFewRegulars] = useState(false)
+  const [notOn, setNotOn] = useState<string | null>(null)
   const busy = enabling || complete.isPending
 
   async function finish() {
@@ -80,13 +93,18 @@ export function NotificationsStep({ enableNotifications = notificationsUnavailab
   async function turnOn() {
     clearProblem()
     setEnabling(true)
+    let result: NotificationsResult
     try {
-      await enableNotifications()
+      result = await enableNotifications()
     } catch (error) {
       setProblem(`Could not turn on notifications: ${(error as Error).message}`)
       return
     } finally {
       setEnabling(false)
+    }
+    if (result !== 'enabled') {
+      setNotOn(notOnReasons[result])
+      return
     }
     await finish()
   }
@@ -101,14 +119,22 @@ export function NotificationsStep({ enableNotifications = notificationsUnavailab
       step={3}
       title="Stay in the loop"
       action={
-        <div className={styles.actions}>
-          <Button className={styles.action} disabled={busy} onClick={() => void turnOn()}>
-            Turn on notifications
-          </Button>
-          <Button variant="outline" className={styles.action} disabled={busy} onClick={later}>
-            Maybe later
-          </Button>
-        </div>
+        notOn ? (
+          <div className={styles.actions}>
+            <Button className={styles.action} disabled={busy} onClick={later}>
+              Finish setting up
+            </Button>
+          </div>
+        ) : (
+          <div className={styles.actions}>
+            <Button className={styles.action} disabled={busy} onClick={() => void turnOn()}>
+              Turn on notifications
+            </Button>
+            <Button variant="outline" className={styles.action} disabled={busy} onClick={later}>
+              Maybe later
+            </Button>
+          </div>
+        )
       }
     >
       <p className={styles.helper}>MealQuest can let the household know when there&apos;s something to look at:</p>
@@ -128,6 +154,11 @@ export function NotificationsStep({ enableNotifications = notificationsUnavailab
       <div className={styles.hint}>
         <InstallHint />
       </div>
+      {notOn && (
+        <p role="status" className={styles.notOn}>
+          {notOn}
+        </p>
+      )}
       {problem && (
         <p role="alert" className={styles.problem}>
           {problem}

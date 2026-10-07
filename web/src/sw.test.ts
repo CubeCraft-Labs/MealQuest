@@ -15,12 +15,16 @@ describe('service worker activation', () => {
     vi.unstubAllGlobals()
   })
 
-  it('deletes the v1 API cache and keeps the precache, photo and font caches', async () => {
-    // A household on the v1 worker: its API cache held dinners with the
-    // pasted recipe_url; its photos and fonts are not in the precache.
+  it('deletes the v1 and v2 API caches and keeps the current caches', async () => {
+    // A household that ran the v1 and v2 workers: the v1 API cache held
+    // dinners with the pasted recipe_url, the v2 one recipe candidates whose
+    // candidate_id was the full URL. Its photos and fonts are not in the
+    // precache, and the current API cache may already exist.
     const names = [
       'mealquest-precache-v1',
       'mealquest-api-v1',
+      'mealquest-api-v2',
+      'mealquest-api-v3',
       'mealquest-media-v1',
       'mealquest-fonts-v1',
       'other-app-cache',
@@ -42,6 +46,7 @@ describe('service worker activation', () => {
 
     expect(pending).toHaveLength(1)
     expect(cacheStorage.delete).toHaveBeenCalledWith('mealquest-api-v1')
-    expect(cacheStorage.delete).toHaveBeenCalledTimes(1)
+    expect(cacheStorage.delete).toHaveBeenCalledWith('mealquest-api-v2')
+    expect(cacheStorage.delete).toHaveBeenCalledTimes(2)
   })
 })

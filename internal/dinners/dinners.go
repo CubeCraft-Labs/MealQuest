@@ -151,7 +151,7 @@ type Service struct {
 	// offerSearches holds the Candidates searches running, by dinner id,
 	// so clearing a dinner's offers keeps them from storing theirs.
 	offersMu      sync.Mutex
-	offers        map[string]offerSet
+	offers        map[string]*offerSet
 	offerSearches map[string]map[*offerSearch]struct{}
 }
 
@@ -169,7 +169,7 @@ func NewService(st *store.Store, grounder *recipes.Grounder, runner *jobs.Runner
 	case logger == nil:
 		return nil, errors.New("dinners: nil logger")
 	}
-	s := &Service{st: st, grounder: grounder, logger: logger, groundings: make(map[string]map[*runningGrounding]struct{}), offerKey: make([]byte, 32), offers: make(map[string]offerSet), offerSearches: make(map[string]map[*offerSearch]struct{})}
+	s := &Service{st: st, grounder: grounder, logger: logger, groundings: make(map[string]map[*runningGrounding]struct{}), offerKey: make([]byte, 32), offers: make(map[string]*offerSet), offerSearches: make(map[string]map[*offerSearch]struct{})}
 	rand.Read(s.offerKey) // never fails: it crashes the program instead
 	kind, err := jobs.Register(runner, KindGroundDinner, s.runGroundJob, Reasons...)
 	if err != nil {

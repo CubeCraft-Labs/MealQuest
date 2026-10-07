@@ -31,6 +31,13 @@ func (s *Service) HasOffers(id string) bool {
 	return ok
 }
 
+// OfferCount is the number of dinners whose candidates the service holds.
+func (s *Service) OfferCount() int {
+	s.offersMu.Lock()
+	defer s.offersMu.Unlock()
+	return len(s.offers)
+}
+
 // RunGroundJob runs the KindGroundDinner handler for p in the caller's
 // goroutine, as the job runner would, and returns the grounding status it
 // reports.

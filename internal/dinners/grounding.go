@@ -301,10 +301,11 @@ type Candidate struct {
 var offerLifetime = 30 * time.Minute
 
 // offerSet is the candidates last offered for a dinner: the page URL of
-// each candidate id, until expires.
+// each candidate id. expiry drops the set from offers once offerLifetime
+// has passed.
 type offerSet struct {
-	urls    map[string]string
-	expires time.Time
+	urls   map[string]string
+	expiry *time.Timer
 }
 
 // offerSearch is a Candidates search running for a dinner. It is stale
@@ -350,9 +351,8 @@ func (s *Service) Candidates(ctx context.Context, id string) ([]Candidate, error
 }
 
 // trackOffers registers a Candidates search for dinner id. It returns keep,
-// which stores urls as the dinner's offers unless clearOffers has run for
-// it since, and done, to call when the search ends. keep also drops every
-// dinner's expired offers, so offers holds only those still live.
+// which stores urls as the dinner's offers for offerLifetime unless
+// clearOffers has run for it since, and done, to call when the search ends.
 func (s *Service) trackOffers(id string) (keep func(urls map[string]string), done func()) {
 	search := &offerSearch{}
 	s.offersMu.Lock()
@@ -362,17 +362,23 @@ func (s *Service) trackOffers(id string) (keep func(urls map[string]string), don
 	s.offerSearches[id][search] = struct{}{}
 	s.offersMu.Unlock()
 	keep = func(urls map[string]string) {
-		now := time.Now()
 		s.offersMu.Lock()
 		defer s.offersMu.Unlock()
-		for dinnerID, set := range s.offers {
-			if !now.Before(set.expires) {
-				delete(s.offers, dinnerID)
+		if search.stale {
+			return
+		}
+		s.dropOffers(id)
+		set := &offerSet{urls: urls}
+		// expiry waits for offersMu, so it finds set stored even when it
+		// fires at once, and drops set only, never offers stored later.
+		set.expiry = time.AfterFunc(offerLifetime, func() {
+			s.offersMu.Lock()
+			defer s.offersMu.Unlock()
+			if s.offers[id] == set {
+				delete(s.offers, id)
 			}
-		}
-		if !search.stale {
-			s.offers[id] = offerSet{urls: urls, expires: now.Add(offerLifetime)}
-		}
+		})
+		s.offers[id] = set
 	}
 	done = func() {
 		s.offersMu.Lock()
@@ -391,9 +397,18 @@ func (s *Service) trackOffers(id string) (keep func(urls map[string]string), don
 func (s *Service) clearOffers(id string) {
 	s.offersMu.Lock()
 	defer s.offersMu.Unlock()
-	delete(s.offers, id)
+	s.dropOffers(id)
 	for search := range s.offerSearches[id] {
 		search.stale = true
+	}
+}
+
+// dropOffers drops dinner id's offers and stops their expiry. The caller
+// holds offersMu.
+func (s *Service) dropOffers(id string) {
+	if set := s.offers[id]; set != nil {
+		set.expiry.Stop()
+		delete(s.offers, id)
 	}
 }
 
@@ -410,11 +425,14 @@ func (s *Service) candidateID(id, rawURL string) string {
 // A cid not among the dinner's live offers, or whose page is not a valid
 // recipe link, is a *ValidationError.
 func (s *Service) candidateURL(id, cid string) (string, error) {
+	var raw string
+	var ok bool
 	s.offersMu.Lock()
-	set := s.offers[id]
-	raw, ok := set.urls[cid]
+	if set := s.offers[id]; set != nil {
+		raw, ok = set.urls[cid]
+	}
 	s.offersMu.Unlock()
-	if ok && time.Now().Before(set.expires) {
+	if ok {
 		if u, err := checkRecipeURL(raw); err == nil {
 			return u.String(), nil
 		}

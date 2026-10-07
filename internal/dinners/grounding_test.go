@@ -928,24 +928,47 @@ func TestCandidatesRunningWhenCleared(t *testing.T) {
 	}
 }
 
-// TestCandidatesExpire: candidates ground a dinner only for their
-// lifetime; storing another dinner's candidates drops the expired ones.
+// TestCandidatesExpire: once their lifetime passes, a dinner's candidates
+// are dropped and no longer ground it, with no other search running.
 func TestCandidatesExpire(t *testing.T) {
 	dinners.SetOfferLifetime(t, 0)
 	e := newEnv(t)
 	id := failedDinner(t, e, "Mystery curry")
-	other := failedDinner(t, e, "Other curry")
 	e.search.Results["Mystery curry"] = []recipes.Candidate{{URL: curryA}}
-	e.search.Results["Other curry"] = []recipes.Candidate{{URL: curryB}}
 	cid := candidateID(t, e, id, "Chicken Curry")
 
+	waitNoOffers(t, e)
 	wantStaleCandidate(t, e, id, cid)
-	if !e.svc.HasOffers(id) {
-		t.Fatalf("candidates of %s not held before another search", id)
+}
+
+// TestExpiredCandidatesNotHeld: the service holds no dinner's candidates
+// past their lifetime, however many dinners were offered some.
+func TestExpiredCandidatesNotHeld(t *testing.T) {
+	dinners.SetOfferLifetime(t, 50*time.Millisecond)
+	e := newEnv(t)
+	names := map[string]string{"Mystery curry": curryA, "Other curry": curryB}
+	ids := make([]string, 0, len(names))
+	for name, u := range names {
+		ids = append(ids, failedDinner(t, e, name))
+		e.search.Results[name] = []recipes.Candidate{{URL: u}}
 	}
-	candidateID(t, e, other, "Easy Weeknight Curry")
-	if e.svc.HasOffers(id) {
-		t.Errorf("expired candidates of %s still held after another dinner's search", id)
+	for _, id := range ids {
+		if _, err := e.svc.Candidates(t.Context(), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitNoOffers(t, e)
+}
+
+// waitNoOffers waits for the service to hold no dinner's candidates.
+func waitNoOffers(t *testing.T, e *env) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for n := e.svc.OfferCount(); n > 0; n = e.svc.OfferCount() {
+		if time.Now().After(deadline) {
+			t.Fatalf("service still holds the expired candidates of %d dinners", n)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

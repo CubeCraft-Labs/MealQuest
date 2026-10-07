@@ -196,8 +196,10 @@ func (s *Service) ground(ctx context.Context, quests []skills.SideQuest) ([]grou
 // suggested and origin side_quest, grounded in its recipe, and a pending
 // suggestion citing its Regulars by id, all in one transaction, and
 // returns the suggestion ids. A Side quest is left out when, since
-// suggest_side_quests ran, a dinner it repeats was added or a Regular it
-// cites renamed or archived.
+// suggest_side_quests ran, a dinner it repeats was added, a suggestion it
+// repeats passed, or a Regular it cites renamed or archived. Declined
+// names are read in the same transaction as the store, so a Pass committed
+// before it is never missed.
 func (s *Service) store(ctx context.Context, batchID string, quests []groundedQuest) ([]string, error) {
 	ids := []string{}
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
@@ -206,7 +208,10 @@ func (s *Service) store(ctx context.Context, batchID string, quests []groundedQu
 		if err != nil {
 			return fmt.Errorf("suggest: list dinners for dedupe: %w", err)
 		}
-		var names []string
+		names, err := q.ListDeclinedSuggestionNames(ctx)
+		if err != nil {
+			return fmt.Errorf("suggest: list declined names for dedupe: %w", err)
+		}
 		regulars := map[string][]string{}
 		for _, row := range existing {
 			names = append(names, row.Dinner.Name)
@@ -250,6 +255,7 @@ func (s *Service) store(ctx context.Context, batchID string, quests []groundedQu
 				ID:              id,
 				DinnerID:        d.ID,
 				BatchID:         batchID,
+				Name:            d.Name,
 				Reason:          gq.quest.Reason,
 				CitedRegularIds: string(citedJSON),
 				CreatedAt:       now,

@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"sync"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
@@ -112,10 +111,6 @@ type Service struct {
 	suggest  Suggester
 	logger   *slog.Logger
 	batchJob *jobs.Kind[BatchJob]
-
-	// batchMu makes finding or creating the active batch and enqueuing its
-	// job one step, so a batch is never seen without its job.
-	batchMu sync.Mutex
 }
 
 // NewService returns a service over st that suggests with suggest, grounds
@@ -161,51 +156,52 @@ func (s *Service) StartBatch(ctx context.Context, trigger string) (Batch, error)
 	if !slices.Contains(triggers, trigger) {
 		return Batch{}, fmt.Errorf("suggest: unknown batch trigger %q", trigger)
 	}
-	s.batchMu.Lock()
-	defer s.batchMu.Unlock()
-	var row db.SuggestionBatch
-	created := false
+	var b Batch
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
-		q := db.New(tx)
-		cur, err := q.GetActiveSuggestionBatch(ctx)
-		if err == nil {
-			row = cur
-			return nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("suggest: read active batch: %w", err)
-		}
-		now := store.Now().String()
-		row, err = q.CreateSuggestionBatch(ctx, db.CreateSuggestionBatchParams{
-			ID:        store.NewID(),
-			Trigger:   trigger,
-			CreatedAt: now,
-			UpdatedAt: now,
-		})
-		if err != nil {
-			return fmt.Errorf("suggest: create batch: %w", err)
-		}
-		created = true
-		return nil
+		var err error
+		b, err = s.startBatch(ctx, tx, trigger)
+		return err
 	})
 	if err != nil {
 		return Batch{}, err
 	}
-	b := Batch{ID: row.ID, Trigger: row.Trigger, Status: row.Status, Created: created}
-	if !created {
-		b.JobID, err = db.New(s.st.Reader).GetSuggestionBatchJobID(ctx, db.GetSuggestionBatchJobIDParams{Kind: KindSuggestionBatch, BatchID: row.ID})
-		if err != nil {
-			return Batch{}, fmt.Errorf("suggest: read job of batch %s: %w", row.ID, err)
-		}
-		return b, nil
-	}
-	b.JobID, err = s.batchJob.Enqueue(ctx, BatchJob{BatchID: row.ID})
-	if err != nil {
-		// The batch has no job to run it, so it must not block the next.
-		s.finishBatch(context.WithoutCancel(ctx), row.ID, BatchFailed)
-		return Batch{}, fmt.Errorf("suggest: enqueue batch %s: %w", row.ID, err)
+	if b.Created {
+		s.batchJob.Wake()
 	}
 	return b, nil
+}
+
+// startBatch does StartBatch's work in tx: the batch and the job that runs
+// it are committed together, so a batch is never seen without its job. The
+// caller wakes the job runner once tx has committed and Created is true.
+func (s *Service) startBatch(ctx context.Context, tx *sql.Tx, trigger string) (Batch, error) {
+	q := db.New(tx)
+	cur, err := q.GetActiveSuggestionBatch(ctx)
+	if err == nil {
+		jobID, err := q.GetSuggestionBatchJobID(ctx, db.GetSuggestionBatchJobIDParams{Kind: KindSuggestionBatch, BatchID: cur.ID})
+		if err != nil {
+			return Batch{}, fmt.Errorf("suggest: read job of batch %s: %w", cur.ID, err)
+		}
+		return Batch{ID: cur.ID, JobID: jobID, Trigger: cur.Trigger, Status: cur.Status}, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Batch{}, fmt.Errorf("suggest: read active batch: %w", err)
+	}
+	now := store.Now().String()
+	row, err := q.CreateSuggestionBatch(ctx, db.CreateSuggestionBatchParams{
+		ID:        store.NewID(),
+		Trigger:   trigger,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	if err != nil {
+		return Batch{}, fmt.Errorf("suggest: create batch: %w", err)
+	}
+	jobID, err := s.batchJob.EnqueueTx(ctx, tx, BatchJob{BatchID: row.ID})
+	if err != nil {
+		return Batch{}, fmt.Errorf("suggest: enqueue batch %s: %w", row.ID, err)
+	}
+	return Batch{ID: row.ID, JobID: jobID, Trigger: row.Trigger, Status: row.Status, Created: true}, nil
 }
 
 // finishBatch records batch id as status, logging a failure to do so.
@@ -289,9 +285,9 @@ func (s *Service) Accept(ctx context.Context, id, updatedBy string) (Decision, e
 }
 
 // Decline records Pass on suggestion id, archiving its dinner and
-// recording updatedBy on it. The archived dinner keeps its name, and the
-// declined suggestion is read into every later batch, so the dish is never
-// suggested again.
+// recording updatedBy on it. The suggestion keeps the name its dish was
+// suggested under, whatever the dinner is later renamed, and every later
+// batch reads it as declined, so the dish is never suggested again.
 func (s *Service) Decline(ctx context.Context, id, updatedBy string) (Decision, error) {
 	return s.decide(ctx, id, StatusDeclined, dinners.StatusArchived, updatedBy)
 }
@@ -300,15 +296,15 @@ func (s *Service) Decline(ctx context.Context, id, updatedBy string) (Decision, 
 // dinnerStatus. Repeating a decision changes nothing and returns the
 // suggestion as it is; the opposite decision is a *DecidedError. A
 // decision that leaves the deck under ReplenishBelow starts a replenish
-// batch unless one is already pending or running. The decision is
-// committed before the batch starts, so a failure to start it is returned
-// with the decision already made.
+// batch unless one is already pending or running, in the decision's own
+// transaction: the decision is never recorded without the replenish it
+// calls for, and a failure to start the batch records neither.
 func (s *Service) decide(ctx context.Context, id, decision, dinnerStatus, updatedBy string) (Decision, error) {
 	if updatedBy == "" {
 		return Decision{}, errors.New("suggest: decide: no member to record as updated_by")
 	}
 	var row db.GetSuggestionRow
-	changed := false
+	var replenish *Batch
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		q := db.New(tx)
 		cur, err := q.GetSuggestion(ctx, id)
@@ -349,33 +345,34 @@ func (s *Service) decide(ctx context.Context, id, decision, dinnerStatus, update
 		if err != nil {
 			return fmt.Errorf("suggest: read suggestion %s: %w", id, err)
 		}
-		changed = true
+		left, err := q.CountDeck(ctx)
+		if err != nil {
+			return fmt.Errorf("suggest: count deck: %w", err)
+		}
+		if left >= ReplenishBelow {
+			return nil
+		}
+		b, err := s.startBatch(ctx, tx, TriggerReplenish)
+		if err != nil {
+			return err
+		}
+		replenish = &b
 		return nil
 	})
 	if err != nil {
 		return Decision{}, err
+	}
+	created := replenish != nil && replenish.Created
+	if created {
+		s.batchJob.Wake()
 	}
 	sug, err := fromRow(row.Suggestion, row.Dinner)
 	if err != nil {
 		return Decision{}, err
 	}
 	d := Decision{Suggestion: sug}
-	if !changed {
-		return d, nil
-	}
-	left, err := db.New(s.st.Reader).CountDeck(ctx)
-	if err != nil {
-		return Decision{}, fmt.Errorf("suggest: count deck: %w", err)
-	}
-	if left >= ReplenishBelow {
-		return d, nil
-	}
-	b, err := s.StartBatch(ctx, TriggerReplenish)
-	if err != nil {
-		return Decision{}, err
-	}
-	if b.Created {
-		d.ReplenishJobID = &b.JobID
+	if created {
+		d.ReplenishJobID = &replenish.JobID
 	}
 	return d, nil
 }

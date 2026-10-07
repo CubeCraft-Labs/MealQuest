@@ -71,7 +71,7 @@ func newSuggestionsRouter(t *testing.T, names ...string) (http.Handler, *store.S
 		}
 		id := store.NewID()
 		if err := q.CreateSuggestion(ctx, db.CreateSuggestionParams{
-			ID: id, DinnerID: d.ID, BatchID: batch.ID, Reason: fmt.Sprintf("Reason %d", i), CitedRegularIds: "[]",
+			ID: id, DinnerID: d.ID, BatchID: batch.ID, Name: name, Reason: fmt.Sprintf("Reason %d", i), CitedRegularIds: "[]",
 			CreatedAt: store.Now().String(), UpdatedAt: now,
 		}); err != nil {
 			t.Fatal(err)

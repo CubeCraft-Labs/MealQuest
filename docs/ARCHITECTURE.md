@@ -127,7 +127,7 @@ suggested (deck) ──Try it──▶ quest_log ──planned date passes──
     │                            └──────── explicit decision ─────┤
     │                                                             ├──▶ regular
     │                                                             └──▶ archived
-    └──Pass──▶ archived (name kept for dedupe)
+    └──Pass──▶ archived (suggested name kept for dedupe)
 ```
 
 From `tried`, an explicit decision moves the dinner to `regular`, to
@@ -265,7 +265,7 @@ automatic** (D-021).
   `suggestion_batch` job, answering 202 `{batch_id, job_id, trigger,
   status}` without waiting; while a batch is `pending` or `running` it
   answers 202 with that batch instead, so at most one runs at a time (the
-  check and insert share one write transaction). The job reads the
+  check, the batch and its job share one write transaction). The job reads the
   household context, the deck's names and every declined name, runs
   `suggest_side_quests` for 5 Side quests (scope: the batch id), then
   grounds the survivors in the model's order with `Grounder.GroundMany`,
@@ -274,9 +274,11 @@ automatic** (D-021).
   ones are stored before the next — a dinner with status `suggested`,
   origin `side_quest`, grounding_status `grounded` with the recipe's
   recipe_id, photo_id, method, minutes_total and difficulty and the
-  model's cuisine, and a `pending` suggestion with the reason and
-  `cited_regular_ids` — unless a dinner it repeats was added, or a Regular
-  it cites renamed or archived, while it was grounding. The job publishes
+  model's cuisine, and a `pending` suggestion with the name it is
+  suggested under, the reason and `cited_regular_ids` — unless, since the
+  job read its input, a dinner it repeats was added, a suggestion it
+  repeats passed, or a Regular it cites renamed or archived (checked in
+  the storing transaction). The job publishes
   `{batch_id, stage, suggestion_ids, dropped}` as it goes (`suggesting`,
   `grounding`, `done`). It fails with `no_regulars`, `ai_failed` (the
   skill or `normalize_recipe` failed; no Side quest is made up instead,
@@ -292,7 +294,9 @@ automatic** (D-021).
   first. `POST /api/v1/suggestions/{id}/accept` (Try it) sets the
   suggestion `accepted` and moves its dinner to `quest_log`; `POST
   /api/v1/suggestions/{id}/decline` (Pass) sets it `declined` and archives
-  the dinner, whose name every later batch reads as declined. Both record
+  the dinner; every later batch, and the household context's passed list,
+  reads the suggestion's own name as declined, so renaming the archived
+  dinner changes nothing. Both record
   the session's subject as the dinner's `updated_by` and answer 200
   `{suggestion, replenish_job_id}`. Repeating a decision changes nothing
   and answers 200; the opposite decision is 409 `suggestion_decided`, a
@@ -300,7 +304,10 @@ automatic** (D-021).
   `dinner_not_suggested`, and an unknown id 404. A decision that leaves
   fewer than 5 in the deck starts a `replenish` batch, whose job id it
   returns, unless a batch is already pending or running
-  (`replenish_job_id` is then null).
+  (`replenish_job_id` is then null). The batch and its job are written in
+  the decision's own transaction, so a decision is never recorded without
+  the replenish it calls for; when they cannot be written, neither is the
+  decision, and a retry decides again.
 - `/health` — liveness.
 - Everything else serves the embedded PWA with SPA fallback.
 

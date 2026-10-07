@@ -17,6 +17,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/llm"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
@@ -41,9 +42,12 @@ type env struct {
 	side  *llm.Fake
 	// regulars are the Regulars' ids by name.
 	regulars map[string]string
+	grounder *recipes.Grounder
 
 	mu     sync.Mutex
 	inputs []skills.SideQuestsRequest
+	// stub, when set, answers in place of suggest_side_quests.
+	stub func(in skills.SideQuestsRequest) skills.SideQuests
 }
 
 // newEnv returns a suggestions service over a migrated store with the
@@ -83,6 +87,7 @@ func newEnv(t *testing.T) *env {
 		e.regulars[name] = e.dinner(t, name, "regular")
 	}
 	g := recipestest.NewGrounder(t, st, dataDir, e.search, e.pages, e.images, e.model)
+	e.grounder = g
 	guard, err := harness.NewGuard(harness.DefaultMaxCalls)
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +101,11 @@ func newEnv(t *testing.T) *env {
 	suggester := func(ctx context.Context, scope string, in skills.SideQuestsRequest) (skills.SideQuests, error) {
 		e.mu.Lock()
 		e.inputs = append(e.inputs, in)
+		stub := e.stub
 		e.mu.Unlock()
+		if stub != nil {
+			return stub(in), nil
+		}
 		return skills.SuggestSideQuests(ctx, cfg, scope, in)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -169,6 +178,7 @@ func (e *env) seedDeck(t *testing.T, names ...string) []string {
 			ID:              id,
 			DinnerID:        e.dinner(t, name, "suggested"),
 			BatchID:         b.ID,
+			Name:            name,
 			Reason:          "Like your Beef Chili.",
 			CitedRegularIds: fmt.Sprintf("[%q]", e.regulars["Beef Chili"]),
 			CreatedAt:       store.Now().String(),
@@ -669,6 +679,146 @@ func TestLaterBatchNeverResuggestsDeclined(t *testing.T) {
 	e.mu.Unlock()
 	if !slices.Equal(in.Declined, []string{"Chicken Shawarma Bowls"}) || !slices.Equal(in.Context.Passed, []string{"Chicken Shawarma Bowls"}) {
 		t.Errorf("replenish batch declined %v, passed %v; want the passed dish in both", in.Declined, in.Context.Passed)
+	}
+}
+
+// TestBatchNeverStoresDishPassedWhileRunning passes a Side quest after a
+// batch has read its input but before it stores, with suggest_side_quests
+// answering from that input: the batch must not store the passed dish.
+func TestBatchNeverStoresDishPassedWhileRunning(t *testing.T) {
+	e := newEnv(t)
+	e.start(t)
+	ids := e.seedDeck(t, "Chicken Shawarma Bowls")
+	e.recipe(t, "Chicken Shawarma Bowls")
+	e.recipe(t, "Beef Ragu")
+	held, release := make(chan struct{}), make(chan struct{})
+	stub := func(skills.SideQuestsRequest) skills.SideQuests {
+		close(held)
+		<-release
+		quest := func(name, cited string) skills.SideQuest {
+			return skills.SideQuest{Name: name, Cuisine: "Fusion", Method: "stovetop", EstMinutes: 35, Difficulty: "easy",
+				Reason: "Like your " + cited + ".", CitedRegulars: []string{cited}, SearchQuery: name}
+		}
+		return skills.SideQuests{Suggestions: []skills.SideQuest{
+			quest("Chicken Shawarma Bowls", "Chicken Fajitas"),
+			quest("Beef Ragu", "Beef Chili"),
+		}}
+	}
+	e.mu.Lock()
+	e.stub = stub
+	e.mu.Unlock()
+
+	b, err := e.svc.StartBatch(t.Context(), suggest.TriggerManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-held
+	if _, err := e.svc.Decline(t.Context(), ids[0], member); err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	close(release)
+	job := e.waitJob(t, b.JobID)
+	if job.Status != jobs.StatusSucceeded {
+		t.Fatalf("batch job %s: %v", job.Status, *job.Error)
+	}
+	var res batchResult
+	if err := json.Unmarshal(job.Result, &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.SuggestionIDs) != 1 || res.Dropped != 1 {
+		t.Errorf("batch result = %+v, want 1 kept and the passed dish dropped", res)
+	}
+	if got := e.deckNames(t); !slices.Equal(got, []string{"Beef Ragu"}) {
+		t.Errorf("deck = %v, want [Beef Ragu]", got)
+	}
+}
+
+// TestLaterBatchNeverResuggestsRenamedPass passes a Side quest, renames
+// its archived dinner, and checks the next batch still refuses the name it
+// was suggested under.
+func TestLaterBatchNeverResuggestsRenamedPass(t *testing.T) {
+	e := newEnv(t) // runner not started: the replenish batch waits for the rename
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dinnerSvc, err := dinners.NewService(e.st, e.grounder, e.runner, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := e.seedDeck(t, "Chicken Shawarma Bowls")
+	d, err := e.svc.Decline(t.Context(), ids[0], member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.ReplenishJobID == nil {
+		t.Fatal("passing the last Side quest started no replenish batch")
+	}
+	renamed := "Leftover Wrap"
+	if _, err := dinnerSvc.Update(t.Context(), d.Suggestion.DinnerID, dinners.Patch{Name: &renamed}, member); err != nil {
+		t.Fatal(err)
+	}
+
+	// The respelled passed dish would ground, so only the declined names
+	// keep it out of the deck.
+	e.recipe(t, "chicken shawarma bowls!")
+	e.recipe(t, "Beef Ragu")
+	e.reply(
+		sideQuest("chicken shawarma bowls!", "Spiced chicken, like your Chicken Fajitas.", "Chicken Fajitas"),
+		sideQuest("Beef Ragu", "Slow beef like your Beef Chili.", "Beef Chili"),
+	)
+	e.start(t)
+	job := e.waitJob(t, *d.ReplenishJobID)
+	if job.Status != jobs.StatusSucceeded {
+		t.Fatalf("replenish job %s: %v", job.Status, *job.Error)
+	}
+	if got := e.deckNames(t); !slices.Equal(got, []string{"Beef Ragu"}) {
+		t.Errorf("deck = %v, want [Beef Ragu]", got)
+	}
+	e.mu.Lock()
+	in := e.inputs[0]
+	e.mu.Unlock()
+	if !slices.Equal(in.Declined, []string{"Chicken Shawarma Bowls"}) || !slices.Equal(in.Context.Passed, []string{"Chicken Shawarma Bowls"}) {
+		t.Errorf("replenish batch declined %v, passed %v; want the name it was suggested under in both", in.Declined, in.Context.Passed)
+	}
+}
+
+// TestDecisionNeverCommitsWithoutItsReplenish makes the replenish batch's
+// job fail to store: the decision must not be recorded either, so the
+// retry decides again and starts the replenish.
+func TestDecisionNeverCommitsWithoutItsReplenish(t *testing.T) {
+	e := newEnv(t) // runner not started: the replenish batch stays pending
+	ids := e.seedDeck(t, "Pho", "Ramen", "Laksa", "Bibimbap", "Katsu")
+	if _, err := e.st.Writer.ExecContext(t.Context(), `CREATE TRIGGER refuse_jobs BEFORE INSERT ON jobs BEGIN SELECT RAISE(ABORT, 'jobs refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.Decline(t.Context(), ids[0], member); err == nil {
+		t.Fatal("decline succeeded with no replenish job stored")
+	}
+	if got := e.deckNames(t); len(got) != 5 {
+		t.Errorf("deck after the failed decline = %v, want all 5 still pending", got)
+	}
+	if n := e.activeBatches(t); n != 0 {
+		t.Errorf("%d active batches after the failed decline, want 0", n)
+	}
+
+	if _, err := e.st.Writer.ExecContext(t.Context(), `DROP TRIGGER refuse_jobs`); err != nil {
+		t.Fatal(err)
+	}
+	d, err := e.svc.Decline(t.Context(), ids[0], member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Suggestion.Status != suggest.StatusDeclined || d.ReplenishJobID == nil {
+		t.Fatalf("retried decline = %+v, want declined with a replenish job", d)
+	}
+	job, err := e.runner.Get(t.Context(), *d.ReplenishJobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Kind != suggest.KindSuggestionBatch || job.Status != jobs.StatusQueued {
+		t.Errorf("replenish job = %+v, want a queued %s", job, suggest.KindSuggestionBatch)
+	}
+	if n := e.activeBatches(t); n != 1 {
+		t.Errorf("%d active batches, want 1", n)
 	}
 }
 

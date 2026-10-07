@@ -187,6 +187,46 @@ func TestJobSucceeds(t *testing.T) {
 	}
 }
 
+func TestEnqueueTxStoresJobOnlyWithItsTransaction(t *testing.T) {
+	t.Parallel()
+	st := migratedStore(t)
+	r := newRunner(t, st, 1)
+	count := register(t, r, "count", func(_ context.Context, p countPayload, _ func(countResult) error) (countResult, error) {
+		return countResult{Done: p.Steps}, nil
+	})
+	start(t, r)
+	ctx := context.Background()
+
+	var rolledBack string
+	refused := errors.New("refused")
+	if err := st.WithTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		rolledBack, err = count.EnqueueTx(ctx, tx, countPayload{Steps: 1})
+		if err != nil {
+			return err
+		}
+		return refused
+	}); !errors.Is(err, refused) {
+		t.Fatalf("WithTx = %v, want the refusal", err)
+	}
+	if _, err := r.Get(ctx, rolledBack); !errors.Is(err, ErrNotFound) {
+		t.Errorf("job of a rolled-back transaction: Get = %v, want ErrNotFound", err)
+	}
+
+	var id string
+	if err := st.WithTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		id, err = count.EnqueueTx(ctx, tx, countPayload{Steps: 2})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	count.Wake()
+	if job := waitFor(t, r, id, finished); job.Status != StatusSucceeded || string(job.Result) != `{"done":2}` {
+		t.Errorf("job = %+v (result %s), want succeeded with {\"done\":2}", job, job.Result)
+	}
+}
+
 func TestJobFailsWithFailureCode(t *testing.T) {
 	t.Parallel()
 	st := migratedStore(t)

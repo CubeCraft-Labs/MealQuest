@@ -35,9 +35,9 @@ WHERE id = ? AND status IN ('pending', 'running');
 
 -- name: FailOrphanedSuggestionBatches :execrows
 -- Fails every batch still pending or running whose job is no longer queued
--- or running: the process stopped before enqueuing the job or before its
--- handler recorded a result. Run at boot, after the job runner fails the
--- jobs a previous process left running.
+-- or running: the process stopped before its handler recorded a result.
+-- Run at boot, after the job runner fails the jobs a previous process left
+-- running.
 UPDATE suggestion_batches
 SET status = 'failed', updated_at = sqlc.arg(updated_at)
 WHERE status IN ('pending', 'running')
@@ -49,10 +49,12 @@ WHERE status IN ('pending', 'running')
 	);
 
 -- name: CreateSuggestion :exec
+-- name is the name the dish is suggested under, kept whatever its dinner is
+-- later renamed.
 INSERT INTO suggestions (
-	id, dinner_id, batch_id, reason, cited_regular_ids, status, created_at, updated_at
+	id, dinner_id, batch_id, name, reason, cited_regular_ids, status, created_at, updated_at
 ) VALUES (
-	?, ?, ?, ?, ?, 'pending', ?, ?
+	?, ?, ?, ?, ?, ?, 'pending', ?, ?
 );
 
 -- name: GetSuggestion :one
@@ -79,12 +81,12 @@ JOIN dinners ON dinners.id = suggestions.dinner_id
 WHERE suggestions.status = 'pending' AND dinners.status = 'suggested';
 
 -- name: ListDeclinedSuggestionNames :many
--- The name of every declined suggestion's dinner, oldest decision first.
-SELECT dinners.name
+-- The name every declined suggestion was suggested under, oldest decision
+-- first; renaming its dinner does not change it.
+SELECT name
 FROM suggestions
-JOIN dinners ON dinners.id = suggestions.dinner_id
-WHERE suggestions.status = 'declined'
-ORDER BY suggestions.decided_at, suggestions.id;
+WHERE status = 'declined'
+ORDER BY decided_at, id;
 
 -- name: DecideSuggestion :execrows
 -- Records the household's decision on a pending suggestion; one already

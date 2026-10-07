@@ -27,9 +27,9 @@ func (q *Queries) CountDeck(ctx context.Context) (int64, error) {
 
 const createSuggestion = `-- name: CreateSuggestion :exec
 INSERT INTO suggestions (
-	id, dinner_id, batch_id, reason, cited_regular_ids, status, created_at, updated_at
+	id, dinner_id, batch_id, name, reason, cited_regular_ids, status, created_at, updated_at
 ) VALUES (
-	?, ?, ?, ?, ?, 'pending', ?, ?
+	?, ?, ?, ?, ?, ?, 'pending', ?, ?
 )
 `
 
@@ -37,17 +37,21 @@ type CreateSuggestionParams struct {
 	ID              string
 	DinnerID        string
 	BatchID         string
+	Name            string
 	Reason          string
 	CitedRegularIds string
 	CreatedAt       string
 	UpdatedAt       string
 }
 
+// name is the name the dish is suggested under, kept whatever its dinner is
+// later renamed.
 func (q *Queries) CreateSuggestion(ctx context.Context, arg CreateSuggestionParams) error {
 	_, err := q.db.ExecContext(ctx, createSuggestion,
 		arg.ID,
 		arg.DinnerID,
 		arg.BatchID,
+		arg.Name,
 		arg.Reason,
 		arg.CitedRegularIds,
 		arg.CreatedAt,
@@ -128,9 +132,9 @@ type FailOrphanedSuggestionBatchesParams struct {
 }
 
 // Fails every batch still pending or running whose job is no longer queued
-// or running: the process stopped before enqueuing the job or before its
-// handler recorded a result. Run at boot, after the job runner fails the
-// jobs a previous process left running.
+// or running: the process stopped before its handler recorded a result.
+// Run at boot, after the job runner fails the jobs a previous process left
+// running.
 func (q *Queries) FailOrphanedSuggestionBatches(ctx context.Context, arg FailOrphanedSuggestionBatchesParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, failOrphanedSuggestionBatches, arg.UpdatedAt, arg.Kind)
 	if err != nil {
@@ -185,7 +189,7 @@ func (q *Queries) GetActiveSuggestionBatch(ctx context.Context) (SuggestionBatch
 }
 
 const getSuggestion = `-- name: GetSuggestion :one
-SELECT suggestions.id, suggestions.dinner_id, suggestions.batch_id, suggestions.reason, suggestions.cited_regular_ids, suggestions.status, suggestions.decided_at, suggestions.created_at, suggestions.updated_at, dinners.id, dinners.name, dinners.normalized_name, dinners.status, dinners.origin, dinners.method, dinners.minutes_total, dinners.difficulty, dinners.cuisine, dinners.is_favorite, dinners.recipe_id, dinners.photo_id, dinners.grounding_status, dinners.updated_by, dinners.created_at, dinners.updated_at, dinners.recipe_url, dinners.grounding_error, dinners.grounding_revision
+SELECT suggestions.id, suggestions.dinner_id, suggestions.batch_id, suggestions.name, suggestions.reason, suggestions.cited_regular_ids, suggestions.status, suggestions.decided_at, suggestions.created_at, suggestions.updated_at, dinners.id, dinners.name, dinners.normalized_name, dinners.status, dinners.origin, dinners.method, dinners.minutes_total, dinners.difficulty, dinners.cuisine, dinners.is_favorite, dinners.recipe_id, dinners.photo_id, dinners.grounding_status, dinners.updated_by, dinners.created_at, dinners.updated_at, dinners.recipe_url, dinners.grounding_error, dinners.grounding_revision
 FROM suggestions
 JOIN dinners ON dinners.id = suggestions.dinner_id
 WHERE suggestions.id = ?
@@ -204,6 +208,7 @@ func (q *Queries) GetSuggestion(ctx context.Context, id string) (GetSuggestionRo
 		&i.Suggestion.ID,
 		&i.Suggestion.DinnerID,
 		&i.Suggestion.BatchID,
+		&i.Suggestion.Name,
 		&i.Suggestion.Reason,
 		&i.Suggestion.CitedRegularIds,
 		&i.Suggestion.Status,
@@ -255,7 +260,7 @@ func (q *Queries) GetSuggestionBatchJobID(ctx context.Context, arg GetSuggestion
 }
 
 const listDeck = `-- name: ListDeck :many
-SELECT suggestions.id, suggestions.dinner_id, suggestions.batch_id, suggestions.reason, suggestions.cited_regular_ids, suggestions.status, suggestions.decided_at, suggestions.created_at, suggestions.updated_at, dinners.id, dinners.name, dinners.normalized_name, dinners.status, dinners.origin, dinners.method, dinners.minutes_total, dinners.difficulty, dinners.cuisine, dinners.is_favorite, dinners.recipe_id, dinners.photo_id, dinners.grounding_status, dinners.updated_by, dinners.created_at, dinners.updated_at, dinners.recipe_url, dinners.grounding_error, dinners.grounding_revision
+SELECT suggestions.id, suggestions.dinner_id, suggestions.batch_id, suggestions.name, suggestions.reason, suggestions.cited_regular_ids, suggestions.status, suggestions.decided_at, suggestions.created_at, suggestions.updated_at, dinners.id, dinners.name, dinners.normalized_name, dinners.status, dinners.origin, dinners.method, dinners.minutes_total, dinners.difficulty, dinners.cuisine, dinners.is_favorite, dinners.recipe_id, dinners.photo_id, dinners.grounding_status, dinners.updated_by, dinners.created_at, dinners.updated_at, dinners.recipe_url, dinners.grounding_error, dinners.grounding_revision
 FROM suggestions
 JOIN dinners ON dinners.id = suggestions.dinner_id
 WHERE suggestions.status = 'pending' AND dinners.status = 'suggested'
@@ -282,6 +287,7 @@ func (q *Queries) ListDeck(ctx context.Context) ([]ListDeckRow, error) {
 			&i.Suggestion.ID,
 			&i.Suggestion.DinnerID,
 			&i.Suggestion.BatchID,
+			&i.Suggestion.Name,
 			&i.Suggestion.Reason,
 			&i.Suggestion.CitedRegularIds,
 			&i.Suggestion.Status,
@@ -322,14 +328,14 @@ func (q *Queries) ListDeck(ctx context.Context) ([]ListDeckRow, error) {
 }
 
 const listDeclinedSuggestionNames = `-- name: ListDeclinedSuggestionNames :many
-SELECT dinners.name
+SELECT name
 FROM suggestions
-JOIN dinners ON dinners.id = suggestions.dinner_id
-WHERE suggestions.status = 'declined'
-ORDER BY suggestions.decided_at, suggestions.id
+WHERE status = 'declined'
+ORDER BY decided_at, id
 `
 
-// The name of every declined suggestion's dinner, oldest decision first.
+// The name every declined suggestion was suggested under, oldest decision
+// first; renaming its dinner does not change it.
 func (q *Queries) ListDeclinedSuggestionNames(ctx context.Context) ([]string, error) {
 	rows, err := q.db.QueryContext(ctx, listDeclinedSuggestionNames)
 	if err != nil {

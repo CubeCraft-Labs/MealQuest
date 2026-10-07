@@ -34,6 +34,8 @@ type Querier interface {
 	CreatePhoto(ctx context.Context, arg CreatePhotoParams) (Photo, error)
 	CreateRecipeIngredient(ctx context.Context, arg CreateRecipeIngredientParams) error
 	CreateRecipeStep(ctx context.Context, arg CreateRecipeStepParams) error
+	// name is the name the dish is suggested under, kept whatever its dinner is
+	// later renamed.
 	CreateSuggestion(ctx context.Context, arg CreateSuggestionParams) error
 	CreateSuggestionBatch(ctx context.Context, arg CreateSuggestionBatchParams) (SuggestionBatch, error)
 	// Records the household's decision on a pending suggestion; one already
@@ -50,9 +52,9 @@ type Querier interface {
 	// boot, after the job runner fails the jobs a previous process left running.
 	FailOrphanedPendingDinnerGroundings(ctx context.Context, arg FailOrphanedPendingDinnerGroundingsParams) (int64, error)
 	// Fails every batch still pending or running whose job is no longer queued
-	// or running: the process stopped before enqueuing the job or before its
-	// handler recorded a result. Run at boot, after the job runner fails the
-	// jobs a previous process left running.
+	// or running: the process stopped before its handler recorded a result.
+	// Run at boot, after the job runner fails the jobs a previous process left
+	// running.
 	FailOrphanedSuggestionBatches(ctx context.Context, arg FailOrphanedSuggestionBatchesParams) (int64, error)
 	// Records why the background grounding of an unarchived dinner still
 	// pending at the grounding_revision it was grounded for failed; a dinner
@@ -107,14 +109,16 @@ type Querier interface {
 	// The pending suggestions whose dinner is still suggested, oldest first,
 	// with their dinners.
 	ListDeck(ctx context.Context) ([]ListDeckRow, error)
-	// The name of every declined suggestion's dinner, oldest decision first.
+	// The name every declined suggestion was suggested under, oldest decision
+	// first; renaming its dinner does not change it.
 	ListDeclinedSuggestionNames(ctx context.Context) ([]string, error)
 	ListDinnersByStatus(ctx context.Context, status string) ([]Dinner, error)
 	// The planned dinners dated from from_date up to but not including
 	// to_date, oldest first. Days with no dinner are left out.
 	ListPlannedDinners(ctx context.Context, arg ListPlannedDinnersParams) ([]ListPlannedDinnersRow, error)
 	// Reads for the AI household context block (internal/ai/harness).
-	// The names of the most recently declined suggestions, newest first.
+	// The names the most recently declined suggestions were suggested under,
+	// newest first; renaming their dinners does not change them.
 	ListRecentDeclinedNames(ctx context.Context, limit int64) ([]string, error)
 	ListRecipeIngredients(ctx context.Context, recipeID string) ([]RecipeIngredient, error)
 	ListRecipeSteps(ctx context.Context, recipeID string) ([]RecipeStep, error)

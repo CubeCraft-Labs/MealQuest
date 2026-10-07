@@ -259,6 +259,21 @@ func (k *Kind[P]) Enqueue(ctx context.Context, payload P) (string, error) {
 	return k.r.enqueue(ctx, k.name, data)
 }
 
+// EnqueueTx stores a queued job with payload in tx and returns its id, so
+// the job exists exactly when what else tx writes does. Once tx has
+// committed, call Wake so an idle worker runs it.
+func (k *Kind[P]) EnqueueTx(ctx context.Context, tx *sql.Tx, payload P) (string, error) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("jobs: enqueue %s: encode payload: %w", k.name, err)
+	}
+	return createJob(ctx, db.New(tx), k.name, data)
+}
+
+// Wake tells an idle worker to look for a job, as Enqueue does itself:
+// call it after committing the transaction a job was enqueued in.
+func (k *Kind[P]) Wake() { k.r.wakeOne() }
+
 // Enqueue stores a queued job of kind with its JSON payload and returns its
 // id, as Kind.Enqueue does for a kind known at compile time. It returns
 // ErrUnknownKind for a kind with no registered handler and
@@ -280,9 +295,20 @@ func (r *Runner) Enqueue(ctx context.Context, kind string, payload json.RawMessa
 // enqueue stores a queued job of kind with its encoded payload and wakes a
 // worker.
 func (r *Runner) enqueue(ctx context.Context, kind string, payload []byte) (string, error) {
+	id, err := createJob(ctx, db.New(r.st.Writer), kind, payload)
+	if err != nil {
+		return "", err
+	}
+	r.wakeOne()
+	return id, nil
+}
+
+// createJob stores a queued job of kind with its encoded payload through q
+// and returns its id.
+func createJob(ctx context.Context, q *db.Queries, kind string, payload []byte) (string, error) {
 	id := store.NewID()
 	now := store.Now().String()
-	if err := db.New(r.st.Writer).CreateJob(ctx, db.CreateJobParams{
+	if err := q.CreateJob(ctx, db.CreateJobParams{
 		ID:        id,
 		Kind:      kind,
 		Payload:   string(payload),
@@ -291,11 +317,15 @@ func (r *Runner) enqueue(ctx context.Context, kind string, payload []byte) (stri
 	}); err != nil {
 		return "", fmt.Errorf("jobs: enqueue %s: %w", kind, err)
 	}
+	return id, nil
+}
+
+// wakeOne gives an idle worker a token to look for a queued job.
+func (r *Runner) wakeOne() {
 	select {
 	case r.wake <- struct{}{}:
 	default: // every worker already has a token and will look again
 	}
-	return id, nil
 }
 
 // Start fails every job a previous process left running with

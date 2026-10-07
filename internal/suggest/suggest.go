@@ -201,6 +201,28 @@ func (s *Service) activeBatch(ctx context.Context, q *db.Queries) (*Batch, error
 	return &Batch{ID: cur.ID, JobID: jobID, Trigger: cur.Trigger, Status: cur.Status}, nil
 }
 
+// failedBatch returns the newest batch in q's transaction when it failed,
+// or nil when it did not or there is none: a later batch, done or under
+// way, supersedes an earlier failure. Run after activeBatch, so a batch
+// whose job ended without recording its end reads as failed.
+func failedBatch(ctx context.Context, q *db.Queries) (*Batch, error) {
+	cur, err := q.GetLatestSuggestionBatch(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("suggest: read latest batch: %w", err)
+	}
+	if cur.Status != BatchFailed {
+		return nil, nil
+	}
+	jobID, err := q.GetSuggestionBatchJobID(ctx, db.GetSuggestionBatchJobIDParams{Kind: KindSuggestionBatch, BatchID: cur.ID})
+	if err != nil {
+		return nil, fmt.Errorf("suggest: read job of batch %s: %w", cur.ID, err)
+	}
+	return &Batch{ID: cur.ID, JobID: jobID, Trigger: cur.Trigger, Status: cur.Status}, nil
+}
+
 // startBatch does StartBatch's work in tx: the batch and the job that runs
 // it are committed together, so a batch is never seen without its job. The
 // caller wakes the job runner once tx has committed and Created is true.
@@ -275,16 +297,22 @@ type Suggestion struct {
 }
 
 // Deck is the household's deck: the pending suggestions whose dinner is
-// still suggested, oldest first, and the batch pending or running, if any,
-// so a client can follow the job producing more.
+// still suggested, oldest first; the batch pending or running, if any, so
+// a client can follow the job producing more; and the newest batch when it
+// failed, so a client that was not following its job still learns of the
+// failure. At most one of ActiveBatch and FailedBatch is set: a batch is
+// only started when none is pending or running, so the active batch is
+// always the newest.
 type Deck struct {
 	Suggestions []Suggestion `json:"suggestions"`
 	ActiveBatch *Batch       `json:"active_batch"`
+	FailedBatch *Batch       `json:"failed_batch"`
 }
 
-// Deck reads the deck and its active batch in one transaction, so both come
-// from the same snapshot. It is a write transaction because reading the
-// active batch first fails any batch whose job has ended (see activeBatch).
+// Deck reads the deck and its active and failed batches in one
+// transaction, so all come from the same snapshot. It is a write
+// transaction because reading the active batch first fails any batch whose
+// job has ended (see activeBatch), which is then the failed batch.
 func (s *Service) Deck(ctx context.Context) (Deck, error) {
 	var deck Deck
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
@@ -301,6 +329,10 @@ func (s *Service) Deck(ctx context.Context) (Deck, error) {
 			}
 		}
 		deck.ActiveBatch, err = s.activeBatch(ctx, q)
+		if err != nil || deck.ActiveBatch != nil {
+			return err
+		}
+		deck.FailedBatch, err = failedBatch(ctx, q)
 		return err
 	})
 	if err != nil {

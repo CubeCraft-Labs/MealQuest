@@ -11,6 +11,13 @@ WHERE status IN ('pending', 'running')
 ORDER BY id
 LIMIT 1;
 
+-- name: GetLatestSuggestionBatch :one
+-- The newest batch, whatever its status. Returns sql.ErrNoRows when there
+-- is none.
+SELECT * FROM suggestion_batches
+ORDER BY id DESC
+LIMIT 1;
+
 -- name: GetSuggestionBatchJobID :one
 -- The id of the job that runs batch batch_id.
 SELECT id FROM jobs

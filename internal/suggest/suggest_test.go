@@ -463,6 +463,9 @@ func TestDeckReportsTheActiveBatch(t *testing.T) {
 	if deck.ActiveBatch != nil {
 		t.Fatalf("active batch = %+v with none pending or running, want nil", deck.ActiveBatch)
 	}
+	if deck.FailedBatch != nil {
+		t.Fatalf("failed batch = %+v with none failed, want nil", deck.FailedBatch)
+	}
 	b, err := e.svc.StartBatch(t.Context(), suggest.TriggerManual)
 	if err != nil {
 		t.Fatal(err)
@@ -477,6 +480,42 @@ func TestDeckReportsTheActiveBatch(t *testing.T) {
 	want := suggest.Batch{ID: b.ID, JobID: b.JobID, Trigger: suggest.TriggerManual, Status: suggest.BatchPending}
 	if deck.ActiveBatch == nil || *deck.ActiveBatch != want {
 		t.Errorf("active batch = %+v, want %+v", deck.ActiveBatch, want)
+	}
+	if deck.FailedBatch != nil {
+		t.Errorf("failed batch = %+v with a batch pending, want nil", deck.FailedBatch)
+	}
+}
+
+func TestDeckReportsTheLatestFailedBatch(t *testing.T) {
+	e := newEnv(t)
+	e.start(t)
+	e.side.QueueGenerate(llm.GenerateResult{Err: errors.New("provider down")})
+	b, err := e.svc.StartBatch(t.Context(), suggest.TriggerManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job := e.waitJob(t, b.JobID); job.Status != jobs.StatusFailed {
+		t.Fatalf("job status = %s, want failed", job.Status)
+	}
+	deck, err := e.svc.Deck(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := suggest.Batch{ID: b.ID, JobID: b.JobID, Trigger: suggest.TriggerManual, Status: suggest.BatchFailed}
+	if deck.ActiveBatch != nil || deck.FailedBatch == nil || *deck.FailedBatch != want {
+		t.Fatalf("active batch = %+v, failed batch = %+v; want no active batch and failed %+v", deck.ActiveBatch, deck.FailedBatch, want)
+	}
+
+	// A later batch that succeeds supersedes the failure.
+	e.recipe(t, "Chili Verde")
+	e.reply(sideQuest("Chili Verde", "Your Beef Chili gone green.", "Beef Chili"))
+	e.runBatch(t)
+	deck, err = e.svc.Deck(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deck.ActiveBatch != nil || deck.FailedBatch != nil {
+		t.Errorf("active batch = %+v, failed batch = %+v after a batch succeeded, want neither", deck.ActiveBatch, deck.FailedBatch)
 	}
 }
 
@@ -507,6 +546,10 @@ func TestDeckFailsBatchInterruptedByRestart(t *testing.T) {
 	}
 	if deck.ActiveBatch != nil {
 		t.Errorf("active batch = %+v after its job failed, want nil", deck.ActiveBatch)
+	}
+	want := suggest.Batch{ID: b.ID, JobID: b.JobID, Trigger: suggest.TriggerManual, Status: suggest.BatchFailed}
+	if deck.FailedBatch == nil || *deck.FailedBatch != want {
+		t.Errorf("failed batch = %+v after its job was interrupted, want %+v", deck.FailedBatch, want)
 	}
 	if len(deck.Suggestions) != 1 {
 		t.Errorf("deck has %d suggestions, want 1", len(deck.Suggestions))

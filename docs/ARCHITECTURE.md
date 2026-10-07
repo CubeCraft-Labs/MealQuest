@@ -311,10 +311,13 @@ automatic** (D-021).
   `GET /api/v1/suggestions/deck` returns `{suggestions: [{id, dinner_id,
   name, photo_url, difficulty, method, minutes_total, cuisine, reason,
   cited_regular_ids, status, dinner_status, decided_at, created_at}],
-  active_batch}`: the `pending` suggestions whose dinner is still
-  `suggested`, oldest first, and the batch `pending` or `running`
-  (`{batch_id, job_id, trigger, status}`, or null), read in one snapshot,
-  so a client that did not start the batch can follow its job. `POST /api/v1/suggestions/{id}/accept` (Try it) sets the
+  active_batch, failed_batch}`: the `pending` suggestions whose dinner is
+  still `suggested`, oldest first; the batch `pending` or `running`
+  (`{batch_id, job_id, trigger, status}`, or null); and the newest batch
+  when it `failed` (same shape, or null; a later batch, done or under
+  way, supersedes the failure), read in one snapshot, so a client that
+  did not start the batch can follow its job and learns of a failure it
+  was not following. At most one of the two is set. `POST /api/v1/suggestions/{id}/accept` (Try it) sets the
   suggestion `accepted` and moves its dinner to `quest_log`; `POST
   /api/v1/suggestions/{id}/decline` (Pass) sets it `declined` and archives
   the dinner; every later batch, and the household context's passed list,

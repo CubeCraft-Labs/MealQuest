@@ -50,15 +50,21 @@ const ORZO = suggestionBody('s3', 'Lemon garlic shrimp orzo', { difficulty: 'har
 type Responder = () => Response | Promise<Response>
 
 // stubServer stands in for the API: GET of the deck answers the current
-// server.deck and server.activeBatch, and the Quest log the current
+// server.deck, server.activeBatch and server.failedBatch, and the Quest log the current
 // server.questLog dinners; every
 // other request is answered by responders, keyed "METHOD path". Any other
 // request fails the test.
 function stubServer(deck: unknown[], responders: Record<string, Responder> = {}, questLog = 6) {
-  const server = { deck, questLog, activeBatch: null as { batch_id: string; job_id: string } | null, fetchMock: undefined as unknown as Mock<typeof fetch> }
+  const server = {
+    deck,
+    questLog,
+    activeBatch: null as { batch_id: string; job_id: string } | null,
+    failedBatch: null as { batch_id: string; job_id: string } | null,
+    fetchMock: undefined as unknown as Mock<typeof fetch>,
+  }
   const all: Record<string, Responder> = {
     'GET /api/v1/me': () => jsonResponse(200, ME),
-    [`GET ${DECK}`]: () => jsonResponse(200, { suggestions: server.deck, active_batch: server.activeBatch }),
+    [`GET ${DECK}`]: () => jsonResponse(200, { suggestions: server.deck, active_batch: server.activeBatch, failed_batch: server.failedBatch }),
     [`GET ${QUEST_LOG}`]: () =>
       jsonResponse(200, { dinners: Array.from({ length: server.questLog }, (_, i) => questLogBody(`q${i}`, `Quest ${i}`)) }),
     ...responders,
@@ -378,7 +384,7 @@ describe('DiscoverPage', () => {
 
   it('shows a deck that fails to load with a retry', async () => {
     let fail = true
-    stubServer([BOWLS], { [`GET ${DECK}`]: () => (fail ? errorResponse(500, 'internal') : jsonResponse(200, { suggestions: [BOWLS], active_batch: null })) })
+    stubServer([BOWLS], { [`GET ${DECK}`]: () => (fail ? errorResponse(500, 'internal') : jsonResponse(200, { suggestions: [BOWLS], active_batch: null, failed_batch: null })) })
     await renderPage()
     const alert = await screen.findByRole('alert', {}, { timeout: 5000 })
     expect(alert).toHaveTextContent("Couldn't load your side quests.")
@@ -525,11 +531,21 @@ describe('DiscoverPage', () => {
       const server = stubServer([BOWLS, TIKKA], {
         'POST /api/v1/suggestions/s1/decline': () => {
           server.deck = [TIKKA]
+          server.activeBatch = { batch_id: 'b-j1', job_id: 'j1' }
           return declined(BOWLS, 'j1')
         },
-        'GET /api/v1/jobs/j1': () => jsonResponse(200, batchJob('j1', 'failed', [], 'model unavailable')),
-        'POST /api/v1/suggestions/batches': () => jsonResponse(202, { batch_id: 'b-j2', job_id: 'j2', trigger: 'manual', status: 'pending' }),
+        'GET /api/v1/jobs/j1': () => {
+          server.activeBatch = null
+          server.failedBatch = { batch_id: 'b-j1', job_id: 'j1' }
+          return jsonResponse(200, batchJob('j1', 'failed', [], 'model unavailable'))
+        },
+        'POST /api/v1/suggestions/batches': () => {
+          server.failedBatch = null
+          server.activeBatch = { batch_id: 'b-j2', job_id: 'j2' }
+          return jsonResponse(202, { batch_id: 'b-j2', job_id: 'j2', trigger: 'manual', status: 'pending' })
+        },
         'GET /api/v1/jobs/j2': () => {
+          server.activeBatch = null
           server.deck = [TIKKA, ORZO]
           return jsonResponse(200, batchJob('j2', 'succeeded', ['s3']))
         },
@@ -578,6 +594,78 @@ describe('DiscoverPage', () => {
       await waitFor(() => expect(screen.getAllByRole('article', { hidden: true })).toHaveLength(2))
       expect(screen.queryByRole('alert')).not.toBeInTheDocument()
       expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/decline'])
+    })
+
+    it.each([
+      ['the AI failed', 'an empty deck', 'ai_failed', []],
+      ['the AI failed', 'cards left', 'ai_failed', [BOWLS, TIKKA]],
+      ['a restart interrupted it', 'an empty deck', 'interrupted by restart', []],
+      ['a restart interrupted it', 'cards left', 'interrupted by restart', [BOWLS, TIKKA]],
+    ])('shows the failed batch the deck reports when the page opens after %s, with %s, and a retry that asks again', async (_, __, reason, deck) => {
+      const server = stubServer(deck, {
+        'GET /api/v1/jobs/j1': () => jsonResponse(200, batchJob('j1', 'failed', [], reason)),
+        'POST /api/v1/suggestions/batches': () => {
+          server.failedBatch = null
+          server.activeBatch = { batch_id: 'b-j2', job_id: 'j2' }
+          return jsonResponse(202, { batch_id: 'b-j2', job_id: 'j2', trigger: 'manual', status: 'pending' })
+        },
+        'GET /api/v1/jobs/j2': () => {
+          server.activeBatch = null
+          server.deck = [...deck, ORZO]
+          return jsonResponse(200, batchJob('j2', 'succeeded', ['s3']))
+        },
+      })
+      // The batch failed while the page was closed.
+      server.failedBatch = { batch_id: 'b-j1', job_id: 'j1' }
+      await renderPage()
+
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent(`Couldn't find new side quests. ${reason}`)
+      if (deck.length === 0) {
+        expect(screen.getByRole('heading', { name: 'All caught up' })).toBeInTheDocument()
+      } else {
+        expect(screen.getByRole('article', { name: 'Korean beef bowls' })).toBeInTheDocument()
+        expect(screen.getAllByTestId('blank-card')).toHaveLength(1)
+      }
+      // A failed batch is not finding anything.
+      expect(screen.queryByText('Finding new side quests…')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('skeleton-card')).not.toBeInTheDocument()
+
+      fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+      // The new batch's Side quest joins the deck.
+      await waitFor(() => expect(screen.getAllByRole('article', { hidden: true })).toHaveLength(deck.length + 1), { timeout: 3000 })
+      await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+      expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/batches'])
+    })
+
+    it.each([
+      ['once its job has been polled', false],
+      ['before its job has been polled', true],
+    ])('drops a failed batch %s once a read of the deck reports a later batch another session finished', async (_, slowPoll) => {
+      const poll = deferred()
+      const server = stubServer([BOWLS, TIKKA], {
+        'GET /api/v1/jobs/j1': () => (slowPoll ? poll.promise : jsonResponse(200, batchJob('j1', 'failed', [], 'ai_failed'))),
+      })
+      server.failedBatch = { batch_id: 'b-j1', job_id: 'j1' }
+      const queryClient = createQueryClient()
+      await renderPage(queryClient)
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+      if (slowPoll) await waitFor(() => expect(jobPolls(server.fetchMock)).toBe(1))
+      else expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't find new side quests. ai_failed")
+
+      // Another session's batch j2 succeeds, superseding j1's failure.
+      server.failedBatch = null
+      server.deck = [BOWLS, TIKKA, ORZO]
+      const reads = deckReads(server.fetchMock)
+      await act(() => queryClient.invalidateQueries({ queryKey: DECK_KEY }))
+      await waitFor(() => expect(deckReads(server.fetchMock)).toBe(reads + 1))
+      await waitFor(() => expect(screen.getAllByRole('article', { hidden: true })).toHaveLength(3))
+      // A poll of j1 still out when the deck moved on does not bring it back.
+      await act(async () => poll.resolve(jsonResponse(200, batchJob('j1', 'failed', [], 'ai_failed'))))
+
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(screen.queryByText('Finding new side quests…')).not.toBeInTheDocument()
+      expect(sent(server.fetchMock)).toEqual([])
     })
 
     it('follows the batch the deck reports running when the page opens, with skeleton cards rather than "All caught up"', async () => {
@@ -1054,7 +1142,7 @@ describe('DiscoverPage', () => {
       let late: ReturnType<typeof deferred> | null = null
       const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], {
         'POST /api/v1/suggestions/s1/decline': () => decline.promise,
-        [`GET ${DECK}`]: () => late?.promise ?? jsonResponse(200, { suggestions: server.deck, active_batch: null }),
+        [`GET ${DECK}`]: () => late?.promise ?? jsonResponse(200, { suggestions: server.deck, active_batch: null, failed_batch: null }),
       })
       const queryClient = createQueryClient()
       await renderPage(queryClient)
@@ -1074,7 +1162,7 @@ describe('DiscoverPage', () => {
       server.deck = [TIKKA, ORZO, PAELLA]
       decline.resolve(declined(BOWLS))
       await waitFor(() => expect(screen.getByRole('button', { name: 'Pass' })).toBeEnabled())
-      await act(async () => stale.resolve(jsonResponse(200, { suggestions: [BOWLS, TIKKA, ORZO, PAELLA], active_batch: null })))
+      await act(async () => stale.resolve(jsonResponse(200, { suggestions: [BOWLS, TIKKA, ORZO, PAELLA], active_batch: null, failed_batch: null })))
 
       // The late answer is dropped, and the deck is read again after the save.
       await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)))
@@ -1248,7 +1336,7 @@ describe('DiscoverPage', () => {
       let late: ReturnType<typeof deferred> | null = null
       const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], {
         'POST /api/v1/suggestions/s1/accept': () => accept,
-        [`GET ${DECK}`]: () => late?.promise ?? jsonResponse(200, { suggestions: server.deck, active_batch: null }),
+        [`GET ${DECK}`]: () => late?.promise ?? jsonResponse(200, { suggestions: server.deck, active_batch: null, failed_batch: null }),
       })
       const queryClient = createQueryClient()
       await renderPage(queryClient)
@@ -1265,7 +1353,7 @@ describe('DiscoverPage', () => {
       await act(async () => void queryClient.invalidateQueries({ queryKey: DECK_KEY }))
       late = null
       server.deck = [TIKKA, ORZO, PAELLA]
-      await act(async () => delayed.resolve(jsonResponse(200, { suggestions: server.deck, active_batch: null })))
+      await act(async () => delayed.resolve(jsonResponse(200, { suggestions: server.deck, active_batch: null, failed_batch: null })))
       const reads = deckReads(server.fetchMock)
       await act(async () => lose(new TypeError('Failed to fetch')))
 
@@ -1282,7 +1370,7 @@ describe('DiscoverPage', () => {
       let read: ReturnType<typeof deferred> | null = null
       const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], {
         'POST /api/v1/suggestions/s1/accept': () => accept.promise,
-        [`GET ${DECK}`]: () => read?.promise ?? jsonResponse(200, { suggestions: server.deck, active_batch: null }),
+        [`GET ${DECK}`]: () => read?.promise ?? jsonResponse(200, { suggestions: server.deck, active_batch: null, failed_batch: null }),
       })
       await renderPage()
       await screen.findByRole('article', { name: 'Korean beef bowls' })
@@ -1302,7 +1390,7 @@ describe('DiscoverPage', () => {
       expect(screen.queryByRole('alert')).not.toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'Try it' })).toBeDisabled()
 
-      await act(async () => pending.resolve(jsonResponse(200, { suggestions: server.deck, active_batch: null })))
+      await act(async () => pending.resolve(jsonResponse(200, { suggestions: server.deck, active_batch: null, failed_batch: null })))
       const alert = await screen.findByRole('alert')
       expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument()
       expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
@@ -1339,7 +1427,7 @@ describe('DiscoverPage', () => {
           read = deferred()
           return errorResponse(500, 'internal')
         },
-        [`GET ${DECK}`]: () => read?.promise ?? jsonResponse(200, { suggestions: server.deck, active_batch: null }),
+        [`GET ${DECK}`]: () => read?.promise ?? jsonResponse(200, { suggestions: server.deck, active_batch: null, failed_batch: null }),
       })
       await renderPage()
       await screen.findByRole('article', { name: 'Korean beef bowls' })
@@ -1359,7 +1447,7 @@ describe('DiscoverPage', () => {
       expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept'])
       expect(screen.queryByRole('alert')).not.toBeInTheDocument()
 
-      await act(async () => slow.resolve(jsonResponse(200, { suggestions: server.deck, active_batch: null })))
+      await act(async () => slow.resolve(jsonResponse(200, { suggestions: server.deck, active_batch: null, failed_batch: null })))
       const alert = await screen.findByRole('alert')
       expect(alert).toHaveTextContent("Couldn't save that choice.")
       expect(topCard()).toHaveAccessibleName('Korean beef bowls')
@@ -1393,7 +1481,7 @@ describe('DiscoverPage', () => {
           return errorResponse(500, 'internal')
         },
         'GET /api/v1/jobs/j1': () => poll?.promise ?? job([]),
-        [`GET ${DECK}`]: () => read?.promise ?? jsonResponse(200, { suggestions: server.deck, active_batch: null }),
+        [`GET ${DECK}`]: () => read?.promise ?? jsonResponse(200, { suggestions: server.deck, active_batch: null, failed_batch: null }),
       })
       const queryClient = createQueryClient()
       await renderPage(queryClient)
@@ -1428,7 +1516,7 @@ describe('DiscoverPage', () => {
 
       // The decision's read has the Side quest still pending: the card goes
       // back on top with a Retry, and the decision settles on that read.
-      await act(async () => reconciling.resolve(jsonResponse(200, { suggestions: server.deck, active_batch: null })))
+      await act(async () => reconciling.resolve(jsonResponse(200, { suggestions: server.deck, active_batch: null, failed_batch: null })))
       await waitFor(() => expect(screen.getByRole('button', { name: 'Try it' })).toBeEnabled())
       const alert = screen.getByRole('alert')
       expect(alert).toHaveTextContent("Couldn't save that choice.")
@@ -1438,7 +1526,7 @@ describe('DiscoverPage', () => {
       // The batch's read goes out after it, and brings its Side quest.
       await waitFor(() => expect(deckReads(server.fetchMock)).toBe(reads + 2))
       read = null
-      await act(async () => after.resolve(jsonResponse(200, { suggestions: server.deck, active_batch: null })))
+      await act(async () => after.resolve(jsonResponse(200, { suggestions: server.deck, active_batch: null, failed_batch: null })))
       await waitFor(() => expect(queryClient.getQueryData<{ suggestions: { id: string }[] }>(DECK_KEY)?.suggestions.map((q) => q.id)).toEqual(['s2', 's3', 's4', 's5']))
       expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
 

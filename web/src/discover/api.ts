@@ -30,13 +30,15 @@ export type SideQuest = {
 export type Choice = 'try' | 'pass'
 
 // Batch is a POST /api/v1/suggestions/batches answer, or the deck's active
-// batch: the batch and the job running it, which GET /api/v1/jobs/{id}
-// reports on.
+// or failed batch: the batch and the job running it, which GET
+// /api/v1/jobs/{id} reports on.
 export type Batch = { batch_id: string; job_id: string }
 
 // Deck is the deck as GET /api/v1/suggestions/deck reads it: the pending
-// Side quests, oldest first, and the batch pending or running, if any.
-export type Deck = { suggestions: SideQuest[]; activeBatch: Batch | null }
+// Side quests, oldest first; the batch pending or running, if any; and the
+// newest batch when it failed, which a later batch supersedes. At most one
+// of the two batches is set.
+export type Deck = { suggestions: SideQuest[]; activeBatch: Batch | null; failedBatch: Batch | null }
 
 function isBatch(body: unknown): body is Batch {
   return isRecord(body) && typeof body.batch_id === 'string' && typeof body.job_id === 'string'
@@ -91,8 +93,9 @@ function parseSideQuest(where: string, body: unknown): SideQuest {
   }
 }
 
-// useDeck is the pending Side quests, oldest first, and the batch pending
-// or running (GET /api/v1/suggestions/deck).
+// useDeck is the pending Side quests, oldest first, the batch pending or
+// running and the newest batch when it failed (GET
+// /api/v1/suggestions/deck).
 export function useDeck() {
   const { apiFetch } = useApi()
   return useQuery({
@@ -102,9 +105,11 @@ export function useDeck() {
       const body = await apiFetch<unknown>(DECK_PATH)
       if (!isRecord(body) || !Array.isArray(body.suggestions)) throw new Error(`${where}: response has no suggestions list`)
       if (body.active_batch !== null && !isBatch(body.active_batch)) throw new Error(`${where}: response has no active_batch`)
+      if (body.failed_batch !== null && !isBatch(body.failed_batch)) throw new Error(`${where}: response has no failed_batch`)
       return {
         suggestions: body.suggestions.map((suggestion) => parseSideQuest(where, suggestion)),
         activeBatch: body.active_batch === null ? null : { batch_id: body.active_batch.batch_id, job_id: body.active_batch.job_id },
+        failedBatch: body.failed_batch === null ? null : { batch_id: body.failed_batch.batch_id, job_id: body.failed_batch.job_id },
       }
     },
   })

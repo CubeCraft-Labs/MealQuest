@@ -9,7 +9,7 @@ import { Segmented } from '../ui/Segmented.tsx'
 import { Sheet } from '../ui/Sheet.tsx'
 import { Skeleton } from '../ui/Skeleton.tsx'
 import { Tag } from '../ui/Tag.tsx'
-import type { PlanDay, Swap } from './api.ts'
+import type { PlanDay, PlanDinner, Swap } from './api.ts'
 import { weekdayName } from './week.ts'
 import styles from './SwapSheet.module.css'
 
@@ -21,6 +21,11 @@ export const sourceNames: Record<Source, string> = { quest_log: 'Quest log', reg
 export const emptyLists: Record<Source, string> = {
   quest_log: 'Your Quest log is empty — swipe right on a Side quest to add one.',
   regulars: 'You have no Regulars yet.',
+}
+
+// planDinner is a listed dinner as it is planned on a day.
+export function planDinner(dinner: QuestLogDinner): PlanDinner {
+  return { id: dinner.id, name: dinner.name, photo_id: dinner.photo_id, minutes: dinner.minutes_total, method: dinner.method }
 }
 
 export type SwapSheetProps = {
@@ -88,17 +93,7 @@ export function SwapSheet({ day, planned, onSwap, onClose }: SwapSheetProps) {
                   already
                     ? undefined
                     : () =>
-                        onSwap({
-                          date: day.date,
-                          dinner: {
-                            id: dinner.id,
-                            name: dinner.name,
-                            photo_id: dinner.photo_id,
-                            minutes: dinner.minutes_total,
-                            method: dinner.method,
-                          },
-                          fromQuestLog: source === 'quest_log',
-                        })
+                        onSwap({ date: day.date, dinner: planDinner(dinner), fromQuestLog: source === 'quest_log' })
                 }
                 trailing={already && <Tag>Already this week</Tag>}
               />

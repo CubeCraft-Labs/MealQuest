@@ -464,6 +464,7 @@
 }
 
 .card {
+  position: relative;
   box-sizing: border-box;
   flex: 1;
   display: flex;
@@ -529,6 +530,40 @@
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+/* The day a dragged dinner drops on: a dashed 2.5 px grape border on
+   grape-100 over the card, saying which dinner it replaces. */
+.dropTarget {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 4px;
+  padding: 12px;
+  border: 2.5px dashed var(--color-accent);
+  border-radius: inherit;
+  background: var(--color-accent-100);
+  text-align: center;
+}
+
+.dropTitle {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 16px;
+  color: var(--color-accent-700);
+}
+
+.dropReplaces {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-neutral-700);
+  overflow-wrap: break-word;
 }
 
 /* The swap icon sits bare on the card, beside the tag: its 44 px hit box

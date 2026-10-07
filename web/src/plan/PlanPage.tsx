@@ -28,6 +28,7 @@ import {
   type PlanStatus,
   type Swap,
 } from './api.ts'
+import { DragAnnouncer, DROP_DATE, DropBoard, PlanDragProvider, useDropTarget } from './drag.tsx'
 import { PlanPanel, QuestLogStrip } from './PlanPanel.tsx'
 import { SwapSheet } from './SwapSheet.tsx'
 import {
@@ -138,13 +139,16 @@ function DayTile({ day, timezone, swapping, onSwap }: { day: PlanDay; timezone: 
 // over a card with the dinner's washed photo, name, method and time, a
 // crock-pot dinner's start-by time in the household's zone, and its Regular
 // or Side quest tag, a Side quest's card in teal. The swap icon opens the swap
-// sheet; while that is open the card is swapping, ringed in grape.
+// sheet; while that is open the card is swapping, ringed in grape. A dinner
+// dragged over the day drops on it: the card is swapping, covered by a
+// dashed grape "Drop to swap" saying which dinner it replaces.
 function DayColumn({ day, timezone, swapping, onSwap }: { day: PlanDay; timezone: string; swapping: boolean; onSwap: () => void }) {
   const { dinner } = day
   const time = cooking(dinner)
-  const classes = [styles.card, day.is_new && styles.sideQuestCard, swapping && styles.swapping].filter(Boolean).join(' ')
+  const target = useDropTarget(day.date) !== null
+  const classes = [styles.card, day.is_new && styles.sideQuestCard, (swapping || target) && styles.swapping].filter(Boolean).join(' ')
   return (
-    <li className={styles.column} aria-label={weekdayName(day.date)}>
+    <li className={styles.column} aria-label={weekdayName(day.date)} {...{ [DROP_DATE]: day.date }}>
       <p className={styles.dayLabel} aria-hidden="true">
         <span className={styles.dayName}>{weekdayKicker(day.date)}</span>
         <span className={styles.dayNumber}>{dayOfMonth(day.date)}</span>
@@ -165,6 +169,12 @@ function DayColumn({ day, timezone, swapping, onSwap }: { day: PlanDay; timezone
             <Icon icon={RefreshCw} size="inline" />
           </IconButton>
         </div>
+        {target && (
+          <div className={styles.dropTarget}>
+            <p className={styles.dropTitle}>Drop to swap</p>
+            <p className={styles.dropReplaces}>Replaces {dinner.name}</p>
+          </div>
+        )}
       </div>
     </li>
   )
@@ -316,6 +326,12 @@ function WeekBoard({
     setSwappingDate(null)
     swap.mutate(chosen)
   }
+  // dropIn swaps in a dinner dragged onto a day. A drag is not picked up,
+  // nor dropped, while a swap of the week is pending.
+  function dropIn(chosen: Swap) {
+    swap.dismiss()
+    swapIn(chosen)
+  }
   // openSwap opens the swap sheet on a day. One swap of the week is sent at
   // a time, even across leaving the week and coming back: the plan the
   // server answers it with must not overwrite another still pending.
@@ -359,6 +375,7 @@ function WeekBoard({
     body =
       layout !== 'mobile' ? (
         <>
+          <DropBoard days={days} pending={swap.pending} drop={dropIn} />
           <ul className={`${styles.week} ${styles[layout]}`} aria-label="Dinners this week">
             {days.map((day) => (
               <DayColumn
@@ -545,7 +562,8 @@ function Unavailable({
 // Regulars in a right panel on desktop (2d). It opens on next week once this
 // week's plan_draft time has come in the household's zone, otherwise on this
 // week. The board keeps its place in the tree across layouts, so crossing a
-// breakpoint keeps a draft being followed.
+// breakpoint keeps a draft being followed. From tablet up a dinner is
+// dragged from the strip or the panel onto a day of the grid to swap it in.
 export function PlanPage() {
   const layout = useBreakpoint()
   const settings = useHouseholdSettings()
@@ -563,12 +581,15 @@ export function PlanPage() {
     content = <WeekBoard key={week} weekStart={week} timezone={settings.data.timezone} layout={layout} onWeek={setWeek} />
   }
   return (
-    <div className={`${styles.page} ${styles[`${layout}Page`]}`}>
-      <div className={styles.board}>
-        {content}
-        {layout === 'tablet' && <QuestLogStrip />}
+    <PlanDragProvider>
+      <div className={`${styles.page} ${styles[`${layout}Page`]}`}>
+        <div className={styles.board}>
+          {content}
+          {layout === 'tablet' && <QuestLogStrip />}
+        </div>
+        {layout === 'desktop' && <PlanPanel />}
+        {layout !== 'mobile' && <DragAnnouncer />}
       </div>
-      {layout === 'desktop' && <PlanPanel />}
-    </div>
+    </PlanDragProvider>
   )
 }

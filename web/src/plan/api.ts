@@ -1,7 +1,7 @@
 import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, useApi, type ApiRead } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
-import { oneOf } from '../dinners/api.ts'
+import { METHODS, oneOf, photoId, type Method } from '../dinners/api.ts'
 import { QUEST_LOG_KEY } from '../discover/api.ts'
 
 export const PLANS_PATH = '/api/v1/plans'
@@ -22,24 +22,31 @@ export const PLAN_STATUSES = ['draft', 'synced', 'changed'] as const
 // synced plan makes it changed.
 export type PlanStatus = (typeof PLAN_STATUSES)[number]
 
+// PlanDinner is a planned dinner: photo_id is its stored photo's id, from
+// photo, minutes its minutes from prep to table and method how it is
+// cooked, each when known.
+export type PlanDinner = { id: string; name: string; photo_id: string | undefined; minutes: number | null; method: Method | null }
+
 // PlanDay is one day of a plan: its household-local date, the dinner
 // planned, whether that dinner is a Quest-log pick, and, for a crock-pot
 // dinner of known minutes, the instant it must start by.
 export type PlanDay = {
   date: string
-  dinner: { id: string; name: string }
+  dinner: PlanDinner
   is_new: boolean
   start_by: string | null
 }
 
 // Plan is GET /api/v1/plans/{weekStart}: the week's seven days, Monday to
-// Sunday, and the AI's note on the draft, if any. cached says the service
-// worker answered from its cache: the server may have changed the plan since.
+// Sunday, the AI's note on the draft, if any, and when it was last pushed to
+// Google Calendar, if ever. cached says the service worker answered from its
+// cache: the server may have changed the plan since.
 export type Plan = {
   id: string
   week_start: string
   status: PlanStatus
   ai_note: string | null
+  calendar_synced_at: Date | null
   days: PlanDay[]
   cached: boolean
 }
@@ -57,12 +64,30 @@ function parseDay(where: string, body: unknown): PlanDay {
     !isRecord(body.dinner) ||
     typeof body.dinner.id !== 'string' ||
     typeof body.dinner.name !== 'string' ||
+    (body.dinner.minutes !== null && !Number.isInteger(body.dinner.minutes)) ||
     typeof body.is_new !== 'boolean' ||
     (body.start_by !== null && typeof body.start_by !== 'string')
   ) {
     throw new Error(`${where}: response has a day that is not a plan day`)
   }
-  return { date: body.date, dinner: { id: body.dinner.id, name: body.dinner.name }, is_new: body.is_new, start_by: body.start_by }
+  const dinner: PlanDinner = {
+    id: body.dinner.id,
+    name: body.dinner.name,
+    photo_id: photoId(where, body.dinner.photo),
+    minutes: body.dinner.minutes as number | null,
+    method: body.dinner.method === null ? null : oneOf(where, 'method', METHODS, body.dinner.method),
+  }
+  return { date: body.date, dinner, is_new: body.is_new, start_by: body.start_by }
+}
+
+// syncedAt reads calendar_synced_at, an RFC 3339 instant or null.
+function syncedAt(where: string, value: unknown): Date | null {
+  if (value === null) return null
+  const at = typeof value === 'string' ? new Date(value) : null
+  if (at === null || Number.isNaN(at.getTime())) {
+    throw new Error(`${where}: calendar_synced_at ${JSON.stringify(value)} is not an instant`)
+  }
+  return at
 }
 
 function parsePlan(where: string, weekStart: string, body: unknown, cached: boolean): Plan {
@@ -81,6 +106,7 @@ function parsePlan(where: string, weekStart: string, body: unknown, cached: bool
     week_start: weekStart,
     status: oneOf(where, 'status', PLAN_STATUSES, body.status),
     ai_note: body.ai_note,
+    calendar_synced_at: syncedAt(where, body.calendar_synced_at),
     days: body.days.map((day) => parseDay(where, day)),
     cached,
   }
@@ -134,12 +160,19 @@ export function useStartDraft() {
 
 // Swap is one day's swap: the day, and the dinner chosen for it with whether
 // it was chosen from the Quest log.
-export type Swap = { date: string; dinner: { id: string; name: string }; fromQuestLog: boolean }
+export type Swap = { date: string; dinner: PlanDinner; fromQuestLog: boolean }
 
 // sameDay says whether two plan days are the same in every field.
 function sameDay(a: PlanDay, b: PlanDay): boolean {
   return (
-    a.date === b.date && a.dinner.id === b.dinner.id && a.dinner.name === b.dinner.name && a.is_new === b.is_new && a.start_by === b.start_by
+    a.date === b.date &&
+    a.dinner.id === b.dinner.id &&
+    a.dinner.name === b.dinner.name &&
+    a.dinner.photo_id === b.dinner.photo_id &&
+    a.dinner.minutes === b.dinner.minutes &&
+    a.dinner.method === b.dinner.method &&
+    a.is_new === b.is_new &&
+    a.start_by === b.start_by
   )
 }
 

@@ -21,11 +21,12 @@ function planBody(changes: Record<number, { id: string; name: string; is_new?: b
     week_start: WEEK,
     status: 'draft',
     ai_note: null,
+    calendar_synced_at: null as string | null,
     days: DAYS.map((date, i) => {
       const change = changes[i]
       return {
         date,
-        dinner: { id: change?.id ?? `d${i}`, name: change?.name ?? `Dinner ${i}` },
+        dinner: { id: change?.id ?? `d${i}`, name: change?.name ?? `Dinner ${i}`, photo: null, minutes: null, method: null as string | null, origin: 'regular' },
         is_new: change?.is_new ?? false,
         start_by: change?.start_by ?? null,
       }
@@ -74,11 +75,50 @@ async function renderSwaps() {
   return { ...hook, queryClient, plan: () => queryClient.getQueryData<Plan>(planKey(WEEK))! }
 }
 
-const ORZO = { date: '2026-10-09', dinner: { id: 'q1', name: 'Lemon orzo' }, fromQuestLog: true }
-const FISH = { date: '2026-10-05', dinner: { id: 'r1', name: 'Fish tacos' }, fromQuestLog: false }
+const ORZO = { date: '2026-10-09', dinner: { id: 'q1', name: 'Lemon orzo', photo_id: undefined, minutes: null, method: null }, fromQuestLog: true }
+const FISH = { date: '2026-10-05', dinner: { id: 'r1', name: 'Fish tacos', photo_id: undefined, minutes: null, method: null }, fromQuestLog: false }
 
 afterEach(() => {
   vi.unstubAllGlobals()
+})
+
+// renderPlan renders the week's plan read over a query client.
+async function renderPlan() {
+  const api = createApiClient(fakeLocation('/plan'), createNetworkStatus(window), createVerifiedSession(localStorage))
+  await api.loadMe()
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <ApiProvider client={api}>
+      <QueryClientProvider client={createQueryClient()}>{children}</QueryClientProvider>
+    </ApiProvider>
+  )
+  const hook = renderHook(() => usePlan(WEEK), { wrapper })
+  await waitFor(() => expect(hook.result.current.isPending).toBe(false))
+  return hook.result.current
+}
+
+describe('usePlan', () => {
+  it("reads each dinner's method and when the plan was pushed to Calendar", async () => {
+    const body = planBody()
+    body.days[2]!.dinner.method = 'crockpot'
+    stubServer({ [`GET ${PLAN}`]: () => jsonResponse(200, { ...body, status: 'synced', calendar_synced_at: '2026-10-07T15:58:00Z' }) })
+    const plan = await renderPlan()
+
+    expect(plan.data?.calendar_synced_at).toEqual(new Date('2026-10-07T15:58:00Z'))
+    expect(plan.data?.days.map((day) => day.dinner.method)).toEqual([null, null, 'crockpot', null, null, null, null])
+  })
+
+  it.each([
+    ['a method it does not know', (body: ReturnType<typeof planBody>) => (body.days[0]!.dinner.method = 'microwave'), 'method "microwave"'],
+    ['no method', (body: ReturnType<typeof planBody>) => Reflect.deleteProperty(body.days[0]!.dinner, 'method'), 'method undefined'],
+    ['a sync time that is no instant', (body: ReturnType<typeof planBody>) => (body.calendar_synced_at = 'yesterday'), 'calendar_synced_at "yesterday"'],
+  ])('refuses a plan with %s', async (_, change, said) => {
+    const body = planBody()
+    change(body)
+    stubServer({ [`GET ${PLAN}`]: () => jsonResponse(200, body) })
+    const plan = await renderPlan()
+
+    expect(plan.error?.message).toContain(said)
+  })
 })
 
 describe('useSwapDay', () => {

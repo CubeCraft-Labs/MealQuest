@@ -1,14 +1,17 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { ChevronLeft, ChevronRight, Plus } from 'lucide-react'
-import { useEffect, useId, useMemo, useState } from 'react'
+import { CalendarDays, Check, ChevronLeft, ChevronRight, Plus, RefreshCw, ShoppingCart } from 'lucide-react'
+import { useEffect, useId, useMemo, useState, type ReactNode } from 'react'
 import { useJob } from '../api/index.ts'
 import { Confirm } from '../settings/LeaveGuard.tsx'
+import { methodLabels } from '../settings/RegularsSettingsPage.tsx'
 import { formatClockTime, useHouseholdSettings } from '../settings/api.ts'
-import { Button } from '../ui/Button.tsx'
+import { useBreakpoint, type Breakpoint } from '../shell/useBreakpoint.ts'
+import { Button, type ButtonVariant } from '../ui/Button.tsx'
 import { EmptyState } from '../ui/EmptyState.tsx'
 import { ErrorBanner } from '../ui/ErrorBanner.tsx'
 import { Icon } from '../ui/Icon.tsx'
 import { IconButton } from '../ui/IconButton.tsx'
+import { Photo } from '../ui/Photo.tsx'
 import { Skeleton } from '../ui/Skeleton.tsx'
 import { Tag } from '../ui/Tag.tsx'
 import {
@@ -19,12 +22,24 @@ import {
   useStartDraft,
   useSwapDay,
   type DraftResult,
+  type Plan,
   type PlanDay,
+  type PlanDinner,
   type PlanStatus,
   type Swap,
 } from './api.ts'
+import { PlanPanel, QuestLogStrip } from './PlanPanel.tsx'
 import { SwapSheet } from './SwapSheet.tsx'
-import { addDays, defaultWeek, localNow, weekdayKicker, weekdayName, weekLabel } from './week.ts'
+import {
+  addDays,
+  dayOfMonth,
+  defaultWeek,
+  localNow,
+  weekdayKicker,
+  weekdayName,
+  weekLabel,
+  weekStart as weekOf,
+} from './week.ts'
 import styles from './PlanPage.module.css'
 
 // statusTags is the tag beside the week's title for each plan status.
@@ -47,6 +62,48 @@ const draftFailures: Record<string, string> = {
 // PUSH_HINT is why Push to Calendar is unavailable.
 // TODO(Feature 16): connect Push to Calendar once Google Calendar is.
 const PUSH_HINT = 'Push to Calendar arrives once Google Calendar can be connected.'
+
+// SHOPPING_HINT is why the shopping list is unavailable.
+// TODO(Feature 17): open the Supply run, with its count, once it is built.
+const SHOPPING_HINT = 'The shopping list arrives once the Supply run is built.'
+
+// syncStatuses is the plan manager's line on whether the plan is on Calendar.
+const syncStatuses: Record<PlanStatus, string> = {
+  draft: 'Not pushed to Google Calendar yet',
+  synced: 'Synced to Google Calendar',
+  changed: 'Changes not pushed to Google Calendar',
+}
+
+// duration is minutes as the plan manager's cards say it: "45 min", "6 hr",
+// "1 hr 30 min", with no-break spaces so a narrow card wraps the line
+// between the method and the duration, never inside the duration.
+export function duration(minutes: number): string {
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  if (hours === 0) return `${rest}\u00a0min`
+  return rest === 0 ? `${hours}\u00a0hr` : `${hours}\u00a0hr\u00a0${rest}\u00a0min`
+}
+
+// cooking is a card's "method · duration" line, "Crock pot · 6 hr", with
+// whichever of the two is known, or null when neither is.
+export function cooking(dinner: PlanDinner): string | null {
+  const parts = [dinner.method && methodLabels[dinner.method], dinner.minutes !== null && duration(dinner.minutes)].filter(
+    (part): part is string => typeof part === 'string',
+  )
+  return parts.length === 0 ? null : parts.join(' · ')
+}
+
+// ago is how long before now the instant at was: "just now", "2 min ago",
+// "3 hr ago", "2 days ago".
+export function ago(at: Date, now: Date): string {
+  const minutes = Math.floor((now.getTime() - at.getTime()) / 60_000)
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${minutes} min ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} hr ago`
+  const days = Math.floor(hours / 24)
+  return days === 1 ? '1 day ago' : `${days} days ago`
+}
 
 // pushedToCalendar says whether drafting over a plan of this status needs
 // confirm: it was pushed to Calendar.
@@ -77,14 +134,51 @@ function DayTile({ day, timezone, swapping, onSwap }: { day: PlanDay; timezone: 
   )
 }
 
+// DayColumn is one day of the plan manager's 7-column grid: its day label
+// over a card with the dinner's washed photo, name, method and time, a
+// crock-pot dinner's start-by time in the household's zone, and its Regular
+// or Side quest tag, a Side quest's card in teal. The swap icon opens the swap
+// sheet; while that is open the card is swapping, ringed in grape.
+function DayColumn({ day, timezone, swapping, onSwap }: { day: PlanDay; timezone: string; swapping: boolean; onSwap: () => void }) {
+  const { dinner } = day
+  const time = cooking(dinner)
+  const classes = [styles.card, day.is_new && styles.sideQuestCard, swapping && styles.swapping].filter(Boolean).join(' ')
+  return (
+    <li className={styles.column} aria-label={weekdayName(day.date)}>
+      <p className={styles.dayLabel} aria-hidden="true">
+        <span className={styles.dayName}>{weekdayKicker(day.date)}</span>
+        <span className={styles.dayNumber}>{dayOfMonth(day.date)}</span>
+      </p>
+      <div className={classes}>
+        {/* The card's name already says what the photo shows. */}
+        <span aria-hidden="true">
+          <Photo id={dinner.photo_id} name={dinner.name} radius="18px" sizes="160px" className={styles.cardPhoto} />
+        </span>
+        <p className={styles.cardName}>{dinner.name}</p>
+        {time !== null && <p className={styles.cardMinutes}>{time}</p>}
+        {day.start_by !== null && (
+          <p className={styles.cardStartBy}>Start by {formatClockTime(localNow(timezone, new Date(day.start_by)).time)}</p>
+        )}
+        <div className={styles.cardFooter}>
+          <Tag tone={day.is_new ? 'grape' : 'neutral'} className={styles.cardTag}>{day.is_new ? 'Side quest' : 'Regular'}</Tag>
+          <IconButton label={`Swap ${weekdayName(day.date)}`} className={styles.swapButton} onClick={onSwap}>
+            <Icon icon={RefreshCw} size="inline" />
+          </IconButton>
+        </div>
+      </div>
+    </li>
+  )
+}
+
 // SkeletonTiles stands in for the seven days while the plan loads or the AI
-// drafts it.
-function SkeletonTiles({ label, children }: { label: string; children?: string }) {
+// drafts it, as two columns of tiles on mobile and seven columns wider.
+function SkeletonTiles({ label, layout, children }: { label: string; layout: Breakpoint; children?: string }) {
+  const wide = layout !== 'mobile'
   return (
     <section aria-busy="true" aria-label={label} className={styles.loading}>
-      <div className={styles.grid}>
+      <div className={wide ? `${styles.week} ${styles[layout]}` : styles.grid}>
         {Array.from({ length: 7 }, (_, i) => (
-          <Skeleton key={i} data-testid="skeleton-tile" className={styles.skeletonTile} />
+          <Skeleton key={i} data-testid="skeleton-tile" className={wide ? styles.skeletonCard : styles.skeletonTile} />
         ))}
       </div>
       {children !== undefined && <p className={styles.drafting}>{children}</p>}
@@ -97,7 +191,21 @@ function SkeletonTiles({ label, children }: { label: string; children?: string }
 // starts the draft_week job and shows skeleton tiles until the job ends and
 // the plan is read again. Rebuilding a plan pushed to Calendar asks first,
 // and sends confirm. A failed draft is shown with Retry; no plan is made up.
-function WeekBoard({ weekStart, timezone, onWeek }: { weekStart: string; timezone: string; onWeek: (weekStart: string) => void }) {
+//
+// From tablet up it is the plan manager (mocks 2c, 2d): Rebuild week and the
+// unavailable Shopping list and Push to Calendar are actions in the header,
+// over the plan's sync status and the 7-column grid.
+function WeekBoard({
+  weekStart,
+  timezone,
+  layout,
+  onWeek,
+}: {
+  weekStart: string
+  timezone: string
+  layout: Breakpoint
+  onWeek: (weekStart: string) => void
+}) {
   const queryClient = useQueryClient()
   const plan = usePlan(weekStart)
   const startDraft = useStartDraft()
@@ -221,12 +329,16 @@ function WeekBoard({ weekStart, timezone, onWeek }: { weekStart: string; timezon
   if (plan.isError) {
     body = <ErrorBanner onRetry={() => void plan.refetch()}>Couldn't load this week's plan. {plan.error.message}</ErrorBanner>
   } else if (drafting) {
-    body = <SkeletonTiles label="Drafting this week">Drafting your week…</SkeletonTiles>
+    body = (
+      <SkeletonTiles label="Drafting this week" layout={layout}>
+        Drafting your week…
+      </SkeletonTiles>
+    )
   } else if (resultError !== null) {
     // An unread draft shows no board: the plan read is not the draft.
     body = null
   } else if (plan.isPending) {
-    body = <SkeletonTiles label="Plan loading" />
+    body = <SkeletonTiles label="Plan loading" layout={layout} />
   } else if (plan.data === null) {
     body = (
       <EmptyState title="Nothing planned yet" action={{ label: 'Draft this week', onClick: rebuild }}>
@@ -236,49 +348,107 @@ function WeekBoard({ weekStart, timezone, onWeek }: { weekStart: string; timezon
   } else {
     const { ai_note, days } = plan.data
     const swappingDay = days.find((day) => day.date === swappingDate)
-    body = (
-      <>
-        {ai_note !== null && (
-          <div className={styles.assistant}>
-            <span className={styles.avatar} aria-hidden="true">
-              Q
-            </span>
-            <p className={styles.bubble}>{ai_note}</p>
-          </div>
-        )}
-        <ul className={styles.grid} aria-label="Dinners this week">
-          {days.map((day) => (
-            <DayTile
-              key={day.date}
-              day={day}
-              timezone={timezone}
-              swapping={day.date === swappingDate}
-              onSwap={() => openSwap(day.date)}
-            />
-          ))}
-          <li className={styles.rebuildCell}>
-            <button type="button" className={styles.rebuild} onClick={rebuild} disabled={swap.pending}>
-              <Icon icon={Plus} size="inline" />
-              Rebuild week
-            </button>
-          </li>
-        </ul>
-        <PushToCalendar />
-        {swappingDay !== undefined && (
-          <SwapSheet
-            day={swappingDay}
-            planned={new Set(days.map((day) => day.dinner.id))}
-            onSwap={swapIn}
-            onClose={() => setSwappingDate(null)}
-          />
-        )}
-      </>
+    const sheet = swappingDay !== undefined && (
+      <SwapSheet
+        day={swappingDay}
+        planned={new Set(days.map((day) => day.dinner.id))}
+        onSwap={swapIn}
+        onClose={() => setSwappingDate(null)}
+      />
     )
+    body =
+      layout !== 'mobile' ? (
+        <>
+          <ul className={`${styles.week} ${styles[layout]}`} aria-label="Dinners this week">
+            {days.map((day) => (
+              <DayColumn
+                key={day.date}
+                day={day}
+                timezone={timezone}
+                swapping={day.date === swappingDate}
+                onSwap={() => openSwap(day.date)}
+              />
+            ))}
+          </ul>
+          {sheet}
+        </>
+      ) : (
+        <>
+          {ai_note !== null && (
+            <div className={styles.assistant}>
+              <span className={styles.avatar} aria-hidden="true">
+                Q
+              </span>
+              <p className={styles.bubble}>{ai_note}</p>
+            </div>
+          )}
+          <ul className={styles.grid} aria-label="Dinners this week">
+            {days.map((day) => (
+              <DayTile
+                key={day.date}
+                day={day}
+                timezone={timezone}
+                swapping={day.date === swappingDate}
+                onSwap={() => openSwap(day.date)}
+              />
+            ))}
+            <li className={styles.rebuildCell}>
+              <button type="button" className={styles.rebuild} onClick={rebuild} disabled={swap.pending}>
+                <Icon icon={Plus} size="inline" />
+                Rebuild week
+              </button>
+            </li>
+          </ul>
+          <Unavailable hint={PUSH_HINT} className={styles.pushButton}>
+            Looks good — push to Calendar
+          </Unavailable>
+          {sheet}
+        </>
+      )
   }
 
   const tag = plan.data ? statusTags[plan.data.status] : null
-  return (
-    <>
+  const header =
+    layout !== 'mobile' ? (
+      <header className={styles.wideHeader}>
+        <div className={styles.titleBar}>
+          <div className={styles.heading}>
+            <p className={styles.kicker}>{label.week} · Plan</p>
+            <h1 className={styles.wideTitle}>{label.dates}</h1>
+          </div>
+          <div className={styles.weekNav}>
+            <IconButton label="Previous week" onClick={() => onWeek(addDays(weekStart, -7))}>
+              <Icon icon={ChevronLeft} size="inline" />
+            </IconButton>
+            {layout === 'desktop' && (
+              <button type="button" className={styles.thisWeek} onClick={() => onWeek(weekOf(localNow(timezone, new Date()).date))}>
+                This week
+              </button>
+            )}
+            <IconButton label="Next week" onClick={() => onWeek(addDays(weekStart, 7))}>
+              <Icon icon={ChevronRight} size="inline" />
+            </IconButton>
+          </div>
+        </div>
+        <div className={styles.actionBar}>
+          {plan.data ? <SyncStatus plan={plan.data} /> : <span className={styles.status} />}
+          <div className={styles.actions}>
+            <Unavailable hint={SHOPPING_HINT} variant="outline" below className={styles.action}>
+              <Icon icon={ShoppingCart} size="inline" />
+              Shopping list
+            </Unavailable>
+            <Button variant="outline" className={styles.action} onClick={rebuild} disabled={swap.pending || drafting || !plan.isSuccess}>
+              <Icon icon={RefreshCw} size="inline" />
+              Rebuild week
+            </Button>
+            <Unavailable hint={PUSH_HINT} below className={styles.action}>
+              <Icon icon={CalendarDays} size="inline" />
+              Push to Calendar
+            </Unavailable>
+          </div>
+        </div>
+      </header>
+    ) : (
       <header className={styles.header}>
         <div className={styles.heading}>
           <p className={styles.kicker}>{label.week}</p>
@@ -296,6 +466,10 @@ function WeekBoard({ weekStart, timezone, onWeek }: { weekStart: string; timezon
           </IconButton>
         </div>
       </header>
+    )
+  return (
+    <>
+      {header}
       {body}
       {failure}
       <Confirm
@@ -312,27 +486,68 @@ function WeekBoard({ weekStart, timezone, onWeek }: { weekStart: string; timezon
   )
 }
 
-// PushToCalendar is "Looks good — push to Calendar", unavailable until
-// Google Calendar can be connected: it stays focusable, so a tap or focus
-// shows the tooltip saying why.
-function PushToCalendar() {
+// SyncStatus is the plan manager's status line: whether the plan is on
+// Google Calendar and, once synced, how long ago it was pushed, kept current
+// minute by minute.
+function SyncStatus({ plan }: { plan: Plan }) {
+  const { status, calendar_synced_at: syncedAt } = plan
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 60_000)
+    return () => clearInterval(timer)
+  }, [])
+  return (
+    <p className={[styles.status, status === 'synced' && styles.synced].filter(Boolean).join(' ')}>
+      {status === 'synced' && <Icon icon={Check} size="inline" />}
+      {syncStatuses[status]}
+      {status === 'synced' && syncedAt !== null && ` ${ago(syncedAt, now)}`}
+    </p>
+  )
+}
+
+// Unavailable is an action with nothing behind it yet (Push to Calendar, the
+// shopping list): it stays focusable, so a tap or focus shows the tooltip
+// saying why, above it or, at the top of the page, below.
+function Unavailable({
+  hint,
+  variant = 'primary',
+  below = false,
+  className,
+  children,
+}: {
+  hint: string
+  variant?: ButtonVariant
+  below?: boolean
+  className?: string
+  children: ReactNode
+}) {
   const hintId = useId()
   return (
-    <div className={styles.push}>
-      <Button className={styles.pushButton} aria-disabled="true" aria-describedby={hintId}>
-        Looks good — push to Calendar
+    <div className={[styles.unavailable, below && styles.below].filter(Boolean).join(' ')}>
+      <Button
+        variant={variant}
+        className={[className, styles[variant]].filter(Boolean).join(' ')}
+        aria-disabled="true"
+        aria-describedby={hintId}
+      >
+        {children}
       </Button>
       <span id={hintId} role="tooltip" className={styles.hint}>
-        {PUSH_HINT}
+        {hint}
       </span>
     </div>
   )
 }
 
-// PlanPage is mock 1f, the mobile Draft board, on the week chosen with the
-// previous / next week buttons. It opens on next week once this week's
-// plan_draft time has come in the household's zone, otherwise on this week.
+// PlanPage is the Draft board on the week chosen with the previous / next
+// week buttons: mock 1f on mobile; from tablet up the plan manager, with the
+// Quest log as a strip under the grid on tablet (2c) and the Quest log and
+// Regulars in a right panel on desktop (2d). It opens on next week once this
+// week's plan_draft time has come in the household's zone, otherwise on this
+// week. The board keeps its place in the tree across layouts, so crossing a
+// breakpoint keeps a draft being followed.
 export function PlanPage() {
+  const layout = useBreakpoint()
   const settings = useHouseholdSettings()
   const [week, setWeek] = useState<string | null>(null)
   if (week === null && settings.data) setWeek(defaultWeek(settings.data, new Date()))
@@ -343,9 +558,17 @@ export function PlanPage() {
       <ErrorBanner onRetry={() => void settings.refetch()}>Couldn't load the household settings. {settings.error.message}</ErrorBanner>
     )
   } else if (week === null || !settings.data) {
-    content = <SkeletonTiles label="Plan loading" />
+    content = <SkeletonTiles label="Plan loading" layout={layout} />
   } else {
-    content = <WeekBoard key={week} weekStart={week} timezone={settings.data.timezone} onWeek={setWeek} />
+    content = <WeekBoard key={week} weekStart={week} timezone={settings.data.timezone} layout={layout} onWeek={setWeek} />
   }
-  return <div className={styles.page}>{content}</div>
+  return (
+    <div className={`${styles.page} ${styles[`${layout}Page`]}`}>
+      <div className={styles.board}>
+        {content}
+        {layout === 'tablet' && <QuestLogStrip />}
+      </div>
+      {layout === 'desktop' && <PlanPanel />}
+    </div>
+  )
 }

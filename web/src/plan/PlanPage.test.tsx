@@ -1,5 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
@@ -8,10 +9,11 @@ import { HOUSEHOLD_SETTINGS } from '../test/ApiProviders.tsx'
 import { declaredStyle } from '../test/cssRules.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { mockViewport } from '../test/matchMedia.ts'
-import { PlanPage } from './PlanPage.tsx'
+import { ago, cooking, duration, PlanPage } from './PlanPage.tsx'
 
 const THIS_WEEK = '/api/v1/plans/2026-10-05'
 const NEXT_WEEK = '/api/v1/plans/2026-10-12'
+const PREVIOUS_WEEK = '/api/v1/plans/2026-09-28'
 const DRAFT = `${THIS_WEEK}/draft`
 const JOB = '/api/v1/jobs/j1'
 
@@ -21,7 +23,8 @@ const NAMES = ['Beef tacos', 'Spaghetti bolognese', 'Crock pot tikka masala', 'C
 // planBody is the plan of the week of Oct 5 as GET /api/v1/plans/{weekStart}
 // sends it: Wednesday's crock-pot tikka masala and Saturday's bowls are
 // Quest-log picks, and the tikka masala must start by 1:30 pm New York time
-// to be ready for 5:30 pm dinner.
+// to be ready for 5:30 pm dinner. Monday's tacos have a stored photo. A plan
+// pushed to Calendar was pushed two minutes before the tests' noon.
 function planBody(status: string, names = NAMES) {
   return {
     id: 'plan-1',
@@ -29,13 +32,13 @@ function planBody(status: string, names = NAMES) {
     week_label: 'Week 41 · Oct 5 – 11',
     status,
     ai_note: 'I mixed 5 of your regulars with 2 from your Quest log. Tap any day to swap it.',
-    calendar_synced_at: status === 'draft' ? null : '2026-10-04T15:00:00Z',
+    calendar_synced_at: status === 'draft' ? null : '2026-10-07T15:58:00Z',
     days: DAYS.map((date, i) => ({
       date,
       dinner: {
         id: `d${i}`,
         name: names[i],
-        photo: null,
+        photo: i === 0 ? '/media/photos/tacos-400.jpg' : null,
         minutes: i === 2 ? 240 : 30,
         method: i === 2 ? 'crockpot' : 'stovetop',
         origin: i === 2 || i === 5 ? 'side_quest' : 'regular',
@@ -55,6 +58,31 @@ function draftJob(status: string, error: string | null = null, planId = 'plan-1'
 }
 
 type Responder = (init: RequestInit | undefined) => Response | Promise<Response>
+
+const QUEST_LOG = '/api/v1/dinners?status=quest_log'
+const REGULARS = '/api/v1/dinners?status=regular'
+
+// dinner is a dinner as the dinners API lists it.
+function dinner(id: string, name: string, difficulty: string | null, minutes: number | null) {
+  return {
+    id,
+    name,
+    method: 'stovetop',
+    minutes_total: minutes,
+    difficulty,
+    is_favorite: false,
+    photo_url: null,
+    grounding_status: 'grounded',
+  }
+}
+
+// The Quest log has lemon orzo; the Regulars are Monday's tacos, already
+// this week, and fish tacos.
+const lists = {
+  [`GET ${QUEST_LOG}`]: () => jsonResponse(200, { dinners: [dinner('q1', 'Lemon orzo', 'easy', 25)] }),
+  [`GET ${REGULARS}`]: () =>
+    jsonResponse(200, { dinners: [dinner('d0', 'Beef tacos', 'easy', 30), dinner('r1', 'Fish tacos', 'medium', 35)] }),
+}
 
 // stubServer answers "METHOD path" requests from responders, with /me and
 // the household settings; any other request fails the test.
@@ -94,7 +122,9 @@ async function renderPage() {
   return render(
     <ApiProvider client={api}>
       <QueryClientProvider client={createQueryClient()}>
-        <PlanPage />
+        <MemoryRouter initialEntries={['/plan']}>
+          <PlanPage />
+        </MemoryRouter>
       </QueryClientProvider>
     </ApiProvider>,
   )
@@ -423,31 +453,7 @@ describe('PlanPage', () => {
   })
 
   describe('swap sheet', () => {
-    const QUEST_LOG = '/api/v1/dinners?status=quest_log'
-    const REGULARS = '/api/v1/dinners?status=regular'
     const FRIDAY = `${THIS_WEEK}/days/2026-10-09`
-
-    // dinner is a dinner as the dinners API lists it.
-    function dinner(id: string, name: string, difficulty: string | null, minutes: number | null) {
-      return {
-        id,
-        name,
-        method: 'stovetop',
-        minutes_total: minutes,
-        difficulty,
-        is_favorite: false,
-        photo_url: null,
-        grounding_status: 'grounded',
-      }
-    }
-
-    // The Quest log has lemon orzo; the Regulars are Monday's tacos, already
-    // this week, and fish tacos.
-    const lists = {
-      [`GET ${QUEST_LOG}`]: () => jsonResponse(200, { dinners: [dinner('q1', 'Lemon orzo', 'easy', 25)] }),
-      [`GET ${REGULARS}`]: () =>
-        jsonResponse(200, { dinners: [dinner('d0', 'Beef tacos', 'easy', 30), dinner('r1', 'Fish tacos', 'medium', 35)] }),
-    }
 
     // swappedBody is the plan as the server answers a swap of Friday to
     // lemon orzo, a Quest-log pick.
@@ -679,5 +685,362 @@ describe('PlanPage', () => {
       expect(await screen.findByText('Drafting your week…')).toBeInTheDocument()
       expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     })
+  })
+})
+
+describe.each([
+  { width: 768, layout: 'tablet', photoHeight: '96px', nameSize: '16px' },
+  { width: 1180, layout: 'tablet', photoHeight: '96px', nameSize: '16px' },
+  { width: 1440, layout: 'desktop', photoHeight: '110px', nameSize: '17px' },
+])('PlanPage at $width px (mocks 2c, 2d)', ({ width, layout, photoHeight, nameSize }) => {
+  beforeEach(() => mockViewport(width))
+
+  // column is the grid's column of a day, by its name: "Monday".
+  function column(day: string) {
+    return within(screen.getByRole('list', { name: 'Dinners this week' })).getByRole('listitem', { name: day })
+  }
+  // card is the card in a day's column, holding its dinner.
+  function card(day: string, dinnerName: string) {
+    return within(column(day)).getByText(dinnerName).parentElement!
+  }
+
+  it('renders the plan manager: header, actions, sync status and the 7-column grid', async () => {
+    const fetchMock = stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')), ...lists })
+    await renderPage()
+
+    expect(await screen.findByText('Beef tacos')).toBeInTheDocument()
+    expect(screen.getByText('Week 41 · Plan')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1, name: 'Oct 5 – 11' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Previous week' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Next week' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'This week' }) !== null).toBe(layout === 'desktop')
+
+    // Actions: the shopping list and Push to Calendar unavailable, saying
+    // why; Rebuild week outlined and working.
+    const shopping = screen.getByRole('button', { name: 'Shopping list' })
+    expect(shopping).toHaveAttribute('aria-disabled', 'true')
+    expect(shopping).toHaveAccessibleDescription('The shopping list arrives once the Supply run is built.')
+    const push = screen.getByRole('button', { name: 'Push to Calendar' })
+    expect(push).toHaveAttribute('aria-disabled', 'true')
+    expect(push).toHaveAccessibleDescription('Push to Calendar arrives once Google Calendar can be connected.')
+    expect(declaredStyle(push).background).toBe('var(--color-accent)')
+    const rebuild = screen.getByRole('button', { name: 'Rebuild week' })
+    expect(rebuild).toBeEnabled()
+    expect(declaredStyle(rebuild).borderColor).toBe('var(--color-neutral-300)')
+    fireEvent.click(shopping)
+    fireEvent.click(push)
+    expect(posts(fetchMock)).toEqual([])
+    // Mobile's own pieces are not shown.
+    expect(screen.queryByRole('button', { name: 'Looks good — push to Calendar' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Draft')).not.toBeInTheDocument()
+
+    expect(screen.getByText('Not pushed to Google Calendar yet')).toBeInTheDocument()
+
+    // Seven columns, Monday to Sunday, 12 px apart.
+    const grid = screen.getByRole('list', { name: 'Dinners this week' })
+    expect(declaredStyle(grid).gridTemplateColumns).toBe('repeat(7, minmax(112px, 1fr))')
+    expect(declaredStyle(grid).gap).toBe('12px')
+    expect(within(grid).getAllByRole('listitem').map((li) => li.getAttribute('aria-label'))).toEqual([
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+      'Sunday',
+    ])
+
+    // Monday: day label, the washed photo, the name in Bagel, method and
+    // minutes, and the Regular tag, on the surface.
+    expect(column('Monday')).toHaveTextContent(/^MON5/)
+    const monday = card('Monday', 'Beef tacos')
+    expect(declaredStyle(monday).background).toBe('var(--color-surface)')
+    const photo = within(monday).getByRole('img', { hidden: true, name: 'Beef tacos' })
+    expect(photo).toHaveAttribute('src', '/media/photos/tacos-400.jpg')
+    expect(declaredStyle(photo).height).toBe(photoHeight)
+    const name = within(monday).getByText('Beef tacos')
+    expect(declaredStyle(name).fontFamily).toBe('var(--font-heading)')
+    expect(declaredStyle(name).fontSize).toBe(nameSize)
+    // Testing Library reads the duration's no-break spaces as spaces.
+    expect(within(monday).getByText('Stovetop · 30 min')).toBeInTheDocument()
+    expect(declaredStyle(within(monday).getByText('Regular')).background).toBe('var(--color-neutral-100)')
+    expect(within(monday).queryByText(/Start by/)).not.toBeInTheDocument()
+
+    // Wednesday: a crock-pot Side quest on teal-200, with its start-by time.
+    const wednesday = card('Wednesday', 'Crock pot tikka masala')
+    expect(declaredStyle(wednesday).background).toBe('var(--color-accent-2-200)')
+    expect(within(wednesday).getByText('Crock pot · 4 hr')).toBeInTheDocument()
+    expect(within(wednesday).getByText('Start by 1:30 pm')).toBeInTheDocument()
+    expect(within(wednesday).getByText('Side quest')).toBeInTheDocument()
+    expect(within(column('Wednesday')).getByRole('button', { name: 'Swap Wednesday' })).toBeInTheDocument()
+  })
+
+  it('says a synced plan is on Google Calendar, and how long ago it was pushed', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(new Date('2026-10-07T16:00:00Z'))
+    stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('synced')), ...lists })
+    await renderPage()
+
+    const status = await screen.findByText('Synced to Google Calendar 2 min ago')
+    expect(declaredStyle(status).color).toBe('var(--color-accent-2-800)')
+    // The time is kept current.
+    act(() => vi.advanceTimersByTime(58 * 60_000))
+    expect(status).toHaveTextContent('Synced to Google Calendar 1 hr ago')
+  })
+
+  it('says changes to a pushed plan are not on Google Calendar', async () => {
+    stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('changed')), ...lists })
+    await renderPage()
+
+    expect(await screen.findByText('Changes not pushed to Google Calendar')).toBeInTheDocument()
+  })
+
+  if (layout === 'desktop') {
+    it('shows the Quest log and Regulars in the 290 px right panel', async () => {
+      stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')), ...lists })
+      await renderPage()
+
+      const panel = screen.getByRole('complementary', { name: 'Quest log and Regulars' })
+      expect(declaredStyle(panel).borderLeft).toBe('1px solid var(--color-divider)')
+      expect(declaredStyle(panel.parentElement!).gridTemplateColumns).toBe('minmax(0, 1fr) 290px')
+      expect(await within(panel).findByRole('radio', { name: 'Quest log · 1', checked: true })).toBeInTheDocument()
+      expect(await within(panel).findByRole('radio', { name: 'Regulars · 2' })).toBeInTheDocument()
+      expect(within(panel).getByText('Drag a dinner onto a day to swap it in.')).toBeInTheDocument()
+
+      const orzo = within(within(panel).getByRole('list', { name: 'Quest log' })).getByRole('listitem')
+      expect(within(orzo).getByText('Lemon orzo').nextElementSibling).toHaveTextContent('Easy')
+      expect(declaredStyle(within(orzo).getByRole('img', { hidden: true, name: 'Lemon orzo' })).width).toBe('48px')
+      // The 6-dot grip.
+      expect(orzo.lastElementChild!.children).toHaveLength(6)
+
+      fireEvent.click(within(panel).getByRole('radio', { name: 'Regulars · 2' }))
+      const regulars = within(within(panel).getByRole('list', { name: 'Regulars' })).getAllByRole('listitem')
+      expect(regulars).toHaveLength(2)
+      expect(within(regulars[0]!).getByText('Beef tacos').nextElementSibling).toHaveTextContent('Easy')
+      expect(within(regulars[1]!).getByText('Fish tacos').nextElementSibling).toHaveTextContent('Medium')
+
+      expect(within(panel).getByRole('link', { name: 'Swipe more side quests' })).toHaveAttribute('href', '/discover')
+      expect(screen.queryByRole('region', { name: 'Quest log' })).not.toBeInTheDocument()
+    })
+  } else {
+    it('shows the Quest log as a strip of chips under the grid', async () => {
+      stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')), ...lists })
+      await renderPage()
+
+      const strip = screen.getByRole('region', { name: 'Quest log' })
+      expect(await within(strip).findByRole('heading', { name: 'Quest log · 1' })).toBeInTheDocument()
+      expect(within(strip).getByText('Drag a dinner onto a day to swap it in.')).toBeInTheDocument()
+      const chip = within(within(strip).getByRole('list', { name: 'Quest log dinners' })).getByRole('listitem')
+      expect(chip).toHaveTextContent('Lemon orzo')
+      expect(declaredStyle(within(chip).getByRole('img', { hidden: true, name: 'Lemon orzo' })).width).toBe('28px')
+      // The strip follows the grid.
+      const grid = await screen.findByRole('list', { name: 'Dinners this week' })
+      expect(grid.compareDocumentPosition(strip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(screen.queryByRole('complementary')).not.toBeInTheDocument()
+    })
+  }
+
+  it('moves between weeks with the previous and next week buttons', async () => {
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      [`GET ${NEXT_WEEK}`]: () => errorResponse(404, 'not_found'),
+      [`GET ${PREVIOUS_WEEK}`]: () => errorResponse(404, 'not_found'),
+      ...lists,
+    })
+    await renderPage()
+
+    expect(await screen.findByText('Beef tacos')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Next week' }))
+    expect(await screen.findByRole('heading', { level: 1, name: 'Oct 12 – 18' })).toBeInTheDocument()
+    expect(screen.getByText('Week 42 · Plan')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Draft this week' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Previous week' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Previous week' }))
+    expect(await screen.findByRole('heading', { level: 1, name: 'Sep 28 – Oct 4' })).toBeInTheDocument()
+    expect(screen.getByText('Week 40 · Plan')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next week' }))
+    expect(await screen.findByRole('heading', { level: 1, name: 'Oct 5 – 11' })).toBeInTheDocument()
+    expect(await screen.findByText('Beef tacos')).toBeInTheDocument()
+  })
+
+  if (layout === 'desktop') {
+    it('comes back to this week with the "This week" pill', async () => {
+      stubServer({
+        [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+        [`GET ${NEXT_WEEK}`]: () => errorResponse(404, 'not_found'),
+        ...lists,
+      })
+      await renderPage()
+
+      expect(await screen.findByText('Beef tacos')).toBeInTheDocument()
+      const thisWeek = screen.getByRole('button', { name: 'This week' })
+      expect(declaredStyle(thisWeek).background).toBe('var(--color-surface)')
+      fireEvent.click(screen.getByRole('button', { name: 'Next week' }))
+      expect(await screen.findByRole('heading', { level: 1, name: 'Oct 12 – 18' })).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'This week' }))
+      expect(await screen.findByRole('heading', { level: 1, name: 'Oct 5 – 11' })).toBeInTheDocument()
+      expect(await screen.findByText('Beef tacos')).toBeInTheDocument()
+    })
+
+    it("comes back to this week even when the plan opened on next week's", async () => {
+      vi.setSystemTime(new Date('2026-10-09T13:00:00Z')) // Friday 09:00 in New York
+      stubServer({
+        [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+        [`GET ${NEXT_WEEK}`]: () => errorResponse(404, 'not_found'),
+        ...lists,
+      })
+      await renderPage()
+
+      expect(await screen.findByRole('heading', { level: 1, name: 'Oct 12 – 18' })).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'This week' }))
+      expect(await screen.findByRole('heading', { level: 1, name: 'Oct 5 – 11' })).toBeInTheDocument()
+    })
+  }
+
+  it("opens the swap sheet from a day's swap icon and swaps the dinner in", async () => {
+    const FRIDAY = `${THIS_WEEK}/days/2026-10-09`
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      ...lists,
+      [`PUT ${FRIDAY}`]: () => new Promise<Response>(() => undefined),
+    })
+    await renderPage()
+
+    fireEvent.click(within(await waitFor(() => column('Friday'))).getByRole('button', { name: 'Swap Friday' }))
+    const sheet = await screen.findByRole('dialog', { name: 'Swap Friday' })
+    expect(within(sheet).getByText('Replaces Pizza night')).toBeInTheDocument()
+    // The card being swapped is ringed in grape.
+    expect(declaredStyle(card('Friday', 'Pizza night')).boxShadow).toBe('inset 0 0 0 2px var(--color-accent)')
+
+    fireEvent.keyDown(sheet, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(declaredStyle(card('Friday', 'Pizza night')).boxShadow).toBe('')
+
+    fireEvent.click(within(column('Friday')).getByRole('button', { name: 'Swap Friday' }))
+    const again = await screen.findByRole('dialog', { name: 'Swap Friday' })
+    fireEvent.click(await within(again).findByRole('button', { name: /Lemon orzo/ }))
+
+    // Optimistic: the sheet is closed and Friday is the Side quest, on teal.
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    const friday = await waitFor(() => card('Friday', 'Lemon orzo'))
+    expect(within(friday).getByText('Side quest')).toBeInTheDocument()
+    expect(within(friday).getByText('Stovetop · 25 min')).toBeInTheDocument()
+    expect(declaredStyle(friday).background).toBe('var(--color-accent-2-200)')
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1))
+    // Rebuild week waits for the swap.
+    expect(screen.getByRole('button', { name: 'Rebuild week' })).toBeDisabled()
+  })
+
+  it.each(['synced', 'changed'])('asks before rebuilding a %s plan, and sends confirm', async (status) => {
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody(status)),
+      [`POST ${DRAFT}`]: () => jsonResponse(202, { jobId: 'j1' }),
+      [`GET ${JOB}`]: () => jsonResponse(200, draftJob('running')),
+      ...lists,
+    })
+    await renderPage()
+
+    await screen.findByText('Beef tacos')
+    fireEvent.click(screen.getByRole('button', { name: 'Rebuild week' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Rebuild this week?' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Keep this plan' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(posts(fetchMock)).toEqual([])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rebuild week' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Rebuild week' }))
+    await waitFor(() => expect(posts(fetchMock)).toEqual([`${DRAFT} {"confirm":true}`]))
+    expect(await screen.findByRole('region', { name: 'Drafting this week' })).toBeInTheDocument()
+    expect(screen.getAllByTestId('skeleton-tile')).toHaveLength(7)
+    expect(screen.getByRole('button', { name: 'Rebuild week' })).toBeDisabled()
+  })
+
+  it('rebuilds a draft at once', async () => {
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      [`POST ${DRAFT}`]: () => jsonResponse(202, { jobId: 'j1' }),
+      [`GET ${JOB}`]: () => jsonResponse(200, draftJob('running')),
+      ...lists,
+    })
+    await renderPage()
+
+    await screen.findByText('Beef tacos')
+    fireEvent.click(screen.getByRole('button', { name: 'Rebuild week' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    await waitFor(() => expect(posts(fetchMock)).toEqual([`${DRAFT} {}`]))
+  })
+})
+
+// At tablet's narrow end seven usable columns do not fit beside the rail:
+// the week keeps its columns usable and scrolls sideways.
+describe('PlanPage at 768 px', () => {
+  beforeEach(() => mockViewport(768))
+
+  it('keeps each day column usable and scrolls the week sideways', async () => {
+    stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')), ...lists })
+    await renderPage()
+
+    expect(await screen.findByText('Spaghetti bolognese')).toBeInTheDocument()
+    const grid = screen.getByRole('list', { name: 'Dinners this week' })
+    // Columns no narrower than 112 px; the week scrolls when seven do not
+    // fit, its padding keeping the swap icons' hit boxes inside.
+    expect(declaredStyle(grid).gridTemplateColumns).toBe('repeat(7, minmax(112px, 1fr))')
+    expect(declaredStyle(grid).overflowX).toBe('auto')
+    expect(declaredStyle(grid).padding).toBe('8px')
+    expect(declaredStyle(grid).margin).toBe('-8px')
+
+    const tuesday = within(grid).getByRole('listitem', { name: 'Tuesday' })
+    // The name wraps between words, only breaking a word wider than the card.
+    const name = within(tuesday).getByText('Spaghetti bolognese')
+    expect(declaredStyle(name).overflowWrap).toBe('break-word')
+    expect(declaredStyle(name).hyphens).toBe('')
+    // The swap icon stays beside the tag.
+    const footer = within(tuesday).getByRole('button', { name: 'Swap Tuesday' }).parentElement!
+    expect(within(footer).getByText('Regular')).toBeInTheDocument()
+    expect(declaredStyle(footer).display).toBe('flex')
+    expect(declaredStyle(footer).flexWrap).toBe('')
+    // Every piece of the card is still there.
+    expect(within(tuesday).getByRole('img', { hidden: true, name: 'Spaghetti bolognese' })).toBeInTheDocument()
+    expect(within(tuesday).getByText('Stovetop · 30 min')).toBeInTheDocument()
+    expect(within(within(grid).getByRole('listitem', { name: 'Wednesday' })).getByText('Start by 1:30 pm')).toBeInTheDocument()
+  })
+})
+
+describe('duration', () => {
+  it.each([
+    [25, '25\u00a0min'],
+    [60, '1\u00a0hr'],
+    [90, '1\u00a0hr\u00a030\u00a0min'],
+    [360, '6\u00a0hr'],
+  ])('says %i minutes as %j', (minutes, said) => {
+    expect(duration(minutes)).toBe(said)
+  })
+})
+
+describe('cooking', () => {
+  const dinner = { id: 'd1', name: 'Tikka masala', photo_id: undefined }
+  it.each([
+    [{ method: 'crockpot' as const, minutes: 360 }, 'Crock pot · 6\u00a0hr'],
+    [{ method: 'crockpot' as const, minutes: null }, 'Crock pot'],
+    [{ method: null, minutes: 45 }, '45\u00a0min'],
+    [{ method: null, minutes: null }, null],
+  ])('says %o as %j', (known, said) => {
+    expect(cooking({ ...dinner, ...known })).toBe(said)
+  })
+})
+
+describe('ago', () => {
+  const now = new Date('2026-10-07T16:00:00Z')
+  it.each([
+    ['2026-10-07T15:59:30Z', 'just now'],
+    ['2026-10-07T15:58:00Z', '2 min ago'],
+    ['2026-10-07T13:00:00Z', '3 hr ago'],
+    ['2026-10-06T15:00:00Z', '1 day ago'],
+    ['2026-10-04T15:00:00Z', '3 days ago'],
+  ])('says %s as %j', (at, said) => {
+    expect(ago(new Date(at), now)).toBe(said)
   })
 })

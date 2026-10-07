@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
@@ -301,11 +302,32 @@ func drop(q SideQuest, regulars regularNames, known *harness.Deduper, kept []Sid
 	if n := utf8.RuneCountInString(q.Reason); n > ReasonLimit {
 		return nil, fmt.Sprintf("reason has %d characters, over %d", n, ReasonLimit)
 	}
-	reason := " " + harness.Normalize(q.Reason) + " "
-	if !slices.ContainsFunc(cited, func(name string) bool {
-		return strings.Contains(reason, " "+harness.Normalize(name)+" ")
-	}) {
+	named := regulars.named(q.Reason)
+	if !slices.ContainsFunc(cited, func(name string) bool { return slices.Contains(named, name) }) {
 		return nil, "reason names none of its cited Regulars"
 	}
 	return cited, ""
+}
+
+// named returns the Regulars text names, each found by find. Reading from
+// the left, the longest run of words find takes for one Regular, its outer
+// punctuation trimmed, is the Regular named there; a run naming several
+// Regulars names none. So "Your Easy Beef Chili." names "Easy Beef Chili"
+// and not "Beef Chili".
+func (r regularNames) named(text string) []string {
+	words := strings.Fields(text)
+	var names []string
+	for i := 0; i < len(words); i++ {
+		for j := len(words); j > i; j-- {
+			run := strings.TrimFunc(strings.Join(words[i:j], " "), func(c rune) bool {
+				return !unicode.IsLetter(c) && !unicode.IsDigit(c)
+			})
+			if name, why := r.find(run); why == "" {
+				names = append(names, name)
+				i = j - 1
+				break
+			}
+		}
+	}
+	return names
 }

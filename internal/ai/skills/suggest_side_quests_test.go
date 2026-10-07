@@ -200,6 +200,32 @@ func TestSuggestSideQuestsSharedNormalizedRegularNotRewritten(t *testing.T) {
 	})
 }
 
+func TestSuggestSideQuestsReasonNamesResolvedRegular(t *testing.T) {
+	in := household
+	in.Context.Regulars = append(slices.Clone(household.Context.Regulars),
+		harness.RegularDinner{Name: "Easy Beef Chili", Cuisine: "Tex-Mex", Method: "stovetop", Minutes: 30})
+	other := sideQuest("Chili Verde", "Your Beef Chili gone green, with pork and tomatillos.", "Easy Beef Chili")
+	easy := sideQuest("Frito Pie", "Your Easy Beef Chili over corn chips.", "Easy Beef Chili")
+	plain := sideQuest("Chili Mac", "The Beef Chili, not the Easy Beef Chili, over macaroni.", "Beef Chili")
+	inside := sideQuest("Tamale Bake", "Your Easy Beef Chili under a cornbread crust.", "Beef Chili")
+	var f llm.Fake
+	f.QueueGenerate(reply(batch(other, easy, plain, inside)))
+	out, _, err := suggest(t, &f, in, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSideQuests(t, out, SideQuests{
+		Suggestions: []SideQuest{
+			want("Frito Pie", "Your Easy Beef Chili over corn chips.", "Easy Beef Chili"),
+			want("Chili Mac", "The Beef Chili, not the Easy Beef Chili, over macaroni.", "Beef Chili"),
+		},
+		Dropped: []DroppedSideQuest{
+			{Name: "Chili Verde", Why: "reason names none of its cited Regulars"},
+			{Name: "Tamale Bake", Why: "reason names none of its cited Regulars"},
+		},
+	})
+}
+
 func TestSuggestSideQuestsDuplicatesDropped(t *testing.T) {
 	declined := sideQuest("The Best Homemade Chicken Tikka-Masala", "Spiced like your Chicken Fajitas.", "Chicken Fajitas")
 	oldDeclined := sideQuest("Fish Tacos!", "Tortillas like your Chicken Fajitas.", "Chicken Fajitas")

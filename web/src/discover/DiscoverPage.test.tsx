@@ -8,6 +8,7 @@ import { declaredStyle } from '../test/cssRules.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
 import { mockViewport } from '../test/matchMedia.ts'
+import { DECK_KEY } from './api.ts'
 import { DiscoverPage } from './DiscoverPage.tsx'
 
 const DECK = '/api/v1/suggestions/deck'
@@ -41,16 +42,16 @@ const ORZO = suggestionBody('s3', 'Lemon garlic shrimp orzo', { difficulty: 'har
 type Responder = () => Response | Promise<Response>
 
 // stubServer stands in for the API: GET of the deck answers the current
-// server.deck and the Quest log has questLog dinners; every other request
-// is answered by responders, keyed "METHOD path". Any other request fails
-// the test.
+// server.deck and the Quest log the current server.questLog dinners; every
+// other request is answered by responders, keyed "METHOD path". Any other
+// request fails the test.
 function stubServer(deck: unknown[], responders: Record<string, Responder> = {}, questLog = 6) {
-  const server = { deck, fetchMock: undefined as unknown as Mock<typeof fetch> }
+  const server = { deck, questLog, fetchMock: undefined as unknown as Mock<typeof fetch> }
   const all: Record<string, Responder> = {
     'GET /api/v1/me': () => jsonResponse(200, ME),
     [`GET ${DECK}`]: () => jsonResponse(200, { suggestions: server.deck }),
     [`GET ${QUEST_LOG}`]: () =>
-      jsonResponse(200, { dinners: Array.from({ length: questLog }, (_, i) => ({ id: `q${i}`, name: `Quest ${i}` })) }),
+      jsonResponse(200, { dinners: Array.from({ length: server.questLog }, (_, i) => ({ id: `q${i}`, name: `Quest ${i}` })) }),
     ...responders,
   }
   server.fetchMock = vi.fn<typeof fetch>((input, init) => {
@@ -68,6 +69,11 @@ function sent(fetchMock: Mock<typeof fetch>) {
   return fetchMock.mock.calls
     .filter(([, init]) => (init?.method ?? 'GET') !== 'GET')
     .map(([input, init]) => `${init?.method} ${String(input)}`)
+}
+
+// deckReads counts the GET /api/v1/suggestions/deck requests.
+function deckReads(fetchMock: Mock<typeof fetch>) {
+  return fetchMock.mock.calls.filter(([input, init]) => (init?.method ?? 'GET') === 'GET' && String(input) === DECK).length
 }
 
 // jobPolls counts the GET /api/v1/jobs/j1 requests.
@@ -97,13 +103,13 @@ async function finishRunning(animations: FakeAnimation[]) {
 }
 
 // renderPage loads /me (for the CSRF token every write needs) and renders
-// the Discover page.
-async function renderPage() {
+// the Discover page with queryClient.
+async function renderPage(queryClient = createQueryClient()) {
   const api = createApiClient(fakeLocation('/discover'), createNetworkStatus(window), createVerifiedSession(localStorage))
   await api.loadMe()
   return render(
     <ApiProvider client={api}>
-      <QueryClientProvider client={createQueryClient()}>
+      <QueryClientProvider client={queryClient}>
         <DiscoverPage />
       </QueryClientProvider>
     </ApiProvider>,
@@ -503,6 +509,663 @@ describe('DiscoverPage', () => {
     expect(alert).toHaveTextContent("Couldn't find new side quests. GET /api/v1/jobs/j1: result is not a suggestion batch")
     expect(within(alert).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'All caught up' })).toBeInTheDocument()
+  })
+
+  describe('optimistic decisions', () => {
+    const PAELLA = suggestionBody('s4', 'Sheet pan paella')
+    const SOUP = suggestionBody('s5', 'Tortellini soup')
+    const accepted = (quest: typeof BOWLS, replenish: string | null = null) =>
+      jsonResponse(200, { suggestion: { ...quest, status: 'accepted' }, replenish_job_id: replenish })
+    const declined = (quest: typeof BOWLS) => jsonResponse(200, { suggestion: { ...quest, status: 'declined' }, replenish_job_id: null })
+    // topCard is the deck's top card, the one read out.
+    const topCard = () => screen.getAllByRole('article')[0]
+
+    it('Try it takes the card off the deck and bumps the Quest log count once the exit finishes, before the answer', async () => {
+      const accept = deferred()
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], { 'POST /api/v1/suggestions/s1/accept': () => accept.promise })
+      const animations = stubAnimate({ autoFinish: false })
+      await renderPage()
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+      await screen.findByText('Quest log · 6')
+
+      // Nothing is applied on the press: the card is still leaving.
+      fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+      expect(screen.getByRole('article', { name: 'Korean beef bowls' })).toBeInTheDocument()
+      expect(screen.getByText('Quest log · 6')).toBeInTheDocument()
+      expect(sent(server.fetchMock)).toEqual([])
+
+      // Once it is gone the decision is applied, and sent.
+      await finishRunning(animations)
+      await finishRunning(animations)
+      await screen.findByText('Quest log · 7')
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+      expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument()
+      expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept'])
+      expect(screen.getByRole('button', { name: 'Try it' })).toBeDisabled()
+
+      server.deck = [TIKKA, ORZO, PAELLA]
+      server.questLog = 7
+      accept.resolve(accepted(BOWLS))
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Try it' })).toBeEnabled())
+      expect(screen.getByText('Quest log · 7')).toBeInTheDocument()
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+      // The deck is read again once the decision is saved.
+      expect(deckReads(server.fetchMock)).toBe(2)
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+
+    it('Pass takes the card off the deck before the answer, leaving the Quest log count', async () => {
+      const decline = deferred()
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], { 'POST /api/v1/suggestions/s1/decline': () => decline.promise })
+      await renderPage()
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+      await screen.findByText('Quest log · 6')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Pass' }))
+      await waitFor(() => expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala'))
+      expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument()
+      expect(screen.getByText('Quest log · 6')).toBeInTheDocument()
+      expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/decline'])
+
+      server.deck = [TIKKA, ORZO, PAELLA]
+      decline.resolve(declined(BOWLS))
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Pass' })).toBeEnabled())
+      expect(screen.getByText('Quest log · 6')).toBeInTheDocument()
+      expect(deckReads(server.fetchMock)).toBe(2)
+    })
+
+    it('puts a refused Try it back on top of the deck, reverts the Quest log count and offers Retry', async () => {
+      const accept = deferred()
+      let refuse = true
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], {
+        'POST /api/v1/suggestions/s1/accept': () => (refuse ? accept.promise : accepted(BOWLS)),
+      })
+      await renderPage()
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+      await screen.findByText('Quest log · 6')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+      await screen.findByText('Quest log · 7')
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+
+      // The server refuses the request itself: the deck read again after it
+      // still has the Side quest pending, in the server's order.
+      server.deck = [TIKKA, BOWLS, ORZO, PAELLA]
+      accept.resolve(errorResponse(400, 'invalid_request'))
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent("Couldn't save that choice.")
+      expect(topCard()).toHaveAccessibleName('Korean beef bowls')
+      expect(deckReads(server.fetchMock)).toBe(2)
+      expect(screen.getAllByRole('article', { hidden: true }).map((card) => card.querySelector('h2')!.textContent)).toEqual([
+        'Korean beef bowls',
+        'Crock pot chicken tikka masala',
+        'Lemon garlic shrimp orzo',
+      ])
+      expect(screen.getByText('Quest log · 6')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Try it' })).toBeEnabled()
+
+      // Retry sends the same decision again, applied again at once.
+      refuse = false
+      server.deck = [TIKKA, ORZO, PAELLA]
+      server.questLog = 7
+      fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+      await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+      expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept', 'POST /api/v1/suggestions/s1/accept'])
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+      expect(screen.getByText('Quest log · 7')).toBeInTheDocument()
+    })
+
+    it('keeps a saved decision off the deck when a read started during it answers late', async () => {
+      const decline = deferred()
+      let late: ReturnType<typeof deferred> | null = null
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], {
+        'POST /api/v1/suggestions/s1/decline': () => decline.promise,
+        [`GET ${DECK}`]: () => late?.promise ?? jsonResponse(200, { suggestions: server.deck }),
+      })
+      const queryClient = createQueryClient()
+      await renderPage(queryClient)
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Pass' }))
+      await waitFor(() => expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/decline']))
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+
+      // A read of the deck starts before the decision is saved, and answers
+      // only after: with the Side quest still pending.
+      late = deferred()
+      const stale = late
+      await act(async () => void queryClient.invalidateQueries({ queryKey: DECK_KEY }))
+      expect(deckReads(server.fetchMock)).toBe(2)
+      late = null
+      server.deck = [TIKKA, ORZO, PAELLA]
+      decline.resolve(declined(BOWLS))
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Pass' })).toBeEnabled())
+      await act(async () => stale.resolve(jsonResponse(200, { suggestions: [BOWLS, TIKKA, ORZO, PAELLA] })))
+
+      // The late answer is dropped, and the deck is read again after the save.
+      await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)))
+      expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument()
+      await waitFor(() => expect(deckReads(server.fetchMock)).toBe(3))
+      expect(screen.getAllByRole('article', { hidden: true }).map((card) => card.querySelector('h2')!.textContent)).toEqual([
+        'Crock pot chicken tikka masala',
+        'Lemon garlic shrimp orzo',
+        'Sheet pan paella',
+      ])
+    })
+
+    it('keeps the card off the deck while its decision is unanswered when a read of the deck lands with it still pending, then reads the deck again once it is saved', async () => {
+      const decline = deferred()
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], { 'POST /api/v1/suggestions/s1/decline': () => decline.promise })
+      const queryClient = createQueryClient()
+      await renderPage(queryClient)
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Pass' }))
+      await waitFor(() => expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/decline']))
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+
+      // A read of the deck lands before the decision is saved, with the Side
+      // quest still pending: the card stays off the deck.
+      await act(async () => await queryClient.refetchQueries({ queryKey: DECK_KEY }))
+      await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)))
+      expect(deckReads(server.fetchMock)).toBe(2)
+      expect(queryClient.getQueryData<{ id: string }[]>(DECK_KEY)?.map((q) => q.id)).toEqual(['s1', 's2', 's3', 's4'])
+      expect(screen.getAllByRole('article', { hidden: true }).map((card) => card.querySelector('h2')!.textContent)).toEqual([
+        'Crock pot chicken tikka masala',
+        'Lemon garlic shrimp orzo',
+        'Sheet pan paella',
+      ])
+
+      // Once it is saved, the deck read after it is the deck shown.
+      server.deck = [TIKKA, ORZO, PAELLA]
+      decline.resolve(declined(BOWLS))
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Pass' })).toBeEnabled())
+      expect(deckReads(server.fetchMock)).toBe(3)
+      expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument()
+      expect(screen.getAllByRole('article', { hidden: true }).map((card) => card.querySelector('h2')!.textContent)).toEqual([
+        'Crock pot chicken tikka masala',
+        'Lemon garlic shrimp orzo',
+        'Sheet pan paella',
+      ])
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+
+    it('keeps the card off the deck while its decision is unanswered when a read of the deck lands with it still pending, then puts it back on top with a Retry once it is refused', async () => {
+      const accept = deferred()
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], { 'POST /api/v1/suggestions/s1/accept': () => accept.promise })
+      const queryClient = createQueryClient()
+      await renderPage(queryClient)
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+      await waitFor(() => expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept']))
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+
+      // A read of the deck lands mid-decision, in the server's order.
+      server.deck = [TIKKA, BOWLS, ORZO, PAELLA]
+      await act(async () => await queryClient.refetchQueries({ queryKey: DECK_KEY }))
+      await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)))
+      expect(deckReads(server.fetchMock)).toBe(2)
+      expect(screen.getAllByRole('article', { hidden: true }).map((card) => card.querySelector('h2')!.textContent)).toEqual([
+        'Crock pot chicken tikka masala',
+        'Lemon garlic shrimp orzo',
+        'Sheet pan paella',
+      ])
+
+      // The server refuses it; the deck read after it still has it pending.
+      accept.resolve(errorResponse(400, 'invalid_request'))
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent("Couldn't save that choice.")
+      expect(within(alert).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+      expect(deckReads(server.fetchMock)).toBe(3)
+      expect(screen.getAllByRole('article', { hidden: true }).map((card) => card.querySelector('h2')!.textContent)).toEqual([
+        'Korean beef bowls',
+        'Crock pot chicken tikka masala',
+        'Lemon garlic shrimp orzo',
+      ])
+    })
+
+    it('leaves the Quest log count alone for a dinner already in it, on Try it and on its refusal', async () => {
+      const accept = deferred()
+      stubServer([BOWLS, TIKKA, ORZO, PAELLA], {
+        'POST /api/v1/suggestions/s1/accept': () => accept.promise,
+        // A read of the Quest log already has the dinner the stale deck offers.
+        [`GET ${QUEST_LOG}`]: () =>
+          jsonResponse(200, {
+            dinners: [
+              { id: 'q0', name: 'Quest 0' },
+              { id: 'dinner-s1', name: 'Korean beef bowls' },
+            ],
+          }),
+      })
+      await renderPage()
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+      await screen.findByText('Quest log · 2')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+      await waitFor(() => expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala'))
+      expect(screen.getByText('Quest log · 2')).toBeInTheDocument()
+
+      accept.resolve(errorResponse(500, 'internal'))
+      await screen.findByRole('alert')
+      expect(topCard()).toHaveAccessibleName('Korean beef bowls')
+      expect(screen.getByText('Quest log · 2')).toBeInTheDocument()
+    })
+
+    it('takes out of the Quest log only the entry a refused Try it added, after a read of the Quest log lands during it', async () => {
+      const accept = deferred()
+      const questLog = [{ id: 'q0', name: 'Quest 0' }]
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], {
+        'POST /api/v1/suggestions/s1/accept': () => accept.promise,
+        [`GET ${QUEST_LOG}`]: () => jsonResponse(200, { dinners: questLog }),
+      })
+      const queryClient = createQueryClient()
+      await renderPage(queryClient)
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+      await screen.findByText('Quest log · 1')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+      await waitFor(() => expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept']))
+      expect(screen.getByText('Quest log · 2')).toBeInTheDocument()
+
+      // The decision is saved, and a read of the Quest log lands with its
+      // dinner in it; then the answer to the decision is lost.
+      questLog.push({ id: 'dinner-s1', name: 'Korean beef bowls' })
+      await act(async () => await queryClient.invalidateQueries({ queryKey: ['dinners', 'quest_log'] }))
+      accept.resolve(errorResponse(500, 'internal'))
+      await screen.findByRole('alert')
+      expect(screen.getByText('Quest log · 2')).toBeInTheDocument()
+      // The answer was lost, so the Quest log is read again.
+      const questLogReads = () => server.fetchMock.mock.calls.filter(([input]) => String(input) === QUEST_LOG).length
+      await waitFor(() => expect(questLogReads()).toBe(3))
+      expect(screen.getByText('Quest log · 2')).toBeInTheDocument()
+    })
+
+    it('sends a decision for the card thrown out even when a read of the deck took it away during the exit, offering no Retry for it', async () => {
+      const server = stubServer([BOWLS], {
+        'POST /api/v1/suggestions/s1/accept': () => errorResponse(500, 'internal'),
+      })
+      const queryClient = createQueryClient()
+      const animations = stubAnimate({ autoFinish: false })
+      await renderPage(queryClient)
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      // While the card leaves, a read of the deck takes the last card away.
+      fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+      server.deck = []
+      await act(async () => await queryClient.invalidateQueries({ queryKey: DECK_KEY }))
+      await screen.findByRole('heading', { name: 'All caught up' })
+
+      await finishRunning(animations)
+      await finishRunning(animations)
+      const alert = await screen.findByRole('alert')
+      expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept'])
+      // The deck read after it confirms the Side quest is decided: the card
+      // is not put back, and there is nothing to retry.
+      expect(alert).toHaveTextContent('That side quest has been decided already.')
+      expect(within(alert).queryByRole('button')).not.toBeInTheDocument()
+      expect(screen.queryByRole('article')).not.toBeInTheDocument()
+      expect(screen.getByRole('heading', { name: 'All caught up' })).toBeInTheDocument()
+    })
+
+    it('keeps a card off the deck when a read during its decision left it out and the answer is lost, and reads the deck again', async () => {
+      let lose!: (error: Error) => void
+      const accept = new Promise<Response>((_, reject) => (lose = reject))
+      let late: ReturnType<typeof deferred> | null = null
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], {
+        'POST /api/v1/suggestions/s1/accept': () => accept,
+        [`GET ${DECK}`]: () => late?.promise ?? jsonResponse(200, { suggestions: server.deck }),
+      })
+      const queryClient = createQueryClient()
+      await renderPage(queryClient)
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+      await waitFor(() => expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept']))
+
+      // The decision is saved, and a read of the deck started during it
+      // answers without the Side quest; then the answer to the decision is
+      // lost on the way back.
+      late = deferred()
+      const delayed = late
+      await act(async () => void queryClient.invalidateQueries({ queryKey: DECK_KEY }))
+      late = null
+      server.deck = [TIKKA, ORZO, PAELLA]
+      await act(async () => delayed.resolve(jsonResponse(200, { suggestions: server.deck })))
+      const reads = deckReads(server.fetchMock)
+      await act(async () => lose(new TypeError('Failed to fetch')))
+
+      await screen.findByRole('alert')
+      expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument()
+      // The decision may have been saved: the deck is read again.
+      await waitFor(() => expect(deckReads(server.fetchMock)).toBe(reads + 1))
+      expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument()
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+    })
+
+    it('keeps a card off the deck when another session already decided it (409), and reads the deck again', async () => {
+      const accept = deferred()
+      let read: ReturnType<typeof deferred> | null = null
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], {
+        'POST /api/v1/suggestions/s1/accept': () => accept.promise,
+        [`GET ${DECK}`]: () => read?.promise ?? jsonResponse(200, { suggestions: server.deck }),
+      })
+      await renderPage()
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+      await waitFor(() => expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept']))
+
+      // Another session passed on it first; no read of the deck lands
+      // during the decision.
+      read = deferred()
+      const pending = read
+      server.deck = [TIKKA, ORZO, PAELLA]
+      await act(async () => accept.resolve(errorResponse(409, 'suggestion_decided')))
+      await waitFor(() => expect(deckReads(server.fetchMock)).toBe(2))
+      expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument()
+      // The decision is not over until that read lands.
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Try it' })).toBeDisabled()
+
+      await act(async () => pending.resolve(jsonResponse(200, { suggestions: server.deck })))
+      const alert = await screen.findByRole('alert')
+      expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument()
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+      // It was decided: there is no decision to retry.
+      expect(alert).toHaveTextContent('That side quest has been decided already.')
+      expect(within(alert).queryByRole('button')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Try it' })).toBeEnabled()
+    })
+
+    it('reads the Quest log again after a Pass another session beat with Try it (409), counting its dinner', async () => {
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], {
+        'POST /api/v1/suggestions/s1/decline': () => {
+          // Another session tried it first: its dinner is in the Quest log.
+          server.deck = [TIKKA, ORZO, PAELLA]
+          server.questLog = 7
+          return errorResponse(409, 'suggestion_decided')
+        },
+      })
+      await renderPage()
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+      await screen.findByText('Quest log · 6')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Pass' }))
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent('That side quest has been decided already.')
+      expect(screen.getByText('Quest log · 7')).toBeInTheDocument()
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+    })
+
+    it('locks the next decision until the reads after a failed one land, then puts the still-pending card back on top with a Retry', async () => {
+      let read: ReturnType<typeof deferred> | null = null
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], {
+        'POST /api/v1/suggestions/s1/accept': () => {
+          read = deferred()
+          return errorResponse(500, 'internal')
+        },
+        [`GET ${DECK}`]: () => read?.promise ?? jsonResponse(200, { suggestions: server.deck }),
+      })
+      await renderPage()
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      // The decision failed and was not saved; the deck read after it is slow.
+      fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+      await waitFor(() => expect(deckReads(server.fetchMock)).toBe(2))
+      const slow = read!
+      read = null
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+
+      // Deciding the next card does nothing while that read is out.
+      expect(screen.getByRole('button', { name: 'Pass' })).toBeDisabled()
+      fireEvent.click(screen.getByRole('button', { name: 'Pass' }))
+      fireEvent.keyDown(window, { key: 'ArrowLeft' })
+      await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)))
+      expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept'])
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+
+      await act(async () => slow.resolve(jsonResponse(200, { suggestions: server.deck })))
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent("Couldn't save that choice.")
+      expect(topCard()).toHaveAccessibleName('Korean beef bowls')
+      expect(screen.getByRole('button', { name: 'Try it' })).toBeEnabled()
+
+      // Retry sends it again.
+      fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+      await waitFor(() => expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept', 'POST /api/v1/suggestions/s1/accept']))
+    })
+
+    it('settles a failed decision on its own read of the deck when a batch poll reads the deck again during it', async () => {
+      const job = (suggestionIds: string[]) =>
+        jsonResponse(200, {
+          id: 'j1',
+          kind: 'suggestion_batch',
+          status: 'running',
+          result: { batch_id: 'b1', stage: 'suggesting', suggestion_ids: suggestionIds, dropped: 0 },
+          error: null,
+        })
+      let poll: ReturnType<typeof deferred> | null = null
+      let read: ReturnType<typeof deferred> | null = null
+      let refuse = true
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], {
+        'POST /api/v1/suggestions/s1/decline': () => {
+          server.deck = [TIKKA, ORZO, PAELLA]
+          return jsonResponse(200, { suggestion: { ...BOWLS, status: 'declined' }, replenish_job_id: 'j1' })
+        },
+        'POST /api/v1/suggestions/s2/accept': () => {
+          if (!refuse) return accepted(TIKKA)
+          read = deferred()
+          return errorResponse(500, 'internal')
+        },
+        'GET /api/v1/jobs/j1': () => poll?.promise ?? job([]),
+        [`GET ${DECK}`]: () => read?.promise ?? jsonResponse(200, { suggestions: server.deck }),
+      })
+      const queryClient = createQueryClient()
+      await renderPage(queryClient)
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      // A Pass starts a replenish batch, whose job is polled.
+      fireEvent.click(screen.getByRole('button', { name: 'Pass' }))
+      await waitFor(() => expect(jobPolls(server.fetchMock)).toBe(1))
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Try it' })).toBeEnabled())
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+      poll = deferred()
+      const polled = poll
+      await waitFor(() => expect(jobPolls(server.fetchMock)).toBe(2), { timeout: 2000 })
+
+      // Try it fails without being saved; the deck read it makes is slow.
+      const reads = deckReads(server.fetchMock)
+      fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+      await waitFor(() => expect(deckReads(server.fetchMock)).toBe(reads + 1))
+      const reconciling = read!
+      read = deferred()
+      const after = read
+      expect(screen.getByRole('button', { name: 'Try it' })).toBeDisabled()
+
+      // The batch stores a Side quest while that read is out: its read of
+      // the deck waits for the decision's rather than replacing it.
+      const SOUP = suggestionBody('s5', 'Tortellini soup')
+      server.deck = [TIKKA, ORZO, PAELLA, SOUP]
+      await act(async () => polled.resolve(job(['s5'])))
+      await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)))
+      expect(deckReads(server.fetchMock)).toBe(reads + 1)
+      expect(screen.getByRole('button', { name: 'Try it' })).toBeDisabled()
+
+      // The decision's read has the Side quest still pending: the card goes
+      // back on top with a Retry, and the decision settles on that read.
+      await act(async () => reconciling.resolve(jsonResponse(200, { suggestions: server.deck })))
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Try it' })).toBeEnabled())
+      const alert = screen.getByRole('alert')
+      expect(alert).toHaveTextContent("Couldn't save that choice.")
+      expect(within(alert).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+
+      // The batch's read goes out after it, and brings its Side quest.
+      await waitFor(() => expect(deckReads(server.fetchMock)).toBe(reads + 2))
+      read = null
+      await act(async () => after.resolve(jsonResponse(200, { suggestions: server.deck })))
+      await waitFor(() => expect(queryClient.getQueryData<{ id: string }[]>(DECK_KEY)?.map((q) => q.id)).toEqual(['s2', 's3', 's4', 's5']))
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+
+      // Retry sends it again.
+      refuse = false
+      fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+      await waitFor(() =>
+        expect(sent(server.fetchMock)).toEqual([
+          'POST /api/v1/suggestions/s1/decline',
+          'POST /api/v1/suggestions/s2/accept',
+          'POST /api/v1/suggestions/s2/accept',
+        ]),
+      )
+    })
+
+    it('does not put a failed decision back on the deck when a later read, landing before it settles, has it decided', async () => {
+      let log: ReturnType<typeof deferred> | null = null
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], {
+        'POST /api/v1/suggestions/s1/accept': () => {
+          log = deferred()
+          return errorResponse(500, 'internal')
+        },
+        [`GET ${QUEST_LOG}`]: () => log?.promise ?? jsonResponse(200, { dinners: [] }),
+      })
+      const queryClient = createQueryClient()
+      await renderPage(queryClient)
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      // The decision fails; the deck read after it still has the Side quest
+      // pending, and the Quest log read after it is slow.
+      fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+      await waitFor(() => expect(log).not.toBeNull())
+      const slow = log!
+      log = null
+      await waitFor(() => expect(deckReads(server.fetchMock)).toBe(2))
+
+      // Another session decides it, and a read of the deck lands meanwhile.
+      server.deck = [TIKKA, ORZO, PAELLA]
+      await act(async () => await queryClient.refetchQueries({ queryKey: DECK_KEY }))
+      await act(async () => slow.resolve(jsonResponse(200, { dinners: [] })))
+
+      const alert = await screen.findByRole('alert')
+      expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument()
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+      expect(alert).toHaveTextContent('That side quest has been decided already.')
+      expect(within(alert).queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+    })
+
+    it('withdraws the Retry for a failed decision once a later read of the deck has it decided', async () => {
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], {
+        'POST /api/v1/suggestions/s1/accept': () => errorResponse(500, 'internal'),
+      })
+      const queryClient = createQueryClient()
+      await renderPage(queryClient)
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+      const alert = await screen.findByRole('alert')
+      expect(within(alert).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+      expect(topCard()).toHaveAccessibleName('Korean beef bowls')
+
+      // Another session decides it, and the next read of the deck says so.
+      server.deck = [TIKKA, ORZO, PAELLA]
+      await act(async () => await queryClient.refetchQueries({ queryKey: DECK_KEY }))
+      await waitFor(() => expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala'))
+      expect(screen.getByRole('alert')).toHaveTextContent('That side quest has been decided already.')
+      expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+    })
+
+    it('reads the deck again after a 500 to a decision, rather than putting the card back', async () => {
+      const decline = deferred()
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], {
+        'POST /api/v1/suggestions/s1/decline': () => decline.promise,
+      })
+      await renderPage()
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Pass' }))
+      await waitFor(() => expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/decline']))
+
+      // The decision was saved, and the answer to it is a 500 all the same.
+      server.deck = [TIKKA, ORZO, PAELLA]
+      await act(async () => decline.resolve(errorResponse(500, 'internal')))
+      await screen.findByRole('alert')
+      expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument()
+      await waitFor(() => expect(deckReads(server.fetchMock)).toBe(2))
+      expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument()
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+    })
+
+    it('reads the deck again once a saved decision leaves fewer than 3 cards', async () => {
+      const server = stubServer([BOWLS, TIKKA, ORZO], {
+        'POST /api/v1/suggestions/s1/decline': () => {
+          server.deck = [TIKKA, ORZO, PAELLA, SOUP]
+          return declined(BOWLS)
+        },
+      })
+      await renderPage()
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+      expect(deckReads(server.fetchMock)).toBe(1)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Pass' }))
+      await waitFor(() => expect(deckReads(server.fetchMock)).toBe(2))
+      await waitFor(() =>
+        expect(screen.getAllByRole('article', { hidden: true }).map((card) => card.querySelector('h2')!.textContent)).toEqual([
+          'Crock pot chicken tikka masala',
+          'Lemon garlic shrimp orzo',
+          'Sheet pan paella',
+        ]),
+      )
+    })
+
+    it('shows skeleton cards, not "All caught up", while the replenish job a decision started runs', async () => {
+      const polls = [
+        { id: 'j1', kind: 'suggestion_batch', status: 'running', result: { batch_id: 'b1', stage: 'suggesting', suggestion_ids: [], dropped: 0 }, error: null },
+        { id: 'j1', kind: 'suggestion_batch', status: 'succeeded', result: { batch_id: 'b1', stage: 'done', suggestion_ids: ['s2'], dropped: 0 }, error: null },
+      ]
+      const server = stubServer([BOWLS], {
+        'POST /api/v1/suggestions/s1/accept': () => {
+          server.deck = []
+          return accepted(BOWLS, 'j1')
+        },
+        'GET /api/v1/jobs/j1': () => {
+          const job = polls.shift()!
+          if (job.status === 'succeeded') server.deck = [TIKKA]
+          return jsonResponse(200, job)
+        },
+      })
+      await renderPage()
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+      expect(await screen.findByText('Finding new side quests…')).toBeInTheDocument()
+      expect(screen.getAllByTestId('skeleton-card')).toHaveLength(3)
+      expect(screen.getByRole('region', { name: 'Side quests loading' })).toHaveAttribute('aria-busy', 'true')
+      expect(screen.queryByRole('heading', { name: 'All caught up' })).not.toBeInTheDocument()
+
+      await screen.findByRole('article', { name: 'Crock pot chicken tikka masala' }, { timeout: 3000 })
+      expect(screen.queryByTestId('skeleton-card')).not.toBeInTheDocument()
+      expect(screen.queryByRole('heading', { name: 'All caught up' })).not.toBeInTheDocument()
+      // The decision's replenish is followed; no batch is asked for.
+      expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept'])
+    })
+
+    it('shows skeleton cards, not "All caught up", while the decision that emptied the deck is unanswered', async () => {
+      const accept = deferred()
+      const server = stubServer([BOWLS], { 'POST /api/v1/suggestions/s1/accept': () => accept.promise })
+      await renderPage()
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+      await waitFor(() => expect(screen.getAllByTestId('skeleton-card')).toHaveLength(3))
+      expect(screen.queryByRole('heading', { name: 'All caught up' })).not.toBeInTheDocument()
+      expect(screen.queryByText('Finding new side quests…')).not.toBeInTheDocument()
+
+      // Saved without a replenish, the deck is caught up.
+      server.deck = []
+      accept.resolve(accepted(BOWLS))
+      await screen.findByRole('heading', { name: 'All caught up' })
+      expect(screen.queryByTestId('skeleton-card')).not.toBeInTheDocument()
+    })
   })
 
   describe('motion', () => {
@@ -989,15 +1652,21 @@ describe('DiscoverPage', () => {
       const server = stubServer([BOWLS, TIKKA], {
         'POST /api/v1/suggestions/s1/accept': () => (++calls === 1 ? errorResponse(500, 'internal') : retry.promise),
       })
-      await renderPage()
-      const card = await screen.findByRole('article', { name: 'Korean beef bowls' })
+      const queryClient = createQueryClient()
+      await renderPage(queryClient)
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
       fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
       const alert = await screen.findByRole('alert')
+      // A read of the deck puts the refused Side quest back in the server's
+      // order, still pending, behind the card dragged during its Retry.
+      server.deck = [TIKKA, BOWLS]
+      await act(async () => await queryClient.invalidateQueries({ queryKey: DECK_KEY }))
+      const card = await screen.findByRole('article', { name: 'Crock pot chicken tikka masala' })
 
       press(card)
       drag(card, 60, 0)
       fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
-      await waitFor(() => expect(screen.getByRole('button', { name: 'Try it' })).toBeDisabled())
+      expect(screen.getByRole('button', { name: 'Try it' })).toBeDisabled()
       drag(card, -160, 0)
       expect(card.style.transform).toBe('translate(60px,0px) rotate(3.3333333333333335deg)')
       const started = vi.mocked(Element.prototype.animate).mock.calls.length
@@ -1005,7 +1674,12 @@ describe('DiscoverPage', () => {
       expect(card.style.transform).toBe('')
       expect(within(card).getByText('Try it!').style.opacity).toBe('')
       expect(vi.mocked(Element.prototype.animate).mock.calls.length).toBe(started)
-      expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept', 'POST /api/v1/suggestions/s1/accept'])
+      await waitFor(() =>
+        expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept', 'POST /api/v1/suggestions/s1/accept']),
+      )
+      // The retried Side quest leaves the deck while the Retry is out.
+      await waitFor(() => expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument())
+      server.deck = [TIKKA]
       retry.resolve(accepted(BOWLS))
       await waitFor(() => expect(screen.getByRole('button', { name: 'Try it' })).toBeEnabled())
     })

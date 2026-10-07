@@ -1,5 +1,5 @@
-import { hashKey, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ApiError, useApi } from '../api/index.ts'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { DIFFICULTIES, DINNERS_PATH, oneOf, photoId, type Difficulty } from '../dinners/api.ts'
 
@@ -38,13 +38,7 @@ export const BATCH_JOB_KIND = 'suggestion_batch'
 export type BatchResult = { batch_id: string; stage: string; suggestion_ids: string[]; dropped: number }
 
 // QuestLogDinner is a dinner in the Quest log, as the Quest log pill lists it.
-// adding marks the entry a Try it put in before it was saved, so its
-// rollback takes out that entry and no other.
-export type QuestLogDinner = { id: string; name: string; adding?: symbol }
-
-// REFILL_BELOW is the deck size, the depths the deck shows, under which a
-// saved decision reads the deck again.
-export const REFILL_BELOW = 3
+export type QuestLogDinner = { id: string; name: string }
 
 // DECISION_STATUS is the status a suggestion has once each choice is saved.
 const DECISION_STATUS: Record<Choice, string> = { try: 'accepted', pass: 'declined' }
@@ -136,24 +130,6 @@ export function useStartBatch() {
   })
 }
 
-// Decided is the context a decision's optimistic update leaves for its
-// rollback: whether the Side quest was taken off the deck, the mark of the
-// Quest log entry it added, if it added one, and what the reads of the deck
-// that landed since have said of the Side quest.
-type Decided = { taken: boolean; adding: symbol | null; reads: DeckReads }
-
-// DeckReads follows the reads of the deck that land while a decision is in
-// flight: gone is whether the latest left the Side quest out.
-type DeckReads = { gone: boolean; stop: () => void }
-
-// stillPending is whether a failed decision's error shows its Side quest
-// still pending: an API error answer refusing the request itself. A 404 or
-// 409 says it is gone or decided already, a 5xx answer may have come after
-// the decision was saved, and a failure without an answer may have too.
-function stillPending(error: Error): boolean {
-  return error instanceof ApiError && error.status >= 400 && error.status < 500 && error.status !== 404 && error.status !== 409
-}
-
 // useDecide records Try it (POST /api/v1/suggestions/{id}/accept) or Pass
 // (POST /api/v1/suggestions/{id}/decline) on the Side quest the household
 // decided on, whether or not a read of the deck has since taken it away.
@@ -161,16 +137,14 @@ function stillPending(error: Error): boolean {
 // is the id of the replenish job the decision started, or null.
 //
 // The decision is applied at once: the Side quest leaves the deck and, on
-// Try it, its dinner joins the Quest log unless it is there already. A
-// failed decision takes out of the Quest log only the entry it added and
-// reads the Quest log again, since the decision may have been saved all the
-// same. One the server refused with the Side quest still pending (see
-// stillPending) puts it back on top of the deck if it took it off and no
-// read of the deck since has left it out; any other failure reads the deck
-// again instead, leaving the Side quest off it until that read answers. A
-// saved one reads the Quest log again, and the deck too once fewer than
-// REFILL_BELOW Side quests are left in it or a read of the deck started
-// before the decision was saved.
+// Try it, its dinner joins the Quest log unless it is there already.
+// Nothing else is worked out here: the server is the record of both. However
+// the decision ends, saved or failed, the deck and the Quest log are read
+// again, and the decision is pending until those reads land, so the next one
+// (which DiscoverPage locks out until then) cannot start under them. No
+// decision cancels a read; one under way when the decision ends is replaced
+// by the read made after it. A failed decision whose Side quest that read
+// still has is still pending, and goes back on top of the deck.
 export function useDecide() {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
@@ -192,47 +166,21 @@ export function useDecide() {
       }
       return body.replenish_job_id
     },
-    onMutate: async ({ quest, choice }): Promise<Decided> => {
-      // A read already under way would answer with the Side quest still
-      // pending, undoing the update.
-      await Promise.all([queryClient.cancelQueries({ queryKey: DECK_KEY }), queryClient.cancelQueries({ queryKey: QUEST_LOG_KEY })])
-      const deck = queryClient.getQueryData<SideQuest[]>(DECK_KEY)
-      const taken = deck !== undefined && deck.some((q) => q.id === quest.id)
-      if (taken) queryClient.setQueryData<SideQuest[]>(DECK_KEY, deck.filter((q) => q.id !== quest.id))
-      const reads: DeckReads = { gone: false, stop: () => {} }
-      const deckHash = hashKey(DECK_KEY)
-      reads.stop = queryClient.getQueryCache().subscribe((event) => {
-        if (event.type !== 'updated' || event.query.queryHash !== deckHash || event.action.type !== 'success' || event.action.manual) return
-        reads.gone = !(event.action.data as SideQuest[]).some((q) => q.id === quest.id)
+    onMutate: ({ quest, choice }) => {
+      queryClient.setQueryData<SideQuest[]>(DECK_KEY, (deck) => deck?.filter((q) => q.id !== quest.id))
+      if (choice !== 'try') return
+      // A stale deck can offer a Side quest whose dinner the Quest log has.
+      queryClient.setQueryData<QuestLogDinner[]>(QUEST_LOG_KEY, (dinners) =>
+        dinners === undefined || dinners.some((d) => d.id === quest.dinner_id) ? dinners : dinners.concat({ id: quest.dinner_id, name: quest.name }),
+      )
+    },
+    onSettled: async (_replenishJobId, error, { quest: { id } }) => {
+      await Promise.all([queryClient.invalidateQueries({ queryKey: DECK_KEY }), queryClient.invalidateQueries({ queryKey: QUEST_LOG_KEY })])
+      if (error === null) return
+      queryClient.setQueryData<SideQuest[]>(DECK_KEY, (deck) => {
+        const pending = deck?.find((q) => q.id === id)
+        return pending === undefined ? deck : [pending, ...deck!.filter((q) => q !== pending)]
       })
-      // A stale deck can offer a Side quest whose dinner a read of the Quest
-      // log already has.
-      const dinners = queryClient.getQueryData<QuestLogDinner[]>(QUEST_LOG_KEY)
-      if (choice !== 'try' || dinners === undefined || dinners.some((d) => d.id === quest.dinner_id)) return { taken, adding: null, reads }
-      const adding = Symbol(quest.dinner_id)
-      queryClient.setQueryData<QuestLogDinner[]>(QUEST_LOG_KEY, dinners.concat({ id: quest.dinner_id, name: quest.name, adding }))
-      return { taken, adding, reads }
     },
-    onError: (error, { quest }, context) => {
-      const { taken, adding, reads } = context!
-      if (!stillPending(error)) void queryClient.invalidateQueries({ queryKey: DECK_KEY })
-      else if (taken && !reads.gone) queryClient.setQueryData<SideQuest[]>(DECK_KEY, (deck) => deck && [quest, ...deck.filter((q) => q.id !== quest.id)])
-      if (adding === null) return
-      // A read of the Quest log that landed meanwhile has replaced the entry.
-      queryClient.setQueryData<QuestLogDinner[]>(QUEST_LOG_KEY, (dinners) => dinners?.filter((d) => d.adding !== adding))
-      void queryClient.invalidateQueries({ queryKey: QUEST_LOG_KEY })
-    },
-    onSuccess: async (_replenishJobId, { quest: { id } }) => {
-      // A read that landed while the decision was in flight may have put
-      // the Side quest back, and one still under way may yet: invalidating
-      // cancels it for a read made after the decision was saved.
-      const reading = queryClient.isFetching({ queryKey: DECK_KEY }) > 0
-      const deck = queryClient.setQueryData<SideQuest[]>(DECK_KEY, (current) => current?.filter((q) => q.id !== id))
-      await Promise.all([
-        reading || (deck !== undefined && deck.length < REFILL_BELOW) ? queryClient.invalidateQueries({ queryKey: DECK_KEY }) : undefined,
-        queryClient.invalidateQueries({ queryKey: QUEST_LOG_KEY }),
-      ])
-    },
-    onSettled: (_data, _error, _variables, context) => context?.reads.stop(),
   })
 }

@@ -90,10 +90,12 @@ function QuestLogPill({ dinners, ref }: { dinners: { id: string; name: string }[
 // at a time from the top card. A decision from the buttons, the ← / → keys
 // or a swipe of the top card throws it out (motion.ts) and sends the
 // decision once it is gone, taking the card off the deck at once (see
-// useDecide); Retry sends a refused one again. Input is
-// locked from the press until the decision settles: the lock is a ref, set
-// before anything starts, so a second press before the next render does
-// nothing, and busy mirrors it to disable the buttons.
+// useDecide); Retry sends a failed one again while the deck read since still
+// has its Side quest pending. Input is locked from the press until the
+// decision settles, which is once the deck and the Quest log have been read
+// again after it, so no decision starts under those reads. The lock is a
+// ref, set before anything starts, so a second press before the next render
+// does nothing, and busy mirrors it to disable the buttons.
 export function DiscoverPage() {
   const queryClient = useQueryClient()
   const deck = useDeck()
@@ -150,8 +152,9 @@ export function DiscoverPage() {
     setBusy(true)
     return true
   }, [])
-  // send records a decision. A refused one puts the card back; a saved one
-  // that started a replenish batch follows its job.
+  // send records a decision. A failed one stops the card's exit, so a card
+  // useDecide put back on the deck is at rest; a saved one that started a
+  // replenish batch follows its job.
   const send = useCallback(
     (variables: { quest: SideQuest; choice: Choice }) => {
       leaving.current = variables.quest.id
@@ -314,6 +317,11 @@ export function DiscoverPage() {
     void queryClient.invalidateQueries({ queryKey: DECK_KEY })
   }, [queryClient, job.status, stored])
 
+  // A failed decision can be retried only while the deck, read again after
+  // it, still has its Side quest pending: anything else decided it already.
+  const failed = decision.isError ? decision.variables.quest.id : null
+  const retryable = failed !== null && !deck.isError && deck.data !== undefined && deck.data.some((q) => q.id === failed)
+
   let body
   if (deck.isError) {
     body = <ErrorBanner onRetry={() => void deck.refetch()}>Couldn't load your side quests. {deck.error.message}</ErrorBanner>
@@ -380,10 +388,15 @@ export function DiscoverPage() {
         <ErrorBanner onRetry={() => void questLog.refetch()}>Couldn't load the Quest log. {questLog.error.message}</ErrorBanner>
       )}
       {body}
-      {/* A refused decision is shown whatever the deck has come to since. */}
-      {decision.isError && (
-        <ErrorBanner onRetry={() => submit(decision.variables!)}>Couldn't save that choice. {decision.error.message}</ErrorBanner>
-      )}
+      {/* A failed decision is shown whatever the deck has come to since. */}
+      {decision.isError &&
+        (retryable ? (
+          <ErrorBanner onRetry={() => submit(decision.variables)}>Couldn't save that choice. {decision.error.message}</ErrorBanner>
+        ) : deck.isError ? (
+          <ErrorBanner>Couldn't save that choice. {decision.error.message}</ErrorBanner>
+        ) : (
+          <ErrorBanner>That side quest has been decided already. {decision.error.message}</ErrorBanner>
+        ))}
     </div>
   )
 }

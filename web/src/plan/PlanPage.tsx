@@ -3,6 +3,7 @@ import { CalendarDays, Check, ChevronLeft, ChevronRight, Plus, RefreshCw, Shoppi
 import { useEffect, useId, useMemo, useState, type ReactNode } from 'react'
 import { useJob } from '../api/index.ts'
 import { Confirm } from '../settings/LeaveGuard.tsx'
+import { methodLabels } from '../settings/RegularsSettingsPage.tsx'
 import { formatClockTime, useHouseholdSettings } from '../settings/api.ts'
 import { useBreakpoint, type Breakpoint } from '../shell/useBreakpoint.ts'
 import { Button, type ButtonVariant } from '../ui/Button.tsx'
@@ -21,7 +22,9 @@ import {
   useStartDraft,
   useSwapDay,
   type DraftResult,
+  type Plan,
   type PlanDay,
+  type PlanDinner,
   type PlanStatus,
   type Swap,
 } from './api.ts'
@@ -71,6 +74,37 @@ const syncStatuses: Record<PlanStatus, string> = {
   changed: 'Changes not pushed to Google Calendar',
 }
 
+// duration is minutes as the plan manager's cards say it: "45 min", "6 hr",
+// "1 hr 30 min", with no-break spaces so a narrow card wraps the line
+// between the method and the duration, never inside the duration.
+export function duration(minutes: number): string {
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  if (hours === 0) return `${rest}\u00a0min`
+  return rest === 0 ? `${hours}\u00a0hr` : `${hours}\u00a0hr\u00a0${rest}\u00a0min`
+}
+
+// cooking is a card's "method · duration" line, "Crock pot · 6 hr", with
+// whichever of the two is known, or null when neither is.
+export function cooking(dinner: PlanDinner): string | null {
+  const parts = [dinner.method && methodLabels[dinner.method], dinner.minutes !== null && duration(dinner.minutes)].filter(
+    (part): part is string => typeof part === 'string',
+  )
+  return parts.length === 0 ? null : parts.join(' · ')
+}
+
+// ago is how long before now the instant at was: "just now", "2 min ago",
+// "3 hr ago", "2 days ago".
+export function ago(at: Date, now: Date): string {
+  const minutes = Math.floor((now.getTime() - at.getTime()) / 60_000)
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${minutes} min ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} hr ago`
+  const days = Math.floor(hours / 24)
+  return days === 1 ? '1 day ago' : `${days} days ago`
+}
+
 // pushedToCalendar says whether drafting over a plan of this status needs
 // confirm: it was pushed to Calendar.
 function pushedToCalendar(status: PlanStatus): boolean {
@@ -101,12 +135,13 @@ function DayTile({ day, timezone, swapping, onSwap }: { day: PlanDay; timezone: 
 }
 
 // DayColumn is one day of the plan manager's 7-column grid: its day label
-// over a card with the dinner's washed photo, name, minutes, a crock-pot
-// dinner's start-by time in the household's zone, and its Regular or Side
-// quest tag, a Side quest's card in teal. The swap icon opens the swap
+// over a card with the dinner's washed photo, name, method and time, a
+// crock-pot dinner's start-by time in the household's zone, and its Regular
+// or Side quest tag, a Side quest's card in teal. The swap icon opens the swap
 // sheet; while that is open the card is swapping, ringed in grape.
 function DayColumn({ day, timezone, swapping, onSwap }: { day: PlanDay; timezone: string; swapping: boolean; onSwap: () => void }) {
   const { dinner } = day
+  const time = cooking(dinner)
   const classes = [styles.card, day.is_new && styles.sideQuestCard, swapping && styles.swapping].filter(Boolean).join(' ')
   return (
     <li className={styles.column} aria-label={weekdayName(day.date)}>
@@ -120,7 +155,7 @@ function DayColumn({ day, timezone, swapping, onSwap }: { day: PlanDay; timezone
           <Photo id={dinner.photo_id} name={dinner.name} radius="18px" sizes="160px" className={styles.cardPhoto} />
         </span>
         <p className={styles.cardName}>{dinner.name}</p>
-        {dinner.minutes !== null && <p className={styles.cardMinutes}>{dinner.minutes} min</p>}
+        {time !== null && <p className={styles.cardMinutes}>{time}</p>}
         {day.start_by !== null && (
           <p className={styles.cardStartBy}>Start by {formatClockTime(localNow(timezone, new Date(day.start_by)).time)}</p>
         )}
@@ -396,7 +431,7 @@ function WeekBoard({
           </div>
         </div>
         <div className={styles.actionBar}>
-          {plan.data ? <SyncStatus status={plan.data.status} /> : <span className={styles.status} />}
+          {plan.data ? <SyncStatus plan={plan.data} /> : <span className={styles.status} />}
           <div className={styles.actions}>
             <Unavailable hint={SHOPPING_HINT} variant="outline" below className={styles.action}>
               <Icon icon={ShoppingCart} size="inline" />
@@ -452,12 +487,20 @@ function WeekBoard({
 }
 
 // SyncStatus is the plan manager's status line: whether the plan is on
-// Google Calendar.
-function SyncStatus({ status }: { status: PlanStatus }) {
+// Google Calendar and, once synced, how long ago it was pushed, kept current
+// minute by minute.
+function SyncStatus({ plan }: { plan: Plan }) {
+  const { status, calendar_synced_at: syncedAt } = plan
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 60_000)
+    return () => clearInterval(timer)
+  }, [])
   return (
     <p className={[styles.status, status === 'synced' && styles.synced].filter(Boolean).join(' ')}>
       {status === 'synced' && <Icon icon={Check} size="inline" />}
       {syncStatuses[status]}
+      {status === 'synced' && syncedAt !== null && ` ${ago(syncedAt, now)}`}
     </p>
   )
 }

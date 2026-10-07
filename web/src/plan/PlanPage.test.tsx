@@ -9,7 +9,7 @@ import { HOUSEHOLD_SETTINGS } from '../test/ApiProviders.tsx'
 import { declaredStyle } from '../test/cssRules.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { mockViewport } from '../test/matchMedia.ts'
-import { PlanPage } from './PlanPage.tsx'
+import { ago, cooking, duration, PlanPage } from './PlanPage.tsx'
 
 const THIS_WEEK = '/api/v1/plans/2026-10-05'
 const NEXT_WEEK = '/api/v1/plans/2026-10-12'
@@ -23,7 +23,8 @@ const NAMES = ['Beef tacos', 'Spaghetti bolognese', 'Crock pot tikka masala', 'C
 // planBody is the plan of the week of Oct 5 as GET /api/v1/plans/{weekStart}
 // sends it: Wednesday's crock-pot tikka masala and Saturday's bowls are
 // Quest-log picks, and the tikka masala must start by 1:30 pm New York time
-// to be ready for 5:30 pm dinner. Monday's tacos have a stored photo.
+// to be ready for 5:30 pm dinner. Monday's tacos have a stored photo. A plan
+// pushed to Calendar was pushed two minutes before the tests' noon.
 function planBody(status: string, names = NAMES) {
   return {
     id: 'plan-1',
@@ -31,7 +32,7 @@ function planBody(status: string, names = NAMES) {
     week_label: 'Week 41 · Oct 5 – 11',
     status,
     ai_note: 'I mixed 5 of your regulars with 2 from your Quest log. Tap any day to swap it.',
-    calendar_synced_at: status === 'draft' ? null : '2026-10-04T15:00:00Z',
+    calendar_synced_at: status === 'draft' ? null : '2026-10-07T15:58:00Z',
     days: DAYS.map((date, i) => ({
       date,
       dinner: {
@@ -688,6 +689,7 @@ describe('PlanPage', () => {
 })
 
 describe.each([
+  { width: 768, layout: 'tablet', photoHeight: '96px', nameSize: '16px' },
   { width: 1180, layout: 'tablet', photoHeight: '96px', nameSize: '16px' },
   { width: 1440, layout: 'desktop', photoHeight: '110px', nameSize: '17px' },
 ])('PlanPage at $width px (mocks 2c, 2d)', ({ width, layout, photoHeight, nameSize }) => {
@@ -736,7 +738,7 @@ describe.each([
 
     // Seven columns, Monday to Sunday, 12 px apart.
     const grid = screen.getByRole('list', { name: 'Dinners this week' })
-    expect(declaredStyle(grid).gridTemplateColumns).toBe('repeat(7, minmax(0, 1fr))')
+    expect(declaredStyle(grid).gridTemplateColumns).toBe('repeat(7, minmax(112px, 1fr))')
     expect(declaredStyle(grid).gap).toBe('12px')
     expect(within(grid).getAllByRole('listitem').map((li) => li.getAttribute('aria-label'))).toEqual([
       'Monday',
@@ -748,8 +750,8 @@ describe.each([
       'Sunday',
     ])
 
-    // Monday: day label, the washed photo, the name in Bagel, minutes and
-    // the Regular tag, on the surface.
+    // Monday: day label, the washed photo, the name in Bagel, method and
+    // minutes, and the Regular tag, on the surface.
     expect(column('Monday')).toHaveTextContent(/^MON5/)
     const monday = card('Monday', 'Beef tacos')
     expect(declaredStyle(monday).background).toBe('var(--color-surface)')
@@ -759,25 +761,38 @@ describe.each([
     const name = within(monday).getByText('Beef tacos')
     expect(declaredStyle(name).fontFamily).toBe('var(--font-heading)')
     expect(declaredStyle(name).fontSize).toBe(nameSize)
-    expect(within(monday).getByText('30 min')).toBeInTheDocument()
+    // Testing Library reads the duration's no-break spaces as spaces.
+    expect(within(monday).getByText('Stovetop · 30 min')).toBeInTheDocument()
     expect(declaredStyle(within(monday).getByText('Regular')).background).toBe('var(--color-neutral-100)')
     expect(within(monday).queryByText(/Start by/)).not.toBeInTheDocument()
 
     // Wednesday: a crock-pot Side quest on teal-200, with its start-by time.
     const wednesday = card('Wednesday', 'Crock pot tikka masala')
     expect(declaredStyle(wednesday).background).toBe('var(--color-accent-2-200)')
-    expect(within(wednesday).getByText('240 min')).toBeInTheDocument()
+    expect(within(wednesday).getByText('Crock pot · 4 hr')).toBeInTheDocument()
     expect(within(wednesday).getByText('Start by 1:30 pm')).toBeInTheDocument()
     expect(within(wednesday).getByText('Side quest')).toBeInTheDocument()
     expect(within(column('Wednesday')).getByRole('button', { name: 'Swap Wednesday' })).toBeInTheDocument()
   })
 
-  it('says a synced plan is on Google Calendar', async () => {
+  it('says a synced plan is on Google Calendar, and how long ago it was pushed', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(new Date('2026-10-07T16:00:00Z'))
     stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('synced')), ...lists })
     await renderPage()
 
-    const status = await screen.findByText('Synced to Google Calendar')
+    const status = await screen.findByText('Synced to Google Calendar 2 min ago')
     expect(declaredStyle(status).color).toBe('var(--color-accent-2-800)')
+    // The time is kept current.
+    act(() => vi.advanceTimersByTime(58 * 60_000))
+    expect(status).toHaveTextContent('Synced to Google Calendar 1 hr ago')
+  })
+
+  it('says changes to a pushed plan are not on Google Calendar', async () => {
+    stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('changed')), ...lists })
+    await renderPage()
+
+    expect(await screen.findByText('Changes not pushed to Google Calendar')).toBeInTheDocument()
   })
 
   if (layout === 'desktop') {
@@ -912,7 +927,7 @@ describe.each([
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     const friday = await waitFor(() => card('Friday', 'Lemon orzo'))
     expect(within(friday).getByText('Side quest')).toBeInTheDocument()
-    expect(within(friday).getByText('25 min')).toBeInTheDocument()
+    expect(within(friday).getByText('Stovetop · 25 min')).toBeInTheDocument()
     expect(declaredStyle(friday).background).toBe('var(--color-accent-2-200)')
     await waitFor(() => expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1))
     // Rebuild week waits for the swap.
@@ -956,5 +971,76 @@ describe.each([
     fireEvent.click(screen.getByRole('button', { name: 'Rebuild week' }))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     await waitFor(() => expect(posts(fetchMock)).toEqual([`${DRAFT} {}`]))
+  })
+})
+
+// At tablet's narrow end seven usable columns do not fit beside the rail:
+// the week keeps its columns usable and scrolls sideways.
+describe('PlanPage at 768 px', () => {
+  beforeEach(() => mockViewport(768))
+
+  it('keeps each day column usable and scrolls the week sideways', async () => {
+    stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')), ...lists })
+    await renderPage()
+
+    expect(await screen.findByText('Spaghetti bolognese')).toBeInTheDocument()
+    const grid = screen.getByRole('list', { name: 'Dinners this week' })
+    // Columns no narrower than 112 px; the week scrolls when seven do not
+    // fit, its padding keeping the swap icons' hit boxes inside.
+    expect(declaredStyle(grid).gridTemplateColumns).toBe('repeat(7, minmax(112px, 1fr))')
+    expect(declaredStyle(grid).overflowX).toBe('auto')
+    expect(declaredStyle(grid).padding).toBe('8px')
+    expect(declaredStyle(grid).margin).toBe('-8px')
+
+    const tuesday = within(grid).getByRole('listitem', { name: 'Tuesday' })
+    // The name wraps between words, only breaking a word wider than the card.
+    const name = within(tuesday).getByText('Spaghetti bolognese')
+    expect(declaredStyle(name).overflowWrap).toBe('break-word')
+    expect(declaredStyle(name).hyphens).toBe('')
+    // The swap icon stays beside the tag.
+    const footer = within(tuesday).getByRole('button', { name: 'Swap Tuesday' }).parentElement!
+    expect(within(footer).getByText('Regular')).toBeInTheDocument()
+    expect(declaredStyle(footer).display).toBe('flex')
+    expect(declaredStyle(footer).flexWrap).toBe('')
+    // Every piece of the card is still there.
+    expect(within(tuesday).getByRole('img', { hidden: true, name: 'Spaghetti bolognese' })).toBeInTheDocument()
+    expect(within(tuesday).getByText('Stovetop · 30 min')).toBeInTheDocument()
+    expect(within(within(grid).getByRole('listitem', { name: 'Wednesday' })).getByText('Start by 1:30 pm')).toBeInTheDocument()
+  })
+})
+
+describe('duration', () => {
+  it.each([
+    [25, '25\u00a0min'],
+    [60, '1\u00a0hr'],
+    [90, '1\u00a0hr\u00a030\u00a0min'],
+    [360, '6\u00a0hr'],
+  ])('says %i minutes as %j', (minutes, said) => {
+    expect(duration(minutes)).toBe(said)
+  })
+})
+
+describe('cooking', () => {
+  const dinner = { id: 'd1', name: 'Tikka masala', photo_id: undefined }
+  it.each([
+    [{ method: 'crockpot' as const, minutes: 360 }, 'Crock pot · 6\u00a0hr'],
+    [{ method: 'crockpot' as const, minutes: null }, 'Crock pot'],
+    [{ method: null, minutes: 45 }, '45\u00a0min'],
+    [{ method: null, minutes: null }, null],
+  ])('says %o as %j', (known, said) => {
+    expect(cooking({ ...dinner, ...known })).toBe(said)
+  })
+})
+
+describe('ago', () => {
+  const now = new Date('2026-10-07T16:00:00Z')
+  it.each([
+    ['2026-10-07T15:59:30Z', 'just now'],
+    ['2026-10-07T15:58:00Z', '2 min ago'],
+    ['2026-10-07T13:00:00Z', '3 hr ago'],
+    ['2026-10-06T15:00:00Z', '1 day ago'],
+    ['2026-10-04T15:00:00Z', '3 days ago'],
+  ])('says %s as %j', (at, said) => {
+    expect(ago(new Date(at), now)).toBe(said)
   })
 })

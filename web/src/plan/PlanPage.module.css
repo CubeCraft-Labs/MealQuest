@@ -418,14 +418,20 @@
   white-space: nowrap;
 }
 
-/* The week: seven columns, each a day label over its card. */
+/* The week: seven columns, each a day label over its card. A column is
+   never narrower than 112 px, which holds a dinner's words whole and the
+   tag beside the swap icon; where seven of those do not fit (tablet's
+   narrow end, desktop beside the panel) the week scrolls sideways. Its 8 px
+   padding, taken back by the margin, keeps the swap icons' hit boxes and
+   focus rings inside the scroll area. */
 .week {
   flex: 1;
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(112px, 1fr));
   gap: 12px;
-  margin: 0;
-  padding: 0;
+  margin: -8px;
+  padding: 8px;
+  overflow-x: auto;
   list-style: none;
 }
 
@@ -494,8 +500,7 @@
   font-family: var(--font-heading);
   font-size: 17px;
   line-height: 1.15;
-  hyphens: auto;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .tablet .cardName {
@@ -522,16 +527,13 @@
 .cardFooter {
   margin-top: auto;
   display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
   align-items: center;
   gap: 4px;
 }
 
 /* The swap icon sits bare on the card, beside the tag: its 44 px hit box
    keeps the 16 px footprint of its icon, reaching over the card's padding
-   and the tag. Where even that does not fit, it wraps under the tag, at the
-   right. */
+   and the tag. */
 .cardFooter .swapButton {
   margin: -14px;
 }

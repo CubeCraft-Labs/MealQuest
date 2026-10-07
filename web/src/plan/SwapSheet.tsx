@@ -90,7 +90,13 @@ export function SwapSheet({ day, planned, onSwap, onClose }: SwapSheetProps) {
                     : () =>
                         onSwap({
                           date: day.date,
-                          dinner: { id: dinner.id, name: dinner.name, photo_id: dinner.photo_id, minutes: dinner.minutes_total },
+                          dinner: {
+                            id: dinner.id,
+                            name: dinner.name,
+                            photo_id: dinner.photo_id,
+                            minutes: dinner.minutes_total,
+                            method: dinner.method,
+                          },
                           fromQuestLog: source === 'quest_log',
                         })
                 }

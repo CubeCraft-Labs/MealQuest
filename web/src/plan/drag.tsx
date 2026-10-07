@@ -197,8 +197,8 @@ const DRAG_THRESHOLD = 4
 
 // The dragged copy floats this far below and to the right of the pointer,
 // as a drag image does, so it stays clear of the "Drop to swap" text
-// centred in the day the pointer is over. Where it would leave the viewport it flips to the
-// left of the pointer, or above it.
+// centred in the day the pointer is over. Where it would leave the
+// viewport it flips to the left of the pointer, or above it.
 const FLOAT_OFFSET = 48
 
 // Press is a pointer held on a draggable: its id, where it went down, the

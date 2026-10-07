@@ -95,14 +95,29 @@
 .tile {
   box-sizing: border-box;
   display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  gap: 6px;
   min-height: 86px;
-  padding: 12px;
   border-radius: 22px;
   background: var(--color-surface);
   color: var(--color-text);
+}
+
+/* The whole tile is the button that opens the swap sheet. */
+.tileButton {
+  box-sizing: border-box;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: stretch;
+  gap: 6px;
+  padding: 12px;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
 /* A Quest-log pick. */
@@ -111,6 +126,7 @@
 }
 
 .dayKicker {
+  display: block;
   margin: 0;
   font-family: var(--font-body);
   font-size: 10px;
@@ -125,6 +141,7 @@
 }
 
 .dinner {
+  display: block;
   margin: 0;
   font-family: var(--font-heading);
   font-size: 15px;
@@ -134,6 +151,7 @@
 }
 
 .startBy {
+  display: block;
   margin: 4px 0 0;
   font-family: var(--font-body);
   font-size: 11px;
@@ -143,6 +161,22 @@
 
 .newTile .startBy {
   color: var(--color-accent-2-900);
+}
+
+/* The day being swapped, while the swap sheet is open: the page background
+   ringed in grape, its name muted. */
+.swapping {
+  background: var(--color-bg);
+  box-shadow: inset 0 0 0 2px var(--color-accent);
+}
+
+.swapping .dayKicker {
+  color: var(--color-accent-700);
+}
+
+.swapping .dinner,
+.swapping .startBy {
+  color: var(--color-neutral-600);
 }
 
 .rebuildCell {

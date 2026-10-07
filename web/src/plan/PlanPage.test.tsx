@@ -54,7 +54,7 @@ function draftJob(status: string, error: string | null = null, planId = 'plan-1'
   return { id: 'j1', kind: 'draft_week', status, result, error }
 }
 
-type Responder = (init: RequestInit | undefined) => Response
+type Responder = (init: RequestInit | undefined) => Response | Promise<Response>
 
 // stubServer answers "METHOD path" requests from responders, with /me and
 // the household settings; any other request fails the test.
@@ -142,7 +142,7 @@ describe('PlanPage', () => {
     expect(declaredStyle(grid).gridTemplateColumns).toBe('repeat(2, minmax(0, 1fr))')
     const items = within(grid).getAllByRole('listitem')
     expect(items).toHaveLength(8)
-    expect(items.slice(0, 7).map((item) => item.firstChild!.textContent)).toEqual([
+    expect(items.slice(0, 7).map((item) => item.querySelector('button')!.firstChild!.textContent)).toEqual([
       'MON',
       'TUE',
       'WED · NEW',
@@ -420,5 +420,181 @@ describe('PlanPage', () => {
     await renderPage()
 
     expect(await screen.findByRole('alert', {}, { timeout: 3000 })).toHaveTextContent("Couldn't load this week's plan. internal message")
+  })
+
+  describe('swap sheet', () => {
+    const QUEST_LOG = '/api/v1/dinners?status=quest_log'
+    const REGULARS = '/api/v1/dinners?status=regular'
+    const FRIDAY = `${THIS_WEEK}/days/2026-10-09`
+
+    // dinner is a dinner as the dinners API lists it.
+    function dinner(id: string, name: string, difficulty: string | null, minutes: number | null) {
+      return {
+        id,
+        name,
+        method: 'stovetop',
+        minutes_total: minutes,
+        difficulty,
+        is_favorite: false,
+        photo_url: null,
+        grounding_status: 'grounded',
+      }
+    }
+
+    // The Quest log has lemon orzo; the Regulars are Monday's tacos, already
+    // this week, and fish tacos.
+    const lists = {
+      [`GET ${QUEST_LOG}`]: () => jsonResponse(200, { dinners: [dinner('q1', 'Lemon orzo', 'easy', 25)] }),
+      [`GET ${REGULARS}`]: () =>
+        jsonResponse(200, { dinners: [dinner('d0', 'Beef tacos', 'easy', 30), dinner('r1', 'Fish tacos', 'medium', 35)] }),
+    }
+
+    // swappedBody is the plan as the server answers a swap of Friday to
+    // lemon orzo, a Quest-log pick.
+    function swappedBody() {
+      const body = planBody('draft')
+      body.days[4] = { ...body.days[4]!, dinner: { ...body.days[4]!.dinner, id: 'q1', name: 'Lemon orzo' }, is_new: true }
+      return body
+    }
+
+    // puts lists the PUTs sent, as "path body".
+    function puts(fetchMock: Mock<typeof fetch>) {
+      return fetchMock.mock.calls
+        .filter(([, init]) => init?.method === 'PUT')
+        .map(([input, init]) => `${String(input)} ${String(init?.body)}`)
+    }
+
+    async function openFriday() {
+      fireEvent.click(within(await waitFor(() => tile('FRI'))).getByRole('button'))
+      return screen.findByRole('dialog', { name: 'Swap Friday' })
+    }
+
+    it('opens on a tapped day, puts it in the swapping state, and closes again', async () => {
+      stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')), ...lists })
+      await renderPage()
+
+      const sheet = await openFriday()
+      expect(within(sheet).getByText('Replaces Pizza night')).toBeInTheDocument()
+
+      // The tile: page background, a 2 px grape inset ring, the SWAPPING…
+      // kicker and its name muted.
+      const friday = tile('FRI · SWAPPING…')
+      expect(declaredStyle(friday).background).toBe('var(--color-bg)')
+      expect(declaredStyle(friday).boxShadow).toBe('inset 0 0 0 2px var(--color-accent)')
+      expect(declaredStyle(within(friday).getByText('FRI · SWAPPING…')).color).toBe('var(--color-accent-700)')
+      expect(declaredStyle(within(friday).getByText('Pizza night')).color).toBe('var(--color-neutral-600)')
+
+      // "Quest log · N | Regulars · N", on the Quest log first.
+      expect(await within(sheet).findByRole('radio', { name: 'Quest log · 1', checked: true })).toBeInTheDocument()
+      expect(await within(sheet).findByRole('radio', { name: 'Regulars · 2' })).toBeInTheDocument()
+      const row = within(within(sheet).getByRole('list', { name: 'Quest log' })).getByRole('button', { name: /Lemon orzo/ })
+      expect(row).toHaveTextContent('Easy · 25 min')
+      const photo = within(sheet).getByRole('img', { hidden: true, name: 'Lemon orzo' })
+      expect(declaredStyle(photo).width).toBe('48px')
+
+      fireEvent.keyDown(sheet, { key: 'Escape' })
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(tile('FRI')).toBeInTheDocument()
+      expect(screen.queryByText('FRI · SWAPPING…')).not.toBeInTheDocument()
+    })
+
+    it('swaps the day at once, closing the sheet, and lands the plan the server answers', async () => {
+      let answer!: (response: Response) => void
+      const fetchMock = stubServer({
+        [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+        ...lists,
+        [`PUT ${FRIDAY}`]: () => new Promise<Response>((resolve) => (answer = resolve)),
+      })
+      await renderPage()
+
+      const sheet = await openFriday()
+      fireEvent.click(await within(sheet).findByRole('button', { name: /Lemon orzo/ }))
+
+      // Optimistic: the sheet is closed and Friday is the Quest-log pick, NEW.
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      await screen.findByText('FRI · NEW')
+      expect(within(tile('FRI · NEW')).getByText('Lemon orzo')).toBeInTheDocument()
+      expect(declaredStyle(tile('FRI · NEW')).background).toBe('var(--color-accent-2-300)')
+      await waitFor(() => expect(puts(fetchMock)).toEqual([`${FRIDAY} {"dinner_id":"q1"}`]))
+
+      await act(async () => answer(jsonResponse(200, swappedBody())))
+      expect(within(tile('FRI · NEW')).getByText('Lemon orzo')).toBeInTheDocument()
+      expect(screen.queryByText('Pizza night')).not.toBeInTheDocument()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+
+      // Once the swap has settled the sheet opens again, and reads the Quest
+      // log again: the server leaves a dinner on the plan out of it.
+      await waitFor(() => {
+        fireEvent.click(within(tile('FRI · NEW')).getByRole('button'))
+        expect(screen.getByRole('dialog', { name: 'Swap Friday' })).toHaveTextContent('Replaces Lemon orzo')
+      })
+      await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input) === QUEST_LOG)).toHaveLength(2))
+    })
+
+    it('takes the NEW highlight off a day swapped to a Regular', async () => {
+      const fetchMock = stubServer({
+        [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+        ...lists,
+        [`PUT ${THIS_WEEK}/days/2026-10-07`]: () => {
+          const body = planBody('draft')
+          body.days[2] = { ...body.days[2]!, dinner: { ...body.days[2]!.dinner, id: 'r1', name: 'Fish tacos' }, is_new: false, start_by: null }
+          return jsonResponse(200, body)
+        },
+      })
+      await renderPage()
+
+      fireEvent.click(within(await waitFor(() => tile('WED · NEW'))).getByRole('button'))
+      const sheet = await screen.findByRole('dialog', { name: 'Swap Wednesday' })
+      fireEvent.click(await within(sheet).findByRole('radio', { name: 'Regulars · 2' }))
+      fireEvent.click(within(sheet).getByRole('button', { name: /Fish tacos/ }))
+
+      await screen.findByText('Fish tacos')
+      expect(within(tile('WED')).getByText('Fish tacos')).toBeInTheDocument()
+      expect(declaredStyle(tile('WED')).background).toBe('var(--color-surface)')
+      await waitFor(() => expect(puts(fetchMock)).toEqual([`${THIS_WEEK}/days/2026-10-07 {"dinner_id":"r1"}`]))
+      expect(screen.queryByText('Start by 1:30 pm')).not.toBeInTheDocument()
+    })
+
+    it('puts the day back and shows the failure, with Retry, when the swap is refused', async () => {
+      let refuse = true
+      const fetchMock = stubServer({
+        [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+        ...lists,
+        [`PUT ${FRIDAY}`]: () => (refuse ? errorResponse(409, 'dinner_not_plannable') : jsonResponse(200, swappedBody())),
+      })
+      await renderPage()
+
+      const sheet = await openFriday()
+      fireEvent.click(await within(sheet).findByRole('button', { name: /Lemon orzo/ }))
+
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent("Couldn't swap Friday's dinner. dinner_not_plannable message")
+      expect(within(tile('FRI')).getByText('Pizza night')).toBeInTheDocument()
+      expect(screen.queryByText('Lemon orzo')).not.toBeInTheDocument()
+
+      refuse = false
+      fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+      expect(await screen.findByText('Lemon orzo')).toBeInTheDocument()
+      await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+      expect(puts(fetchMock)).toHaveLength(2)
+    })
+
+    it('marks dinners already this week, which cannot be chosen', async () => {
+      const fetchMock = stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')), ...lists })
+      await renderPage()
+
+      const sheet = await openFriday()
+      fireEvent.click(await within(sheet).findByRole('radio', { name: 'Regulars · 2' }))
+      const regulars = within(sheet).getByRole('list', { name: 'Regulars' })
+      const [tacos, fish] = within(regulars).getAllByRole('listitem')
+      expect(within(tacos!).getByText('Already this week')).toBeInTheDocument()
+      expect(within(tacos!).queryByRole('button')).not.toBeInTheDocument()
+      expect(within(fish!).queryByText('Already this week')).not.toBeInTheDocument()
+      expect(within(fish!).getByRole('button', { name: /Fish tacos/ })).toBeInTheDocument()
+
+      fireEvent.click(within(tacos!).getByText('Beef tacos'))
+      expect(screen.getByRole('dialog', { name: 'Swap Friday' })).toBeInTheDocument()
+      expect(puts(fetchMock)).toEqual([])
+    })
   })
 })

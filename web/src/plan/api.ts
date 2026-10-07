@@ -1,7 +1,8 @@
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, useApi, type ApiRead } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { oneOf } from '../dinners/api.ts'
+import { QUEST_LOG_KEY } from '../discover/api.ts'
 
 export const PLANS_PATH = '/api/v1/plans'
 
@@ -128,5 +129,51 @@ export function useStartDraft() {
       if (!isRecord(body) || typeof body.jobId !== 'string') throw new Error(`POST ${path}: response has no jobId`)
       return body.jobId
     },
+  })
+}
+
+// Swap is one day's swap: the day, and the dinner chosen for it with whether
+// it was chosen from the Quest log.
+export type Swap = { date: string; dinner: { id: string; name: string }; fromQuestLog: boolean }
+
+// useSwapDay swaps the dinner of one day of the week starting on weekStart
+// (PUT /api/v1/plans/{weekStart}/days/{date}). The day shows the dinner at
+// once, NEW when it came from the Quest log, with no start-by time until the
+// server answers with the plan as swapped, which then replaces it. A refused
+// swap puts the day back as it was, unless it has changed again meanwhile.
+// However the swap ends, the Quest log is read again: the server leaves a
+// dinner on the plan out of it.
+export function useSwapDay(weekStart: string) {
+  const { apiFetch } = useApi()
+  const queryClient = useQueryClient()
+  const key = planKey(weekStart)
+  return useMutation({
+    mutationFn: async ({ date, dinner }: Swap): Promise<Plan> => {
+      const path = `${planPath(weekStart)}/days/${encodeURIComponent(date)}`
+      const body = await apiFetch<unknown>(path, { method: 'PUT', body: { dinner_id: dinner.id } })
+      return parsePlan(`PUT ${path}`, weekStart, body, false)
+    },
+    onMutate: async ({ date, dinner, fromQuestLog }) => {
+      await queryClient.cancelQueries({ queryKey: key })
+      const plan = queryClient.getQueryData<Plan | null>(key)
+      const previous = plan?.days.find((day) => day.date === date)
+      if (!plan || previous === undefined) throw new Error(`The week of ${weekStart} has no plan day ${date} to swap.`)
+      const swapped: PlanDay = { date, dinner, is_new: fromQuestLog, start_by: null }
+      queryClient.setQueryData<Plan>(key, { ...plan, days: plan.days.map((day) => (day.date === date ? swapped : day)) })
+      return { previous, swapped }
+    },
+    onSuccess: (plan) => {
+      queryClient.setQueryData<Plan>(key, plan)
+    },
+    onError: (_error, { date }, context) => {
+      if (context === undefined) return
+      queryClient.setQueryData<Plan | null>(key, (plan) =>
+        plan && {
+          ...plan,
+          days: plan.days.map((day) => (day.date === date && day.dinner.id === context.swapped.dinner.id ? context.previous : day)),
+        },
+      )
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: QUEST_LOG_KEY }),
   })
 }

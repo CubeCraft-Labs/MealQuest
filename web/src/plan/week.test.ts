@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { addDays, defaultWeek, localNow, weekdayKicker, weekLabel, weekStart } from './week.ts'
+import { addDays, defaultWeek, localNow, weekdayKicker, weekdayName, weekLabel, weekStart } from './week.ts'
 
 // SCHEDULE drafts the plan on Fridays (Sunday = 0) at 09:00 in New York.
 const SCHEDULE = { timezone: 'America/New_York', plan_draft_dow: 5, plan_draft_time: '09:00' }
@@ -29,6 +29,11 @@ describe('week helpers', () => {
   it('names the day of a date as a tile kicker', () => {
     expect(weekdayKicker('2026-10-05')).toBe('MON')
     expect(weekdayKicker('2026-10-11')).toBe('SUN')
+  })
+
+  it('names the day of a date in full', () => {
+    expect(weekdayName('2026-10-09')).toBe('Friday')
+    expect(weekdayName('2026-10-11')).toBe('Sunday')
   })
 
   it('refuses a week start that is not a Monday, and a date that is not real', () => {

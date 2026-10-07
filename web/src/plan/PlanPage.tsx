@@ -11,8 +11,20 @@ import { Icon } from '../ui/Icon.tsx'
 import { IconButton } from '../ui/IconButton.tsx'
 import { Skeleton } from '../ui/Skeleton.tsx'
 import { Tag } from '../ui/Tag.tsx'
-import { DRAFT_JOB_KIND, parseDraftResult, planKey, usePlan, useStartDraft, type DraftResult, type PlanDay, type PlanStatus } from './api.ts'
-import { addDays, defaultWeek, localNow, weekdayKicker, weekLabel } from './week.ts'
+import {
+  DRAFT_JOB_KIND,
+  parseDraftResult,
+  planKey,
+  usePlan,
+  useStartDraft,
+  useSwapDay,
+  type DraftResult,
+  type PlanDay,
+  type PlanStatus,
+  type Swap,
+} from './api.ts'
+import { SwapSheet } from './SwapSheet.tsx'
+import { addDays, defaultWeek, localNow, weekdayKicker, weekdayName, weekLabel } from './week.ts'
 import styles from './PlanPage.module.css'
 
 // statusTags is the tag beside the week's title for each plan status.
@@ -44,18 +56,23 @@ function pushedToCalendar(status: PlanStatus): boolean {
 
 // DayTile is one day of the Draft board: a Regular on the surface, a
 // Quest-log pick in teal with its "NEW" kicker, and a crock-pot dinner's
-// start-by time in the household's zone.
-function DayTile({ day, timezone }: { day: PlanDay; timezone: string }) {
+// start-by time in the household's zone. Tapping it opens the swap sheet;
+// while that is open the tile is swapping: on the page background, ringed in
+// grape, its name muted.
+function DayTile({ day, timezone, swapping, onSwap }: { day: PlanDay; timezone: string; swapping: boolean; onSwap: () => void }) {
   const kicker = weekdayKicker(day.date)
+  const classes = [styles.tile, day.is_new && styles.newTile, swapping && styles.swapping].filter(Boolean).join(' ')
   return (
-    <li className={[styles.tile, day.is_new && styles.newTile].filter(Boolean).join(' ')}>
-      <p className={styles.dayKicker}>{day.is_new ? `${kicker} · NEW` : kicker}</p>
-      <div>
-        <p className={styles.dinner}>{day.dinner.name}</p>
-        {day.start_by !== null && (
-          <p className={styles.startBy}>Start by {formatClockTime(localNow(timezone, new Date(day.start_by)).time)}</p>
-        )}
-      </div>
+    <li className={classes}>
+      <button type="button" className={styles.tileButton} onClick={onSwap}>
+        <span className={styles.dayKicker}>{swapping ? `${kicker} · SWAPPING…` : day.is_new ? `${kicker} · NEW` : kicker}</span>
+        <span>
+          <span className={styles.dinner}>{day.dinner.name}</span>
+          {day.start_by !== null && (
+            <span className={styles.startBy}>Start by {formatClockTime(localNow(timezone, new Date(day.start_by)).time)}</span>
+          )}
+        </span>
+      </button>
     </li>
   )
 }
@@ -87,6 +104,9 @@ function WeekBoard({ weekStart, timezone, onWeek }: { weekStart: string; timezon
   const [jobId, setJobId] = useState<string | null>(null)
   const job = useJob<unknown>(DRAFT_JOB_KIND, jobId)
   const [confirming, setConfirming] = useState(false)
+  const swap = useSwapDay(weekStart)
+  // The date of the day being swapped, while the swap sheet is open.
+  const [swappingDate, setSwappingDate] = useState<string | null>(null)
   const label = weekLabel(weekStart)
 
   // The draft's result, once the job has succeeded, or why it cannot be read.
@@ -143,8 +163,10 @@ function WeekBoard({ weekStart, timezone, onWeek }: { weekStart: string; timezon
   const { mutate } = startDraft
   function start(confirm: boolean) {
     setConfirming(false)
-    // A draft asked for again leaves the last one's failure behind.
+    // A draft asked for again leaves the last one's failure, and a failed
+    // swap's, behind.
     setJobId(null)
+    swap.reset()
     mutate(
       { weekStart, confirm },
       {
@@ -160,7 +182,11 @@ function WeekBoard({ weekStart, timezone, onWeek }: { weekStart: string; timezon
     else start(false)
   }
 
-  const failure = startDraft.isError ? (
+  const failure = swap.isError ? (
+    <ErrorBanner onRetry={() => swapIn(swap.variables)}>
+      Couldn't swap {weekdayName(swap.variables.date)}'s dinner. {swap.error.message}
+    </ErrorBanner>
+  ) : startDraft.isError ? (
     <ErrorBanner onRetry={rebuild}>Couldn't start drafting this week. {startDraft.error.message}</ErrorBanner>
   ) : result.error !== null ? (
     <ErrorBanner onRetry={rebuild}>Couldn't read the draft. {result.error.message}</ErrorBanner>
@@ -173,6 +199,19 @@ function WeekBoard({ weekStart, timezone, onWeek }: { weekStart: string; timezon
   ) : (
     <ErrorBanner onRetry={job.poll}>Couldn't check on the draft. {job.error.message}</ErrorBanner>
   )
+
+  // swapIn sends the swap chosen in the sheet and closes it.
+  function swapIn(chosen: Swap) {
+    setSwappingDate(null)
+    swap.mutate(chosen)
+  }
+  // openSwap opens the swap sheet on a day. One swap is sent at a time: the
+  // plan the server answers it with must not overwrite another still pending.
+  function openSwap(date: string) {
+    if (swap.isPending) return
+    swap.reset()
+    setSwappingDate(date)
+  }
 
   let body
   if (plan.isError) {
@@ -192,6 +231,7 @@ function WeekBoard({ weekStart, timezone, onWeek }: { weekStart: string; timezon
     )
   } else {
     const { ai_note, days } = plan.data
+    const swappingDay = days.find((day) => day.date === swappingDate)
     body = (
       <>
         {ai_note !== null && (
@@ -204,7 +244,13 @@ function WeekBoard({ weekStart, timezone, onWeek }: { weekStart: string; timezon
         )}
         <ul className={styles.grid} aria-label="Dinners this week">
           {days.map((day) => (
-            <DayTile key={day.date} day={day} timezone={timezone} />
+            <DayTile
+              key={day.date}
+              day={day}
+              timezone={timezone}
+              swapping={day.date === swappingDate}
+              onSwap={() => openSwap(day.date)}
+            />
           ))}
           <li className={styles.rebuildCell}>
             <button type="button" className={styles.rebuild} onClick={rebuild}>
@@ -214,6 +260,14 @@ function WeekBoard({ weekStart, timezone, onWeek }: { weekStart: string; timezon
           </li>
         </ul>
         <PushToCalendar />
+        {swappingDay !== undefined && (
+          <SwapSheet
+            day={swappingDay}
+            planned={new Set(days.map((day) => day.dinner.id))}
+            onSwap={swapIn}
+            onClose={() => setSwappingDate(null)}
+          />
+        )}
       </>
     )
   }

@@ -941,6 +941,23 @@ func TestCandidatesExpire(t *testing.T) {
 	wantStaleCandidate(t, e, id, cid)
 }
 
+// TestCandidatesExpireBeforeEviction: once their lifetime passes, a
+// dinner's candidates no longer ground it, even while the service still
+// holds them because their eviction has not run yet.
+func TestCandidatesExpireBeforeEviction(t *testing.T) {
+	dinners.SetOfferLifetime(t, time.Hour)
+	e := newEnv(t)
+	id := failedDinner(t, e, "Mystery curry")
+	e.search.Results["Mystery curry"] = []recipes.Candidate{{URL: curryA}}
+	cid := candidateID(t, e, id, "Chicken Curry")
+
+	dinners.AdvanceClock(t, time.Hour)
+	if !e.svc.HasOffers(id) {
+		t.Fatal("candidates evicted already, want them held until their timer fires")
+	}
+	wantStaleCandidate(t, e, id, cid)
+}
+
 // TestExpiredCandidatesNotHeld: the service holds no dinner's candidates
 // past their lifetime, however many dinners were offered some.
 func TestExpiredCandidatesNotHeld(t *testing.T) {

@@ -22,6 +22,15 @@ func SetOfferLifetime(t *testing.T, d time.Duration) {
 	t.Cleanup(func() { offerLifetime = old })
 }
 
+// AdvanceClock moves the service's clock d ahead of real time until t
+// ends, without firing any timer. A test calling it must not run in
+// parallel.
+func AdvanceClock(t *testing.T, d time.Duration) {
+	old := now
+	now = func() time.Time { return old().Add(d) }
+	t.Cleanup(func() { now = old })
+}
+
 // HasOffers reports whether the service holds candidates offered for
 // dinner id.
 func (s *Service) HasOffers(id string) bool {

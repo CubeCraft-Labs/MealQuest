@@ -300,12 +300,16 @@ type Candidate struct {
 // ground it; tests shorten it.
 var offerLifetime = 30 * time.Minute
 
+// now is the clock offer lifetimes are measured on; tests advance it.
+var now = time.Now
+
 // offerSet is the candidates last offered for a dinner: the page URL of
-// each candidate id. expiry drops the set from offers once offerLifetime
-// has passed.
+// each candidate id. They ground the dinner until deadline; expiry drops
+// the set from offers once it has passed.
 type offerSet struct {
-	urls   map[string]string
-	expiry *time.Timer
+	urls     map[string]string
+	deadline time.Time
+	expiry   *time.Timer
 }
 
 // offerSearch is a Candidates search running for a dinner. It is stale
@@ -368,7 +372,7 @@ func (s *Service) trackOffers(id string) (keep func(urls map[string]string), don
 			return
 		}
 		s.dropOffers(id)
-		set := &offerSet{urls: urls}
+		set := &offerSet{urls: urls, deadline: now().Add(offerLifetime)}
 		// expiry waits for offersMu, so it finds set stored even when it
 		// fires at once, and drops set only, never offers stored later.
 		set.expiry = time.AfterFunc(offerLifetime, func() {
@@ -423,12 +427,13 @@ func (s *Service) candidateID(id, rawURL string) string {
 
 // candidateURL is the page URL of candidate cid last offered for dinner id.
 // A cid not among the dinner's live offers, or whose page is not a valid
-// recipe link, is a *ValidationError.
+// recipe link, is a *ValidationError. Offers past their deadline are not
+// live, even before their expiry drops them.
 func (s *Service) candidateURL(id, cid string) (string, error) {
 	var raw string
 	var ok bool
 	s.offersMu.Lock()
-	if set := s.offers[id]; set != nil {
+	if set := s.offers[id]; set != nil && now().Before(set.deadline) {
 		raw, ok = set.urls[cid]
 	}
 	s.offersMu.Unlock()

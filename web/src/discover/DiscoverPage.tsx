@@ -95,25 +95,28 @@ export function DiscoverPage() {
   const questLog = useQuestLog()
   const decision = useDecide()
   const startBatch = useStartBatch()
-  // The job of the batch last known to be finding Side quests: the one Get
-  // more now started or joined, the replenish a decision started or joined,
-  // or the deck's active batch, which may have been started elsewhere or
-  // before the page opened.
+  // The job of the batch last known to be finding Side quests, or to have
+  // failed to: the one Get more now started or joined, the replenish a
+  // decision started or joined, or the deck's active or failed batch, which
+  // may have been started elsewhere or before the page opened.
   const [batchJobId, setBatchJobId] = useState<string | null>(null)
-  // A read of the deck reporting a new active batch follows its job from
-  // that render on; one reporting none leaves the last job followed, so its
-  // end and any failure stay shown.
-  const activeJobId = deck.data?.activeBatch?.job_id ?? null
-  const [seenActiveJobId, setSeenActiveJobId] = useState<string | null>(null)
-  if (activeJobId !== seenActiveJobId) {
-    setSeenActiveJobId(activeJobId)
-    if (activeJobId !== null) setBatchJobId(activeJobId)
+  // A read of the deck reporting a new active or failed batch follows its
+  // job from that render on; one reporting neither leaves the last job
+  // followed, so its end and any failure stay shown.
+  const failedJobId = deck.data?.failedBatch?.job_id ?? null
+  const deckJobId = deck.data?.activeBatch?.job_id ?? failedJobId
+  const [seenDeckJobId, setSeenDeckJobId] = useState<string | null>(null)
+  if (deckJobId !== seenDeckJobId) {
+    setSeenDeckJobId(deckJobId)
+    if (deckJobId !== null) setBatchJobId(deckJobId)
   }
   const job = useJob<unknown>(BATCH_JOB_KIND, batchJobId)
 
   const top = cards?.[0]
   const [busy, setBusy] = useState(false)
-  const jobRunning = batchJobId !== null && job.status !== 'succeeded' && job.status !== 'failed'
+  // The deck's failed batch is not finding anything, even before its job's
+  // first poll says why it failed.
+  const jobRunning = batchJobId !== null && batchJobId !== failedJobId && job.status !== 'succeeded' && job.status !== 'failed'
   const finding = startBatch.isPending || jobRunning
   const { mutate: mutateStartBatch } = startBatch
   const getMore = useCallback(() => mutateStartBatch(undefined, { onSuccess: (b) => setBatchJobId(b.job_id) }), [mutateStartBatch])

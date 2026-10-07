@@ -187,6 +187,28 @@ func (q *Queries) GetActiveSuggestionBatch(ctx context.Context) (SuggestionBatch
 	return i, err
 }
 
+const getLatestSuggestionBatch = `-- name: GetLatestSuggestionBatch :one
+SELECT id, "trigger", status, ai_run_id, created_at, updated_at FROM suggestion_batches
+ORDER BY id DESC
+LIMIT 1
+`
+
+// The newest batch, whatever its status. Returns sql.ErrNoRows when there
+// is none.
+func (q *Queries) GetLatestSuggestionBatch(ctx context.Context) (SuggestionBatch, error) {
+	row := q.db.QueryRowContext(ctx, getLatestSuggestionBatch)
+	var i SuggestionBatch
+	err := row.Scan(
+		&i.ID,
+		&i.Trigger,
+		&i.Status,
+		&i.AiRunID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getSuggestion = `-- name: GetSuggestion :one
 SELECT suggestions.id, suggestions.dinner_id, suggestions.batch_id, suggestions.name, suggestions.reason, suggestions.cited_regular_ids, suggestions.status, suggestions.decided_at, suggestions.created_at, suggestions.updated_at, dinners.id, dinners.name, dinners.normalized_name, dinners.status, dinners.origin, dinners.method, dinners.minutes_total, dinners.difficulty, dinners.cuisine, dinners.is_favorite, dinners.recipe_id, dinners.photo_id, dinners.grounding_status, dinners.updated_by, dinners.created_at, dinners.updated_at, dinners.recipe_url, dinners.grounding_error, dinners.grounding_revision
 FROM suggestions

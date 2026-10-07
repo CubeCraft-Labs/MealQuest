@@ -78,6 +78,9 @@ type Querier interface {
 	// Returns sql.ErrNoRows until the row exists.
 	GetIntegrationsGoogle(ctx context.Context) (IntegrationsGoogle, error)
 	GetJob(ctx context.Context, id string) (Job, error)
+	// The newest batch, whatever its status. Returns sql.ErrNoRows when there
+	// is none.
+	GetLatestSuggestionBatch(ctx context.Context) (SuggestionBatch, error)
 	GetPhoto(ctx context.Context, id string) (Photo, error)
 	// Finds stored image bytes by content hash. The schema does not make sha256
 	// unique, so the earliest-created (lowest id) match is returned.

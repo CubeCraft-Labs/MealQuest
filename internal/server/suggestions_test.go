@@ -174,6 +174,9 @@ func TestSuggestionDeckActiveBatch(t *testing.T) {
 	if active, ok := body["active_batch"]; !ok || active != nil {
 		t.Fatalf("deck = %v, want active_batch null", body)
 	}
+	if failed, ok := body["failed_batch"]; !ok || failed != nil {
+		t.Fatalf("deck = %v, want failed_batch null", body)
+	}
 
 	rec, started := callDinners(t, h, http.MethodPost, suggestionsPath+"/batches", "")
 	if rec.Code != http.StatusAccepted {

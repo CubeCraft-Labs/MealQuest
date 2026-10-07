@@ -248,35 +248,48 @@ func (q *Queries) GetDinner(ctx context.Context, id string) (Dinner, error) {
 
 const groundDinner = `-- name: GroundDinner :one
 UPDATE dinners
-SET recipe_id = ?,
+SET recipe_id = ?1,
 	recipe_url = NULL,
-	photo_id = ?,
-	method = ?,
-	minutes_total = ?,
-	difficulty = ?,
-	grounding_status = ?,
+	photo_id = ?2,
+	method = ?3,
+	minutes_total = ?4,
+	difficulty = ?5,
+	grounding_status = ?6,
 	grounding_error = NULL,
-	updated_by = ?,
-	updated_at = ?
-WHERE id = ?
+	updated_by = ?7,
+	updated_at = ?8
+WHERE id = ?9
+	AND status <> 'archived'
+	AND normalized_name = ?10
+	AND grounding_status = ?11
+	AND grounding_revision = ?12
+	AND recipe_id IS ?13
 RETURNING id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url, grounding_error, grounding_revision
 `
 
 type GroundDinnerParams struct {
-	RecipeID        sql.NullString
-	PhotoID         sql.NullString
-	Method          sql.NullString
-	MinutesTotal    sql.NullInt64
-	Difficulty      sql.NullString
-	GroundingStatus string
-	UpdatedBy       sql.NullString
-	UpdatedAt       string
-	ID              string
+	RecipeID                  sql.NullString
+	PhotoID                   sql.NullString
+	Method                    sql.NullString
+	MinutesTotal              sql.NullInt64
+	Difficulty                sql.NullString
+	GroundingStatus           string
+	UpdatedBy                 sql.NullString
+	UpdatedAt                 string
+	ID                        string
+	ObservedNormalizedName    string
+	ObservedGroundingStatus   string
+	ObservedGroundingRevision int64
+	ObservedRecipeID          sql.NullString
 }
 
 // Records a dinner's grounding by hand (grounded or manual) and clears any
 // grounding_error and pasted recipe_url: the recipe chosen replaces the
-// link. An unknown id returns sql.ErrNoRows.
+// link. It writes only an unarchived dinner still as it was observed
+// before grounding (same normalized_name, grounding_status,
+// grounding_revision and recipe_id), so a dinner renamed, archived or
+// grounded some other way meanwhile is left as it is. That dinner, or an
+// unknown id, returns sql.ErrNoRows.
 func (q *Queries) GroundDinner(ctx context.Context, arg GroundDinnerParams) (Dinner, error) {
 	row := q.db.QueryRowContext(ctx, groundDinner,
 		arg.RecipeID,
@@ -288,6 +301,10 @@ func (q *Queries) GroundDinner(ctx context.Context, arg GroundDinnerParams) (Din
 		arg.UpdatedBy,
 		arg.UpdatedAt,
 		arg.ID,
+		arg.ObservedNormalizedName,
+		arg.ObservedGroundingStatus,
+		arg.ObservedGroundingRevision,
+		arg.ObservedRecipeID,
 	)
 	var i Dinner
 	err := row.Scan(

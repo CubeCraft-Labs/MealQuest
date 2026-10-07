@@ -69,7 +69,11 @@ type Querier interface {
 	GetRecipeSearchSettings(ctx context.Context) (RecipeSearchSetting, error)
 	// Records a dinner's grounding by hand (grounded or manual) and clears any
 	// grounding_error and pasted recipe_url: the recipe chosen replaces the
-	// link. An unknown id returns sql.ErrNoRows.
+	// link. It writes only an unarchived dinner still as it was observed
+	// before grounding (same normalized_name, grounding_status,
+	// grounding_revision and recipe_id), so a dinner renamed, archived or
+	// grounded some other way meanwhile is left as it is. That dinner, or an
+	// unknown id, returns sql.ErrNoRows.
 	GroundDinner(ctx context.Context, arg GroundDinnerParams) (Dinner, error)
 	// Records the background grounding of an unarchived dinner still pending at
 	// the grounding_revision it was grounded for; a dinner grounded some other

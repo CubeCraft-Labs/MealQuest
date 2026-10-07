@@ -76,6 +76,18 @@ var groundTimeout = GroundTimeout
 // runs past GroundTimeout; the dinner is left as it was.
 var ErrGroundTimeout = errors.New("dinners: grounding the recipe took too long")
 
+// ErrGroundFailed wraps any failure grounding a candidate or link by hand.
+// Its text may quote the link and dependency errors, so it is never
+// logged.
+var ErrGroundFailed = errors.New("dinners: grounding the recipe failed")
+
+// ErrArchived is grounding an archived dinner by hand.
+var ErrArchived = errors.New("dinner archived")
+
+// ErrGroundConflict is a candidate or link grounded for a dinner that was
+// renamed or grounded some other way while it was grounding.
+var ErrGroundConflict = errors.New("dinner changed while its recipe was grounding")
+
 // GroundJob is the KindGroundDinner payload: the dinner to ground and its
 // grounding_revision when the job was enqueued.
 type GroundJob struct {
@@ -326,8 +338,11 @@ type ManualRecipe struct {
 // difficulty. A manual recipe is stored as typed — no model runs — and
 // sets grounding_status manual with its method and minutes; it has no
 // photo, and the dinner keeps its difficulty. An invalid f is a
-// *ValidationError; a page that cannot ground the dinner is a
-// *recipes.ErrUngroundable and changes nothing.
+// *ValidationError and an archived dinner ErrArchived. A failure grounding
+// a candidate or link wraps ErrGroundFailed; a page that cannot ground the
+// dinner is also a *recipes.ErrUngroundable. A dinner renamed, archived or
+// grounded some other way while a candidate or link was grounding is
+// ErrGroundConflict or ErrArchived. None of these changes the dinner.
 func (s *Service) Ground(ctx context.Context, id string, f Fix, updatedBy string) (Dinner, error) {
 	if updatedBy == "" {
 		return Dinner{}, errors.New("dinners: ground: no member to record as updated_by")
@@ -339,8 +354,12 @@ func (s *Service) Ground(ctx context.Context, id string, f Fix, updatedBy string
 	if manual != nil {
 		return s.groundManual(ctx, id, *manual, updatedBy)
 	}
-	if _, err := s.get(ctx, id); err != nil {
+	cur, err := s.get(ctx, id)
+	if err != nil {
 		return Dinner{}, err
+	}
+	if cur.Status == StatusArchived {
+		return Dinner{}, ErrArchived
 	}
 	groundCtx, cancel := context.WithTimeout(ctx, groundTimeout)
 	defer cancel()
@@ -349,26 +368,43 @@ func (s *Service) Ground(ctx context.Context, id string, f Fix, updatedBy string
 		if ctx.Err() == nil && errors.Is(groundCtx.Err(), context.DeadlineExceeded) {
 			return Dinner{}, ErrGroundTimeout
 		}
-		return Dinner{}, fmt.Errorf("dinners: ground %s: %w", id, err)
+		return Dinner{}, fmt.Errorf("%w: dinner %s: %w", ErrGroundFailed, id, err)
 	}
 	row, err := db.New(s.st.Writer).GroundDinner(ctx, db.GroundDinnerParams{
-		RecipeID:        sql.NullString{String: gr.RecipeID, Valid: true},
-		PhotoID:         sql.NullString{String: gr.PhotoID, Valid: true},
-		Method:          sql.NullString{String: gr.Method, Valid: true},
-		MinutesTotal:    nullInt(gr.MinutesTotal),
-		Difficulty:      sql.NullString{String: gr.Difficulty, Valid: true},
-		GroundingStatus: GroundingGrounded,
-		UpdatedBy:       sql.NullString{String: updatedBy, Valid: true},
-		UpdatedAt:       store.Now().String(),
-		ID:              id,
+		RecipeID:                  sql.NullString{String: gr.RecipeID, Valid: true},
+		PhotoID:                   sql.NullString{String: gr.PhotoID, Valid: true},
+		Method:                    sql.NullString{String: gr.Method, Valid: true},
+		MinutesTotal:              nullInt(gr.MinutesTotal),
+		Difficulty:                sql.NullString{String: gr.Difficulty, Valid: true},
+		GroundingStatus:           GroundingGrounded,
+		UpdatedBy:                 sql.NullString{String: updatedBy, Valid: true},
+		UpdatedAt:                 store.Now().String(),
+		ID:                        cur.ID,
+		ObservedNormalizedName:    cur.NormalizedName,
+		ObservedGroundingStatus:   cur.GroundingStatus,
+		ObservedGroundingRevision: cur.GroundingRevision,
+		ObservedRecipeID:          cur.RecipeID,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
-		return Dinner{}, ErrNotFound
+		return Dinner{}, s.groundRejected(ctx, id)
 	}
 	if err != nil {
 		return Dinner{}, fmt.Errorf("dinners: ground %s: %w", id, err)
 	}
 	return fromRow(row), nil
+}
+
+// groundRejected is the error for dinner id when it was not as observed
+// before grounding: ErrNotFound, ErrArchived or ErrGroundConflict.
+func (s *Service) groundRejected(ctx context.Context, id string) error {
+	cur, err := s.get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if cur.Status == StatusArchived {
+		return ErrArchived
+	}
+	return ErrGroundConflict
 }
 
 // groundManual stores m as dinner id's recipe, with its ingredients and
@@ -383,6 +419,9 @@ func (s *Service) groundManual(ctx context.Context, id string, m ManualRecipe, u
 		}
 		if err != nil {
 			return fmt.Errorf("dinners: read %s: %w", id, err)
+		}
+		if cur.Status == StatusArchived {
+			return ErrArchived
 		}
 		ld, err := json.Marshal(manualJSONLD{
 			Context:      "https://schema.org",
@@ -439,14 +478,18 @@ func (s *Service) groundManual(ctx context.Context, id string, m ManualRecipe, u
 			}
 		}
 		row, err = q.GroundDinner(ctx, db.GroundDinnerParams{
-			RecipeID:        sql.NullString{String: rec.ID, Valid: true},
-			Method:          method,
-			MinutesTotal:    minutes,
-			Difficulty:      cur.Difficulty,
-			GroundingStatus: GroundingManual,
-			UpdatedBy:       sql.NullString{String: updatedBy, Valid: true},
-			UpdatedAt:       now,
-			ID:              cur.ID,
+			RecipeID:                  sql.NullString{String: rec.ID, Valid: true},
+			Method:                    method,
+			MinutesTotal:              minutes,
+			Difficulty:                cur.Difficulty,
+			GroundingStatus:           GroundingManual,
+			UpdatedBy:                 sql.NullString{String: updatedBy, Valid: true},
+			UpdatedAt:                 now,
+			ID:                        cur.ID,
+			ObservedNormalizedName:    cur.NormalizedName,
+			ObservedGroundingStatus:   cur.GroundingStatus,
+			ObservedGroundingRevision: cur.GroundingRevision,
+			ObservedRecipeID:          cur.RecipeID,
 		})
 		if err != nil {
 			return fmt.Errorf("dinners: ground %s: %w", id, err)

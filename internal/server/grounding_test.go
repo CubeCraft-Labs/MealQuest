@@ -224,6 +224,49 @@ func TestPostGroundViaRecipeURL(t *testing.T) {
 	}
 }
 
+// TestPostGroundViaRecipeURLStorageFailure: a pasted link that fails for a
+// reason other than its recipe is a 500 logged by reason and dinner id,
+// never with the link, which can carry a personal token, or the dependency
+// error.
+func TestPostGroundViaRecipeURLStorageFailure(t *testing.T) {
+	t.Parallel()
+	e := newDinnersEnv(t).withRecipes(t)
+	const token = "personal-token-abc123"
+	link := stewPage + "?access_token=" + token
+	e.pages.Bodies[link] = e.pages.Bodies[stewPage]
+	id := createDinner(t, e.h, `{"name":"Sunday stew"}`)
+	e.model.QueueGenerate(recipestest.NormalizedReply("oven", 150))
+	if _, err := e.st.Writer.ExecContext(t.Context(),
+		`CREATE TRIGGER refuse_recipes BEFORE INSERT ON recipes BEGIN SELECT RAISE(ABORT, 'disk full'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, body := callDinners(t, e.h, http.MethodPost, dinnersPath+"/"+id+"/ground", `{"recipe_url":"`+link+`"}`)
+	if rec.Code != http.StatusInternalServerError || errorCode(body) != "internal" || strings.Contains(rec.Body.String(), token) {
+		t.Errorf("POST = %d %s, want 500 internal without the link", rec.Code, rec.Body)
+	}
+	logs := e.logs.String()
+	if strings.Contains(logs, token) || strings.Contains(logs, "c.example") || strings.Contains(logs, "disk full") ||
+		!strings.Contains(logs, "reason=ground_failed") || !strings.Contains(logs, "dinner_id="+id) {
+		t.Errorf("logs = %q, want reason=ground_failed and the dinner id, without the link or dependency error", logs)
+	}
+}
+
+// TestPostGroundArchived: grounding an archived dinner by hand is a 409.
+func TestPostGroundArchived(t *testing.T) {
+	t.Parallel()
+	e := newDinnersEnv(t)
+	id := createDinner(t, e.h, `{"name":"Family chili"}`)
+	if rec, _ := callDinners(t, e.h, http.MethodDelete, dinnersPath+"/"+id, ""); rec.Code != http.StatusOK {
+		t.Fatalf("DELETE = %d: %s", rec.Code, rec.Body)
+	}
+	rec, body := callDinners(t, e.h, http.MethodPost, dinnersPath+"/"+id+"/ground",
+		`{"manual":{"ingredients":["1 lb beef"],"minutes":240,"method":"crockpot"}}`)
+	if rec.Code != http.StatusConflict || errorCode(body) != "dinner_archived" {
+		t.Errorf("POST = %d %v, want 409 dinner_archived", rec.Code, body)
+	}
+}
+
 func TestPostGroundViaManual(t *testing.T) {
 	t.Parallel()
 	e := newDinnersEnv(t)

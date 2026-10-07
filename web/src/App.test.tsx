@@ -30,6 +30,7 @@ function renderAppAt(path: string, location = fakeLocation(path)) {
 // The routes that render a built screen rather than a placeholder page.
 const SCREENS = {
   '/onboarding': true,
+  '/plan': true,
   '/discover': true,
   '/settings': true,
   '/settings/ai': true,
@@ -165,19 +166,19 @@ describe('App first-run redirect', () => {
   it('opens the routes once onboarding is finished', async () => {
     mockViewport(390)
     stubFetchByPath(SIGNED_IN)
-    renderAt('/plan')
-    expect(await screen.findByRole('heading', { level: 1, name: 'Plan' })).toBeInTheDocument()
+    renderAt('/quick')
+    expect(await screen.findByRole('heading', { level: 1, name: 'Quick dinners' })).toBeInTheDocument()
   })
 
   it('reports a household settings failure with a retry instead of rendering the routes', async () => {
     mockViewport(390)
     stubFetch(jsonResponse(200, ME), errorResponse(500, 'internal'), jsonResponse(200, HOUSEHOLD_SETTINGS))
-    renderAt('/plan')
+    renderAt('/quick')
 
     expect(await screen.findByRole('alert')).toHaveTextContent('MealQuest could not load: internal message')
     expect(screen.queryByRole('navigation', { name: 'Primary' })).not.toBeInTheDocument()
     screen.getByRole('button', { name: 'Retry' }).click()
-    expect(await screen.findByRole('heading', { level: 1, name: 'Plan' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: 'Quick dinners' })).toBeInTheDocument()
   })
 })
 
@@ -185,12 +186,12 @@ describe('App bootstrap', () => {
   it('shows the skeleton until /me loads, then the routes', async () => {
     mockViewport(390)
     const fetchMock = stubFetch(jsonResponse(200, ME), jsonResponse(200, HOUSEHOLD_SETTINGS))
-    renderAt('/plan')
+    renderAt('/quick')
 
     expect(screen.getByRole('main', { name: 'Loading MealQuest' })).toHaveAttribute('aria-busy', 'true')
     expect(screen.queryByRole('navigation', { name: 'Primary' })).not.toBeInTheDocument()
 
-    expect(await screen.findByRole('heading', { level: 1, name: 'Plan' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: 'Quick dinners' })).toBeInTheDocument()
     expect(screen.queryByRole('main', { name: 'Loading MealQuest' })).not.toBeInTheDocument()
     expect(request(fetchMock, 0)).toMatchObject({ path: '/api/v1/me', method: 'GET', credentials: 'same-origin' })
   })
@@ -258,7 +259,7 @@ describe('App offline bootstrap', () => {
   })
 
   it.each([
-    ['/plan', 'Plan'],
+    ['/quick', 'Quick dinners'],
     ['/dinner/01J9ZK', 'Dinner'],
   ])('an offline reload of %s after an online visit opens the saved page', async (path, title) => {
     await visitOnline()
@@ -282,7 +283,7 @@ describe('App offline bootstrap', () => {
         () => new Promise((_, reject) => (failMe = () => reject(new TypeError('Failed to fetch')))),
       ).mockRejectedValue(new TypeError('Failed to fetch')),
     )
-    renderAt('/plan')
+    renderAt('/quick')
     await vi.waitFor(() => expect(failMe).toBeDefined())
     onLine = false
     act(() => {
@@ -290,7 +291,7 @@ describe('App offline bootstrap', () => {
     })
     act(() => failMe())
 
-    expect(await screen.findByRole('heading', { level: 1, name: 'Plan' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: 'Quick dinners' })).toBeInTheDocument()
     expect(screen.queryByRole('main', { name: 'Loading MealQuest' })).not.toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveTextContent('Offline — showing saved data')
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
@@ -299,15 +300,15 @@ describe('App offline bootstrap', () => {
   it('opens the saved pages when the server is unreachable but the browser reports online', async () => {
     await visitOnline()
     vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockRejectedValue(new TypeError('Failed to fetch')))
-    renderAt('/plan')
+    renderAt('/quick')
 
-    expect(await screen.findByRole('heading', { level: 1, name: 'Plan' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: 'Quick dinners' })).toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveTextContent('Offline — showing saved data')
   })
 
   it('reports the failure offline when this device never verified a session', async () => {
     goOffline()
-    renderAt('/plan')
+    renderAt('/quick')
 
     expect(await screen.findByRole('alert')).toHaveTextContent('MealQuest could not load: Failed to fetch')
     expect(screen.queryByRole('navigation', { name: 'Primary' })).not.toBeInTheDocument()
@@ -316,12 +317,12 @@ describe('App offline bootstrap', () => {
   it('reports the failure offline after the session was refused', async () => {
     await visitOnline()
     stubFetch(errorResponse(401, 'unauthenticated'))
-    const { location, unmount } = renderAt('/plan')
+    const { location, unmount } = renderAt('/quick')
     await vi.waitFor(() => expect(location.assign).toHaveBeenCalled())
     unmount()
 
     goOffline()
-    renderAt('/plan')
+    renderAt('/quick')
     expect(await screen.findByRole('alert')).toHaveTextContent('MealQuest could not load: Failed to fetch')
     expect(screen.queryByRole('navigation', { name: 'Primary' })).not.toBeInTheDocument()
   })
@@ -329,13 +330,13 @@ describe('App offline bootstrap', () => {
   it('loads /me again on reconnect and refuses writes until it has', async () => {
     await visitOnline()
     goOffline()
-    const api = createApiClient(fakeLocation('/plan'), createNetworkStatus(window), createVerifiedSession(localStorage))
+    const api = createApiClient(fakeLocation('/quick'), createNetworkStatus(window), createVerifiedSession(localStorage))
     render(
-      <InDataRouter path="/plan">
+      <InDataRouter path="/quick">
         <App api={api} serviceWorker={undefined} />
       </InDataRouter>,
     )
-    expect(await screen.findByRole('heading', { level: 1, name: 'Plan' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: 'Quick dinners' })).toBeInTheDocument()
     await expect(api.apiFetch('/api/v1/plans', { method: 'POST', body: {} })).rejects.toThrow(/no CSRF token/)
 
     const fetchMock = stubFetchByPath(SIGNED_IN)
@@ -350,6 +351,6 @@ describe('App offline bootstrap', () => {
       ]),
     )
     await vi.waitFor(() => expect(screen.queryByRole('status')).toBeNull())
-    expect(screen.getByRole('heading', { level: 1, name: 'Plan' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1, name: 'Quick dinners' })).toBeInTheDocument()
   })
 })

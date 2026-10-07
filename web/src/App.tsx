@@ -7,6 +7,7 @@ import { DiscoverPage } from './discover/DiscoverPage.tsx'
 import { ONBOARDING_PATH, OnboardingGate } from './onboarding/OnboardingGate.tsx'
 import { OnboardingPage } from './onboarding/OnboardingPage.tsx'
 import { PlaceholderPage } from './pages/PlaceholderPage.tsx'
+import { PlanPage } from './plan/PlanPage.tsx'
 import { OfflinePill } from './pwa/OfflinePill.tsx'
 import { UpdatePrompt, type UpdateContainer } from './pwa/UpdatePrompt.tsx'
 import { AISettingsPage } from './settings/AISettingsPage.tsx'
@@ -36,6 +37,7 @@ export const routes = [
 
 // The screens built so far; every other route shows its placeholder page.
 const screens: Partial<Record<(typeof routes)[number]['path'], ReactNode>> = {
+  '/plan': <PlanPage />,
   '/discover': <DiscoverPage />,
   '/settings': <SettingsPage />,
   '/settings/ai': <AISettingsPage />,

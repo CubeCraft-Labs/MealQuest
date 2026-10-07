@@ -25,7 +25,7 @@ function planBody(changes: Record<number, { id: string; name: string; is_new?: b
       const change = changes[i]
       return {
         date,
-        dinner: { id: change?.id ?? `d${i}`, name: change?.name ?? `Dinner ${i}` },
+        dinner: { id: change?.id ?? `d${i}`, name: change?.name ?? `Dinner ${i}`, photo: null, minutes: null, method: null, origin: 'regular' },
         is_new: change?.is_new ?? false,
         start_by: change?.start_by ?? null,
       }
@@ -74,8 +74,8 @@ async function renderSwaps() {
   return { ...hook, queryClient, plan: () => queryClient.getQueryData<Plan>(planKey(WEEK))! }
 }
 
-const ORZO = { date: '2026-10-09', dinner: { id: 'q1', name: 'Lemon orzo' }, fromQuestLog: true }
-const FISH = { date: '2026-10-05', dinner: { id: 'r1', name: 'Fish tacos' }, fromQuestLog: false }
+const ORZO = { date: '2026-10-09', dinner: { id: 'q1', name: 'Lemon orzo', photo_id: undefined, minutes: null }, fromQuestLog: true }
+const FISH = { date: '2026-10-05', dinner: { id: 'r1', name: 'Fish tacos', photo_id: undefined, minutes: null }, fromQuestLog: false }
 
 afterEach(() => {
   vi.unstubAllGlobals()

@@ -1,7 +1,7 @@
 import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, useApi, type ApiRead } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
-import { oneOf } from '../dinners/api.ts'
+import { oneOf, photoId } from '../dinners/api.ts'
 import { QUEST_LOG_KEY } from '../discover/api.ts'
 
 export const PLANS_PATH = '/api/v1/plans'
@@ -22,12 +22,16 @@ export const PLAN_STATUSES = ['draft', 'synced', 'changed'] as const
 // synced plan makes it changed.
 export type PlanStatus = (typeof PLAN_STATUSES)[number]
 
+// PlanDinner is a planned dinner: photo_id is its stored photo's id, from
+// photo, and minutes its minutes from prep to table, when known.
+export type PlanDinner = { id: string; name: string; photo_id: string | undefined; minutes: number | null }
+
 // PlanDay is one day of a plan: its household-local date, the dinner
 // planned, whether that dinner is a Quest-log pick, and, for a crock-pot
 // dinner of known minutes, the instant it must start by.
 export type PlanDay = {
   date: string
-  dinner: { id: string; name: string }
+  dinner: PlanDinner
   is_new: boolean
   start_by: string | null
 }
@@ -57,12 +61,19 @@ function parseDay(where: string, body: unknown): PlanDay {
     !isRecord(body.dinner) ||
     typeof body.dinner.id !== 'string' ||
     typeof body.dinner.name !== 'string' ||
+    (body.dinner.minutes !== null && !Number.isInteger(body.dinner.minutes)) ||
     typeof body.is_new !== 'boolean' ||
     (body.start_by !== null && typeof body.start_by !== 'string')
   ) {
     throw new Error(`${where}: response has a day that is not a plan day`)
   }
-  return { date: body.date, dinner: { id: body.dinner.id, name: body.dinner.name }, is_new: body.is_new, start_by: body.start_by }
+  const dinner: PlanDinner = {
+    id: body.dinner.id,
+    name: body.dinner.name,
+    photo_id: photoId(where, body.dinner.photo),
+    minutes: body.dinner.minutes as number | null,
+  }
+  return { date: body.date, dinner, is_new: body.is_new, start_by: body.start_by }
 }
 
 function parsePlan(where: string, weekStart: string, body: unknown, cached: boolean): Plan {
@@ -134,12 +145,18 @@ export function useStartDraft() {
 
 // Swap is one day's swap: the day, and the dinner chosen for it with whether
 // it was chosen from the Quest log.
-export type Swap = { date: string; dinner: { id: string; name: string }; fromQuestLog: boolean }
+export type Swap = { date: string; dinner: PlanDinner; fromQuestLog: boolean }
 
 // sameDay says whether two plan days are the same in every field.
 function sameDay(a: PlanDay, b: PlanDay): boolean {
   return (
-    a.date === b.date && a.dinner.id === b.dinner.id && a.dinner.name === b.dinner.name && a.is_new === b.is_new && a.start_by === b.start_by
+    a.date === b.date &&
+    a.dinner.id === b.dinner.id &&
+    a.dinner.name === b.dinner.name &&
+    a.dinner.photo_id === b.dinner.photo_id &&
+    a.dinner.minutes === b.dinner.minutes &&
+    a.is_new === b.is_new &&
+    a.start_by === b.start_by
   )
 }
 

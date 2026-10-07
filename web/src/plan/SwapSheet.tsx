@@ -13,11 +13,12 @@ import type { PlanDay, Swap } from './api.ts'
 import { weekdayName } from './week.ts'
 import styles from './SwapSheet.module.css'
 
-type Source = 'quest_log' | 'regulars'
+// Source is a list a dinner is swapped in from.
+export type Source = 'quest_log' | 'regulars'
 
-const sourceNames: Record<Source, string> = { quest_log: 'Quest log', regulars: 'Regulars' }
+export const sourceNames: Record<Source, string> = { quest_log: 'Quest log', regulars: 'Regulars' }
 
-const emptyLists: Record<Source, string> = {
+export const emptyLists: Record<Source, string> = {
   quest_log: 'Your Quest log is empty — swipe right on a Side quest to add one.',
   regulars: 'You have no Regulars yet.',
 }
@@ -86,7 +87,12 @@ export function SwapSheet({ day, planned, onSwap, onClose }: SwapSheetProps) {
                 onClick={
                   already
                     ? undefined
-                    : () => onSwap({ date: day.date, dinner: { id: dinner.id, name: dinner.name }, fromQuestLog: source === 'quest_log' })
+                    : () =>
+                        onSwap({
+                          date: day.date,
+                          dinner: { id: dinner.id, name: dinner.name, photo_id: dinner.photo_id, minutes: dinner.minutes_total },
+                          fromQuestLog: source === 'quest_log',
+                        })
                 }
                 trailing={already && <Tag>Already this week</Tag>}
               />

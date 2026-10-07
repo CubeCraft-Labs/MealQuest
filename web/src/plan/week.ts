@@ -40,6 +40,11 @@ export function weekdayKicker(date: string): string {
   return WEEKDAYS[midnightUTC(date).getUTCDay()]!
 }
 
+// dayOfMonth is date's day of the month: 1 to 31.
+export function dayOfMonth(date: string): number {
+  return midnightUTC(date).getUTCDate()
+}
+
 const weekday = new Intl.DateTimeFormat('en-US', { weekday: 'long', timeZone: 'UTC' })
 
 // weekdayName is date's day in full: "Monday" to "Sunday".

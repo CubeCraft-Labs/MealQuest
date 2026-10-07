@@ -972,6 +972,31 @@ describe.each([
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     await waitFor(() => expect(posts(fetchMock)).toEqual([`${DRAFT} {}`]))
   })
+  it('reads the Quest log again once a draft finishes, dropping the dinners it planned', async () => {
+    let plan = planBody('draft')
+    let job = draftJob('running')
+    let questLog = [dinner('q1', 'Lemon orzo', 'easy', 25)]
+    stubServer({
+      ...lists,
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, plan),
+      [`POST ${DRAFT}`]: () => jsonResponse(202, { jobId: 'j1' }),
+      [`GET ${JOB}`]: () => jsonResponse(200, job),
+      [`GET ${QUEST_LOG}`]: () => jsonResponse(200, { dinners: questLog }),
+    })
+    await renderPage()
+
+    const list = await screen.findByRole('list', { name: layout === 'desktop' ? 'Quest log' : 'Quest log dinners' })
+    expect(await within(list).findByText('Lemon orzo')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Rebuild week' }))
+    expect(await screen.findByRole('region', { name: 'Drafting this week' })).toBeInTheDocument()
+
+    plan = planBody('draft', ['Lemon orzo', ...NAMES.slice(1)])
+    questLog = []
+    job = draftJob('succeeded')
+    const week = await screen.findByRole('list', { name: 'Dinners this week' }, { timeout: 3000 })
+    expect(await within(week).findByText('Lemon orzo', {}, { timeout: 3000 })).toBeInTheDocument()
+    await waitFor(() => expect(within(list).queryByText('Lemon orzo')).not.toBeInTheDocument())
+  })
 })
 
 // Dragging a dinner from desktop's panel or tablet's strip onto a day swaps

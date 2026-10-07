@@ -174,9 +174,15 @@ func (e *env) reply(note string, names ...string) {
 // weekReply is the draft_week reply planning the dinners named names on
 // weekDates, in order.
 func (e *env) weekReply(note string, names ...string) llm.GenerateResult {
+	return e.weekReplyOn(weekDates, note, names...)
+}
+
+// weekReplyOn is the draft_week reply planning the dinners named names on
+// dates, in order.
+func (e *env) weekReplyOn(dates []string, note string, names ...string) llm.GenerateResult {
 	var days []string
 	for i, name := range names {
-		days = append(days, fmt.Sprintf(`{"date":%q,"dinner_id":%q}`, weekDates[i], e.ids[name]))
+		days = append(days, fmt.Sprintf(`{"date":%q,"dinner_id":%q}`, dates[i], e.ids[name]))
 	}
 	js := fmt.Sprintf(`{"days":[%s],"note":%q}`, strings.Join(days, ","), note)
 	return llm.GenerateResult{Response: llm.Response{Text: js, JSON: json.RawMessage(js)}}
@@ -398,15 +404,16 @@ func TestStartByAcrossDaylightSavingTimeEnd(t *testing.T) {
 			t.Errorf("%s start_by = %s, %v; want %s", dates[tc.day], b, err, tc.want)
 		}
 	}
-	// Swapped to Beef Chili, Sunday starts at 13:30 EST.
-	if _, err := e.svc.Swap(t.Context(), dst, "2026-11-01", e.ids["Beef Chili"]); err != nil {
+	// Swapped to Short Ribs (240 minutes), Sunday starts at 13:30 EST.
+	ribs := e.dinner(t, "Short Ribs", "regular", "crockpot", 240)
+	if _, err := e.svc.Swap(t.Context(), dst, "2026-11-01", ribs); err != nil {
 		t.Fatal(err)
 	}
 	if p, err = e.svc.Get(t.Context(), dst); err != nil {
 		t.Fatal(err)
 	}
 	if b, err := json.Marshal(p.Days[6].StartBy); err != nil || string(b) != `"2026-11-01T13:30:00-05:00"` {
-		t.Errorf("Sunday Beef Chili start_by = %s, %v; want 13:30 EST", b, err)
+		t.Errorf("Sunday Short Ribs start_by = %s, %v; want 13:30 EST", b, err)
 	}
 }
 
@@ -463,6 +470,70 @@ func TestDraftPoolLeavesOutQuestLogPlannedOnAnotherWeek(t *testing.T) {
 	e.mustDraft(t, false)
 	if !slices.ContainsFunc(e.input(1).Pool, func(c skills.Candidate) bool { return c.Name == "Shawarma Bowls" }) {
 		t.Errorf("redraft pool left out Shawarma Bowls, planned on this week")
+	}
+}
+
+func TestDraftFailsWhenPoolDinnerLeavesWhileDrafting(t *testing.T) {
+	for _, status := range []string{"archived", "tried"} {
+		t.Run(status, func(t *testing.T) {
+			e := newEnv(t)
+			e.start(t)
+			// Pad Thai leaves the Quest log while draft_week plans it.
+			started, release := make(chan struct{}), make(chan struct{})
+			r := e.weekReply("", fullWeek...)
+			r.Started, r.Release = started, release
+			e.model.QueueGenerate(r)
+			d, err := e.svc.StartDraft(t.Context(), week, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			<-started
+			if _, err := e.st.Writer.ExecContext(t.Context(), `UPDATE dinners SET status = ? WHERE id = ?`, status, e.ids["Pad Thai"]); err != nil {
+				t.Fatal(err)
+			}
+			close(release)
+			job := e.waitJob(t, d.JobID)
+			if job.Status != jobs.StatusFailed || *job.Error != plan.ReasonPoolChanged {
+				t.Fatalf("job %s %v, want failed %s", job.Status, job.Error, plan.ReasonPoolChanged)
+			}
+			if _, err := e.svc.Get(t.Context(), week); !errors.Is(err, plan.ErrNotFound) {
+				t.Errorf("Get = %v, want ErrNotFound: no partial plan", err)
+			}
+		})
+	}
+}
+
+func TestDraftsOfTwoWeeksDoNotShareAQuestLogDinner(t *testing.T) {
+	e := newEnv(t)
+	e.start(t)
+	// This week's draft plans Pad Thai; while draft_week runs, the other
+	// worker drafts a later week with Pad Thai too and stores it first.
+	started, release := make(chan struct{}), make(chan struct{})
+	r := e.weekReply("", fullWeek...)
+	r.Started, r.Release = started, release
+	e.model.QueueGenerate(r)
+	d, err := e.svc.StartDraft(t.Context(), week, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	later := mustDate("2099-01-05")
+	laterDates := []string{"2099-01-05", "2099-01-06", "2099-01-07", "2099-01-08", "2099-01-09", "2099-01-10", "2099-01-11"}
+	e.model.QueueGenerate(e.weekReplyOn(laterDates, "", fullWeek...))
+	other, err := e.svc.StartDraft(t.Context(), later, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job := e.waitJob(t, other.JobID); job.Status != jobs.StatusSucceeded {
+		t.Fatalf("later week's draft %s %v", job.Status, job.Error)
+	}
+	close(release)
+	job := e.waitJob(t, d.JobID)
+	if job.Status != jobs.StatusFailed || *job.Error != plan.ReasonPoolChanged {
+		t.Fatalf("job %s %v, want failed %s", job.Status, job.Error, plan.ReasonPoolChanged)
+	}
+	if _, err := e.svc.Get(t.Context(), week); !errors.Is(err, plan.ErrNotFound) {
+		t.Errorf("Get = %v, want ErrNotFound: no partial plan", err)
 	}
 }
 
@@ -633,7 +704,8 @@ func TestDraftFailsWhenPlanSwappedWhileDrafting(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-started
-	if _, err := e.svc.Swap(t.Context(), week, "2026-10-14", e.ids["Sheet Pan Salmon"]); err != nil {
+	e.ids["Fish Tacos"] = e.dinner(t, "Fish Tacos", "regular", "stovetop", 25)
+	if _, err := e.svc.Swap(t.Context(), week, "2026-10-14", e.ids["Fish Tacos"]); err != nil {
 		t.Fatal(err)
 	}
 	close(release)
@@ -646,7 +718,7 @@ func TestDraftFailsWhenPlanSwappedWhileDrafting(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := slices.Clone(fullWeek)
-	want[2] = "Sheet Pan Salmon"
+	want[2] = "Fish Tacos"
 	if *p.AINote != "first" || !slices.Equal(dayNames(p), want) {
 		t.Errorf("plan = %q %v, want the first draft with the swap %v", *p.AINote, dayNames(p), want)
 	}
@@ -822,7 +894,8 @@ func TestSwapStatusTransitions(t *testing.T) {
 			e.reply("", fullWeek...)
 			e.mustDraft(t, false)
 			e.setStatus(t, tc.from)
-			p, err := e.svc.Swap(t.Context(), week, "2026-10-12", e.ids["Pad Thai"])
+			fishTacos := e.dinner(t, "Fish Tacos", "regular", "stovetop", 25)
+			p, err := e.svc.Swap(t.Context(), week, "2026-10-12", fishTacos)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -852,6 +925,7 @@ func TestSwapRefusals(t *testing.T) {
 	}{
 		{"no plan", mustDate("2026-10-19"), "2026-10-19", e.ids["Pad Thai"], func(err error) bool { return errors.Is(err, plan.ErrNotFound) }},
 		{"unknown dinner", week, "2026-10-12", "no-such-dinner", func(err error) bool { return errors.Is(err, plan.ErrDinnerNotFound) }},
+		{"dinner on another day", week, "2026-10-12", e.ids["Pot Roast"], func(err error) bool { return errors.Is(err, plan.ErrDinnerAlreadyPlanned) }},
 		{"suggested dinner", week, "2026-10-12", suggested, func(err error) bool { return errors.As(err, &notPlannable) }},
 		{"archived dinner", week, "2026-10-12", archived, func(err error) bool { return errors.As(err, &notPlannable) }},
 		{"day of another week", week, "2026-10-19", e.ids["Pad Thai"], func(err error) bool { return errors.As(err, &badDay) }},

@@ -357,13 +357,19 @@ automatic** (D-021).
   left as it is and the job fails `confirm_required`. The job reads the
   plan's revision before draft_week runs; if the plan was edited (a swap,
   or another draft stored) by the time the draft is stored, the plan is
-  left as it is and the job fails `plan_changed`. A pool under seven
+  left as it is and the job fails `plan_changed`. The pool is read again
+  in the same transaction that stores the draft; if a dinner the draft
+  planned has left it meanwhile (archived, `tried`, or a Quest log dinner
+  stored on another current or later week's plan, as by a draft of
+  another week), nothing is stored and the job fails `pool_changed`,
+  which drafting again resolves. A pool under seven
   dinners fails the job `not_enough_dinners`, draft_week failing
   `ai_failed`. `PUT /api/v1/plans/{weekStart}/days/{date}` takes
   `{dinner_id}`, a Regular or Quest log dinner, swaps the day, recomputes
   `is_new`, moves a `synced` plan to `changed`, and answers 200 with the
   plan. A date outside the week is 400 `invalid_date`, an unknown dinner or
-  a week with no plan 404, and any other dinner 409 `dinner_not_plannable`.
+  a week with no plan 404, any other dinner 409 `dinner_not_plannable`, and
+  a dinner already on another day of the week 409 `dinner_already_planned`.
 - Rotation check (`plan.Service`, D-021). `MarkTried(date)`, which the
   `rotation_check` schedule calls for the household-local day just past,
   moves every `quest_log` dinner planned on that date, on a plan of any

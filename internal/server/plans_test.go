@@ -309,6 +309,7 @@ func TestPutPlanDay(t *testing.T) {
 		{"2026-10-12/days/2026-10-32", `{"dinner_id":"` + e.questLog + `"}`, http.StatusBadRequest, "invalid_date"},
 		{"2026-10-12/days/2026-10-14", `{"dinner_id":"no-such-dinner"}`, http.StatusNotFound, "not_found"},
 		{"2026-10-19/days/2026-10-20", `{"dinner_id":"` + e.questLog + `"}`, http.StatusNotFound, "not_found"},
+		{"2026-10-12/days/2026-10-15", `{"dinner_id":"` + e.questLog + `"}`, http.StatusConflict, "dinner_already_planned"},
 	} {
 		rec, body := callDinners(t, e.h, http.MethodPut, plansPath+tc.target, tc.body)
 		if rec.Code != tc.status || errorCode(body) != tc.code {

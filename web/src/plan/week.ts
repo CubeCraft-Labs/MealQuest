@@ -40,6 +40,13 @@ export function weekdayKicker(date: string): string {
   return WEEKDAYS[midnightUTC(date).getUTCDay()]!
 }
 
+const weekday = new Intl.DateTimeFormat('en-US', { weekday: 'long', timeZone: 'UTC' })
+
+// weekdayName is date's day in full: "Monday" to "Sunday".
+export function weekdayName(date: string): string {
+  return weekday.format(midnightUTC(date))
+}
+
 // monday reads start as midnight UTC, or throws when it is not a Monday.
 function monday(start: string): Date {
   const t = midnightUTC(start)

@@ -1,7 +1,8 @@
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, useApi, type ApiRead } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { oneOf } from '../dinners/api.ts'
+import { QUEST_LOG_KEY } from '../discover/api.ts'
 
 export const PLANS_PATH = '/api/v1/plans'
 
@@ -129,4 +130,114 @@ export function useStartDraft() {
       return body.jobId
     },
   })
+}
+
+// Swap is one day's swap: the day, and the dinner chosen for it with whether
+// it was chosen from the Quest log.
+export type Swap = { date: string; dinner: { id: string; name: string }; fromQuestLog: boolean }
+
+// sameDay says whether two plan days are the same in every field.
+function sameDay(a: PlanDay, b: PlanDay): boolean {
+  return (
+    a.date === b.date && a.dinner.id === b.dinner.id && a.dinner.name === b.dinner.name && a.is_new === b.is_new && a.start_by === b.start_by
+  )
+}
+
+// swapKey keys the swaps of the week starting on weekStart in the mutation
+// cache, where they outlive the Draft board that sent them.
+function swapKey(weekStart: string) {
+  return ['plans', weekStart, 'swap'] as const
+}
+
+// SwapDay is the swaps of one week, as the mutation cache holds them:
+// whether one is pending, and the failure of the latest, if it failed.
+export type SwapDay = {
+  pending: boolean
+  failed: { swap: Swap; error: Error } | null
+  mutate: (chosen: Swap) => void
+  dismiss: () => void
+}
+
+// useSwapDay swaps the dinner of one day of the week starting on weekStart
+// (PUT /api/v1/plans/{weekStart}/days/{date}). The day shows the dinner at
+// once, NEW when it came from the Quest log, with no start-by time until the
+// server answers with the plan as swapped, which then replaces it. A refused
+// swap puts the day back as it was, unless it has changed again meanwhile.
+// However the swap ends, the Quest log is read again: the server leaves a
+// dinner on the plan out of it.
+//
+// The week's swaps live in the mutation cache, not in the component, so
+// leaving the week and coming back keeps them: pending and failed are read
+// from there. Only the latest swap of the week speaks for it: the plan an
+// earlier one is answered with is not written over a later one, and its
+// failure is not the week's. dismiss leaves settled swaps behind; it is
+// refused while one is pending, so a later swap is always in the cache for
+// an earlier, pending one to see.
+export function useSwapDay(weekStart: string): SwapDay {
+  const { apiFetch } = useApi()
+  const queryClient = useQueryClient()
+  const key = planKey(weekStart)
+  const mutationKey = swapKey(weekStart)
+  const mutations = queryClient.getMutationCache()
+  // The week's swaps, in the order sent.
+  const swaps = useMutationState({
+    filters: { mutationKey },
+    select: (mutation) => ({ status: mutation.state.status, swap: mutation.state.variables as Swap, error: mutation.state.error }),
+  })
+  const latest = swaps.at(-1)
+
+  function mutate(chosen: Swap) {
+    // isLatest says whether no swap of the week was sent after this one.
+    const isLatest = () => mutations.findAll({ mutationKey }).every((other) => other.mutationId <= mutation.mutationId)
+    const mutation = mutations.build<Plan, Error, Swap, { previous: PlanDay; swapped: PlanDay }>(queryClient, {
+      mutationKey,
+      // Kept until dismissed: a later swap must stay in the cache while an
+      // earlier one is pending.
+      gcTime: Infinity,
+      mutationFn: async ({ date, dinner }) => {
+        const path = `${planPath(weekStart)}/days/${encodeURIComponent(date)}`
+        const body = await apiFetch<unknown>(path, { method: 'PUT', body: { dinner_id: dinner.id } })
+        return parsePlan(`PUT ${path}`, weekStart, body, false)
+      },
+      onMutate: async ({ date, dinner, fromQuestLog }) => {
+        await queryClient.cancelQueries({ queryKey: key })
+        const plan = queryClient.getQueryData<Plan | null>(key)
+        const previous = plan?.days.find((day) => day.date === date)
+        if (!plan || previous === undefined) throw new Error(`The week of ${weekStart} has no plan day ${date} to swap.`)
+        const swapped: PlanDay = { date, dinner, is_new: fromQuestLog, start_by: null }
+        queryClient.setQueryData<Plan>(key, { ...plan, days: plan.days.map((day) => (day.date === date ? swapped : day)) })
+        return { previous, swapped }
+      },
+      onSuccess: (plan) => {
+        if (isLatest()) queryClient.setQueryData<Plan>(key, plan)
+      },
+      // The day goes back only while it is still, field for field, the day
+      // this swap wrote: a later swap or plan read that replaced it is left
+      // alone.
+      onError: (_error, _swap, context) => {
+        if (context === undefined) return
+        queryClient.setQueryData<Plan | null>(key, (plan) =>
+          plan && { ...plan, days: plan.days.map((day) => (sameDay(day, context.swapped) ? context.previous : day)) },
+        )
+      },
+      onSettled: () => queryClient.invalidateQueries({ queryKey: QUEST_LOG_KEY }),
+    })
+    // A failure is the mutation's state, which failed reports.
+    mutation.execute(chosen).catch(() => undefined)
+  }
+
+  function dismiss() {
+    const week = mutations.findAll({ mutationKey })
+    if (week.some((mutation) => mutation.state.status === 'pending')) {
+      throw new Error(`The week of ${weekStart} has a swap pending, which cannot be dismissed.`)
+    }
+    for (const mutation of week) mutations.remove(mutation)
+  }
+
+  return {
+    pending: swaps.some((swap) => swap.status === 'pending'),
+    failed: latest?.status === 'error' ? { swap: latest.swap, error: latest.error! } : null,
+    mutate,
+    dismiss,
+  }
 }

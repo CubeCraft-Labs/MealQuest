@@ -1040,6 +1040,45 @@ describe('DiscoverPage', () => {
       expect(card.style.transform).toBe('')
     })
 
+    it.each([
+      ['without moving', null],
+      ['after moving', 160],
+    ])('ignores a second primary pointer pressing and releasing %s mid-drag, then springs the card back clean', async (_, moves) => {
+      const server = stubServer([BOWLS, TIKKA])
+      const animations = stubAnimate({ autoFinish: false })
+      await renderPage()
+      const card = await screen.findByRole('article', { name: 'Korean beef bowls' })
+      const [tryStamp, passStamp] = stamps(card)
+      // A touch (id 7) drags; a mouse (id 1), also primary, comes and goes.
+      const mouse = (x: number) => ({ pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0, clientX: 400 + x, clientY: 300 })
+
+      press(card)
+      drag(card, 72, 0)
+      fireEvent.pointerDown(card, mouse(0))
+      if (moves !== null) fireEvent.pointerMove(card, mouse(moves))
+      fireEvent.pointerUp(card, mouse(moves ?? 0))
+      fireEvent.lostPointerCapture(card, mouse(moves ?? 0))
+      expect(capture).toHaveBeenCalledExactlyOnceWith(7)
+      expect(card.style.transform).toBe('translate(72px,0px) rotate(4deg)')
+      expect(animations).toEqual([])
+
+      release(card)
+      expect(animations.map((a) => [a.target, a.options])).toEqual([[card, { duration: 420, easing: SPRING }]])
+      expect(card.style.transform).toBe('')
+      expect(tryStamp!.style.opacity).toBe('')
+      expect(passStamp!.style.opacity).toBe('')
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(screen.getByRole('button', { name: 'Try it' })).toBeEnabled()
+      expect(sent(server.fetchMock)).toEqual([])
+
+      // The card can be dragged again.
+      press(card)
+      drag(card, 36, 0)
+      expect(card.style.transform).toBe('translate(36px,0px) rotate(2deg)')
+    })
+
     it('a key decision mid-drag ends the drag and throws the card from rest', async () => {
       const server = stubServer([BOWLS, TIKKA], {
         'POST /api/v1/suggestions/s1/accept': () => {

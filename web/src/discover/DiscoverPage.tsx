@@ -221,8 +221,9 @@ export function DiscoverPage() {
   // press, until the release decides past the threshold or springs it back
   // short of it. The release decides from where the pointer let go, which
   // may differ from its last move. A cancel, or losing the capture before
-  // the release, springs it back from its last move. Input while busy is
-  // ignored, and a drag held into a busy spell (a Retry) is put back on
+  // the release, springs it back from its last move. One pointer drags at
+  // a time: a press while a drag is in progress is ignored, as is input
+  // while busy, and a drag held into a busy spell (a Retry) is put back on
   // release.
   const swipe = useMemo<SwipeHandlers>(() => {
     function track(card: HTMLElement, current: Drag, event: PointerEvent<HTMLElement>) {
@@ -245,7 +246,7 @@ export function DiscoverPage() {
     }
     return {
       onPointerDown: (event) => {
-        if (deciding.current || !event.isPrimary || event.button !== 0) return
+        if (drag.current !== null || deciding.current || !event.isPrimary || event.button !== 0) return
         stopSpring()
         event.currentTarget.setPointerCapture(event.pointerId)
         drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, dx: 0, transform: null }
@@ -266,9 +267,14 @@ export function DiscoverPage() {
   // Leaving the page stops an exit before its decision is sent.
   useEffect(() => () => exit.current?.cancel(), [])
 
+  const topId = top?.id
+  // A drag belongs to the card it started on, which a new top card ends.
+  useLayoutEffect(() => {
+    drag.current = null
+  }, [topId])
+
   // Once the deck moves past the card a decision was sent for, the cards
   // behind it move up a depth.
-  const topId = top?.id
   useLayoutEffect(() => {
     if (leaving.current === null || leaving.current === topId) return
     leaving.current = null

@@ -39,6 +39,7 @@ SELECT id FROM jobs
 WHERE kind = ?1
 	AND status IN ('queued', 'running')
 	AND json_extract(payload, '$.week_start') = ?2
+	AND (CAST(?3 AS INTEGER) = 0 OR json_extract(payload, '$.confirm') = 1)
 ORDER BY id
 LIMIT 1
 `
@@ -46,19 +47,21 @@ LIMIT 1
 type GetActiveDraftJobIDParams struct {
 	Kind      string
 	WeekStart string
+	Confirmed int64
 }
 
 // The id of the job of kind queued or running for the week starting
-// week_start. Returns sql.ErrNoRows when there is none.
+// week_start, one whose payload has confirm when confirmed is 1. Returns
+// sql.ErrNoRows when there is none.
 func (q *Queries) GetActiveDraftJobID(ctx context.Context, arg GetActiveDraftJobIDParams) (string, error) {
-	row := q.db.QueryRowContext(ctx, getActiveDraftJobID, arg.Kind, arg.WeekStart)
+	row := q.db.QueryRowContext(ctx, getActiveDraftJobID, arg.Kind, arg.WeekStart, arg.Confirmed)
 	var id string
 	err := row.Scan(&id)
 	return id, err
 }
 
 const getWeekPlan = `-- name: GetWeekPlan :one
-SELECT id, week_start, status, ai_note, ai_run_id, calendar_synced_at, created_at, updated_at FROM week_plans
+SELECT id, week_start, status, ai_note, ai_run_id, calendar_synced_at, created_at, updated_at, revision FROM week_plans
 WHERE week_start = ?
 `
 
@@ -76,6 +79,7 @@ func (q *Queries) GetWeekPlan(ctx context.Context, weekStart string) (WeekPlan, 
 		&i.CalendarSyncedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Revision,
 	)
 	return i, err
 }
@@ -241,6 +245,7 @@ func (q *Queries) ListWeekPlanDinnerIDs(ctx context.Context, weekStart string) (
 const markWeekPlanEdited = `-- name: MarkWeekPlanEdited :exec
 UPDATE week_plans
 SET status = CASE WHEN status = 'synced' THEN 'changed' ELSE status END,
+	revision = revision + 1,
 	updated_at = ?
 WHERE id = ?
 `
@@ -250,8 +255,8 @@ type MarkWeekPlanEditedParams struct {
 	ID        string
 }
 
-// Records an edit of plan id: a synced plan becomes changed, any other
-// keeps its status.
+// Records an edit of plan id, raising its revision: a synced plan becomes
+// changed, any other keeps its status.
 func (q *Queries) MarkWeekPlanEdited(ctx context.Context, arg MarkWeekPlanEditedParams) error {
 	_, err := q.db.ExecContext(ctx, markWeekPlanEdited, arg.UpdatedAt, arg.ID)
 	return err
@@ -291,7 +296,7 @@ func (q *Queries) PutPlanDay(ctx context.Context, arg PutPlanDayParams) error {
 
 const redraftWeekPlan = `-- name: RedraftWeekPlan :exec
 UPDATE week_plans
-SET status = ?, ai_note = ?, updated_at = ?
+SET status = ?, ai_note = ?, revision = revision + 1, updated_at = ?
 WHERE id = ?
 `
 
@@ -302,7 +307,8 @@ type RedraftWeekPlanParams struct {
 	ID        string
 }
 
-// Records a new draft over plan id: its status and note.
+// Records a new draft over plan id: its status and note, raising its
+// revision.
 func (q *Queries) RedraftWeekPlan(ctx context.Context, arg RedraftWeekPlanParams) error {
 	_, err := q.db.ExecContext(ctx, redraftWeekPlan,
 		arg.Status,

@@ -99,7 +99,7 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 | `dinners` | The meal record and its lifecycle: name, normalized_name, status (`suggested` / `quest_log` / `tried` / `regular` / `archived`), origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, recipe_url (a pasted recipe link awaiting grounding), photo_id, grounding_status (`pending` / `grounded` / `failed` / `manual`), grounding_error (why grounding failed), grounding_revision (raised whenever a dinner is renamed, so only the latest `ground_dinner` job may write it and no candidate offered before the rename grounds it), updated_by. |
 | `suggestion_batches` | trigger, status, ai_run_id. |
 | `suggestions` | dinner_id, batch_id, name (the name the dish was suggested under, kept whatever its dinner is later renamed, so a Pass stays an immutable record every later batch dedupes against), reason, cited_regular_ids (JSON), status, decided_at. |
-| `week_plans` | week_start (unique), status (`draft` / `synced` / `changed`), ai_note, ai_run_id, calendar_synced_at. |
+| `week_plans` | week_start (unique), status (`draft` / `synced` / `changed`), ai_note, ai_run_id, calendar_synced_at, revision (raised by every swap and stored draft). |
 | `plan_days` | plan_id, date (unique per plan), dinner_id, is_new, calendar_event_id. |
 | `rotation_reviews` | dinner_id + plan_date (unique), status, decision (`keep` / `drop` / `not_made`), decided_at, updated_by. |
 | `shopping_lists` | week_start (unique), plan_id, title, status (`current` / `archived`), sent_to_chat_at, frozen_at. |
@@ -344,15 +344,19 @@ automatic** (D-021).
   dinner time on that date minus `minutes_total`, computed on read, for a
   crock-pot dinner with known minutes, else null. `POST
   /api/v1/plans/{weekStart}/draft` takes `{confirm?}` and answers 202
-  `{job_id}` for a `draft_week` job, or for the one already queued or
-  running for the week. The job runs the `draft_week` skill on every Regular
+  `{jobId}` for a `draft_week` job, or for the one already queued or
+  running for the week — a confirmed one when the draft is confirmed, so a
+  confirmed draft never joins an unconfirmed job. The job runs the `draft_week` skill on every Regular
   and every Quest log dinner no other plan for the current or a later week
   has, with the household context and last week's dinners, and stores the
   week: a new plan is `draft`; a redraft keeps each day's
   `calendar_event_id`, and a `synced` or `changed` plan becomes `changed`.
   Drafting over a `synced` or `changed` plan needs `{"confirm": true}`, else
   409 `confirm_required`; a plan synced while an unconfirmed draft runs is
-  left as it is and the job fails `confirm_required`. A pool under seven
+  left as it is and the job fails `confirm_required`. The job reads the
+  plan's revision before draft_week runs; if the plan was edited (a swap,
+  or another draft stored) by the time the draft is stored, the plan is
+  left as it is and the job fails `plan_changed`. A pool under seven
   dinners fails the job `not_enough_dinners`, draft_week failing
   `ai_failed`. `PUT /api/v1/plans/{weekStart}/days/{date}` takes
   `{dinner_id}`, a Regular or Quest log dinner, swaps the day, recomputes

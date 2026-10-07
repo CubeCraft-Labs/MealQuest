@@ -316,4 +316,5 @@ type WeekPlan struct {
 	CalendarSyncedAt sql.NullString
 	CreatedAt        string
 	UpdatedAt        string
+	Revision         int64
 }

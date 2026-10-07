@@ -3,10 +3,14 @@ package server
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 
@@ -141,6 +145,8 @@ func TestPlanWeekStartMustBeMonday(t *testing.T) {
 	for _, tc := range []struct{ method, target, body string }{
 		{http.MethodGet, plansPath + "2026-10-13", ""},
 		{http.MethodGet, plansPath + "not-a-date", ""},
+		{http.MethodGet, plansPath + "2026-02-30", ""},
+		{http.MethodPost, plansPath + "2027-02-29/draft", "{}"},
 		{http.MethodPost, plansPath + "2026-10-18/draft", "{}"},
 		{http.MethodPut, plansPath + "2026-10-14/days/2026-10-14", `{"dinner_id":"` + e.questLog + `"}`},
 	} {
@@ -159,9 +165,9 @@ func TestPostPlanDraft(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("POST draft = %d: %s", rec.Code, rec.Body)
 	}
-	jobID, _ := body["job_id"].(string)
-	if jobID == "" {
-		t.Fatalf("POST draft = %v, want a job_id", body)
+	jobID, _ := body["jobId"].(string)
+	if jobID == "" || len(body) != 1 {
+		t.Fatalf("POST draft = %v, want only a jobId", body)
 	}
 	rec, job := callDinners(t, e.h, http.MethodGet, "/api/v1/jobs/"+jobID, "")
 	if rec.Code != http.StatusOK || job["kind"] != plan.KindDraftWeek || job["status"] != "queued" {
@@ -169,18 +175,61 @@ func TestPostPlanDraft(t *testing.T) {
 	}
 	// A second draft of the week joins the queued one.
 	rec, body = callDinners(t, e.h, http.MethodPost, plansPath+"2026-10-12/draft", `{"confirm":false}`)
-	if rec.Code != http.StatusAccepted || body["job_id"] != jobID {
+	if rec.Code != http.StatusAccepted || body["jobId"] != jobID {
 		t.Errorf("second POST draft = %d %v, want 202 with job %s", rec.Code, body, jobID)
 	}
 	// A week with no plan needs no confirm.
 	rec, body = callDinners(t, e.h, http.MethodPost, plansPath+"2026-10-19/draft", "{}")
-	if rec.Code != http.StatusAccepted || body["job_id"] == jobID {
+	if rec.Code != http.StatusAccepted || body["jobId"] == jobID {
 		t.Errorf("POST draft of a new week = %d %v, want 202 with its own job", rec.Code, body)
+	}
+
+	// A confirmed draft does not join the unconfirmed one, but a second
+	// confirmed draft joins the first.
+	rec, body = callDinners(t, e.h, http.MethodPost, plansPath+"2026-10-12/draft", `{"confirm":true}`)
+	confirmedID, _ := body["jobId"].(string)
+	if rec.Code != http.StatusAccepted || confirmedID == "" || confirmedID == jobID {
+		t.Errorf("confirmed POST draft = %d %v, want 202 with its own job", rec.Code, body)
+	}
+	rec, body = callDinners(t, e.h, http.MethodPost, plansPath+"2026-10-12/draft", `{"confirm":true}`)
+	if rec.Code != http.StatusAccepted || body["jobId"] != confirmedID {
+		t.Errorf("second confirmed POST draft = %d %v, want 202 with job %s", rec.Code, body, confirmedID)
 	}
 
 	rec, body = callDinners(t, e.h, http.MethodPost, plansPath+"2026-10-12/draft", `{"confirm":"yes"}`)
 	if rec.Code != http.StatusBadRequest || errorCode(body) != "invalid_request" {
 		t.Errorf("POST draft with a bad confirm = %d %v, want 400", rec.Code, body)
+	}
+}
+
+func TestSimultaneousPostPlanDraftsShareOneJob(t *testing.T) {
+	t.Parallel()
+	e := newPlansRouter(t)
+
+	const n = 10
+	recs := make([]*httptest.ResponseRecorder, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			recs[i] = httptest.NewRecorder()
+			e.h.ServeHTTP(recs[i], signedIn(http.MethodPost, plansPath+"2026-10-12/draft", strings.NewReader("{}")))
+		})
+	}
+	wg.Wait()
+	jobIDs := map[any]int{}
+	for i, rec := range recs {
+		var body map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || rec.Code != http.StatusAccepted {
+			t.Fatalf("POST draft %d = %d %s, want 202", i, rec.Code, rec.Body)
+		}
+		jobIDs[body["jobId"]]++
+	}
+	var queued int
+	if err := e.st.Reader.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM jobs WHERE kind = ?`, plan.KindDraftWeek).Scan(&queued); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobIDs) != 1 || jobIDs[nil] != 0 || queued != 1 {
+		t.Errorf("jobIds = %v, %d draft jobs; want one jobId for all %d drafts", jobIDs, queued, n)
 	}
 }
 
@@ -196,7 +245,7 @@ func TestPostPlanDraftOverSyncedPlanNeedsConfirm(t *testing.T) {
 			}
 		}
 		rec, body := callDinners(t, e.h, http.MethodPost, plansPath+"2026-10-12/draft", `{"confirm":true}`)
-		if rec.Code != http.StatusAccepted || body["job_id"] == nil {
+		if rec.Code != http.StatusAccepted || body["jobId"] == nil {
 			t.Errorf("%s plan: POST draft with confirm = %d %v, want 202", status, rec.Code, body)
 		}
 	}
@@ -228,6 +277,7 @@ func TestPutPlanDay(t *testing.T) {
 		{"2026-10-12/days/2026-10-14", `{"dinner_id":7}`, http.StatusBadRequest, "invalid_request"},
 		{"2026-10-12/days/2026-10-14", `{"dinner_id":"x","extra":1}`, http.StatusBadRequest, "invalid_request"},
 		{"2026-10-12/days/2026-10-20", `{"dinner_id":"` + e.questLog + `"}`, http.StatusBadRequest, "invalid_date"},
+		{"2026-10-12/days/2026-10-32", `{"dinner_id":"` + e.questLog + `"}`, http.StatusBadRequest, "invalid_date"},
 		{"2026-10-12/days/2026-10-14", `{"dinner_id":"no-such-dinner"}`, http.StatusNotFound, "not_found"},
 		{"2026-10-19/days/2026-10-20", `{"dinner_id":"` + e.questLog + `"}`, http.StatusNotFound, "not_found"},
 	} {

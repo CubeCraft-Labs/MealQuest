@@ -2,7 +2,8 @@
 // drafts from the Regulars and the Quest log, and the swaps the household
 // makes on it. A draft runs as a job: draft_week plans seven dinners, one
 // a day from Monday to Sunday, and the job stores them as the week's plan,
-// replacing any draft before it. A plan is draft until Push to Calendar
+// replacing any draft before it unless the household edited the plan
+// while draft_week ran. A plan is draft until Push to Calendar
 // syncs it (Feature 16); an edit of a synced plan makes it changed.
 package plan
 
@@ -45,10 +46,13 @@ const (
 	// ReasonConfirmRequired: the plan was synced after the draft was
 	// asked for without confirm, so the draft does not replace it.
 	ReasonConfirmRequired = "confirm_required"
+	// ReasonPlanChanged: the plan was edited while draft_week ran, so the
+	// draft does not replace the edit.
+	ReasonPlanChanged = "plan_changed"
 )
 
 // Reasons are every draft failure reason.
-var Reasons = []string{ReasonNotEnoughDinners, ReasonAIFailed, ReasonConfirmRequired}
+var Reasons = []string{ReasonNotEnoughDinners, ReasonAIFailed, ReasonConfirmRequired, ReasonPlanChanged}
 
 // ContextBudget is the character budget of the household context
 // draft_week is given (see harness.BuildContext).
@@ -265,15 +269,16 @@ func startBy(zone *time.Location, date store.LocalDate, dinnerTime string, d db.
 // Draft is a draft asked for: the job drafting the week, and whether this
 // call enqueued it rather than found one already queued or running.
 type Draft struct {
-	JobID   string `json:"job_id"`
+	JobID   string `json:"jobId"`
 	Created bool   `json:"-"`
 }
 
 // StartDraft enqueues the KindDraftWeek job drafting the week starting
 // weekStart, unless one is already queued or running for it, which it
-// returns instead with Created false. Drafting over a synced or changed
-// plan needs confirm, else it fails with ErrConfirmRequired and enqueues
-// nothing.
+// returns instead with Created false. A confirmed draft joins only a
+// confirmed job, so a job asked for without confirm cannot fail it with
+// ReasonConfirmRequired. Drafting over a synced or changed plan needs
+// confirm, else it fails with ErrConfirmRequired and enqueues nothing.
 func (s *Service) StartDraft(ctx context.Context, weekStart store.LocalDate, confirm bool) (Draft, error) {
 	if _, err := household.WeekDays(weekStart); err != nil {
 		return Draft{}, &InvalidWeekError{Value: weekStart.String()}
@@ -289,7 +294,11 @@ func (s *Service) StartDraft(ctx context.Context, weekStart store.LocalDate, con
 		case cur.Status != StatusDraft && !confirm:
 			return ErrConfirmRequired
 		}
-		id, err := q.GetActiveDraftJobID(ctx, db.GetActiveDraftJobIDParams{Kind: KindDraftWeek, WeekStart: weekStart.String()})
+		confirmed := int64(0)
+		if confirm {
+			confirmed = 1
+		}
+		id, err := q.GetActiveDraftJobID(ctx, db.GetActiveDraftJobIDParams{Kind: KindDraftWeek, WeekStart: weekStart.String(), Confirmed: confirmed})
 		if err == nil {
 			d = Draft{JobID: id}
 			return nil

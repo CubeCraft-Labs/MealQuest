@@ -43,9 +43,9 @@ func getPlan(logger *slog.Logger, svc *plan.Service) http.HandlerFunc {
 }
 
 // postPlanDraft enqueues the draft of the week and answers 202 with the
-// job_id that GET /jobs/{id} reports on, without waiting for the job. When
-// a draft of the week is already queued or running it answers 202 with
-// that job instead.
+// jobId that GET /jobs/{id} reports on, without waiting for the job. When
+// a draft of the week is already queued or running, confirmed if this one
+// is, it answers 202 with that job instead.
 func postPlanDraft(logger *slog.Logger, svc *plan.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		week, ok := weekStartOrFail(w, r, logger)

@@ -69,7 +69,8 @@ type Querier interface {
 	// Returns sql.ErrNoRows until the row exists.
 	GetAISettings(ctx context.Context) (AiSetting, error)
 	// The id of the job of kind queued or running for the week starting
-	// week_start. Returns sql.ErrNoRows when there is none.
+	// week_start, one whose payload has confirm when confirmed is 1. Returns
+	// sql.ErrNoRows when there is none.
 	GetActiveDraftJobID(ctx context.Context, arg GetActiveDraftJobIDParams) (string, error)
 	// The batch still pending or running, oldest first. Returns sql.ErrNoRows
 	// when there is none.
@@ -148,8 +149,8 @@ type Querier interface {
 	// The ids of the dinners planned in the week starting week_start, Monday
 	// first.
 	ListWeekPlanDinnerIDs(ctx context.Context, weekStart string) ([]sql.NullString, error)
-	// Records an edit of plan id: a synced plan becomes changed, any other
-	// keeps its status.
+	// Records an edit of plan id, raising its revision: a synced plan becomes
+	// changed, any other keeps its status.
 	MarkWeekPlanEdited(ctx context.Context, arg MarkWeekPlanEditedParams) error
 	// Moves a dinner still suggested to status (quest_log or archived),
 	// recording updated_by; a dinner no longer suggested is left as it is
@@ -160,7 +161,8 @@ type Querier interface {
 	// Plans dinner_id on date of plan_id, keeping the day's calendar event id
 	// when the day exists.
 	PutPlanDay(ctx context.Context, arg PutPlanDayParams) error
-	// Records a new draft over plan id: its status and note.
+	// Records a new draft over plan id: its status and note, raising its
+	// revision.
 	RedraftWeekPlan(ctx context.Context, arg RedraftWeekPlanParams) error
 	// An unknown id returns sql.ErrNoRows.
 	SetDinnerFavorite(ctx context.Context, arg SetDinnerFavoriteParams) (Dinner, error)

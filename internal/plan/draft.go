@@ -35,13 +35,18 @@ func (r draftResult) PublicJSON() ([]byte, error) { return json.Marshal(r) }
 // runDraft drafts the week p.WeekStart: draft_week plans it from the
 // Regulars and the Quest log dinners no other current or later plan has,
 // given the household context and last week's dinners, and the draft is
-// stored as the week's plan. A pool under seven dinners fails with
+// stored as the week's plan if the plan is still as it was before
+// draft_week ran. A pool under seven dinners fails with
 // ReasonNotEnoughDinners and draft_week failing with ReasonAIFailed; no
 // week is made up instead.
 func (s *Service) runDraft(ctx context.Context, p DraftJob, _ func(draftResult) error) (draftResult, error) {
 	weekStart, err := ParseWeekStart(p.WeekStart)
 	if err != nil {
 		return draftResult{}, fmt.Errorf("plan: draft: %w", err)
+	}
+	base, err := s.revision(ctx, weekStart)
+	if err != nil {
+		return draftResult{}, err
 	}
 	in, err := s.request(ctx, weekStart)
 	if err != nil {
@@ -63,11 +68,27 @@ func (s *Service) runDraft(ctx context.Context, p DraftJob, _ func(draftResult) 
 	for _, w := range week.Warnings {
 		s.logger.InfoContext(ctx, "week draft warning", "week_start", p.WeekStart, "warning", w)
 	}
-	planID, err := s.storeDraft(ctx, weekStart, p.Confirm, week)
+	planID, err := s.storeDraft(ctx, weekStart, p.Confirm, base, week)
 	if err != nil {
 		return draftResult{}, err
 	}
 	return draftResult{WeekStart: p.WeekStart, PlanID: planID}, nil
+}
+
+// noPlan is the revision of a week with no plan.
+const noPlan = -1
+
+// revision returns the revision of the plan of the week starting
+// weekStart, or noPlan when the week has none.
+func (s *Service) revision(ctx context.Context, weekStart store.LocalDate) (int64, error) {
+	cur, err := db.New(s.st.Reader).GetWeekPlan(ctx, weekStart.String())
+	if errors.Is(err, sql.ErrNoRows) {
+		return noPlan, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("plan: read week %s: %w", weekStart, err)
+	}
+	return cur.Revision, nil
 }
 
 // request reads what draft_week is given for the week starting weekStart:
@@ -119,8 +140,10 @@ func (s *Service) request(ctx context.Context, weekStart store.LocalDate) (skill
 // event id; a draft plan stays draft and a synced or changed one becomes
 // changed, since Calendar no longer shows it. A plan synced since the
 // draft was asked for without confirm is left as it is, failing with
-// ReasonConfirmRequired.
-func (s *Service) storeDraft(ctx context.Context, weekStart store.LocalDate, confirm bool, week skills.Week) (string, error) {
+// ReasonConfirmRequired, and so is a plan no longer at revision base (the
+// revision before draft_week ran, or noPlan), failing with
+// ReasonPlanChanged.
+func (s *Service) storeDraft(ctx context.Context, weekStart store.LocalDate, confirm bool, base int64, week skills.Week) (string, error) {
 	var planID string
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		q := db.New(tx)
@@ -128,6 +151,8 @@ func (s *Service) storeDraft(ctx context.Context, weekStart store.LocalDate, con
 		note := sql.NullString{String: week.Note, Valid: week.Note != ""}
 		cur, err := q.GetWeekPlan(ctx, weekStart.String())
 		switch {
+		case errors.Is(err, sql.ErrNoRows) && base != noPlan:
+			return &jobs.Failure{Code: ReasonPlanChanged}
 		case errors.Is(err, sql.ErrNoRows):
 			planID = store.NewID()
 			if err := q.CreateWeekPlan(ctx, db.CreateWeekPlanParams{
@@ -143,6 +168,8 @@ func (s *Service) storeDraft(ctx context.Context, weekStart store.LocalDate, con
 			return fmt.Errorf("plan: read week %s: %w", weekStart, err)
 		case cur.Status != StatusDraft && !confirm:
 			return &jobs.Failure{Code: ReasonConfirmRequired}
+		case cur.Revision != base:
+			return &jobs.Failure{Code: ReasonPlanChanged}
 		default:
 			planID = cur.ID
 			status := StatusDraft

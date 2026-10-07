@@ -355,6 +355,60 @@ func TestStartByIsDinnerTimeMinusMinutesForCrockPot(t *testing.T) {
 	}
 }
 
+func TestStartByAcrossDaylightSavingTimeEnd(t *testing.T) {
+	e := newEnv(t)
+	// New York leaves daylight saving time at 02:00 on Sunday 2026-11-01.
+	// Beef Chili (240 minutes) is planned Monday to Saturday and a 20-hour
+	// crock-pot dinner on Sunday, so its start crosses the change.
+	stew := e.dinner(t, "Overnight Stew", "regular", "crockpot", 1200)
+	q := db.New(e.st.Writer)
+	now := store.Now().String()
+	id := store.NewID()
+	dst := mustDate("2026-10-26")
+	if err := q.CreateWeekPlan(t.Context(), db.CreateWeekPlanParams{ID: id, WeekStart: dst.String(), CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	dates := []string{"2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29", "2026-10-30", "2026-10-31", "2026-11-01"}
+	for i, date := range dates {
+		dinner := e.ids["Beef Chili"]
+		if i == 6 {
+			dinner = stew
+		}
+		if err := q.PutPlanDay(t.Context(), db.PutPlanDayParams{ID: store.NewID(), PlanID: id, Date: date,
+			DinnerID: sql.NullString{String: dinner, Valid: true}, CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, err := e.svc.Get(t.Context(), dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Saturday's dinner is 17:30 EDT; Sunday's is 17:30 EST, 22:30 UTC, and
+	// twenty hours before it is 22:30 EDT on Saturday.
+	for _, tc := range []struct {
+		day  int
+		want string
+	}{
+		{5, `"2026-10-31T13:30:00-04:00"`},
+		{6, `"2026-10-31T22:30:00-04:00"`},
+	} {
+		b, err := json.Marshal(p.Days[tc.day].StartBy)
+		if err != nil || string(b) != tc.want {
+			t.Errorf("%s start_by = %s, %v; want %s", dates[tc.day], b, err, tc.want)
+		}
+	}
+	// Swapped to Beef Chili, Sunday starts at 13:30 EST.
+	if _, err := e.svc.Swap(t.Context(), dst, "2026-11-01", e.ids["Beef Chili"]); err != nil {
+		t.Fatal(err)
+	}
+	if p, err = e.svc.Get(t.Context(), dst); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := json.Marshal(p.Days[6].StartBy); err != nil || string(b) != `"2026-11-01T13:30:00-05:00"` {
+		t.Errorf("Sunday Beef Chili start_by = %s, %v; want 13:30 EST", b, err)
+	}
+}
+
 func TestDraftGivesLastWeek(t *testing.T) {
 	e := newEnv(t)
 	e.start(t)
@@ -464,6 +518,148 @@ func TestStartDraftIsSingleFlight(t *testing.T) {
 	}
 }
 
+func TestSimultaneousStartDraftsShareOneJobPerConfirm(t *testing.T) {
+	e := newEnv(t)
+	first, err := e.svc.StartDraft(t.Context(), week, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Twenty simultaneous drafts, half of them confirmed: the unconfirmed
+	// ones join the queued job, and the confirmed ones share one confirmed
+	// job of their own.
+	const n = 20
+	drafts := make([]plan.Draft, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			drafts[i], errs[i] = e.svc.StartDraft(context.Background(), week, i%2 == 1)
+		})
+	}
+	wg.Wait()
+	confirmedJob := ""
+	created := 0
+	for i, d := range drafts {
+		if errs[i] != nil {
+			t.Fatalf("draft %d: %v", i, errs[i])
+		}
+		if d.Created {
+			created++
+		}
+		if i%2 == 0 {
+			if d.JobID != first.JobID || d.Created {
+				t.Errorf("unconfirmed draft %d = %+v, want it to join %s", i, d, first.JobID)
+			}
+			continue
+		}
+		if confirmedJob == "" {
+			confirmedJob = d.JobID
+		}
+		if d.JobID != confirmedJob || d.JobID == first.JobID {
+			t.Errorf("confirmed draft %d = %+v, want the one confirmed job %s, not %s", i, d, confirmedJob, first.JobID)
+		}
+	}
+	if created != 1 {
+		t.Errorf("%d drafts enqueued a job, want 1", created)
+	}
+	var payload string
+	if err := e.st.Reader.QueryRowContext(t.Context(), `SELECT payload FROM jobs WHERE id = ?`, confirmedJob).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(payload, `"confirm":true`) {
+		t.Errorf("confirmed job payload = %s, want confirm", payload)
+	}
+}
+
+func TestConfirmedDraftDoesNotJoinUnconfirmedJob(t *testing.T) {
+	e := newEnv(t)
+	e.start(t)
+	e.reply("first", fullWeek...)
+	e.mustDraft(t, false)
+
+	// An unconfirmed redraft is running when the plan is synced; the
+	// household then confirms a redraft, which must not join the job that
+	// will fail confirm_required.
+	reversed := slices.Clone(fullWeek)
+	slices.Reverse(reversed)
+	started, release := make(chan struct{}), make(chan struct{})
+	r := e.weekReply("unconfirmed", fullWeek...)
+	r.Started, r.Release = started, release
+	e.model.QueueGenerate(r)
+	e.reply("confirmed", reversed...)
+	unconfirmed, err := e.svc.StartDraft(t.Context(), week, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	e.setStatus(t, plan.StatusSynced)
+	confirmed, err := e.svc.StartDraft(t.Context(), week, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !confirmed.Created || confirmed.JobID == unconfirmed.JobID {
+		t.Fatalf("confirmed draft = %+v, want its own job, not %s", confirmed, unconfirmed.JobID)
+	}
+	close(release)
+	if job := e.waitJob(t, unconfirmed.JobID); job.Status != jobs.StatusFailed || *job.Error != plan.ReasonConfirmRequired {
+		t.Errorf("unconfirmed job %s %v, want failed %s", job.Status, job.Error, plan.ReasonConfirmRequired)
+	}
+	if job := e.waitJob(t, confirmed.JobID); job.Status != jobs.StatusSucceeded {
+		t.Fatalf("confirmed job %s %v, want succeeded", job.Status, job.Error)
+	}
+	p, err := e.svc.Get(t.Context(), week)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Status != plan.StatusChanged || *p.AINote != "confirmed" || !slices.Equal(dayNames(p), reversed) {
+		t.Errorf("plan = %s %q %v, want the confirmed draft, changed", p.Status, *p.AINote, dayNames(p))
+	}
+}
+
+func TestDraftFailsWhenPlanSwappedWhileDrafting(t *testing.T) {
+	e := newEnv(t)
+	e.start(t)
+	e.reply("first", fullWeek...)
+	e.mustDraft(t, false)
+
+	// The household swaps Wednesday while draft_week runs; the draft must
+	// not erase the swap.
+	reversed := slices.Clone(fullWeek)
+	slices.Reverse(reversed)
+	started, release := make(chan struct{}), make(chan struct{})
+	r := e.weekReply("second", reversed...)
+	r.Started, r.Release = started, release
+	e.model.QueueGenerate(r)
+	d, err := e.svc.StartDraft(t.Context(), week, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if _, err := e.svc.Swap(t.Context(), week, "2026-10-14", e.ids["Sheet Pan Salmon"]); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	job := e.waitJob(t, d.JobID)
+	if job.Status != jobs.StatusFailed || *job.Error != plan.ReasonPlanChanged {
+		t.Fatalf("job %s %v, want failed %s", job.Status, job.Error, plan.ReasonPlanChanged)
+	}
+	p, err := e.svc.Get(t.Context(), week)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := slices.Clone(fullWeek)
+	want[2] = "Sheet Pan Salmon"
+	if *p.AINote != "first" || !slices.Equal(dayNames(p), want) {
+		t.Errorf("plan = %q %v, want the first draft with the swap %v", *p.AINote, dayNames(p), want)
+	}
+
+	// A draft after the swap replaces the plan.
+	e.reply("third", reversed...)
+	if p := e.mustDraft(t, false); *p.AINote != "third" || !slices.Equal(dayNames(p), reversed) {
+		t.Errorf("redraft after the swap = %q %v, want the third draft", *p.AINote, dayNames(p))
+	}
+}
+
 func TestRedraftOverDraftNeedsNoConfirm(t *testing.T) {
 	e := newEnv(t)
 	e.start(t)
@@ -564,7 +760,8 @@ func TestParseWeekStart(t *testing.T) {
 	if d, err := plan.ParseWeekStart("2026-10-12"); err != nil || d != week {
 		t.Errorf("ParseWeekStart(Monday) = %v, %v", d, err)
 	}
-	for _, s := range []string{"2026-10-13", "2026-10-18", "2026-10-5", "next-week", ""} {
+	// 2026-02-30 and 2027-02-29 would be Mondays were they dates.
+	for _, s := range []string{"2026-10-13", "2026-10-18", "2026-10-5", "2026-02-30", "2027-02-29", "2026-13-05", "next-week", ""} {
 		var invalid *plan.InvalidWeekError
 		if _, err := plan.ParseWeekStart(s); !errors.As(err, &invalid) {
 			t.Errorf("ParseWeekStart(%q) = %v, want *InvalidWeekError", s, err)
@@ -661,6 +858,7 @@ func TestSwapRefusals(t *testing.T) {
 		{"archived dinner", week, "2026-10-12", archived, func(err error) bool { return errors.As(err, &notPlannable) }},
 		{"day of another week", week, "2026-10-19", e.ids["Pad Thai"], func(err error) bool { return errors.As(err, &badDay) }},
 		{"not a date", week, "monday", e.ids["Pad Thai"], func(err error) bool { return errors.As(err, &badDay) }},
+		{"impossible date", week, "2026-10-32", e.ids["Pad Thai"], func(err error) bool { return errors.As(err, &badDay) }},
 	} {
 		if _, err := e.svc.Swap(t.Context(), tc.week, tc.date, tc.id); !tc.wantError(err) {
 			t.Errorf("%s: Swap = %v", tc.name, err)

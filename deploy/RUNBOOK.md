@@ -1027,13 +1027,17 @@ M=/var/lib/docker/volumes/mealquest-data/_data/media
 NAS=/volume1/homes/Joshua/mealquest-backups/media
 SSH="ssh -i deploy/secrets/litestream_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/etc/mealquest/known_hosts -o StrictHostKeyChecking=yes"
 fail() { echo "$*" >&2; exit 1; }
-nas= here=
+nas= here= w=
 # On the way out, give the counts only if every step passed; on any
-# failure the timer stays stopped.
+# failure, report the timer's actual state, not an assumed one.
 trap 'st=$?
-if [ "$st" -eq 0 ] && [ -n "$here" ]; then echo "media restored: $here files here, $nas on the NAS"
-else [ "$st" -ne 0 ] || st=1; echo "media restore FAILED (status $st): leave the timer stopped and find out why" >&2; fi
+[ -z "$w" ] || rm -rf "$w"
+if [ "$st" -eq 0 ] && [ -n "$here" ]; then echo "media restored: $here files here, $nas on the NAS, all $nas match the NAS manifest"
+else [ "$st" -ne 0 ] || st=1; t=$(systemctl is-active mealquest-media-backup.timer) || :
+  if [ "$t" = inactive ]; then echo "media restore FAILED (status $st): the timer is inactive; leave it stopped and find out why" >&2
+  else echo "media restore FAILED (status $st): the timer is ${t:-unknown}, not inactive; run sudo systemctl stop mealquest-media-backup.timer mealquest-media-backup.service and confirm it is inactive before anything else" >&2; fi; fi
 exit "$st"' EXIT
+w=$(mktemp -d)
 
 # 1. Stop the nightly mirror: the timer AND any run in flight.
 sudo systemctl stop mealquest-media-backup.timer mealquest-media-backup.service
@@ -1058,6 +1062,11 @@ esac
 l=$(sudo $SSH joshua@10.60.1.50 "find $NAS -type f") || fail "listing the NAS copy failed"
 [ -n "$l" ] || fail "the NAS copy holds no files"
 nas=$(printf '%s\n' "$l" | wc -l)   # the target below
+# The NAS manifest: one "sha256  ./path" line per file, taken now, before
+# the copy. Every check below compares content against it, not counts.
+sudo $SSH joshua@10.60.1.50 "cd $NAS && find . -type f -exec sha256sum {} +" >"$w/raw" || fail "hashing the NAS copy failed"
+LC_ALL=C sort "$w/raw" >"$w/nas"
+[ "$(wc -l <"$w/nas")" -eq "$nas" ] || fail "the NAS manifest has $(wc -l <"$w/nas") files, the listing $nas"
 
 # 3. Stop the app (no writes into media/ meanwhile).
 docker compose -f deploy/compose.yaml stop mealquest
@@ -1066,8 +1075,10 @@ docker compose -f deploy/compose.yaml stop mealquest
 sudo install -d -o 10001 -g 10001 -m 0755 "$M"
 
 # 5. Copy back from the NAS as uid 10001's files. No --delete in this
-#    direction: the NAS copy is the source and is only read.
-sudo rsync -a --stats --chown=10001:10001 -e "$SSH" "joshua@10.60.1.50:$NAS/" "$M/"
+#    direction: the NAS copy is the source and is only read. --checksum
+#    compares content, so a local file with the NAS size and mtime but
+#    other bytes is still replaced.
+sudo rsync -a --checksum --stats --chown=10001:10001 -e "$SSH" "joshua@10.60.1.50:$NAS/" "$M/"
 
 # 6. Post-condition — before anything can mirror again: at least the NAS
 #    count here, and the NAS count unchanged.
@@ -1077,6 +1088,14 @@ n=$(printf '%s\n' "$l" | wc -l)
 [ "$n" -ge "$nas" ] || fail "only $n of the NAS's $nas files are here: the copy did not complete"
 l=$(sudo $SSH joshua@10.60.1.50 "find $NAS -type f") || fail "listing the NAS copy failed"
 [ -n "$l" ] && [ "$(printf '%s\n' "$l" | wc -l)" -eq "$nas" ] || fail "the NAS file count changed from $nas"
+# Content: every file in the NAS manifest is here with the same bytes,
+# and the NAS still matches the manifest taken before the copy.
+sudo sh -c 'cd "$1" && find . -type f -exec sha256sum {} +' sh "$M" >"$w/raw" || fail "hashing $M failed"
+LC_ALL=C sort "$w/raw" >"$w/here"
+LC_ALL=C comm -23 "$w/nas" "$w/here" >"$w/bad"
+[ ! -s "$w/bad" ] || { cat "$w/bad" >&2; fail "$(wc -l <"$w/bad") NAS file(s) above are missing here or differ in content"; }
+sudo $SSH joshua@10.60.1.50 "cd $NAS && find . -type f -exec sha256sum {} +" >"$w/raw" || fail "hashing the NAS copy failed"
+LC_ALL=C sort "$w/raw" | cmp -s - "$w/nas" || fail "the NAS copy changed during the restore"
 here=$n
 
 # 7. Start the app, then the timer again. Only now may the service run.
@@ -1088,8 +1107,11 @@ systemctl is-active mealquest-media-backup.timer   # active; exits nonzero other
 ```
 
 The block stops at the first failed step and gives the counts last, only
-when every step passed. On `media restore FAILED` or a nonzero `echo $?`
-leave the timer stopped. The local count may exceed the NAS count only if
+when every step passed and every file in the NAS manifest (a SHA-256 of
+each file, taken before the copy) is present locally with the same bytes.
+On `media restore FAILED` or a nonzero `echo $?` the message gives the
+timer's actual state: if it is not `inactive`, stop it as the message says
+before anything else; then leave it stopped. The local count may exceed the NAS count only if
 `media/` still held files the NAS never received (photos added since the
 last nightly run); the next nightly run then copies them up. If the local count is lower,
 the copy did not complete: fix the cause and run the block again.

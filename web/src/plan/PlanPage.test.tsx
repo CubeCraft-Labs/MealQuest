@@ -81,6 +81,11 @@ function posts(fetchMock: Mock<typeof fetch>) {
     .map(([input, init]) => `${String(input)} ${String(init?.body)}`)
 }
 
+// planReads counts the reads of this week's plan.
+function planReads(fetchMock: Mock<typeof fetch>) {
+  return fetchMock.mock.calls.filter(([input, init]) => (init?.method ?? 'GET') === 'GET' && String(input) === THIS_WEEK).length
+}
+
 // renderPage loads /me (for the CSRF token every write needs) and renders
 // the Plan page.
 async function renderPage() {
@@ -299,7 +304,7 @@ describe('PlanPage', () => {
   it.each([
     ['the week has no plan', null, 'The week has no plan, not draft plan-1.'],
     ['the week has another plan', { ...planBody('draft'), id: 'plan-9' }, "The week's plan is not draft plan-1."],
-  ])('shows a succeeded draft with Retry when %s once read', async (_, landed, message) => {
+  ])('shows a succeeded draft with Retry when %s once read, and Retry reads the plan again', async (_, landed, message) => {
     let plan: unknown = null
     let job = draftJob('running')
     const fetchMock = stubServer({
@@ -317,18 +322,30 @@ describe('PlanPage', () => {
     expect(alert).toHaveTextContent(`Couldn't read the draft. ${message}`)
     expect(screen.queryByTestId('skeleton-tile')).not.toBeInTheDocument()
 
-    job = draftJob('running')
+    // Retry reads the plan again rather than drafting again: the read is
+    // still not the draft.
+    let reads = planReads(fetchMock)
     fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
-    await waitFor(() => expect(posts(fetchMock)).toHaveLength(2))
-    expect(await screen.findByRole('region', { name: 'Drafting this week' })).toBeInTheDocument()
+    await waitFor(() => expect(planReads(fetchMock)).toBe(reads + 1))
+    expect(await screen.findByRole('alert')).toHaveTextContent(`Couldn't read the draft. ${message}`)
+    expect(posts(fetchMock)).toEqual([`${DRAFT} {}`])
+
+    // The next read is the draft, from the server: it lands.
+    plan = planBody('draft')
+    reads = planReads(fetchMock)
+    fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('Beef tacos')).toBeInTheDocument()
+    expect(planReads(fetchMock)).toBe(reads + 1)
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('skeleton-tile')).not.toBeInTheDocument()
+    expect(posts(fetchMock)).toEqual([`${DRAFT} {}`])
   })
 
   it("doesn't land a succeeded draft on the plan cached before it, and lands it once the server is read", async () => {
     let plan = planBody('draft')
     let cached = false
     let job = draftJob('running')
-    stubServer({
+    const fetchMock = stubServer({
       [`GET ${THIS_WEEK}`]: () => {
         const response = jsonResponse(200, plan)
         if (cached) response.headers.set(cacheFallbackHeader, '1')
@@ -347,9 +364,17 @@ describe('PlanPage', () => {
     job = draftJob('succeeded')
     const alert = await screen.findByRole('alert', {}, { timeout: 3000 })
     expect(alert).toHaveTextContent("Couldn't read the draft. The plan came from this device's cache, not the server")
-    expect(within(alert).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
     expect(screen.queryByText('Beef tacos')).not.toBeInTheDocument()
     expect(screen.queryByTestId('skeleton-tile')).not.toBeInTheDocument()
+
+    // Retry reads the plan again and drafts nothing: still the cache, so the
+    // draft stays unread.
+    const reads = planReads(fetchMock)
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(planReads(fetchMock)).toBe(reads + 1))
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't read the draft. The plan came from this device's cache, not the server")
+    expect(screen.queryByText('Beef tacos')).not.toBeInTheDocument()
+    expect(posts(fetchMock)).toEqual([`${DRAFT} {}`])
 
     // The server is back: the next read of the plan is the draft.
     plan = planBody('draft', ['Lasagna', ...NAMES.slice(1)])

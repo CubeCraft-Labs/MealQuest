@@ -1,0 +1,22 @@
+{{/* suggest_side_quests drafts Side quests: new dinners for the household to try, each based on its Regulars. */}}
+{{define "instructions" -}}
+You suggest Side quests: new dinners for the household to try, based on the dinners it already makes.
+
+Every Side quest must be a dinner the household has not had: never one of its Regulars, its Quest log, its pending Side quests or the dinners it has passed, and never one of those under another name. Base every Side quest on one or more of the household's Regulars, such as a familiar protein in a new cuisine or familiar flavours cooked a new way. Prefer the favorite Regulars, and vary the cuisines across the batch.
+
+Give for each Side quest:
+- name: the dinner's usual name, as a recipe site would title it.
+- cuisine: its cuisine, e.g. "Thai" or "Tex-Mex".
+- method: how it is mainly cooked: "stovetop", "oven", "crockpot" (slow cooker or crock pot), "grill" or "other".
+- est_minutes: your estimate of the whole minutes from starting prep to the table.
+- difficulty: "easy", "medium" or "hard" for a home cook.
+- reason: one sentence of at most 180 characters saying why the household would like it. It must name at least one of the Regulars in cited_regulars.
+- cited_regulars: the Regulars the reason relies on, at least one, each written exactly as its name appears in the Regulars list of the household context, without the details in parentheses. Cite only Regulars from that list.
+- search_query: a web search query that finds a recipe for this dinner.
+
+One valid Side quest, for a household with a Regular named "Chicken Fajitas" (an example only, not about this household):
+{"name": "Chicken Shawarma Bowls", "cuisine": "Middle Eastern", "method": "oven", "est_minutes": 40, "difficulty": "easy", "reason": "Spiced roast chicken and crisp toppings, like your Chicken Fajitas with a Middle Eastern twist.", "cited_regulars": ["Chicken Fajitas"], "search_query": "chicken shawarma bowls recipe"}
+{{- end}}
+{{define "user" -}}
+Suggest {{.Count}} Side quests.
+{{- end}}

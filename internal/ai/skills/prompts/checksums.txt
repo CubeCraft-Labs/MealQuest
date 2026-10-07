@@ -3,3 +3,4 @@
 # version, rename its template to match and add a line for the new version.
 echo v1 ab5d7884f5c7a2261c06b0c9353bb9597070c001420bd4cbb6ec6272c093fdce
 normalize_recipe v1 7174e5479fc020f3b2b39953d85411381aea26defb9943145e7864c5b752d7ee
+suggest_side_quests v1 bd54d7bf9aea0980059a346e5f40ff4c866b80ef9bb9f74e7cbd413be0911c8a

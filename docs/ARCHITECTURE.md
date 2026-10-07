@@ -322,6 +322,18 @@ automatic** (D-021).
   dinner when the token-set (Jaccard) similarity of their words is at least
   0.85. A `Deduper` over the Regulars, Quest log, pending suggestions and
   passed names rejects a suggestion that repeats any of them.
+- **Side quest suggestions** (`skills.SuggestSideQuests`, skill
+  `suggest_side_quests` v1): asks for twice the Side quests needed, at the
+  household temperature, with the household context plus the pending Side
+  quests. Malformed replies (bad JSON, a missing field, a bad enum, an
+  empty name) get the one repair turn. Well-formed Side quests that break a
+  rule are dropped, not repaired, and listed in `Dropped` with the rule:
+  one that repeats a Regular, Quest log dinner, pending Side quest, any
+  passed name (the whole history, not only the 60 in the context) or an
+  earlier Side quest of the batch; one citing no Regular or a name that is
+  not a Regular; and one whose reason is over 180 characters or names none
+  of its cited Regulars. Cited names are rewritten as the household writes
+  them. Grounding each survivor in a recipe is the caller's next step.
 
 ## Recipe grounding
 

@@ -319,10 +319,11 @@ func drop(q SideQuest, regulars regularNames, known *harness.Deduper, kept []Sid
 // Chili-inspired" and "Beef Chili's" mention "Beef Chili" while "Beef
 // Chilis" does not, nor does "Cafe" with a combining accent after it
 // mention "Cafe". Punctuation at either end of the name, with any spacing
-// beside it, is optional, and a mention takes it in only where text spells
-// it, spaced in any way, and the border still holds after it: "Easy Beef
-// Chili!" is mentioned by "Easy Beef Chili." too, by "Easy Beef Chili !"
-// with its "!", and by "Easy Beef Chili!x" without its "!". A
+// beside it, is optional, and a mention takes in as much of it as text
+// spells, spaced in any way, with the border still holding after it: "Easy
+// Beef Chili!" is mentioned by "Easy Beef Chili." too, by "Easy Beef Chili
+// !" with its "!", and by "Easy Beef Chili!x" without its "!", and "Beef
+// Chili!!" by "Beef Chili!" with one "!". A
 // combining mark is part of its letter, never punctuation. A mention names
 // its Regular unless a mention of a different Regular covers the same text
 // or more, so "Your Easy Beef Chili." names "Easy Beef Chili" and not "Beef
@@ -357,12 +358,8 @@ func (r regularNames) named(text string) []string {
 			if !bordered(start, end) {
 				continue
 			}
-			if s := spelledBefore(text, start, lead); s >= 0 && bordered(s, end) {
-				start = s
-			}
-			if e := spelledAfter(text, end, trail); e >= 0 && bordered(start, e) {
-				end = e
-			}
+			start = spelledBefore(text, start, lead, func(s int) bool { return bordered(s, end) })
+			end = spelledAfter(text, end, trail, func(e int) bool { return bordered(start, e) })
 			mentions = append(mentions, mention{name, start, end})
 		}
 	}
@@ -378,31 +375,41 @@ func (r regularNames) named(text string) []string {
 	return names
 }
 
-// spelledAfter returns where outer ends when text spells it from at,
-// ignoring spacing, or -1 when text does not.
-func spelledAfter(text string, at int, outer string) int {
+// spelledAfter returns where the longest start of outer that text spells
+// from at ends, ignoring spacing, among those after which bordered holds,
+// or at when there are none.
+func spelledAfter(text string, at int, outer string, bordered func(int) bool) int {
+	end := at
 	for _, c := range strings.Join(strings.Fields(outer), "") {
 		at = len(text) - len(strings.TrimLeftFunc(text[at:], unicode.IsSpace))
 		if !strings.HasPrefix(text[at:], string(c)) {
-			return -1
+			break
 		}
 		at += utf8.RuneLen(c)
+		if bordered(at) {
+			end = at
+		}
 	}
-	return at
+	return end
 }
 
-// spelledBefore returns where outer starts when text spells it up to at,
-// ignoring spacing, or -1 when text does not.
-func spelledBefore(text string, at int, outer string) int {
+// spelledBefore returns where the longest end of outer that text spells up
+// to at starts, ignoring spacing, among those before which bordered holds,
+// or at when there are none.
+func spelledBefore(text string, at int, outer string, bordered func(int) bool) int {
+	start := at
 	punct := []rune(strings.Join(strings.Fields(outer), ""))
 	for i := len(punct) - 1; i >= 0; i-- {
 		at = len(strings.TrimRightFunc(text[:at], unicode.IsSpace))
 		if !strings.HasSuffix(text[:at], string(punct[i])) {
-			return -1
+			break
 		}
 		at -= utf8.RuneLen(punct[i])
+		if bordered(at) {
+			start = at
+		}
 	}
-	return at
+	return start
 }
 
 // isWord reports whether c is a letter, a mark on one or a digit.

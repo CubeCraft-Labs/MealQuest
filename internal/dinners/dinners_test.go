@@ -26,6 +26,10 @@ func TestNameFromURL(t *testing.T) {
 		{"https://example.com/stew-x7k2p9q4", "Stew"},
 		{"https://example.com/recipes/token-abcdefghijk", ""},
 		{"https://example.com/key-lime-pie", "Key lime pie"},
+		{"https://example.com/stew-t=abcdef", "Stew"},
+		{"https://example.com/stew-accesstoken-abcdefghijk", "Stew"},
+		{"https://example.com/stew-abcdefghijklmnopqrstuvwxyz", "Stew"},
+		{"https://example.com/cre%CC%80me-bru%CC%82le%CC%81e", "Cre\u0300me bru\u0302le\u0301e"},
 	}
 	for _, tt := range tests {
 		u, err := url.Parse(tt.link)

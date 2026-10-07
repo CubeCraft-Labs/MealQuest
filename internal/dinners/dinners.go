@@ -500,15 +500,21 @@ func checkRecipeURL(raw string) (*url.URL, error) {
 // can carry a personal token in its path, as in /stew-access_token-abc123,
 // and the name is shown in every dinner response.
 var credentialWords = map[string]bool{
-	"access": true, "api": true, "apikey": true, "auth": true, "credential": true,
-	"credentials": true, "passcode": true, "password": true, "passwd": true,
-	"secret": true, "session": true, "sig": true, "signature": true, "token": true,
+	"access": true, "accesstoken": true, "api": true, "apikey": true, "auth": true,
+	"authtoken": true, "bearer": true, "credential": true, "credentials": true,
+	"jwt": true, "passcode": true, "password": true, "passwd": true, "secret": true,
+	"session": true, "sig": true, "signature": true, "token": true,
 }
 
+// maxSlugWordChars bounds a word nameFromURL keeps: a longer run of letters
+// is more likely a token than a dish.
+const maxSlugWordChars = 20
+
 // nameFromURL names a dinner from the last path segment of u: separators
-// become spaces, a file extension and words holding a digit are dropped, the
-// name ends at the first of credentialWords and the first letter is
-// capitalized, so https://example.com/recipes/12345/chicken-tikka-masala/ is
+// become spaces, a file extension is dropped, only words of at most
+// maxSlugWordChars letters are kept, the name ends at the first of
+// credentialWords and the first letter is capitalized, so
+// https://example.com/recipes/12345/chicken-tikka-masala/ is
 // "Chicken tikka masala". ok is false when no usable name is left.
 func nameFromURL(u *url.URL) (name string, ok bool) {
 	segments := strings.FieldsFunc(u.Path, func(r rune) bool { return r == '/' })
@@ -525,7 +531,7 @@ func nameFromURL(u *url.URL) (name string, ok bool) {
 		if credentialWords[w] {
 			break
 		}
-		if strings.IndexFunc(w, unicode.IsDigit) < 0 {
+		if utf8.RuneCountInString(w) <= maxSlugWordChars && strings.IndexFunc(w, notLetter) < 0 {
 			words = append(words, w)
 		}
 	}
@@ -537,6 +543,11 @@ func nameFromURL(u *url.URL) (name string, ok bool) {
 		return "", false
 	}
 	return name, true
+}
+
+// notLetter reports whether r is neither a letter nor a combining mark.
+func notLetter(r rune) bool {
+	return !unicode.IsLetter(r) && !unicode.IsMark(r)
 }
 
 // checkUnique returns a *DuplicateError when name is harness.Similar to an

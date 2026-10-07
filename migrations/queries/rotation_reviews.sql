@@ -40,12 +40,18 @@ ORDER BY rotation_reviews.plan_date, rotation_reviews.id;
 SELECT * FROM rotation_reviews
 WHERE dinner_id = ? AND status = 'pending';
 
+-- name: CountRotationReviews :one
+-- How many Rotation checks dinner_id has had, pending or decided.
+SELECT COUNT(*) FROM rotation_reviews WHERE dinner_id = ?;
+
 -- name: DecideRotationReview :execrows
--- Records the household's decision on a pending Rotation check; one
--- already decided is left as it is (0 rows).
+-- Records the household's decision on a pending Rotation check, with the
+-- dinner's name for a drop and NULL otherwise; one already decided is left
+-- as it is (0 rows).
 UPDATE rotation_reviews
 SET status = 'decided',
 	decision = sqlc.arg(decision),
+	name = sqlc.narg(name),
 	decided_at = sqlc.arg(now),
 	updated_by = sqlc.arg(updated_by),
 	updated_at = sqlc.arg(now)

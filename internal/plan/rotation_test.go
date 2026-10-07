@@ -55,14 +55,14 @@ func (e *env) dinnerRow(t *testing.T, name string) db.Dinner {
 
 // review is a rotation_reviews row as stored.
 type review struct {
-	planDate, status               string
-	decision, decidedAt, updatedBy sql.NullString
+	planDate, status                     string
+	decision, name, decidedAt, updatedBy sql.NullString
 }
 
 func (e *env) reviews(t *testing.T, name string) []review {
 	t.Helper()
 	rows, err := e.st.Reader.QueryContext(t.Context(),
-		`SELECT plan_date, status, decision, decided_at, updated_by FROM rotation_reviews WHERE dinner_id = ? ORDER BY plan_date`, e.ids[name])
+		`SELECT plan_date, status, decision, name, decided_at, updated_by FROM rotation_reviews WHERE dinner_id = ? ORDER BY plan_date`, e.ids[name])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func (e *env) reviews(t *testing.T, name string) []review {
 	var out []review
 	for rows.Next() {
 		var r review
-		if err := rows.Scan(&r.planDate, &r.status, &r.decision, &r.decidedAt, &r.updatedBy); err != nil {
+		if err := rows.Scan(&r.planDate, &r.status, &r.decision, &r.name, &r.decidedAt, &r.updatedBy); err != nil {
 			t.Fatal(err)
 		}
 		out = append(out, r)
@@ -103,7 +103,7 @@ func TestMarkTried(t *testing.T) {
 	}
 	got := e.reviews(t, "Pad Thai")
 	if len(got) != 1 || got[0].planDate != padThaiDay.String() || got[0].status != "pending" ||
-		got[0].decision.Valid || got[0].decidedAt.Valid || got[0].updatedBy.Valid {
+		got[0].decision.Valid || got[0].name.Valid || got[0].decidedAt.Valid || got[0].updatedBy.Valid {
 		t.Fatalf("Pad Thai reviews = %+v, want one pending for %s", got, padThaiDay)
 	}
 	if got := e.dinnerRow(t, "Shawarma Bowls").Status; got != "quest_log" {
@@ -197,10 +197,17 @@ func TestDecideReview(t *testing.T) {
 				t.Errorf("Pad Thai = status %s origin %s name %s updated_by %v, want %s side_quest Pad Thai %s",
 					row.Status, row.Origin, row.Name, row.UpdatedBy, tc.status, reviewer)
 			}
+			// Only a drop records the dinner's name.
+			wantPassed := tc.decision == plan.DecisionDrop
+			wantName := sql.NullString{}
+			if wantPassed {
+				wantName = sql.NullString{String: "Pad Thai", Valid: true}
+			}
 			got := e.reviews(t, "Pad Thai")
 			if len(got) != 1 || got[0].status != "decided" || got[0].decision.String != tc.decision ||
-				got[0].decidedAt.String != d.DecidedAt || got[0].updatedBy.String != reviewer {
-				t.Errorf("reviews = %+v, want one decided %s by %s at %s", got, tc.decision, reviewer, d.DecidedAt)
+				got[0].decidedAt.String != d.DecidedAt || got[0].updatedBy.String != reviewer ||
+				got[0].name != wantName {
+				t.Errorf("reviews = %+v, want one decided %s by %s at %s, named only by a drop", got, tc.decision, reviewer, d.DecidedAt)
 			}
 			if pending, err := e.svc.PendingReviews(t.Context()); err != nil || len(pending) != 0 {
 				t.Errorf("pending after deciding = %+v, %v, want none", pending, err)
@@ -224,7 +231,6 @@ func TestDecideReview(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			wantPassed := tc.decision == plan.DecisionDrop
 			if slices.Contains(passed, "Pad Thai") != wantPassed || slices.Contains(recent, "Pad Thai") != wantPassed {
 				t.Errorf("passed names = %v, recent %v; want Pad Thai among them: %t", passed, recent, wantPassed)
 			}
@@ -246,8 +252,8 @@ func TestDecideReviewRefused(t *testing.T) {
 		t.Errorf("unknown dinner: %v, want ErrDinnerNotFound", err)
 	}
 	// Never tried: Shawarma Bowls is in the Quest log with no check.
-	if _, err := e.svc.DecideReview(ctx, e.ids["Shawarma Bowls"], plan.DecisionKeep, reviewer); !errors.Is(err, plan.ErrNoPendingReview) {
-		t.Errorf("dinner never tried: %v, want ErrNoPendingReview", err)
+	if _, err := e.svc.DecideReview(ctx, e.ids["Shawarma Bowls"], plan.DecisionKeep, reviewer); !errors.Is(err, plan.ErrReviewNotFound) {
+		t.Errorf("dinner never tried: %v, want ErrReviewNotFound", err)
 	}
 	if got := e.dinnerRow(t, "Shawarma Bowls").Status; got != "quest_log" {
 		t.Errorf("Shawarma Bowls status = %s, want quest_log", got)

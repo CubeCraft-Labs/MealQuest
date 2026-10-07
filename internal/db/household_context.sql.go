@@ -59,10 +59,9 @@ SELECT name FROM (
 	FROM suggestions
 	WHERE status = 'declined'
 	UNION ALL
-	SELECT dinners.name, rotation_reviews.decided_at, rotation_reviews.id
+	SELECT name, decided_at, id
 	FROM rotation_reviews
-	JOIN dinners ON dinners.id = rotation_reviews.dinner_id
-	WHERE rotation_reviews.decision = 'drop'
+	WHERE decision = 'drop'
 )
 ORDER BY decided_at DESC, id DESC
 LIMIT ?

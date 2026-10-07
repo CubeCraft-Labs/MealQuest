@@ -25,6 +25,8 @@ type Querier interface {
 	CountDeck(ctx context.Context) (int64, error)
 	// How many Regulars the household has; archived dinners are not counted.
 	CountRegularDinners(ctx context.Context) (int64, error)
+	// How many Rotation checks dinner_id has had, pending or decided.
+	CountRotationReviews(ctx context.Context, dinnerID string) (int64, error)
 	CreateAIRun(ctx context.Context, arg CreateAIRunParams) error
 	CreateDinner(ctx context.Context, arg CreateDinnerParams) (Dinner, error)
 	CreateJob(ctx context.Context, arg CreateJobParams) error
@@ -40,8 +42,9 @@ type Querier interface {
 	CreateSuggestion(ctx context.Context, arg CreateSuggestionParams) error
 	CreateSuggestionBatch(ctx context.Context, arg CreateSuggestionBatchParams) (SuggestionBatch, error)
 	CreateWeekPlan(ctx context.Context, arg CreateWeekPlanParams) error
-	// Records the household's decision on a pending Rotation check; one
-	// already decided is left as it is (0 rows).
+	// Records the household's decision on a pending Rotation check, with the
+	// dinner's name for a drop and NULL otherwise; one already decided is left
+	// as it is (0 rows).
 	DecideRotationReview(ctx context.Context, arg DecideRotationReviewParams) (int64, error)
 	// Records the household's decision on a pending suggestion; one already
 	// decided is left as it is (0 rows).
@@ -136,8 +139,8 @@ type Querier interface {
 	ListDraftPool(ctx context.Context, arg ListDraftPoolParams) ([]Dinner, error)
 	// Every name the household turned down, oldest decision first: the name
 	// each declined suggestion was suggested under, which renaming its dinner
-	// does not change, and the name of each dinner a Rotation check dropped
-	// ("Not for us"), which archiving keeps.
+	// does not change, and the name each dinner a Rotation check dropped
+	// ("Not for us") had when dropped, which renaming it does not change.
 	ListPassedNames(ctx context.Context) ([]string, error)
 	// The pending Rotation checks whose dinner is still tried, oldest plan
 	// date first, with their dinners.

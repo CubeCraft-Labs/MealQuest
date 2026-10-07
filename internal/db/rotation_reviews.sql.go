@@ -10,6 +10,18 @@ import (
 	"database/sql"
 )
 
+const countRotationReviews = `-- name: CountRotationReviews :one
+SELECT COUNT(*) FROM rotation_reviews WHERE dinner_id = ?
+`
+
+// How many Rotation checks dinner_id has had, pending or decided.
+func (q *Queries) CountRotationReviews(ctx context.Context, dinnerID string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countRotationReviews, dinnerID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createRotationReview = `-- name: CreateRotationReview :exec
 INSERT INTO rotation_reviews (id, dinner_id, plan_date, status, created_at, updated_at)
 VALUES (?, ?, ?, 'pending', ?, ?)
@@ -38,24 +50,28 @@ const decideRotationReview = `-- name: DecideRotationReview :execrows
 UPDATE rotation_reviews
 SET status = 'decided',
 	decision = ?1,
-	decided_at = ?2,
-	updated_by = ?3,
-	updated_at = ?2
-WHERE id = ?4 AND status = 'pending'
+	name = ?2,
+	decided_at = ?3,
+	updated_by = ?4,
+	updated_at = ?3
+WHERE id = ?5 AND status = 'pending'
 `
 
 type DecideRotationReviewParams struct {
 	Decision  sql.NullString
+	Name      sql.NullString
 	Now       sql.NullString
 	UpdatedBy sql.NullString
 	ID        string
 }
 
-// Records the household's decision on a pending Rotation check; one
-// already decided is left as it is (0 rows).
+// Records the household's decision on a pending Rotation check, with the
+// dinner's name for a drop and NULL otherwise; one already decided is left
+// as it is (0 rows).
 func (q *Queries) DecideRotationReview(ctx context.Context, arg DecideRotationReviewParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, decideRotationReview,
 		arg.Decision,
+		arg.Name,
 		arg.Now,
 		arg.UpdatedBy,
 		arg.ID,
@@ -67,7 +83,7 @@ func (q *Queries) DecideRotationReview(ctx context.Context, arg DecideRotationRe
 }
 
 const getPendingRotationReview = `-- name: GetPendingRotationReview :one
-SELECT id, dinner_id, plan_date, status, decision, decided_at, updated_by, created_at, updated_at FROM rotation_reviews
+SELECT id, dinner_id, plan_date, status, decision, name, decided_at, updated_by, created_at, updated_at FROM rotation_reviews
 WHERE dinner_id = ? AND status = 'pending'
 `
 
@@ -83,6 +99,7 @@ func (q *Queries) GetPendingRotationReview(ctx context.Context, dinnerID string)
 		&i.PlanDate,
 		&i.Status,
 		&i.Decision,
+		&i.Name,
 		&i.DecidedAt,
 		&i.UpdatedBy,
 		&i.CreatedAt,

@@ -97,6 +97,24 @@ func TestPostRotationReview(t *testing.T) {
 	}
 }
 
+// A dinner that has never had a Rotation check is 404; a second decision
+// on one already decided is 409 (TestPostRotationReview).
+func TestPostRotationReviewNeverChecked(t *testing.T) {
+	t.Parallel()
+	e := newPlansRouter(t)
+	rec, body := callDinners(t, e.h, http.MethodPost, dinnersPath+"/"+e.questLog+"/rotation-review", `{"decision":"keep"}`)
+	if rec.Code != http.StatusNotFound || errorCode(body) != "not_found" {
+		t.Errorf("never checked = %d %v, want 404 not_found", rec.Code, body)
+	}
+	var status string
+	if err := e.st.Reader.QueryRowContext(t.Context(), `SELECT status FROM dinners WHERE id = ?`, e.questLog).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "quest_log" {
+		t.Errorf("status after a refused decision = %s, want quest_log", status)
+	}
+}
+
 func TestPostRotationReviewRefused(t *testing.T) {
 	t.Parallel()
 	e := newPlansRouter(t)

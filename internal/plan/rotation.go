@@ -32,8 +32,12 @@ var decisionStatus = map[string]string{
 	DecisionNotMade: dinners.StatusQuestLog,
 }
 
-// ErrNoPendingReview is a decision on a dinner with no pending Rotation
-// check: it was never tried, or its check is already decided.
+// ErrReviewNotFound is a decision on a dinner that has never had a
+// Rotation check: it was never tried.
+var ErrReviewNotFound = errors.New("the dinner has no Rotation check")
+
+// ErrNoPendingReview is a decision on a dinner whose Rotation checks are
+// all decided, such as a second decision.
 var ErrNoPendingReview = errors.New("the dinner has no pending Rotation check")
 
 // ErrDinnerNotTried is a decision on a pending Rotation check whose dinner
@@ -130,9 +134,11 @@ func (s *Service) PendingReviews(ctx context.Context) ([]Review, error) {
 // DecideReview applies decision to the pending Rotation check of dinnerID
 // and closes it, recording updatedBy: keep makes the dinner a Regular,
 // drop archives it and not_made returns it to the Quest log; its origin is
-// kept. An unknown dinner is ErrDinnerNotFound, a dinner with no pending
-// check (including a second decision) ErrNoPendingReview, and one no
-// longer tried ErrDinnerNotTried; none of them changes anything.
+// kept; a drop records the dinner's name on the check, so renaming the
+// dinner later never takes it off the passed names. An unknown dinner is
+// ErrDinnerNotFound, a dinner never checked ErrReviewNotFound, one whose
+// checks are all decided (such as a second decision) ErrNoPendingReview,
+// and one no longer tried ErrDinnerNotTried; none of them changes anything.
 func (s *Service) DecideReview(ctx context.Context, dinnerID, decision, updatedBy string) (Decided, error) {
 	status, ok := decisionStatus[decision]
 	if !ok {
@@ -153,6 +159,13 @@ func (s *Service) DecideReview(ctx context.Context, dinnerID, decision, updatedB
 		}
 		review, err := q.GetPendingRotationReview(ctx, d.ID)
 		if errors.Is(err, sql.ErrNoRows) {
+			checks, err := q.CountRotationReviews(ctx, d.ID)
+			if err != nil {
+				return fmt.Errorf("plan: count Rotation checks of %s: %w", d.ID, err)
+			}
+			if checks == 0 {
+				return ErrReviewNotFound
+			}
 			return ErrNoPendingReview
 		}
 		if err != nil {
@@ -173,6 +186,7 @@ func (s *Service) DecideReview(ctx context.Context, dinnerID, decision, updatedB
 		}
 		closed, err := q.DecideRotationReview(ctx, db.DecideRotationReviewParams{
 			Decision:  sql.NullString{String: decision, Valid: true},
+			Name:      sql.NullString{String: d.Name, Valid: decision == DecisionDrop},
 			Now:       sql.NullString{String: now, Valid: true},
 			UpdatedBy: sql.NullString{String: updatedBy, Valid: true},
 			ID:        review.ID,

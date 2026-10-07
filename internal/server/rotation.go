@@ -64,9 +64,9 @@ func postRotationReview(logger *slog.Logger, svc *plan.Service) http.HandlerFunc
 }
 
 // writeRotationError maps a Rotation check error to its API error: a
-// decision other than keep, drop or not_made is 400, an unknown dinner
-// 404, and a dinner with no pending check (such as a second decision) or
-// no longer tried 409.
+// decision other than keep, drop or not_made is 400, an unknown dinner or
+// a dinner never checked 404, and a dinner whose checks are all decided
+// (such as a second decision) or no longer tried 409.
 func writeRotationError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, action string, err error) {
 	var invalid *plan.InvalidDecisionError
 	switch {
@@ -74,6 +74,8 @@ func writeRotationError(w http.ResponseWriter, r *http.Request, logger *slog.Log
 		writeError(w, r, logger, http.StatusBadRequest, "invalid_decision", invalid.Error())
 	case errors.Is(err, plan.ErrDinnerNotFound):
 		writeError(w, r, logger, http.StatusNotFound, "not_found", "dinner not found")
+	case errors.Is(err, plan.ErrReviewNotFound):
+		writeError(w, r, logger, http.StatusNotFound, "not_found", "rotation check not found")
 	case errors.Is(err, plan.ErrNoPendingReview):
 		writeError(w, r, logger, http.StatusConflict, "no_pending_review", err.Error())
 	case errors.Is(err, plan.ErrDinnerNotTried):

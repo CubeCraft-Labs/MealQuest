@@ -7,6 +7,7 @@ package dinners
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -142,6 +143,18 @@ type Service struct {
 	// by dinner id, so archiving or renaming a dinner can stop them.
 	groundingsMu sync.Mutex
 	groundings   map[string]map[*runningGrounding]struct{}
+
+	// offerKey keys the candidate ids Candidates offers, so they are
+	// opaque and stable for this process.
+	offerKey []byte
+	// offersMu guards offers and offerSearches. offers holds, by dinner
+	// id, the candidates last offered by Candidates until they expire, so
+	// a candidate id is resolved here and its URL never leaves the server.
+	// offerSearches holds the Candidates searches running, by dinner id,
+	// so clearing a dinner's offers keeps them from storing stale ones.
+	offersMu      sync.Mutex
+	offers        map[string]*offerSet
+	offerSearches map[string]map[*offerSearch]struct{}
 }
 
 // NewService returns a service over st that grounds dinners with grounder
@@ -158,7 +171,8 @@ func NewService(st *store.Store, grounder *recipes.Grounder, runner *jobs.Runner
 	case logger == nil:
 		return nil, errors.New("dinners: nil logger")
 	}
-	s := &Service{st: st, grounder: grounder, logger: logger, groundings: make(map[string]map[*runningGrounding]struct{})}
+	s := &Service{st: st, grounder: grounder, logger: logger, groundings: make(map[string]map[*runningGrounding]struct{}), offerKey: make([]byte, 32), offers: make(map[string]*offerSet), offerSearches: make(map[string]map[*offerSearch]struct{})}
+	rand.Read(s.offerKey) // never fails: it crashes the program instead
 	kind, err := jobs.Register(runner, KindGroundDinner, s.runGroundJob, Reasons...)
 	if err != nil {
 		return nil, err
@@ -324,11 +338,14 @@ func (s *Service) listQuestLog(ctx context.Context) (rows []db.Dinner, err error
 
 // Update applies p to dinner id, recording updatedBy. An invalid patch is a
 // *ValidationError and a new name repeating another unarchived dinner a
-// *DuplicateError; either changes nothing. Renaming a dinner still pending
-// clears its recipe_url, raises its grounding_revision and enqueues a fresh
-// KindGroundDinner job that grounds the new name: a job queued or running
-// for the old name or link carries the old revision, so it can no longer
-// write the dinner, and one running is stopped.
+// *DuplicateError; either changes nothing. Renaming a dinner raises its
+// grounding_revision and drops the candidates offered for its old name:
+// each was offered at an earlier revision, so none of them grounds it.
+// Renaming a dinner still pending also enqueues a fresh KindGroundDinner
+// job that grounds the new name, and clears its recipe_url when the
+// normalized name changes: a job queued or running for the old name or
+// link carries the old revision, so it can no longer write the dinner, and
+// one running is stopped.
 func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy string) (Dinner, error) {
 	if updatedBy == "" {
 		return Dinner{}, errors.New("dinners: update: no member to record as updated_by")
@@ -339,7 +356,7 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 	}
 
 	var row db.Dinner
-	var regrounding bool
+	var renamed, regrounding bool
 	err = s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		q := db.New(tx)
 		cur, err := q.GetDinner(ctx, id)
@@ -373,11 +390,13 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 			}
 			params.Name = name
 			params.NormalizedName = harness.Normalize(name)
+			if name != cur.Name {
+				params.GroundingRevision++
+			}
 			if cur.GroundingStatus == GroundingPending && params.NormalizedName != cur.NormalizedName {
 				// The link was the old dinner's recipe; the new name is
 				// grounded by name, and a link can be given by hand.
 				params.RecipeUrl = sql.NullString{}
-				params.GroundingRevision++
 			}
 		}
 		if p.Method != nil {
@@ -393,11 +412,16 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 		if err != nil {
 			return fmt.Errorf("dinners: update %s: %w", id, err)
 		}
-		regrounding = row.GroundingRevision != cur.GroundingRevision
+		renamed = row.GroundingRevision != cur.GroundingRevision
+		regrounding = renamed && cur.GroundingStatus == GroundingPending
 		return nil
 	})
 	if err != nil {
 		return Dinner{}, err
+	}
+	if renamed {
+		updateCommitted()
+		s.clearOffers(row.ID, row.GroundingRevision)
 	}
 	if regrounding {
 		s.stopGroundings(row.ID, row.GroundingRevision)
@@ -417,7 +441,8 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 
 // Archive sets dinner id's status to archived, recording updatedBy. The row
 // is kept, so its name still counts for Side quest dedupe. A
-// KindGroundDinner job running for it is stopped.
+// KindGroundDinner job running for it is stopped, and its candidates no
+// longer ground it.
 func (s *Service) Archive(ctx context.Context, id, updatedBy string) (Dinner, error) {
 	if updatedBy == "" {
 		return Dinner{}, errors.New("dinners: archive: no member to record as updated_by")
@@ -434,6 +459,7 @@ func (s *Service) Archive(ctx context.Context, id, updatedBy string) (Dinner, er
 		return Dinner{}, fmt.Errorf("dinners: archive %s: %w", id, err)
 	}
 	s.stopGroundings(row.ID, math.MaxInt64)
+	s.clearOffers(row.ID, math.MaxInt64)
 	return fromRow(row), nil
 }
 

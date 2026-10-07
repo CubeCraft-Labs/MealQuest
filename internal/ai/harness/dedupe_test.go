@@ -8,11 +8,11 @@ import (
 	"unicode/utf8"
 )
 
-// TestSharedDedupeCases runs testdata/dedupe_cases.json, which the PWA's
-// copy of Normalize and Similar (web/src/dinners/names.ts) runs too, so the
-// two cannot drift apart on these names.
+// TestSharedDedupeCases runs web/src/dinners/testdata/dedupe_cases.json,
+// which the PWA's copy of Normalize and Similar (web/src/dinners/names.ts)
+// runs too, so the two cannot drift apart on these names.
 func TestSharedDedupeCases(t *testing.T) {
-	raw, err := os.ReadFile("testdata/dedupe_cases.json")
+	raw, err := os.ReadFile("../../../web/src/dinners/testdata/dedupe_cases.json")
 	if err != nil {
 		t.Fatal(err)
 	}

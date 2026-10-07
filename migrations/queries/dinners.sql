@@ -131,9 +131,11 @@ RETURNING *;
 -- the grounding_revision it was grounded for; a dinner grounded some other
 -- way, renamed or archived meanwhile is left as it is (0 rows). A method,
 -- minutes_total or difficulty already set is kept: a pending dinner has
--- them only when a member edited them while it was grounding.
+-- them only when a member edited them while it was grounding. Like
+-- GroundDinner it clears the pasted recipe_url: the recipe replaces the link.
 UPDATE dinners
 SET recipe_id = sqlc.arg(recipe_id),
+	recipe_url = NULL,
 	photo_id = sqlc.arg(photo_id),
 	method = COALESCE(method, sqlc.arg(method)),
 	minutes_total = COALESCE(minutes_total, sqlc.arg(minutes_total)),

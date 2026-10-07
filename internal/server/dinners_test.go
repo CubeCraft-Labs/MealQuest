@@ -298,9 +298,11 @@ func TestDinnerResponsesHideTokenInLinkPath(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("same link again = %d, want 409: %s", rec.Code, rec.Body)
 	}
+	// Each secret holds a character no ULID has (Crockford base32 has no I,
+	// L, O, U, "-", "." or "/"), so the dinner's id never matches one.
 	for _, resp := range []struct{ name, body string }{{"create", created}, {"list", listed}, {"duplicate", rec.Body.String()}} {
 		lower := strings.ToLower(resp.body)
-		for _, secret := range []string{"c.example", "recipes", "key", "abcdefghijklmno"} {
+		for _, secret := range []string{link, "c.example", "recipes/stew", "stew-key", "abcdefghijklmno"} {
 			if strings.Contains(lower, secret) {
 				t.Errorf("%s response contains %q: %s", resp.name, secret, resp.body)
 			}

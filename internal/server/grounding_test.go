@@ -68,6 +68,27 @@ func listedDinner(t *testing.T, h http.Handler, id string) map[string]any {
 	return nil
 }
 
+// candidateID returns the candidate_id GET recipe-candidates offers dinner
+// id for the page titled title.
+func candidateID(t *testing.T, h http.Handler, id, title string) string {
+	t.Helper()
+	rec, body := callDinners(t, h, http.MethodGet, dinnersPath+"/"+id+"/recipe-candidates", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET candidates = %d: %s", rec.Code, rec.Body)
+	}
+	for _, c := range body["candidates"].([]any) {
+		if c := c.(map[string]any); c["title"] == title {
+			cid := c["candidate_id"].(string)
+			if strings.Contains(cid, "://") {
+				t.Fatalf("candidate_id = %q, want an opaque id, not the page URL", cid)
+			}
+			return cid
+		}
+	}
+	t.Fatalf("candidates = %v, want one titled %q", body, title)
+	return ""
+}
+
 func TestPostDinnerReturnsBeforeGroundingCompletes(t *testing.T) {
 	t.Parallel()
 	e := newDinnersEnv(t).withRecipes(t)
@@ -138,8 +159,11 @@ func TestGetRecipeCandidates(t *testing.T) {
 		t.Fatalf("candidates = %v, want 2", body)
 	}
 	first := list[0].(map[string]any)
+	if cid, _ := first["candidate_id"].(string); cid == "" || strings.Contains(cid, "a.example") {
+		t.Errorf("candidate_id = %#v, want an opaque id", first["candidate_id"])
+	}
 	want := map[string]any{
-		"candidate_id": curryPage,
+		"candidate_id": first["candidate_id"],
 		"title":        "Chicken Curry",
 		"site_name":    "Curry House",
 		"photo_url":    nil,
@@ -180,13 +204,65 @@ func TestGetRecipeCandidatesSearchFails(t *testing.T) {
 	}
 }
 
+// TestGetRecipeCandidatesStoredLookupFailure: a candidate whose stored
+// recipe cannot be read, or is stored incomplete, is a 500 logged by reason
+// and dinner id, never with the candidate's URL, which can carry a personal
+// token, or the database error.
+func TestGetRecipeCandidatesStoredLookupFailure(t *testing.T) {
+	t.Parallel()
+	const (
+		token = "personal-token-abc123"
+		host  = "secret-candidate.example"
+		page  = "https://" + host + "/curry?access_token=" + token
+	)
+	for _, tc := range []struct {
+		name, sabotage string
+		leaks          []string
+	}{
+		// Renaming a column the lookup selects fails the read.
+		{"lookup", `ALTER TABLE recipes RENAME COLUMN yield TO yield_gone`, []string{"no such column", "yield"}},
+		// A recipe stored without its photo, method or difficulty is
+		// incomplete.
+		{"incomplete", `INSERT INTO recipes (id, source_url, title, raw_jsonld, fetched_at, created_at, updated_at)
+			VALUES ('r-incomplete', '` + page + `', 'Curry', '{}', 'now', 'now', 'now')`, []string{"r-incomplete", "no photo"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			e := newDinnersEnv(t)
+			e.search.Results["Chicken curry"] = []recipes.Candidate{{URL: page}}
+			id := createDinner(t, e.h, `{"name":"Chicken curry"}`) // runner not started: stays pending
+			if _, err := e.st.Writer.ExecContext(t.Context(), tc.sabotage); err != nil {
+				t.Fatal(err)
+			}
+
+			rec, body := callDinners(t, e.h, http.MethodGet, dinnersPath+"/"+id+"/recipe-candidates", "")
+			if rec.Code != http.StatusInternalServerError || errorCode(body) != "internal" {
+				t.Errorf("GET = %d %s, want 500 internal", rec.Code, rec.Body)
+			}
+			logs := e.logs.String()
+			for _, secret := range append([]string{page, host, token, "access_token"}, tc.leaks...) {
+				if strings.Contains(rec.Body.String(), secret) {
+					t.Errorf("response contains %q: %s", secret, rec.Body)
+				}
+				if strings.Contains(logs, secret) {
+					t.Errorf("logs contain %q: %s", secret, logs)
+				}
+			}
+			if !strings.Contains(logs, "reason=candidates_failed") || !strings.Contains(logs, "dinner_id="+id) {
+				t.Errorf("logs = %q, want reason=candidates_failed and the dinner id", logs)
+			}
+		})
+	}
+}
+
 func TestPostGroundViaCandidate(t *testing.T) {
 	t.Parallel()
 	e := newDinnersEnv(t).withRecipes(t)
 	id := createDinner(t, e.h, `{"name":"Chicken curry"}`)
 	e.model.QueueGenerate(recipestest.NormalizedReply("stovetop", 25))
 
-	rec, d := callDinners(t, e.h, http.MethodPost, dinnersPath+"/"+id+"/ground", `{"candidate_id":"`+curry2Page+`"}`)
+	cid := candidateID(t, e.h, id, "Weeknight Curry")
+	rec, d := callDinners(t, e.h, http.MethodPost, dinnersPath+"/"+id+"/ground", `{"candidate_id":"`+cid+`"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST = %d: %s", rec.Code, rec.Body)
 	}
@@ -198,8 +274,77 @@ func TestPostGroundViaCandidate(t *testing.T) {
 	// The candidate is now stored, so it is offered with its photo.
 	_, body := callDinners(t, e.h, http.MethodGet, dinnersPath+"/"+id+"/recipe-candidates", "")
 	for _, c := range body["candidates"].([]any) {
-		if c := c.(map[string]any); c["candidate_id"] == curry2Page && c["photo_url"] != photo {
+		if c := c.(map[string]any); c["candidate_id"] == cid && c["photo_url"] != photo {
 			t.Errorf("grounded candidate photo_url = %v, want %s", c["photo_url"], photo)
+		}
+	}
+}
+
+// TestRecipeCandidatesHideTokenURLs: a candidate page whose URL carries a
+// token in its path or query is offered by an opaque id alone, which
+// grounds the dinner in that page.
+func TestRecipeCandidatesHideTokenURLs(t *testing.T) {
+	t.Parallel()
+	e := newDinnersEnv(t)
+	const (
+		pathToken  = "path-token-abc123"
+		queryToken = "query-token-def456"
+		pathPage   = "https://secret-path.example/u/" + pathToken + "/chicken-curry"
+		queryPage  = "https://secret-query.example/curry?access_token=" + queryToken
+	)
+	e.search.Results["Chicken curry"] = []recipes.Candidate{{URL: pathPage}, {URL: queryPage}}
+	e.pages.Bodies[pathPage] = recipestest.RecipePage("Chicken Curry", "Curry House", "https://a.example/curry.jpg", 40)
+	e.pages.Bodies[queryPage] = recipestest.RecipePage("Weeknight Curry", "B Kitchen", "https://b.example/curry.jpg", 25)
+	e.images.JPEGs["https://b.example/curry.jpg"] = recipestest.JPEG(t, 400, 320, 2)
+	id := createDinner(t, e.h, `{"name":"Chicken curry"}`) // runner not started: stays pending
+
+	rec, body := callDinners(t, e.h, http.MethodGet, dinnersPath+"/"+id+"/recipe-candidates", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET = %d: %s", rec.Code, rec.Body)
+	}
+	if list, _ := body["candidates"].([]any); len(list) != 2 {
+		t.Fatalf("candidates = %v, want 2", body)
+	}
+	for _, secret := range []string{pathPage, queryPage, "secret-path.example", "secret-query.example", pathToken, queryToken, "access_token"} {
+		if strings.Contains(rec.Body.String(), secret) {
+			t.Errorf("candidates response contains %q: %s", secret, rec.Body)
+		}
+	}
+
+	e.model.QueueGenerate(recipestest.NormalizedReply("stovetop", 25))
+	cid := candidateID(t, e.h, id, "Weeknight Curry")
+	rec, d := callDinners(t, e.h, http.MethodPost, dinnersPath+"/"+id+"/ground", `{"candidate_id":"`+cid+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST = %d: %s", rec.Code, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), queryToken) {
+		t.Errorf("ground response contains the token: %s", rec.Body)
+	}
+	var source string
+	if err := e.st.Reader.QueryRow(`SELECT source_url FROM recipes WHERE id = ?`, d["recipe_id"]).Scan(&source); err != nil {
+		t.Fatal(err)
+	}
+	if d["grounding_status"] != "grounded" || source != queryPage {
+		t.Errorf("dinner = %v in recipe %s, want grounded in %s", d, source, queryPage)
+	}
+}
+
+// TestPostGroundRejectsCandidateNotOffered: a candidate_id is only one
+// offered for that dinner; a page URL, or another dinner's candidate, is
+// refused.
+func TestPostGroundRejectsCandidateNotOffered(t *testing.T) {
+	t.Parallel()
+	e := newDinnersEnv(t).withRecipes(t)
+	id := createDinner(t, e.h, `{"name":"Chicken curry"}`)
+	other := createDinner(t, e.h, `{"name":"Pad thai"}`)
+	cid := candidateID(t, e.h, id, "Weeknight Curry")
+	for _, tc := range []struct{ name, dinner, cid string }{
+		{"page URL", id, curry2Page},
+		{"another dinner's", other, cid},
+	} {
+		rec, body := callDinners(t, e.h, http.MethodPost, dinnersPath+"/"+tc.dinner+"/ground", `{"candidate_id":"`+tc.cid+`"}`)
+		if rec.Code != http.StatusBadRequest || errorCode(body) != "invalid_dinner" {
+			t.Errorf("%s: %d %v, want 400 invalid_dinner", tc.name, rec.Code, body)
 		}
 	}
 }
@@ -365,7 +510,8 @@ func TestPostGroundRejects(t *testing.T) {
 	for _, tc := range []struct{ name, body, code string }{
 		{"empty", `{}`, "invalid_dinner"},
 		{"two kinds", `{"candidate_id":"https://a.example/x","recipe_url":"https://a.example/x"}`, "invalid_dinner"},
-		{"candidate not a link", `{"candidate_id":"c1"}`, "invalid_dinner"},
+		{"candidate not offered", `{"candidate_id":"c1"}`, "invalid_dinner"},
+		{"candidate a page URL", `{"candidate_id":"https://a.example/x"}`, "invalid_dinner"},
 		{"http link", `{"recipe_url":"http://a.example/x"}`, "invalid_dinner"},
 		{"null", `{"recipe_url":null}`, "invalid_request"},
 		{"unknown field", `{"url":"https://a.example/x"}`, "invalid_request"},

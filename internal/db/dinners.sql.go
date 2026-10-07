@@ -347,6 +347,7 @@ func (q *Queries) GroundDinner(ctx context.Context, arg GroundDinnerParams) (Din
 const groundPendingDinner = `-- name: GroundPendingDinner :execrows
 UPDATE dinners
 SET recipe_id = ?1,
+	recipe_url = NULL,
 	photo_id = ?2,
 	method = COALESCE(method, ?3),
 	minutes_total = COALESCE(minutes_total, ?4),
@@ -375,7 +376,8 @@ type GroundPendingDinnerParams struct {
 // the grounding_revision it was grounded for; a dinner grounded some other
 // way, renamed or archived meanwhile is left as it is (0 rows). A method,
 // minutes_total or difficulty already set is kept: a pending dinner has
-// them only when a member edited them while it was grounding.
+// them only when a member edited them while it was grounding. Like
+// GroundDinner it clears the pasted recipe_url: the recipe replaces the link.
 func (q *Queries) GroundPendingDinner(ctx context.Context, arg GroundPendingDinnerParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, groundPendingDinner,
 		arg.RecipeID,

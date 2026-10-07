@@ -103,7 +103,8 @@ type Querier interface {
 	// the grounding_revision it was grounded for; a dinner grounded some other
 	// way, renamed or archived meanwhile is left as it is (0 rows). A method,
 	// minutes_total or difficulty already set is kept: a pending dinner has
-	// them only when a member edited them while it was grounding.
+	// them only when a member edited them while it was grounding. Like
+	// GroundDinner it clears the pasted recipe_url: the recipe replaces the link.
 	GroundPendingDinner(ctx context.Context, arg GroundPendingDinnerParams) (int64, error)
 	// The pending suggestions whose dinner is still suggested, oldest first,
 	// with their dinners.

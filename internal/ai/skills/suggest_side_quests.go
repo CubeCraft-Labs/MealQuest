@@ -314,28 +314,37 @@ func drop(q SideQuest, regulars regularNames, known *harness.Deduper, kept []Sid
 
 // named returns the Regulars text names, by one rule. A mention of a
 // Regular is a place where text spells its name, ignoring case and spacing,
-// with the name's own outer punctuation optional ("Easy Beef Chili!" is
-// mentioned by "Easy Beef Chili." too) and no letter or digit just outside
-// it: the start or end of text, white space or punctuation must border it,
-// so "Beef Chili-inspired" and "Beef Chili's" mention "Beef Chili" while
-// "Beef Chilis" does not. A mention names its Regular unless a mention of a
-// different Regular covers the same text or more, so "Your Easy Beef
-// Chili." names "Easy Beef Chili" and not "Beef Chili", and text that two
-// Regulars spell alike names neither there.
+// with no letter, mark or digit just outside it: the start or end of text,
+// white space, punctuation or a symbol must border it, so "Beef
+// Chili-inspired" and "Beef Chili's" mention "Beef Chili" while "Beef
+// Chilis" does not, nor does "Cafe" with a combining accent after it
+// mention "Cafe". Punctuation at either end of the name, with any spacing
+// beside it, is optional, and a mention takes it in only where text spells
+// it and the border still holds after it: "Easy Beef Chili!" is mentioned
+// by "Easy Beef Chili." too, and by "Easy Beef Chili!x" without its "!". A
+// combining mark is part of its letter, never punctuation. A mention names
+// its Regular unless a mention of a different Regular covers the same text
+// or more, so "Your Easy Beef Chili." names "Easy Beef Chili" and not "Beef
+// Chili", and text that two Regulars spell alike names neither there.
 func (r regularNames) named(text string) []string {
 	type mention struct {
 		name       string
 		start, end int
 	}
 	text = exactName(text)
+	bordered := func(start, end int) bool {
+		before, _ := utf8.DecodeLastRuneInString(text[:start])
+		after, _ := utf8.DecodeRuneInString(text[end:])
+		return (start == 0 || !isWord(before)) && (end == len(text) || !isWord(after))
+	}
 	var mentions []mention
 	for _, name := range r.all {
 		full := exactName(name)
-		core := strings.TrimFunc(full, isNotWord)
+		core := strings.TrimFunc(full, isOuter)
 		if core == "" {
 			continue
 		}
-		lead := full[:len(full)-len(strings.TrimLeftFunc(full, isNotWord))]
+		lead := full[:len(full)-len(strings.TrimLeftFunc(full, isOuter))]
 		trail := full[len(lead)+len(core):]
 		for at := 0; ; {
 			i := strings.Index(text[at:], core)
@@ -344,15 +353,13 @@ func (r regularNames) named(text string) []string {
 			}
 			start, end := at+i, at+i+len(core)
 			at = start + 1
-			before, _ := utf8.DecodeLastRuneInString(text[:start])
-			after, _ := utf8.DecodeRuneInString(text[end:])
-			if (start > 0 && !isNotWord(before)) || (end < len(text) && !isNotWord(after)) {
+			if !bordered(start, end) {
 				continue
 			}
-			if strings.HasSuffix(text[:start], lead) {
+			if strings.HasSuffix(text[:start], lead) && bordered(start-len(lead), end) {
 				start -= len(lead)
 			}
-			if strings.HasPrefix(text[end:], trail) {
+			if strings.HasPrefix(text[end:], trail) && bordered(start, end+len(trail)) {
 				end += len(trail)
 			}
 			mentions = append(mentions, mention{name, start, end})
@@ -370,5 +377,9 @@ func (r regularNames) named(text string) []string {
 	return names
 }
 
-// isNotWord reports whether c is neither a letter nor a digit.
-func isNotWord(c rune) bool { return !unicode.IsLetter(c) && !unicode.IsDigit(c) }
+// isWord reports whether c is a letter, a mark on one or a digit.
+func isWord(c rune) bool { return unicode.IsLetter(c) || unicode.IsMark(c) || unicode.IsDigit(c) }
+
+// isOuter reports whether c may be left off the end of a name: punctuation
+// or white space.
+func isOuter(c rune) bool { return unicode.IsPunct(c) || unicode.IsSpace(c) }

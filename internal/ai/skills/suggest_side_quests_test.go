@@ -252,6 +252,11 @@ func TestSuggestSideQuestsReasonMentionRule(t *testing.T) {
 		"punctuation-only difference":  {[]string{"Beef Chili!"}, "Your Beef Chili! over corn chips.", "Beef Chili!", ""},
 		"bare name inside punctuated":  {[]string{"Beef Chili!"}, "Your Beef Chili! over corn chips.", "Beef Chili", none},
 		"spelled alike by both":        {[]string{"Beef Chili!"}, "Corn chips under your Beef Chili.", "Beef Chili", none},
+		"punctuation then a letter":    {[]string{"Beef Chili!"}, "Your Beef Chili!X is our inspiration.", "Beef Chili!", none},
+		"letter before punctuation":    {[]string{"¡Beef Chili"}, "Your X¡Beef Chili is our inspiration.", "¡Beef Chili", none},
+		"stored symbol left off":       {[]string{"Green Chili 🌶"}, "Like your Green Chili, gone green.", "Green Chili 🌶", none},
+		"stored accent left off":       {[]string{"Chicken Cafe\u0301"}, "Like your Chicken Cafe, gone green.", "Chicken Cafe\u0301", none},
+		"accent written after name":    {[]string{"Chicken Cafe"}, "Like your Chicken Cafe\u0301, gone green.", "Chicken Cafe", none},
 	} {
 		t.Run(name, func(t *testing.T) {
 			in := household

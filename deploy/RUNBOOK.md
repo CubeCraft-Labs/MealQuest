@@ -576,11 +576,15 @@ of its own migration files — the `*.sql` files directly in `migrations/`
 versions the live database has applied with the files the previous SHA has:
 
 ```sh
-cd /home/overseer/mealquest
+cd /home/overseer/mealquest && (
+set -eu   # any failed step ends the check with a nonzero status
 D=/var/lib/docker/volumes/mealquest-data/_data
 P=<previous SHA>
-rm -rf /tmp/mqcheck && mkdir /tmp/mqcheck
-sudo sh -c "cp -a $D/mealquest.db* /tmp/mqcheck/" && sudo chown -R "$USER" /tmp/mqcheck
+rm -rf /tmp/mqcheck
+mkdir /tmp/mqcheck
+trap 'st=$?; rm -rf /tmp/mqcheck; [ "$st" -eq 0 ] || echo "check FAILED (status $st): stop and fix the cause" >&2; exit "$st"' EXIT
+sudo sh -c "cp -a $D/mealquest.db* /tmp/mqcheck/"
+sudo chown -R "$USER" /tmp/mqcheck
 git ls-tree --name-only "$P" migrations/ > /tmp/mqcheck/known   # top level only
 python3 - /tmp/mqcheck/mealquest.db /tmp/mqcheck/known <<'PY'
 import sqlite3, sys
@@ -591,13 +595,20 @@ if not applied or not known:
 unknown = sorted(applied - known)
 print("unknown to the previous SHA:", " ".join(unknown) if unknown else "none")
 PY
-rm -rf /tmp/mqcheck
+)
 ```
 
-It prints `none` when no migration crossed; otherwise it lists the versions
-the older build does not know, and the migration-crossing path below is
-required. If it exits with an error, stop and fix the cause — do not pick a
-path.
+The check runs in a subshell that stops at the first failed step — the
+copy, `git ls-tree` or the comparison — and removes `/tmp/mqcheck` on the
+way out without changing the status. Read it like this:
+
+- `unknown to the previous SHA: none` and `echo $?` prints `0` — no
+  migration crossed: take the plain restart below.
+- `unknown to the previous SHA:` followed by versions, and `echo $?`
+  prints `0` — the older build does not know them: the migration-crossing
+  path below is required.
+- `check FAILED`, any other error, or a nonzero `echo $?` — stop and fix
+  the cause, then run the check again. Do not pick a path.
 
 **No migration crossed** — rebuild and restart the older SHA:
 

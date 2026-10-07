@@ -1,7 +1,7 @@
 // The PWA's copy of the server's dinner-name rules (internal/ai/harness
 // Normalize and Similar), so a screen can tell beforehand that the dinners
 // API would refuse a name as a duplicate. The server still decides.
-// internal/ai/harness/testdata/dedupe_cases.json is run against both.
+// web/src/dinners/testdata/dedupe_cases.json is run against both.
 
 import folds from './letterFolds.json'
 

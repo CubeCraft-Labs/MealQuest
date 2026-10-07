@@ -517,7 +517,7 @@ Regular has a name `harness.Similar` to it — the PWA's copy of the name
 rules in `web/src/dinners/names.ts` folds letters with
 `web/src/dinners/letterFolds.json`, which `gen_folds.py` writes from the
 same table as the server's, and runs the same cases,
-`internal/ai/harness/testdata/dedupe_cases.json`, as the server's) and
+`web/src/dinners/testdata/dedupe_cases.json`, as the server's) and
 notifications (`/onboarding/notifications`: what MealQuest notifies about,
 the iOS install hint, "Turn on notifications" and "Maybe later"). Either
 button sends `PATCH /api/v1/settings/household` with

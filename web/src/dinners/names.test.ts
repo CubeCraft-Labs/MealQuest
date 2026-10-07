@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import cases from '../../../internal/ai/harness/testdata/dedupe_cases.json'
+import cases from './testdata/dedupe_cases.json'
 import { normalizeName, similarNames } from './names.ts'
 
 // The cases internal/ai/harness's tests run against Normalize and Similar.

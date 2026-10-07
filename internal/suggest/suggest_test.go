@@ -44,6 +44,9 @@ type env struct {
 	regulars map[string]string
 	grounder *recipes.Grounder
 
+	// logs collects the service's and job runner's log output.
+	logs *logBuffer
+
 	mu     sync.Mutex
 	inputs []skills.SideQuestsRequest
 	// stub, when set, answers in place of suggest_side_quests.
@@ -82,6 +85,7 @@ func newEnv(t *testing.T) *env {
 		model:    &llm.Fake{},
 		side:     &llm.Fake{},
 		regulars: map[string]string{},
+		logs:     &logBuffer{},
 	}
 	for _, name := range []string{"Beef Chili", "Chicken Fajitas"} {
 		e.regulars[name] = e.dinner(t, name, "regular")
@@ -108,7 +112,7 @@ func newEnv(t *testing.T) *env {
 		}
 		return skills.SuggestSideQuests(ctx, cfg, scope, in)
 	}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.NewTextHandler(e.logs, nil))
 	e.runner, err = jobs.NewRunner(st, logger, 1)
 	if err != nil {
 		t.Fatal(err)
@@ -118,6 +122,24 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	return e
+}
+
+// logBuffer collects log output written by concurrent goroutines.
+type logBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *logBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // start starts the env's job runner, stopping it when the test ends.
@@ -938,6 +960,62 @@ func TestBatchJobFailsWhenRecordingItsEndFails(t *testing.T) {
 
 	if _, err := e.st.Writer.ExecContext(t.Context(), `DROP TRIGGER refuse_done`); err != nil {
 		t.Fatal(err)
+	}
+	next, err := e.svc.StartBatch(t.Context(), suggest.TriggerManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !next.Created || next.ID == b.ID {
+		t.Errorf("next batch = %+v, want a new one", next)
+	}
+	if got := e.batchStatus(t, b.ID); got != suggest.BatchFailed {
+		t.Errorf("batch status = %s with its job failed, want failed", got)
+	}
+}
+
+func TestBatchRecoversWhenRecordingItsEndAndItsJobsEndFail(t *testing.T) {
+	e := newEnv(t)
+	e.start(t)
+	e.recipe(t, "Chili Verde")
+	e.reply(sideQuest("Chili Verde", "Your Beef Chili gone green.", "Beef Chili"))
+	for _, trigger := range []string{
+		`CREATE TRIGGER refuse_done BEFORE UPDATE OF status ON suggestion_batches WHEN NEW.status = 'done' BEGIN SELECT RAISE(ABORT, 'done refused'); END`,
+		`CREATE TRIGGER refuse_job_end BEFORE UPDATE OF status ON jobs WHEN NEW.status IN ('succeeded', 'failed') BEGIN SELECT RAISE(ABORT, 'job end refused'); END`,
+	} {
+		if _, err := e.st.Writer.ExecContext(t.Context(), trigger); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	b, err := e.svc.StartBatch(t.Context(), suggest.TriggerManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(e.logs.String(), "record job failure") {
+		if time.Now().After(deadline) {
+			t.Fatalf("job end never recorded; batch %s", e.batchStatus(t, b.ID))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// While neither end is recorded the batch is still the active one.
+	again, err := e.svc.StartBatch(t.Context(), suggest.TriggerManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Created || again.ID != b.ID {
+		t.Fatalf("batch = %+v while batch %s is running, want it", again, b.ID)
+	}
+
+	// The database recovers; the service is not restarted.
+	for _, trigger := range []string{"refuse_done", "refuse_job_end"} {
+		if _, err := e.st.Writer.ExecContext(t.Context(), "DROP TRIGGER "+trigger); err != nil {
+			t.Fatal(err)
+		}
+	}
+	job := e.waitJob(t, b.JobID)
+	if job.Status != jobs.StatusFailed {
+		t.Fatalf("job %s, want failed", job.Status)
 	}
 	next, err := e.svc.StartBatch(t.Context(), suggest.TriggerManual)
 	if err != nil {

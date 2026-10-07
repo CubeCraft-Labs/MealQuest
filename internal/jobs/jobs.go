@@ -54,12 +54,13 @@ const (
 	CodeUnknownKind = "unknown_kind"
 )
 
-// Claim retry backoff. A worker whose claim fails with a database error
-// retries after claimRetryMin, doubling up to claimRetryMax, so a job queued
-// when the error clears is claimed without waiting for a wake token.
+// Retry backoff. A worker whose claim or final job write fails with a
+// database error retries after retryMin, doubling up to retryMax, so a job
+// queued when the error clears is claimed without waiting for a wake token,
+// and a job the worker has finished is never left running.
 const (
-	claimRetryMin = 50 * time.Millisecond
-	claimRetryMax = 5 * time.Second
+	retryMin = 50 * time.Millisecond
+	retryMax = 5 * time.Second
 )
 
 // codePattern is the form of every failure code: lower-case snake case.
@@ -387,16 +388,16 @@ func (r *Runner) Get(ctx context.Context, id string) (Job, error) {
 // already queued is not stranded by a transient error.
 func (r *Runner) work(ctx context.Context) {
 	defer r.wg.Done()
-	backoff := claimRetryMin
+	backoff := retryMin
 	for ctx.Err() == nil {
 		job, err := r.claim(ctx, sql.NullString{String: store.Now().String(), Valid: true})
 		switch {
 		case err == nil:
-			backoff = claimRetryMin
+			backoff = retryMin
 			r.run(ctx, job)
 			continue
 		case errors.Is(err, sql.ErrNoRows):
-			backoff = claimRetryMin
+			backoff = retryMin
 			select {
 			case <-r.wake:
 			case <-ctx.Done():
@@ -412,7 +413,7 @@ func (r *Runner) work(ctx context.Context) {
 		case <-ctx.Done():
 			timer.Stop()
 		}
-		backoff = min(2*backoff, claimRetryMax)
+		backoff = min(2*backoff, retryMax)
 	}
 }
 
@@ -420,14 +421,13 @@ func (r *Runner) work(ctx context.Context) {
 // ctx has been cancelled, so a handler that finishes during shutdown is
 // recorded.
 func (r *Runner) run(ctx context.Context, job db.Job) {
-	write := context.WithoutCancel(ctx)
 	logger := r.logger.With("job_id", job.ID, "kind", job.Kind)
 	q := db.New(r.st.Writer)
 
 	h, ok := r.handlers[job.Kind] // read-only once started
 	if !ok {
 		logger.ErrorContext(ctx, "job failed", "code", CodeUnknownKind, "reason", "no handler registered for the kind")
-		r.fail(write, logger, job.ID, CodeUnknownKind)
+		r.fail(ctx, logger, job.ID, CodeUnknownKind)
 		return
 	}
 
@@ -449,7 +449,7 @@ func (r *Runner) run(ctx context.Context, job db.Job) {
 	result, code, reason := h.run(ctx, job.Payload, publish)
 	if code != "" {
 		if ctx.Err() != nil {
-			logger.WarnContext(write, "job interrupted by shutdown; it fails at the next start")
+			logger.WarnContext(context.WithoutCancel(ctx), "job interrupted by shutdown; it fails at the next start")
 			return
 		}
 		level := slog.LevelInfo
@@ -457,35 +457,58 @@ func (r *Runner) run(ctx context.Context, job db.Job) {
 			level = slog.LevelError
 		}
 		logger.Log(ctx, level, "job failed", "code", code, "reason", reason)
-		r.fail(write, logger, job.ID, code)
+		r.fail(ctx, logger, job.ID, code)
 		return
 	}
 
-	n, err := q.SucceedJob(write, db.SucceedJobParams{
-		Result: sql.NullString{String: string(result), Valid: true},
-		Now:    sql.NullString{String: store.Now().String(), Valid: true},
-		ID:     job.ID,
+	r.record(ctx, logger, "record job success", func(write context.Context) (int64, error) {
+		return q.SucceedJob(write, db.SucceedJobParams{
+			Result: sql.NullString{String: string(result), Valid: true},
+			Now:    sql.NullString{String: store.Now().String(), Valid: true},
+			ID:     job.ID,
+		})
 	})
-	if err == nil && n != 1 {
-		err = errors.New("job is not running")
-	}
-	if err != nil {
-		logger.ErrorContext(write, "record job success", "error", err)
-	}
 }
 
 // fail records the job as failed with code. The record errors it logs come
 // from the database, never from a handler.
 func (r *Runner) fail(ctx context.Context, logger *slog.Logger, id, code string) {
-	n, err := db.New(r.st.Writer).FailJob(ctx, db.FailJobParams{
-		Error: sql.NullString{String: code, Valid: true},
-		Now:   sql.NullString{String: store.Now().String(), Valid: true},
-		ID:    id,
+	r.record(ctx, logger, "record job failure", func(write context.Context) (int64, error) {
+		return db.New(r.st.Writer).FailJob(write, db.FailJobParams{
+			Error: sql.NullString{String: code, Valid: true},
+			Now:   sql.NullString{String: store.Now().String(), Valid: true},
+			ID:    id,
+		})
 	})
-	if err == nil && n != 1 {
-		err = errors.New("job is not running")
-	}
-	if err != nil {
-		logger.ErrorContext(ctx, "record job failure", "error", err)
+}
+
+// record makes a job's final write, which must change the one running job.
+// A database error is retried with backoff until the write lands, so a
+// worker never moves on from a job it has finished while leaving it
+// running. Each attempt is made even when ctx has been cancelled; once it
+// is, a failed attempt is not retried and the job stays running, so the
+// next Start fails it as interrupted.
+func (r *Runner) record(ctx context.Context, logger *slog.Logger, what string, write func(context.Context) (int64, error)) {
+	backoff := retryMin
+	for {
+		n, err := write(context.WithoutCancel(ctx))
+		if err == nil {
+			if n != 1 {
+				logger.ErrorContext(ctx, what, "error", "job is not running")
+			}
+			return
+		}
+		if ctx.Err() != nil {
+			logger.ErrorContext(context.WithoutCancel(ctx), what+" failed during shutdown; it fails at the next start", "error", err)
+			return
+		}
+		logger.ErrorContext(ctx, what+" failed; retrying", "error", err, "retry_in", backoff)
+		timer := time.NewTimer(backoff)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+		}
+		backoff = min(2*backoff, retryMax)
 	}
 }

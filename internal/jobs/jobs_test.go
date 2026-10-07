@@ -609,6 +609,39 @@ func TestClaimErrorIsRetried(t *testing.T) {
 	}
 }
 
+func TestFinalWriteErrorIsRetried(t *testing.T) {
+	st := migratedStore(t)
+	logs := &logBuffer{}
+	r := newRunnerLogging(t, st, 1, logs)
+	k := register(t, r, "count", func(ctx context.Context, p countPayload, publish func(countResult) error) (countResult, error) {
+		return countResult{Done: p.Steps}, nil
+	})
+	if _, err := st.Writer.ExecContext(t.Context(), `CREATE TRIGGER refuse_end BEFORE UPDATE OF status ON jobs WHEN NEW.status IN ('succeeded', 'failed') BEGIN SELECT RAISE(ABORT, 'end refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+	start(t, r)
+	id := enqueue(t, k, countPayload{Steps: 3})
+
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(logs.String(), "record job success") {
+		if time.Now().After(deadline) {
+			t.Fatal("job success never recorded")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, err := st.Writer.ExecContext(t.Context(), `DROP TRIGGER refuse_end`); err != nil {
+		t.Fatal(err)
+	}
+
+	job := waitFor(t, r, id, finished)
+	if job.Status != StatusSucceeded || string(job.Result) != `{"done":3}` {
+		t.Fatalf("job = %+v (result %s), want succeeded with {\"done\":3}", job, job.Result)
+	}
+	if out := logs.String(); !strings.Contains(out, "record job success failed; retrying") {
+		t.Fatalf("final write error not logged as retried: %s", out)
+	}
+}
+
 func TestRunnerEnqueueByKindName(t *testing.T) {
 	t.Parallel()
 	st := migratedStore(t)

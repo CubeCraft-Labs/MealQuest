@@ -283,10 +283,13 @@ automatic** (D-021).
   `grounding`, `done`). It fails with `no_regulars`, `ai_failed` (the
   skill or `normalize_recipe` failed; no Side quest is made up instead,
   D-017), `search_not_configured` or `search_failed`, and the batch is set
-  `failed`; Side quests stored before the failure stay in the deck. At
-  boot, after the job runner fails the jobs a previous process left
-  running, every batch still `pending` or `running` with no job queued or
-  running is set `failed`, so it does not block the next.
+  `failed`; Side quests stored before the failure stay in the deck. If
+  recording the batch's end fails, its job fails; the job runner retries
+  a job's final status write with backoff until it lands. Each time a
+  batch is started, before the active batch is selected, every batch
+  still `pending` or `running` with no job queued or running (the process
+  stopped, or recording its end failed) is set `failed`, so it does not
+  block the next.
   `GET /api/v1/suggestions/deck` returns `{suggestions: [{id, dinner_id,
   name, photo_url, difficulty, method, minutes_total, cuisine, reason,
   cited_regular_ids, status, dinner_status, decided_at, created_at}]}`:

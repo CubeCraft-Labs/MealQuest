@@ -132,9 +132,8 @@ type FailOrphanedSuggestionBatchesParams struct {
 }
 
 // Fails every batch still pending or running whose job is no longer queued
-// or running: the process stopped before its handler recorded a result.
-// Run at boot, after the job runner fails the jobs a previous process left
-// running.
+// or running: the process stopped, or recording the batch's end failed,
+// before its handler recorded a result. Run before reading the active batch.
 func (q *Queries) FailOrphanedSuggestionBatches(ctx context.Context, arg FailOrphanedSuggestionBatchesParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, failOrphanedSuggestionBatches, arg.UpdatedAt, arg.Kind)
 	if err != nil {

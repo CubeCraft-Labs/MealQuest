@@ -35,9 +35,8 @@ WHERE id = ? AND status IN ('pending', 'running');
 
 -- name: FailOrphanedSuggestionBatches :execrows
 -- Fails every batch still pending or running whose job is no longer queued
--- or running: the process stopped before its handler recorded a result.
--- Run at boot, after the job runner fails the jobs a previous process left
--- running.
+-- or running: the process stopped, or recording the batch's end failed,
+-- before its handler recorded a result. Run before reading the active batch.
 UPDATE suggestion_batches
 SET status = 'failed', updated_at = sqlc.arg(updated_at)
 WHERE status IN ('pending', 'running')

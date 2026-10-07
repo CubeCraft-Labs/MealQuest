@@ -891,23 +891,63 @@ func TestBatchFailsWithNoRegulars(t *testing.T) {
 	}
 }
 
-func TestFailInterruptedBatches(t *testing.T) {
+func TestStartBatchFailsOrphanedBatch(t *testing.T) {
 	e := newEnv(t)
-	queued, err := e.svc.StartBatch(t.Context(), suggest.TriggerManual) // its job is still queued
-	if err != nil {
-		t.Fatal(err)
-	}
 	now := store.Now().String()
 	orphan, err := db.New(e.st.Writer).CreateSuggestionBatch(t.Context(), db.CreateSuggestionBatchParams{ID: store.NewID(), Trigger: "manual", CreatedAt: now, UpdatedAt: now})
 	if err != nil {
 		t.Fatal(err)
 	}
-	n, err := e.svc.FailInterruptedBatches(t.Context())
+	b, err := e.svc.StartBatch(t.Context(), suggest.TriggerManual)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 1 || e.batchStatus(t, orphan.ID) != suggest.BatchFailed || e.batchStatus(t, queued.ID) != suggest.BatchPending {
-		t.Errorf("failed %d; orphan %s, queued %s; want only the orphan failed", n, e.batchStatus(t, orphan.ID), e.batchStatus(t, queued.ID))
+	if !b.Created || b.ID == orphan.ID {
+		t.Fatalf("batch = %+v, want a new one past the orphan", b)
+	}
+	if got := e.batchStatus(t, orphan.ID); got != suggest.BatchFailed {
+		t.Errorf("orphan status = %s, want failed", got)
+	}
+	// A batch whose job is still queued is not an orphan.
+	again, err := e.svc.StartBatch(t.Context(), suggest.TriggerManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Created || again.ID != b.ID || e.batchStatus(t, b.ID) != suggest.BatchPending {
+		t.Errorf("second batch = %+v, status %s; want batch %s still pending", again, e.batchStatus(t, b.ID), b.ID)
+	}
+}
+
+func TestBatchJobFailsWhenRecordingItsEndFails(t *testing.T) {
+	e := newEnv(t)
+	e.start(t)
+	e.recipe(t, "Chili Verde")
+	e.reply(sideQuest("Chili Verde", "Your Beef Chili gone green.", "Beef Chili"))
+	if _, err := e.st.Writer.ExecContext(t.Context(), `CREATE TRIGGER refuse_done BEFORE UPDATE OF status ON suggestion_batches WHEN NEW.status = 'done' BEGIN SELECT RAISE(ABORT, 'done refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	b, err := e.svc.StartBatch(t.Context(), suggest.TriggerManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := e.waitJob(t, b.JobID)
+	if job.Status != jobs.StatusFailed {
+		t.Fatalf("job %s with its batch %s, want failed", job.Status, e.batchStatus(t, b.ID))
+	}
+
+	if _, err := e.st.Writer.ExecContext(t.Context(), `DROP TRIGGER refuse_done`); err != nil {
+		t.Fatal(err)
+	}
+	next, err := e.svc.StartBatch(t.Context(), suggest.TriggerManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !next.Created || next.ID == b.ID {
+		t.Errorf("next batch = %+v, want a new one", next)
+	}
+	if got := e.batchStatus(t, b.ID); got != suggest.BatchFailed {
+		t.Errorf("batch status = %s with its job failed, want failed", got)
 	}
 }
 

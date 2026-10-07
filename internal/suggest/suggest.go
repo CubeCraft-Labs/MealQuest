@@ -172,10 +172,23 @@ func (s *Service) StartBatch(ctx context.Context, trigger string) (Batch, error)
 }
 
 // startBatch does StartBatch's work in tx: the batch and the job that runs
-// it are committed together, so a batch is never seen without its job. The
+// it are committed together, so a batch is never seen without its job. A
+// batch still pending or running whose job is no longer queued or running
+// is failed first, so a batch whose job ended without recording its end
+// (the process stopped, or the write failed) never blocks a later one. The
 // caller wakes the job runner once tx has committed and Created is true.
 func (s *Service) startBatch(ctx context.Context, tx *sql.Tx, trigger string) (Batch, error) {
 	q := db.New(tx)
+	n, err := q.FailOrphanedSuggestionBatches(ctx, db.FailOrphanedSuggestionBatchesParams{
+		UpdatedAt: store.Now().String(),
+		Kind:      KindSuggestionBatch,
+	})
+	if err != nil {
+		return Batch{}, fmt.Errorf("suggest: fail orphaned batches: %w", err)
+	}
+	if n > 0 {
+		s.logger.WarnContext(ctx, "failed suggestion batches whose job ended", "count", n)
+	}
 	cur, err := q.GetActiveSuggestionBatch(ctx)
 	if err == nil {
 		jobID, err := q.GetSuggestionBatchJobID(ctx, db.GetSuggestionBatchJobIDParams{Kind: KindSuggestionBatch, BatchID: cur.ID})
@@ -204,34 +217,23 @@ func (s *Service) startBatch(ctx context.Context, tx *sql.Tx, trigger string) (B
 	return Batch{ID: row.ID, JobID: jobID, Trigger: row.Trigger, Status: row.Status, Created: true}, nil
 }
 
-// finishBatch records batch id as status, logging a failure to do so.
-func (s *Service) finishBatch(ctx context.Context, id, status string) {
-	if _, err := db.New(s.st.Writer).FinishSuggestionBatch(ctx, db.FinishSuggestionBatchParams{
+// finishBatch records running batch id as status. Its job's handler
+// returns any error, so the job never ends succeeded with the batch still
+// running; the runner keeps only a code, so the error is logged too.
+func (s *Service) finishBatch(ctx context.Context, id, status string) error {
+	n, err := db.New(s.st.Writer).FinishSuggestionBatch(ctx, db.FinishSuggestionBatchParams{
 		Status:    status,
 		UpdatedAt: store.Now().String(),
 		ID:        id,
-	}); err != nil {
-		s.logger.ErrorContext(ctx, "record suggestion batch status", "batch_id", id, "status", status, "error", err)
-	}
-}
-
-// FailInterruptedBatches fails every batch still pending or running whose
-// KindSuggestionBatch job is no longer queued or running, so a batch a
-// previous process left unfinished does not block every later one. Call it
-// once at boot, after the job runner's Start has failed the jobs that
-// process left running. It returns how many it failed.
-func (s *Service) FailInterruptedBatches(ctx context.Context) (int64, error) {
-	n, err := db.New(s.st.Writer).FailOrphanedSuggestionBatches(ctx, db.FailOrphanedSuggestionBatchesParams{
-		UpdatedAt: store.Now().String(),
-		Kind:      KindSuggestionBatch,
 	})
+	if err == nil && n != 1 {
+		err = errors.New("batch is not running")
+	}
 	if err != nil {
-		return 0, fmt.Errorf("suggest: fail interrupted batches: %w", err)
+		s.logger.ErrorContext(ctx, "record suggestion batch status", "batch_id", id, "status", status, "error", err)
+		return fmt.Errorf("suggest: record batch %s %s: %w", id, status, err)
 	}
-	if n > 0 {
-		s.logger.WarnContext(ctx, "failed suggestion batches interrupted by restart", "count", n)
-	}
-	return n, nil
+	return nil
 }
 
 // Suggestion is a Side quest suggestion as the API shows it, with its

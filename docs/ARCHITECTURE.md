@@ -98,7 +98,7 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 | `photos` | source_url, local_path, width, height, sha256, fetched_at. |
 | `dinners` | The meal record and its lifecycle: name, normalized_name, status (`suggested` / `quest_log` / `tried` / `regular` / `archived`), origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, recipe_url (a pasted recipe link awaiting grounding), photo_id, grounding_status (`pending` / `grounded` / `failed` / `manual`), grounding_error (why grounding failed), grounding_revision (raised when a pending dinner is renamed, so only the latest `ground_dinner` job may write it), updated_by. |
 | `suggestion_batches` | trigger, status, ai_run_id. |
-| `suggestions` | dinner_id, batch_id, reason, cited_regular_ids (JSON), status, decided_at. |
+| `suggestions` | dinner_id, batch_id, name (the name the dish was suggested under, kept whatever its dinner is later renamed, so a Pass stays an immutable record every later batch dedupes against), reason, cited_regular_ids (JSON), status, decided_at. |
 | `week_plans` | week_start (unique), status (`draft` / `synced` / `changed`), ai_note, ai_run_id, calendar_synced_at. |
 | `plan_days` | plan_id, date (unique per plan), dinner_id, is_new, calendar_event_id. |
 | `rotation_reviews` | dinner_id + plan_date (unique), status, decision (`keep` / `drop` / `not_made`), decided_at, updated_by. |

@@ -150,11 +150,6 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	if _, err := dinnerSvc.FailInterruptedGroundings(ctx); err != nil {
 		return err
 	}
-	// Likewise a suggestion batch with no job left to run it, so it does
-	// not block every later batch.
-	if _, err := suggestSvc.FailInterruptedBatches(ctx); err != nil {
-		return err
-	}
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           router,

@@ -52,9 +52,8 @@ type Querier interface {
 	// boot, after the job runner fails the jobs a previous process left running.
 	FailOrphanedPendingDinnerGroundings(ctx context.Context, arg FailOrphanedPendingDinnerGroundingsParams) (int64, error)
 	// Fails every batch still pending or running whose job is no longer queued
-	// or running: the process stopped before its handler recorded a result.
-	// Run at boot, after the job runner fails the jobs a previous process left
-	// running.
+	// or running: the process stopped, or recording the batch's end failed,
+	// before its handler recorded a result. Run before reading the active batch.
 	FailOrphanedSuggestionBatches(ctx context.Context, arg FailOrphanedSuggestionBatchesParams) (int64, error)
 	// Records why the background grounding of an unarchived dinner still
 	// pending at the grounding_revision it was grounded for failed; a dinner

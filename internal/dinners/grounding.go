@@ -2,7 +2,10 @@ package dinners
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -282,7 +285,9 @@ func reasonFor(err error, fromURL bool) string {
 
 // Candidate is a recipe page offered to ground a dinner in.
 type Candidate struct {
-	// CandidateID is the page's URL; Fix.CandidateID grounds it.
+	// CandidateID is an opaque id for the page, resolved by the server:
+	// Fix.CandidateID grounds it. The page's URL is never returned, as it
+	// may carry a token.
 	CandidateID string `json:"candidate_id"`
 	Title       string `json:"title"`
 	SiteName    string `json:"site_name"`
@@ -292,8 +297,9 @@ type Candidate struct {
 }
 
 // Candidates searches for dinner id's name and returns up to MaxCandidates
-// recipe pages to ground it in, best first; the list may be empty. A
-// search that fails wraps recipes.ErrSearchFailed.
+// recipe pages to ground it in, best first; the list may be empty. They
+// replace the dinner's earlier candidates: one not offered again no longer
+// grounds it. A search that fails wraps recipes.ErrSearchFailed.
 func (s *Service) Candidates(ctx context.Context, id string) ([]Candidate, error) {
 	row, err := s.get(ctx, id)
 	if err != nil {
@@ -304,14 +310,45 @@ func (s *Service) Candidates(ctx context.Context, id string) ([]Candidate, error
 		return nil, err
 	}
 	out := make([]Candidate, len(offers))
+	urls := make(map[string]string, len(offers))
 	for i, o := range offers {
-		out[i] = Candidate{CandidateID: o.URL, Title: o.Title, SiteName: o.SiteName, Minutes: o.Minutes}
+		cid := s.candidateID(row.ID, o.URL)
+		urls[cid] = o.URL
+		out[i] = Candidate{CandidateID: cid, Title: o.Title, SiteName: o.SiteName, Minutes: o.Minutes}
 		if o.PhotoID != "" {
 			u := PhotoURL(o.PhotoID)
 			out[i].PhotoURL = &u
 		}
 	}
+	s.offersMu.Lock()
+	s.offers[row.ID] = urls
+	s.offersMu.Unlock()
 	return out, nil
+}
+
+// candidateID is the opaque id of the page at rawURL as a candidate for
+// dinner id: the same page is offered under the same id until the service
+// restarts, and the id reveals nothing of the URL.
+func (s *Service) candidateID(id, rawURL string) string {
+	mac := hmac.New(sha256.New, s.offerKey)
+	mac.Write([]byte(id + "\x00" + rawURL))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)[:16])
+}
+
+// candidateURL is the page URL of candidate cid last offered for dinner id.
+// A cid not among the dinner's candidates last offered since the service
+// started, or whose page is not a valid recipe link, is a
+// *ValidationError.
+func (s *Service) candidateURL(id, cid string) (string, error) {
+	s.offersMu.Lock()
+	raw, ok := s.offers[id][cid]
+	s.offersMu.Unlock()
+	if ok {
+		if u, err := checkRecipeURL(raw); err == nil {
+			return u.String(), nil
+		}
+	}
+	return "", invalid("candidate_id", "is not a candidate from recipe-candidates; reload the candidates")
 }
 
 // Fix grounds a dinner by hand: exactly one of a candidate from
@@ -367,6 +404,11 @@ func (s *Service) Ground(ctx context.Context, id string, f Fix, updatedBy string
 	if cur.Status == StatusArchived {
 		return Dinner{}, ErrArchived
 	}
+	if f.CandidateID != nil {
+		if link, err = s.candidateURL(cur.ID, *f.CandidateID); err != nil {
+			return Dinner{}, err
+		}
+	}
 	groundCtx, cancel := context.WithTimeout(ctx, groundTimeout)
 	defer cancel()
 	gr, err := s.grounder.GroundURL(groundCtx, link)
@@ -401,6 +443,9 @@ func (s *Service) Ground(ctx context.Context, id string, f Fix, updatedBy string
 	if err != nil {
 		return Dinner{}, fmt.Errorf("%w: dinner %s: record: %w", ErrGroundFailed, id, err)
 	}
+	s.offersMu.Lock()
+	delete(s.offers, cur.ID)
+	s.offersMu.Unlock()
 	return fromRow(row), nil
 }
 
@@ -550,11 +595,8 @@ func (f Fix) validate() (link string, manual *ManualRecipe, err error) {
 	}
 	switch {
 	case f.CandidateID != nil:
-		u, err := checkRecipeURL(*f.CandidateID)
-		if err != nil {
-			return "", nil, invalid("candidate_id", "is not a candidate from recipe-candidates")
-		}
-		return u.String(), nil, nil
+		// Ground resolves the candidate to its page.
+		return "", nil, nil
 	case f.RecipeURL != nil:
 		u, err := checkRecipeURL(*f.RecipeURL)
 		if err != nil {

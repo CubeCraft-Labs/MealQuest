@@ -7,6 +7,7 @@ package dinners
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -140,6 +141,15 @@ type Service struct {
 	// by dinner id, so archiving or renaming a dinner can stop them.
 	groundingsMu sync.Mutex
 	groundings   map[string]map[*runningGrounding]struct{}
+
+	// offerKey keys the candidate ids Candidates offers, so they are
+	// opaque and stable for this process.
+	offerKey []byte
+	// offersMu guards offers: by dinner id, the page URL of each candidate
+	// id last offered by Candidates, so a candidate id is resolved here
+	// and its URL never leaves the server.
+	offersMu sync.Mutex
+	offers   map[string]map[string]string
 }
 
 // NewService returns a service over st that grounds dinners with grounder
@@ -156,7 +166,8 @@ func NewService(st *store.Store, grounder *recipes.Grounder, runner *jobs.Runner
 	case logger == nil:
 		return nil, errors.New("dinners: nil logger")
 	}
-	s := &Service{st: st, grounder: grounder, logger: logger, groundings: make(map[string]map[*runningGrounding]struct{})}
+	s := &Service{st: st, grounder: grounder, logger: logger, groundings: make(map[string]map[*runningGrounding]struct{}), offerKey: make([]byte, 32), offers: make(map[string]map[string]string)}
+	rand.Read(s.offerKey) // never fails: it crashes the program instead
 	kind, err := jobs.Register(runner, KindGroundDinner, s.runGroundJob, Reasons...)
 	if err != nil {
 		return nil, err

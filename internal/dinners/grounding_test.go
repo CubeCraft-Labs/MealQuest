@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -211,6 +212,39 @@ func TestCreateByRecipeURLGroundsThatURL(t *testing.T) {
 	}
 	if q := e.search.Queries(); len(q) != 0 {
 		t.Errorf("searched %q; a recipe_url is grounded directly", q)
+	}
+}
+
+// TestCreateByRecipeURLClearsLink: once background grounding resolves a
+// pasted link, which may carry a personal token, the dinner no longer
+// stores it; the recipe it grounded in records the page.
+func TestCreateByRecipeURLClearsLink(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	const link = "https://c.example/recipes/beef-stew?access_token=personal-token-abc123"
+	e.pages.Bodies[link] = recipestest.RecipePage("Beef Stew", "Stew Co", "https://c.example/stew.jpg", 150)
+	e.model.QueueGenerate(recipestest.NormalizedReply("oven", 150))
+
+	c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr("Beef stew"), RecipeURL: ptr(link)}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job := e.waitJob(t, *c.GroundingJobID); job.Status != jobs.StatusSucceeded {
+		t.Fatalf("job = %+v", job)
+	}
+	row := e.dinner(t, c.ID)
+	if row.GroundingStatus != "grounded" || !row.RecipeID.Valid {
+		t.Fatalf("dinner = %+v, want grounded", row)
+	}
+	if row.RecipeUrl.Valid {
+		t.Errorf("recipe_url = %q after grounding, want cleared", row.RecipeUrl.String)
+	}
+	rec, err := db.New(e.st.Reader).GetRecipe(t.Context(), row.RecipeID.String)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.SourceUrl != link {
+		t.Errorf("recipe source = %q, want %q", rec.SourceUrl, link)
 	}
 }
 
@@ -642,6 +676,26 @@ func failedDinner(t *testing.T, e *env, name string) string {
 	return c.ID
 }
 
+// candidateID returns the candidate_id Candidates offers dinner id for the
+// page titled title.
+func candidateID(t *testing.T, e *env, id, title string) string {
+	t.Helper()
+	got, err := e.svc.Candidates(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range got {
+		if c.Title == title {
+			if strings.Contains(c.CandidateID, "://") {
+				t.Fatalf("candidate_id = %q, want an opaque id, not the page URL", c.CandidateID)
+			}
+			return c.CandidateID
+		}
+	}
+	t.Fatalf("candidates = %+v, want one titled %q", got, title)
+	return ""
+}
+
 func TestCandidates(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
@@ -664,13 +718,24 @@ func TestCandidates(t *testing.T) {
 	}
 	first, second := got[0], got[1]
 	wantPhoto := dinners.PhotoURL(e.dinner(t, c.ID).PhotoID.String)
-	if first.CandidateID != curryA || first.Title != "Chicken Curry" || first.SiteName != "Curry House" ||
+	if first.Title != "Chicken Curry" || first.SiteName != "Curry House" ||
 		first.PhotoURL == nil || *first.PhotoURL != wantPhoto || first.Minutes == nil || *first.Minutes != 40 {
 		t.Errorf("first = %+v, want the stored curryA with photo %s", first, wantPhoto)
 	}
-	if second.CandidateID != curryB || second.Title != "Easy Weeknight Curry" || second.SiteName != "B Kitchen" ||
+	if second.Title != "Easy Weeknight Curry" || second.SiteName != "B Kitchen" ||
 		second.PhotoURL != nil || second.Minutes == nil || *second.Minutes != 25 {
 		t.Errorf("second = %+v, want curryB without a photo", second)
+	}
+	if first.CandidateID == "" || first.CandidateID == second.CandidateID ||
+		first.CandidateID == curryA || second.CandidateID == curryB {
+		t.Errorf("candidate ids = %q, %q, want distinct opaque ids", first.CandidateID, second.CandidateID)
+	}
+	again, err := e.svc.Candidates(t.Context(), c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != 2 || again[0].CandidateID != first.CandidateID || again[1].CandidateID != second.CandidateID {
+		t.Errorf("candidates again = %+v, want the same ids", again)
 	}
 
 	if _, err := e.svc.Candidates(t.Context(), "nope"); !errors.Is(err, dinners.ErrNotFound) {
@@ -702,9 +767,11 @@ func TestFixViaCandidate(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
 	id := failedDinner(t, e, "Mystery curry")
+	e.search.Results["Mystery curry"] = []recipes.Candidate{{URL: curryA}, {URL: curryB}}
+	cid := candidateID(t, e, id, "Easy Weeknight Curry")
 	e.model.QueueGenerate(recipestest.NormalizedReply("stovetop", 25))
 
-	d, err := e.svc.Ground(t.Context(), id, dinners.Fix{CandidateID: ptr(curryB)}, "member-2")
+	d, err := e.svc.Ground(t.Context(), id, dinners.Fix{CandidateID: ptr(cid)}, "member-2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -729,12 +796,18 @@ func TestFixReplacesPendingLink(t *testing.T) {
 	const lost = "https://gone.example/recipes/lamb-tagine"
 	tests := []struct {
 		name string
-		fix  dinners.Fix
+		// fix is the fix for dinner id.
+		fix func(t *testing.T, e *env, id string) dinners.Fix
 		// linkTaken is the recipe link the fixed dinner now has, if any.
 		linkTaken string
 	}{
-		{"candidate", dinners.Fix{CandidateID: ptr(curryB)}, curryB},
-		{"manual", dinners.Fix{Manual: &dinners.ManualRecipe{Ingredients: []string{"1 lamb"}, Minutes: ptr(90), Method: ptr("oven")}}, ""},
+		{"candidate", func(t *testing.T, e *env, id string) dinners.Fix {
+			e.search.Results["Weeknight dinner"] = []recipes.Candidate{{URL: curryB}}
+			return dinners.Fix{CandidateID: ptr(candidateID(t, e, id, "Easy Weeknight Curry"))}
+		}, curryB},
+		{"manual", func(*testing.T, *env, string) dinners.Fix {
+			return dinners.Fix{Manual: &dinners.ManualRecipe{Ingredients: []string{"1 lamb"}, Minutes: ptr(90), Method: ptr("oven")}}
+		}, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -752,7 +825,7 @@ func TestFixReplacesPendingLink(t *testing.T) {
 				t.Fatal(err)
 			}
 			e.model.QueueGenerate(recipestest.NormalizedReply("stovetop", 25))
-			if _, err := e.svc.Ground(t.Context(), c.ID, tt.fix, member); err != nil {
+			if _, err := e.svc.Ground(t.Context(), c.ID, tt.fix(t, e, c.ID), member); err != nil {
 				t.Fatal(err)
 			}
 			row, err := db.New(e.st.Reader).GetDinner(t.Context(), c.ID)
@@ -855,7 +928,8 @@ func TestFixValidation(t *testing.T) {
 	tests := map[string]dinners.Fix{
 		"nothing":           {},
 		"two":               {CandidateID: ptr(curryA), RecipeURL: ptr(stew)},
-		"candidate not URL": {CandidateID: ptr("cand-1")},
+		"unknown candidate": {CandidateID: ptr("cand-1")},
+		"candidate a URL":   {CandidateID: ptr(curryA)},
 		"http link":         {RecipeURL: ptr("http://a.example/x")},
 		"no ingredients":    {Manual: &dinners.ManualRecipe{Minutes: ptr(20), Method: ptr("oven")}},
 		"blank ingredient":  {Manual: &dinners.ManualRecipe{Ingredients: []string{" "}, Minutes: ptr(20), Method: ptr("oven")}},

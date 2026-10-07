@@ -180,10 +180,22 @@ describe('onboarding step 3', () => {
     expect(requestPermission).not.toHaveBeenCalled()
   })
 
-  it('"Turn on notifications" finishes onboarding and goes Home while notifications are unavailable', async () => {
+  it('"Turn on notifications" says plainly that nothing was turned on while notifications are unavailable', async () => {
     const server = await renderApp()
     fireEvent.click(turnOn())
 
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      "Notifications aren't on yet: MealQuest can't send them until the notification feature ships, so nothing was turned on.",
+    )
+    // Not a silent success: onboarding is not finished behind the household's back.
+    expect(server.held).toHaveLength(0)
+    expect(screen.getByRole('heading', { level: 1, name: 'Stay in the loop' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Turn on notifications' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Maybe later' })).not.toBeInTheDocument()
+
+    const finish = screen.getByRole('button', { name: 'Finish setting up' })
+    expectMinHitArea(finish)
+    fireEvent.click(finish)
     await vi.waitFor(() => expect(server.held).toHaveLength(1))
     expect(server.held[0]!.body).toEqual({ onboarding_completed: true })
     completed(server.held[0]!)
@@ -191,6 +203,19 @@ describe('onboarding step 3', () => {
     expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Primary' })).toBeInTheDocument()
     expect(requestPermission).not.toHaveBeenCalled()
+  })
+
+  it('"Turn on notifications" says the browser blocked them when denied, then finishes on request', async () => {
+    const server = await renderStep(() => Promise.resolve('denied'))
+    fireEvent.click(turnOn())
+
+    expect(await screen.findByRole('status')).toHaveTextContent("Notifications aren't on: this browser blocked them.")
+    expect(server.held).toHaveLength(0)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Finish setting up' }))
+    await vi.waitFor(() => expect(server.held).toHaveLength(1))
+    completed(server.held[0]!)
+    expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument()
   })
 
   it('"Turn on notifications" asks the injected enableNotifications first, then finishes', async () => {

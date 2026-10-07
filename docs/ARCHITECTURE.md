@@ -209,7 +209,8 @@ automatic** (D-021).
   and `grounding_job_id` null. The job grounds the dinner's
   `recipe_url` directly with `GroundURL`, else its name with `Ground`
   (see Recipe grounding), and sets grounding_status `grounded` with the
-  recipe's recipe_id, photo_id, method, minutes_total and difficulty, or
+  recipe's recipe_id, photo_id, method, minutes_total and difficulty,
+  clearing the pasted `recipe_url` (the recipe replaces it), or
   `failed` with `grounding_error` — also the job's failure code — one of
   `no_recipe_found`, `recipe_unusable` (the pasted link), `search_not_configured`,
   `search_failed`, `ai_failed`, `interrupted` (the server stopped) or
@@ -233,9 +234,11 @@ automatic** (D-021).
   searches for the dinner's name and returns `{candidates: [{candidate_id,
   title, site_name, photo_url, minutes}]}`, at most 3, ranked as `Ground`
   ranks them; it fetches pages but downloads no photo and runs no model,
-  so `photo_url` is set only for a page already stored, and `candidate_id`
-  is the page's URL. `POST /api/v1/dinners/{id}/ground` takes exactly one
-  of `{candidate_id}`, `{recipe_url}` (both grounded with `GroundURL`,
+  so `photo_url` is set only for a page already stored. `candidate_id` is
+  an opaque id the server resolves to the page it last offered that dinner
+  (kept in memory, so a restart means fetching the candidates again); the
+  page's URL, which may carry a token, is never returned or cached.
+  `POST /api/v1/dinners/{id}/ground` takes exactly one of `{candidate_id}`, `{recipe_url}` (both grounded with `GroundURL`,
   setting `grounded`) or `{manual: {ingredients[], steps[], minutes,
   method}}` (1–100 ingredient lines, up to 100 steps, each non-blank and at
   most 500 characters; minutes 1–1440). A manual recipe is stored as typed
@@ -519,9 +522,9 @@ rules in `web/src/dinners/names.ts` folds letters with
 same table as the server's, and runs the same cases,
 `web/src/dinners/testdata/dedupe_cases.json`, as the server's) and
 notifications (`/onboarding/notifications`: what MealQuest notifies about,
-the iOS install hint, "Turn on notifications" and "Maybe later"). Either
-button sends `PATCH /api/v1/settings/household` with
-`{"onboarding_completed": true}`; the server sets `onboarding_completed_at`
+the iOS install hint, "Turn on notifications" and "Maybe later"). "Maybe
+later", and "Turn on notifications" once notifications are enabled, send
+`PATCH /api/v1/settings/household` with `{"onboarding_completed": true}`; the server sets `onboarding_completed_at`
 to the time of that update (keeping the first time if it is already set;
 the field itself is read-only and `false` is refused) and the app goes Home.
 Completing needs at least three Regulars (`household.MinRegulars`); with
@@ -530,8 +533,10 @@ fewer the server answers 400 `invalid_settings` naming
 fewer — by its URL, or after another member removes a Regular — so it then
 shows the server's reason with an "Add Regulars" button back to step 2.
 Notification permission is never asked for on page load; until Feature 19
-wires Web Push, "Turn on notifications" asks for nothing. Offline on the saved pages the
-settings cannot be read (the service worker never caches `/api/v1/settings`),
+wires Web Push, "Turn on notifications" asks for nothing and says plainly
+that notifications are not on yet, offering "Finish setting up" (which
+completes onboarding as above) instead of a silent success. Offline on the
+saved pages the settings cannot be read (the service worker never caches `/api/v1/settings`),
 so the saved pages open as they are.
 
 Regular dinners (`/settings/regulars`) lists the Regulars from

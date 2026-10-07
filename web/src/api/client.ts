@@ -43,11 +43,18 @@ export type ApiRequest = {
   body?: unknown
 }
 
+// ApiRead is a GET's decoded response body, and whether the service worker
+// answered it from its cache because the server could not be reached in time.
+export type ApiRead<T> = { body: T; cached: boolean }
+
 export type ApiClient = {
   // apiFetch sends a same-origin JSON request to path, which must be under
   // /api/v1/, and resolves with the decoded response body, or rejects with an
   // ApiError.
   apiFetch<T>(path: string, request?: ApiRequest): Promise<T>
+  // apiRead is apiFetch's GET that also says whether the body is the service
+  // worker's cached copy rather than the server's answer.
+  apiRead<T>(path: string): Promise<ApiRead<T>>
   // loadMe fetches GET /api/v1/me and caches its CSRF token.
   loadMe(): Promise<Me>
   // forbidden reports whether a request was refused because the signed-in
@@ -114,6 +121,16 @@ export function createApiClient(location: ApiLocation, network: NetworkStatus, s
   }
 
   async function apiFetch<T>(path: string, request: ApiRequest = {}): Promise<T> {
+    return (await exchange<T>(path, request)).body
+  }
+
+  function apiRead<T>(path: string): Promise<ApiRead<T>> {
+    return exchange<T>(path, {})
+  }
+
+  // exchange sends request to path and decodes the response, noting whether
+  // it is the service worker's cached copy.
+  async function exchange<T>(path: string, request: ApiRequest): Promise<ApiRead<T>> {
     const method = request.method ?? 'GET'
     const url = apiURL(location.origin, method, path)
     // fetch refuses a GET with a body by rejecting with a TypeError, the same
@@ -131,7 +148,7 @@ export function createApiClient(location: ApiLocation, network: NetworkStatus, s
       response = await send(method, url, request.body)
       if (response.status === 403) throw await parseForbidden(method, path, response)
     }
-    return decode<T>(method, path, response)
+    return { body: await decode<T>(method, path, response), cached: response.headers.has(cacheFallbackHeader) }
   }
 
   // parseForbidden reads a 403. Any API error other than csrf means the
@@ -179,6 +196,7 @@ export function createApiClient(location: ApiLocation, network: NetworkStatus, s
 
   return {
     apiFetch,
+    apiRead,
     loadMe,
     forbidden: () => forbidden,
     subscribe(listener) {

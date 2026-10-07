@@ -115,15 +115,23 @@ function WeekBoard({ weekStart, timezone, onWeek }: { weekStart: string; timezon
     }
   }, [queryClient, ended, jobId, weekStart])
 
-  // The plan read shows once it is the one drafted; no plan, or another
-  // one, is an error rather than an empty or stale board.
+  // The plan read shows once it is the one drafted, read from the server; no
+  // plan, another one, or a copy cached before the draft (a redraft keeps the
+  // plan's id) is an error rather than an empty or stale board. A later read
+  // from the server that is the draft still lands it.
   const { draft } = result
   const read = draft !== null && readJobId === jobId && plan.isSuccess
-  const landed = read && plan.data?.id === draft.plan_id
+  const landed = read && plan.data?.id === draft.plan_id && !plan.data.cached
   const resultError =
     result.error ??
     (read && !landed
-      ? new Error(plan.data === null ? `The week has no plan, not draft ${draft.plan_id}.` : `The week's plan is not draft ${draft.plan_id}.`)
+      ? new Error(
+          plan.data === null
+            ? `The week has no plan, not draft ${draft.plan_id}.`
+            : plan.data.id !== draft.plan_id
+              ? `The week's plan is not draft ${draft.plan_id}.`
+              : `The plan came from this device's cache, not the server, so it may not be draft ${draft.plan_id} yet.`,
+        )
       : null)
   useEffect(() => {
     if (landed) setJobId(null)
@@ -168,6 +176,9 @@ function WeekBoard({ weekStart, timezone, onWeek }: { weekStart: string; timezon
     body = <ErrorBanner onRetry={() => void plan.refetch()}>Couldn't load this week's plan. {plan.error.message}</ErrorBanner>
   } else if (drafting) {
     body = <SkeletonTiles label="Drafting this week">Drafting your week…</SkeletonTiles>
+  } else if (resultError !== null) {
+    // An unread draft shows no board: the plan read is not the draft.
+    body = null
   } else if (plan.isPending) {
     body = <SkeletonTiles label="Plan loading" />
   } else if (plan.data === null) {

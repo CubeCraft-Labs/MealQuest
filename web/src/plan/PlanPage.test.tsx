@@ -1,8 +1,9 @@
 import { QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
+import { cacheFallbackHeader } from '../sw/routes.ts'
 import { HOUSEHOLD_SETTINGS } from '../test/ApiProviders.tsx'
 import { declaredStyle } from '../test/cssRules.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
@@ -321,6 +322,45 @@ describe('PlanPage', () => {
     await waitFor(() => expect(posts(fetchMock)).toHaveLength(2))
     expect(await screen.findByRole('region', { name: 'Drafting this week' })).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it("doesn't land a succeeded draft on the plan cached before it, and lands it once the server is read", async () => {
+    let plan = planBody('draft')
+    let cached = false
+    let job = draftJob('running')
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => {
+        const response = jsonResponse(200, plan)
+        if (cached) response.headers.set(cacheFallbackHeader, '1')
+        return response
+      },
+      [`POST ${DRAFT}`]: () => jsonResponse(202, { jobId: 'j1' }),
+      [`GET ${JOB}`]: () => jsonResponse(200, job),
+    })
+    await renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Rebuild week' }))
+    expect(await screen.findByRole('region', { name: 'Drafting this week' })).toBeInTheDocument()
+    // The draft succeeds, but the server can't be reached: the service
+    // worker answers with the plan cached before the rebuild, same id.
+    cached = true
+    job = draftJob('succeeded')
+    const alert = await screen.findByRole('alert', {}, { timeout: 3000 })
+    expect(alert).toHaveTextContent("Couldn't read the draft. The plan came from this device's cache, not the server")
+    expect(within(alert).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    expect(screen.queryByText('Beef tacos')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('skeleton-tile')).not.toBeInTheDocument()
+
+    // The server is back: the next read of the plan is the draft.
+    plan = planBody('draft', ['Lasagna', ...NAMES.slice(1)])
+    cached = false
+    vi.setSystemTime(new Date('2026-10-07T16:01:00Z'))
+    act(() => {
+      window.dispatchEvent(new Event('visibilitychange'))
+    })
+    expect(await screen.findByText('Lasagna')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('skeleton-tile')).not.toBeInTheDocument()
   })
 
   it('moves between weeks with the previous and next week buttons', async () => {

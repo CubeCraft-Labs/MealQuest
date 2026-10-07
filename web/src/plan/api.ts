@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { ApiError, useApi } from '../api/index.ts'
+import { ApiError, useApi, type ApiRead } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { oneOf } from '../dinners/api.ts'
 
@@ -32,13 +32,15 @@ export type PlanDay = {
 }
 
 // Plan is GET /api/v1/plans/{weekStart}: the week's seven days, Monday to
-// Sunday, and the AI's note on the draft, if any.
+// Sunday, and the AI's note on the draft, if any. cached says the service
+// worker answered from its cache: the server may have changed the plan since.
 export type Plan = {
   id: string
   week_start: string
   status: PlanStatus
   ai_note: string | null
   days: PlanDay[]
+  cached: boolean
 }
 
 // DRAFT_JOB_KIND is the kind of the job drafting a week's plan.
@@ -62,7 +64,7 @@ function parseDay(where: string, body: unknown): PlanDay {
   return { date: body.date, dinner: { id: body.dinner.id, name: body.dinner.name }, is_new: body.is_new, start_by: body.start_by }
 }
 
-function parsePlan(where: string, weekStart: string, body: unknown): Plan {
+function parsePlan(where: string, weekStart: string, body: unknown, cached: boolean): Plan {
   if (
     !isRecord(body) ||
     typeof body.id !== 'string' ||
@@ -79,6 +81,7 @@ function parsePlan(where: string, weekStart: string, body: unknown): Plan {
     status: oneOf(where, 'status', PLAN_STATUSES, body.status),
     ai_note: body.ai_note,
     days: body.days.map((day) => parseDay(where, day)),
+    cached,
   }
 }
 
@@ -94,19 +97,19 @@ export function parseDraftResult(where: string, weekStart: string, body: unknown
 // usePlan is the plan of the week starting on Monday weekStart (GET
 // /api/v1/plans/{weekStart}), or null when the week has none (404).
 export function usePlan(weekStart: string) {
-  const { apiFetch } = useApi()
+  const { apiRead } = useApi()
   return useQuery({
     queryKey: planKey(weekStart),
     queryFn: async (): Promise<Plan | null> => {
       const path = planPath(weekStart)
-      let body: unknown
+      let read: ApiRead<unknown>
       try {
-        body = await apiFetch<unknown>(path)
+        read = await apiRead<unknown>(path)
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) return null
         throw error
       }
-      return parsePlan(`GET ${path}`, weekStart, body)
+      return parsePlan(`GET ${path}`, weekStart, read.body, read.cached)
     },
   })
 }

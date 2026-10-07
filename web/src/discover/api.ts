@@ -51,8 +51,9 @@ export const BATCH_JOB_KIND = 'suggestion_batch'
 export type BatchResult = { batch_id: string; stage: string; suggestion_ids: string[]; dropped: number }
 
 // QuestLogDinner is a dinner in the Quest log, as the Quest log sheet lists
-// it: photo, name, difficulty and minutes.
-export type QuestLogDinner = Pick<Regular, 'id' | 'name' | 'photo_id' | 'difficulty' | 'minutes_total'>
+// it: photo, name, difficulty and minutes, with the method a swap carries
+// onto the plan.
+export type QuestLogDinner = Pick<Regular, 'id' | 'name' | 'photo_id' | 'difficulty' | 'method' | 'minutes_total'>
 
 // DECISION_STATUS is the status a suggestion has once each choice is saved.
 const DECISION_STATUS: Record<Choice, string> = { try: 'accepted', pass: 'declined' }
@@ -127,8 +128,8 @@ export function useQuestLog() {
       const body = await apiFetch<unknown>(QUEST_LOG_PATH)
       if (!isRecord(body) || !Array.isArray(body.dinners)) throw new Error(`${where}: response has no dinners list`)
       return body.dinners.map((dinner) => {
-        const { id, name, photo_id, difficulty, minutes_total } = parseDinner(where, dinner)
-        return { id, name, photo_id, difficulty, minutes_total }
+        const { id, name, photo_id, difficulty, method, minutes_total } = parseDinner(where, dinner)
+        return { id, name, photo_id, difficulty, method, minutes_total }
       })
     },
   })
@@ -250,13 +251,14 @@ export function useDecide() {
       queryClient.setQueryData<QuestLogDinner[]>(QUEST_LOG_KEY, (dinners) =>
         dinners === undefined || dinners.some((d) => d.id === quest.dinner_id)
           ? dinners
-          : // The deck does not say the minutes; the Quest log read after the
-            // decision does.
+          : // The deck does not say the method or minutes; the Quest log
+            // read after the decision does.
             dinners.concat({
               id: quest.dinner_id,
               name: quest.name,
               photo_id: quest.photo_id,
               difficulty: quest.difficulty,
+              method: null,
               minutes_total: null,
             }),
       )

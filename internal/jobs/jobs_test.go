@@ -736,3 +736,39 @@ func TestRunnerEnqueueByKindName(t *testing.T) {
 		t.Errorf("job = %+v (result %s), want succeeded with {\"done\":3}", job, job.Result)
 	}
 }
+
+func TestServiceOnlyKind(t *testing.T) {
+	t.Parallel()
+	st := migratedStore(t)
+	r := newRunner(t, st, 1)
+	k := register(t, r, "count", func(_ context.Context, p countPayload, _ func(countResult) error) (countResult, error) {
+		return countResult{Done: p.Steps}, nil
+	})
+	if err := k.ServiceOnly(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	if _, err := r.Enqueue(ctx, "count", json.RawMessage(`{"steps":3}`)); !errors.Is(err, ErrServiceOnly) {
+		t.Errorf("Runner.Enqueue error = %v, want ErrServiceOnly", err)
+	}
+	var n int
+	if err := st.Reader.QueryRow("SELECT COUNT(*) FROM jobs").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("refused enqueue stored %d jobs, want 0", n)
+	}
+
+	id, err := k.Enqueue(ctx, countPayload{Steps: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start(t, r)
+	if job := waitFor(t, r, id, finished); job.Status != StatusSucceeded {
+		t.Errorf("job enqueued through its Kind = %+v, want succeeded", job)
+	}
+	if err := k.ServiceOnly(); err == nil {
+		t.Error("ServiceOnly after Start succeeded, want an error")
+	}
+}

@@ -15,4 +15,9 @@ describe('Tag', () => {
     render(<Tag tone="teal">Synced</Tag>)
     expect(screen.getByText('Synced')).toHaveClass(styles.teal!)
   })
+
+  it('supports the neutral tone', () => {
+    render(<Tag tone="neutral">Regular</Tag>)
+    expect(screen.getByText('Regular')).toHaveClass(styles.neutral!)
+  })
 })

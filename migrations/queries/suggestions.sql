@@ -86,12 +86,20 @@ FROM suggestions
 JOIN dinners ON dinners.id = suggestions.dinner_id
 WHERE suggestions.status = 'pending' AND dinners.status = 'suggested';
 
--- name: ListDeclinedSuggestionNames :many
--- The name every declined suggestion was suggested under, oldest decision
--- first; renaming its dinner does not change it.
-SELECT name
-FROM suggestions
-WHERE status = 'declined'
+-- name: ListPassedNames :many
+-- Every name the household turned down, oldest decision first: the name
+-- each declined suggestion was suggested under, which renaming its dinner
+-- does not change, and the name each dinner a Rotation check dropped
+-- ("Not for us") had when dropped, which renaming it does not change.
+SELECT name FROM (
+	SELECT name, decided_at, id
+	FROM suggestions
+	WHERE status = 'declined'
+	UNION ALL
+	SELECT name, decided_at, id
+	FROM rotation_reviews
+	WHERE decision = 'drop'
+)
 ORDER BY decided_at, id;
 
 -- name: DecideSuggestion :execrows

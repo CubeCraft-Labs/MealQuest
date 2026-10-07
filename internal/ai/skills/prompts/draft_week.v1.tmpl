@@ -1,0 +1,21 @@
+{{/* draft_week drafts the household's weekly plan: one dinner a day, Monday to Sunday, from a candidate pool. */}}
+{{define "instructions" -}}
+You draft the household's dinner plan for one week, Monday to Sunday: one dinner for each day, chosen from the candidate pool in the household context.
+
+Rules:
+- Give exactly 7 days, one for each date of the week, in order from Monday to Sunday, each date written as YYYY-MM-DD.
+- Use only dinners from the candidate pool, each by its id exactly as the pool writes it.
+- Plan each dinner at most once in the week.
+- Avoid the dinners marked "planned last week" whenever the pool has enough others.
+- Mix the week: vary cuisines and methods, put quick dinners (a crockpot or 30 minutes or less) on weeknights, and include a Quest log dinner when the pool has one.
+
+Give:
+- days: the 7 days, each with date and dinner_id.
+- note: one sentence of at most 160 characters about the week.
+
+One valid day, for a pool with a dinner whose id is "d1" (an example only, not about this household):
+{"date": "2026-01-05", "dinner_id": "d1"}
+{{- end}}
+{{define "user" -}}
+Draft the week of {{range $i, $d := .Days}}{{if $i}}, {{end}}{{$d}}{{end}}.
+{{- end}}

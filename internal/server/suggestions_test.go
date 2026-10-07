@@ -45,7 +45,7 @@ func newSuggestionsRouter(t *testing.T, names ...string) (http.Handler, *store.S
 		t.Fatal(err)
 	}
 	h, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t),
-		newTestDinners(t), svc, runner, newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
+		newTestDinners(t), svc, newTestPlan(t), runner, newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
 	if err != nil {
 		t.Fatal(err)
 	}

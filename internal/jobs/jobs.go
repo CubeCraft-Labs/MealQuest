@@ -88,6 +88,10 @@ var ErrNotFound = errors.New("jobs: job not found")
 // registered handler.
 var ErrUnknownKind = errors.New("jobs: unknown job kind")
 
+// ErrServiceOnly is returned by Runner.Enqueue for a kind made ServiceOnly,
+// whose jobs only its own service enqueues.
+var ErrServiceOnly = errors.New("jobs: job kind is enqueued only by its service")
+
 // ErrInvalidPayload is returned by Runner.Enqueue for a payload that does
 // not decode into the kind's payload type.
 var ErrInvalidPayload = errors.New("jobs: payload does not decode")
@@ -130,11 +134,13 @@ type Job struct {
 // never quotes an error.
 type runFunc func(ctx context.Context, payload string, publish func(json.RawMessage) error) (result json.RawMessage, code, reason string)
 
-// handler is a registered kind: run runs a job, and check reports whether
-// a payload decodes into the kind's payload type.
+// handler is a registered kind: run runs a job, check reports whether a
+// payload decodes into the kind's payload type, and serviceOnly is set when
+// Runner.Enqueue refuses the kind.
 type handler struct {
-	run   runFunc
-	check func(payload []byte) bool
+	run         runFunc
+	check       func(payload []byte) bool
+	serviceOnly bool
 }
 
 // Runner owns the job handlers and the worker pool.
@@ -286,21 +292,39 @@ func (k *Kind[P]) EnqueueTx(ctx context.Context, tx *sql.Tx, payload P) (string,
 	return createJob(ctx, db.New(tx), k.name, data)
 }
 
+// ServiceOnly makes Runner.Enqueue refuse the kind with ErrServiceOnly, so
+// its jobs are enqueued only through k, by the service that checks what
+// must hold before one starts. It must be called before Start.
+func (k *Kind[P]) ServiceOnly() error {
+	k.r.mu.Lock()
+	defer k.r.mu.Unlock()
+	if k.r.started {
+		return fmt.Errorf("jobs: service-only %q: runner already started", k.name)
+	}
+	h := k.r.handlers[k.name]
+	h.serviceOnly = true
+	k.r.handlers[k.name] = h
+	return nil
+}
+
 // Wake tells an idle worker to look for a job, as Enqueue does itself:
 // call it after committing the transaction a job was enqueued in.
 func (k *Kind[P]) Wake() { k.r.wakeOne() }
 
 // Enqueue stores a queued job of kind with its JSON payload and returns its
 // id, as Kind.Enqueue does for a kind known at compile time. It returns
-// ErrUnknownKind for a kind with no registered handler and
-// ErrInvalidPayload for a payload that does not decode into the kind's
-// payload type; neither stores a job.
+// ErrUnknownKind for a kind with no registered handler, ErrServiceOnly for
+// a ServiceOnly kind and ErrInvalidPayload for a payload that does not
+// decode into the kind's payload type; none stores a job.
 func (r *Runner) Enqueue(ctx context.Context, kind string, payload json.RawMessage) (string, error) {
 	r.mu.Lock()
 	h, ok := r.handlers[kind]
 	r.mu.Unlock()
 	if !ok {
 		return "", ErrUnknownKind
+	}
+	if h.serviceOnly {
+		return "", ErrServiceOnly
 	}
 	if !h.check(payload) {
 		return "", ErrInvalidPayload

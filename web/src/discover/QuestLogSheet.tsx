@@ -20,7 +20,7 @@ export type QuestLogSheetProps = {
 
 // details is a Quest-log dinner's "difficulty · minutes" line, or null when
 // neither is known.
-function details(dinner: QuestLogDinner): string | null {
+export function details(dinner: QuestLogDinner): string | null {
   const parts = [
     dinner.difficulty !== null && DIFFICULTY_LABEL[dinner.difficulty],
     dinner.minutes_total !== null && `${dinner.minutes_total} min`,

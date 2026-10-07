@@ -1,7 +1,7 @@
 import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
-import { DIFFICULTIES, DINNERS_PATH, oneOf, photoId, type Difficulty } from '../dinners/api.ts'
+import { DIFFICULTIES, DINNERS_PATH, dinnerPath, oneOf, parseDinner, photoId, type Difficulty, type Regular } from '../dinners/api.ts'
 
 export const SUGGESTIONS_PATH = '/api/v1/suggestions'
 export const DECK_PATH = `${SUGGESTIONS_PATH}/deck`
@@ -39,8 +39,9 @@ export const BATCH_JOB_KIND = 'suggestion_batch'
 // BatchResult is the suggestion batch job's result, published as it goes.
 export type BatchResult = { batch_id: string; stage: string; suggestion_ids: string[]; dropped: number }
 
-// QuestLogDinner is a dinner in the Quest log, as the Quest log pill lists it.
-export type QuestLogDinner = { id: string; name: string }
+// QuestLogDinner is a dinner in the Quest log, as the Quest log sheet lists
+// it: photo, name, difficulty and minutes.
+export type QuestLogDinner = Pick<Regular, 'id' | 'name' | 'photo_id' | 'difficulty' | 'minutes_total'>
 
 // DECISION_STATUS is the status a suggestion has once each choice is saved.
 const DECISION_STATUS: Record<Choice, string> = { try: 'accepted', pass: 'declined' }
@@ -97,7 +98,8 @@ export function useDeck() {
 }
 
 // useQuestLog is the dinners in the Quest log, in the server's order (GET
-// /api/v1/dinners?status=quest_log).
+// /api/v1/dinners?status=quest_log). The server leaves out a dinner already
+// on the plan for the current week or a later one: it is scheduled.
 export function useQuestLog() {
   const { apiFetch } = useApi()
   return useQuery({
@@ -107,11 +109,26 @@ export function useQuestLog() {
       const body = await apiFetch<unknown>(QUEST_LOG_PATH)
       if (!isRecord(body) || !Array.isArray(body.dinners)) throw new Error(`${where}: response has no dinners list`)
       return body.dinners.map((dinner) => {
-        if (!isRecord(dinner) || typeof dinner.id !== 'string' || typeof dinner.name !== 'string') {
-          throw new Error(`${where}: response is not a dinner`)
-        }
-        return { id: dinner.id, name: dinner.name }
+        const { id, name, photo_id, difficulty, minutes_total } = parseDinner(where, dinner)
+        return { id, name, photo_id, difficulty, minutes_total }
       })
+    },
+  })
+}
+
+// useRemoveFromQuestLog archives a Quest-log dinner (DELETE
+// /api/v1/dinners/{id}). Once the server has archived it, it leaves the
+// Quest log, and the Quest log is read again.
+export function useRemoveFromQuestLog() {
+  const { apiFetch } = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (dinner: QuestLogDinner) => {
+      await apiFetch<unknown>(dinnerPath(dinner.id), { method: 'DELETE' })
+    },
+    onSuccess: async (_data, dinner) => {
+      queryClient.setQueryData<QuestLogDinner[]>(QUEST_LOG_KEY, (dinners) => dinners?.filter((d) => d.id !== dinner.id))
+      await queryClient.invalidateQueries({ queryKey: QUEST_LOG_KEY })
     },
   })
 }
@@ -215,7 +232,17 @@ export function useDecide() {
       if (choice !== 'try') return
       // A stale deck can offer a Side quest whose dinner the Quest log has.
       queryClient.setQueryData<QuestLogDinner[]>(QUEST_LOG_KEY, (dinners) =>
-        dinners === undefined || dinners.some((d) => d.id === quest.dinner_id) ? dinners : dinners.concat({ id: quest.dinner_id, name: quest.name }),
+        dinners === undefined || dinners.some((d) => d.id === quest.dinner_id)
+          ? dinners
+          : // The deck does not say the minutes; the Quest log read after the
+            // decision does.
+            dinners.concat({
+              id: quest.dinner_id,
+              name: quest.name,
+              photo_id: quest.photo_id,
+              difficulty: quest.difficulty,
+              minutes_total: null,
+            }),
       )
     },
     onSettled: async (_replenishJobId, error, { quest }) => {

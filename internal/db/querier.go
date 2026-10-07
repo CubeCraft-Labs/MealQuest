@@ -124,6 +124,9 @@ type Querier interface {
 	// Every dinner a new or renamed dinner must not repeat, with the
 	// source_url of the recipe it is grounded in (NULL while it has none).
 	ListUnarchivedDinners(ctx context.Context) ([]ListUnarchivedDinnersRow, error)
+	// The Quest log: dinners with status quest_log that no plan for the week
+	// starting from_week_start or later has on any day.
+	ListUnplannedQuestLogDinners(ctx context.Context, fromWeekStart string) ([]Dinner, error)
 	// Moves a dinner still suggested to status (quest_log or archived),
 	// recording updated_by; a dinner no longer suggested is left as it is
 	// (0 rows).

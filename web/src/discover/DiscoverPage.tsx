@@ -1,8 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Heart, X } from 'lucide-react'
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type Ref } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type Ref } from 'react'
 import { useJob } from '../api/index.ts'
-import { Card } from '../ui/Card.tsx'
 import { EmptyState } from '../ui/EmptyState.tsx'
 import { ErrorBanner } from '../ui/ErrorBanner.tsx'
 import { Icon } from '../ui/Icon.tsx'
@@ -19,6 +18,7 @@ import {
   useQuestLog,
   useStartBatch,
   type Choice,
+  type QuestLogDinner,
   type SideQuest,
 } from './api.ts'
 import { DeckCard, DECK_DEPTH, type SwipeHandlers } from './DeckCard.tsx'
@@ -35,6 +35,7 @@ import {
   unfollow,
   type Exit,
 } from './motion.ts'
+import { QuestLogSheet } from './QuestLogSheet.tsx'
 import styles from './DiscoverPage.module.css'
 
 // SWIPE_THRESHOLD is how far, in px, the top card must be dragged left or
@@ -54,36 +55,22 @@ function isEditable(target: EventTarget | null): boolean {
   )
 }
 
-// QuestLogPill is the "Quest log · N" pill. It shows and hides the names
-// of the dinners in the Quest log; the Quest log sheet replaces this list.
-// ref is the visible pill, which Try it bumps.
-function QuestLogPill({ dinners, ref }: { dinners: { id: string; name: string }[]; ref: Ref<HTMLSpanElement> }) {
+// QuestLogPill is the "Quest log · N" pill, which opens the Quest log
+// sheet. ref is the visible pill, which Try it bumps.
+function QuestLogPill({ dinners, ref }: { dinners: QuestLogDinner[]; ref: Ref<HTMLSpanElement> }) {
   const [open, setOpen] = useState(false)
-  const listId = useId()
   return (
     <>
       <button
         type="button"
         className={styles.questLogButton}
+        aria-haspopup="dialog"
         aria-expanded={open}
-        aria-controls={open ? listId : undefined}
-        onClick={() => setOpen(!open)}
+        onClick={() => setOpen(true)}
       >
         <span ref={ref} className={styles.questLog}>Quest log · {dinners.length}</span>
       </button>
-      {open && (
-        <Card id={listId} tone="muted" className={styles.questLogList}>
-          {dinners.length === 0 ? (
-            <p className={styles.questLogEmpty}>No dinners in the Quest log yet. Try it on a Side quest to add one.</p>
-          ) : (
-            <ul aria-label="Quest log" className={styles.questLogNames}>
-              {dinners.map((dinner) => (
-                <li key={dinner.id}>{dinner.name}</li>
-              ))}
-            </ul>
-          )}
-        </Card>
-      )}
+      <QuestLogSheet open={open} dinners={dinners} onClose={() => setOpen(false)} />
     </>
   )
 }

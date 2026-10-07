@@ -16,10 +16,12 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
@@ -273,12 +275,20 @@ func (s *Service) createRegular(ctx context.Context, r NewRegular, updatedBy str
 }
 
 // List returns the dinners with status, which must be regular or
-// quest_log, ordered by normalized name.
+// quest_log, ordered by normalized name. The Quest log is the dinners
+// accepted and not yet scheduled, so a quest_log dinner on the plan for the
+// household's current week or a later one is left out of it.
 func (s *Service) List(ctx context.Context, status string) ([]Dinner, error) {
 	if !slices.Contains(listable, status) {
 		return nil, invalid("status", "must be one of "+strings.Join(listable, ", "))
 	}
-	rows, err := db.New(s.st.Reader).ListDinnersByStatus(ctx, status)
+	var rows []db.Dinner
+	var err error
+	if status == StatusQuestLog {
+		rows, err = s.listQuestLog(ctx)
+	} else {
+		rows, err = db.New(s.st.Reader).ListDinnersByStatus(ctx, status)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("dinners: list %s: %w", status, err)
 	}
@@ -287,6 +297,29 @@ func (s *Service) List(ctx context.Context, status string) ([]Dinner, error) {
 		out[i] = fromRow(row)
 	}
 	return out, nil
+}
+
+// listQuestLog reads the Quest log in one read transaction, so the
+// household's current week and the plans come from the same snapshot.
+func (s *Service) listQuestLog(ctx context.Context) (rows []db.Dinner, err error) {
+	tx, err := s.st.Reader.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin read: %w", err)
+	}
+	defer func() {
+		err = errors.Join(err, tx.Rollback())
+	}()
+	q := db.New(tx)
+	settings, err := q.GetHouseholdSettings(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read household settings: %w", err)
+	}
+	loc, err := household.LoadZone(settings.Timezone)
+	if err != nil {
+		return nil, fmt.Errorf("household settings: %w", err)
+	}
+	thisWeek := household.WeekStart(household.Today(time.Now(), loc))
+	return q.ListUnplannedQuestLogDinners(ctx, thisWeek.String())
 }
 
 // Update applies p to dinner id, recording updatedBy. An invalid patch is a

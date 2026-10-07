@@ -53,9 +53,9 @@ type env struct {
 
 // newEnv returns a plan service over a migrated store in zone
 // America/New_York with dinner time 17:30, the Regulars below and Quest
-// log dinners Pad Thai and Shawarma Bowls, and an unstarted job runner. It
-// drafts through the real harness and draft_week with the scripted
-// e.model.
+// log dinners Pad Thai and Shawarma Bowls, and an unstarted job runner
+// with two workers. It drafts through the real harness and draft_week with
+// the scripted e.model.
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	ctx := t.Context()
@@ -106,7 +106,8 @@ func newEnv(t *testing.T) *env {
 		return skills.DraftWeek(ctx, cfg, scope, in)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	e.runner, err = jobs.NewRunner(st, logger, 1)
+	// Two workers, as cmd/server runs, so drafts of a week could overlap.
+	e.runner, err = jobs.NewRunner(st, logger, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,100 +519,97 @@ func TestStartDraftIsSingleFlight(t *testing.T) {
 	}
 }
 
-func TestSimultaneousStartDraftsShareOneJobPerConfirm(t *testing.T) {
-	e := newEnv(t)
-	first, err := e.svc.StartDraft(t.Context(), week, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Twenty simultaneous drafts, half of them confirmed: the unconfirmed
-	// ones join the queued job, and the confirmed ones share one confirmed
-	// job of their own.
-	const n = 20
-	drafts := make([]plan.Draft, n)
-	errs := make([]error, n)
-	var wg sync.WaitGroup
-	for i := range n {
-		wg.Go(func() {
-			drafts[i], errs[i] = e.svc.StartDraft(context.Background(), week, i%2 == 1)
-		})
-	}
-	wg.Wait()
-	confirmedJob := ""
-	created := 0
-	for i, d := range drafts {
-		if errs[i] != nil {
-			t.Fatalf("draft %d: %v", i, errs[i])
-		}
-		if d.Created {
-			created++
-		}
-		if i%2 == 0 {
-			if d.JobID != first.JobID || d.Created {
-				t.Errorf("unconfirmed draft %d = %+v, want it to join %s", i, d, first.JobID)
+func TestSimultaneousStartDraftsShareOneJob(t *testing.T) {
+	for _, confirmFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("first confirm %v", confirmFirst), func(t *testing.T) {
+			e := newEnv(t)
+			first, err := e.svc.StartDraft(t.Context(), week, confirmFirst)
+			if err != nil {
+				t.Fatal(err)
 			}
-			continue
-		}
-		if confirmedJob == "" {
-			confirmedJob = d.JobID
-		}
-		if d.JobID != confirmedJob || d.JobID == first.JobID {
-			t.Errorf("confirmed draft %d = %+v, want the one confirmed job %s, not %s", i, d, confirmedJob, first.JobID)
-		}
-	}
-	if created != 1 {
-		t.Errorf("%d drafts enqueued a job, want 1", created)
-	}
-	var payload string
-	if err := e.st.Reader.QueryRowContext(t.Context(), `SELECT payload FROM jobs WHERE id = ?`, confirmedJob).Scan(&payload); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(payload, `"confirm":true`) {
-		t.Errorf("confirmed job payload = %s, want confirm", payload)
+			// Twenty simultaneous drafts, half of them confirmed: every
+			// one joins the queued job, except a confirmed one while the
+			// job is unconfirmed, which is refused.
+			const n = 20
+			drafts := make([]plan.Draft, n)
+			errs := make([]error, n)
+			var wg sync.WaitGroup
+			for i := range n {
+				wg.Go(func() {
+					drafts[i], errs[i] = e.svc.StartDraft(context.Background(), week, i%2 == 1)
+				})
+			}
+			wg.Wait()
+			for i, d := range drafts {
+				if i%2 == 1 && !confirmFirst {
+					if !errors.Is(errs[i], plan.ErrDraftRunning) {
+						t.Errorf("confirmed draft %d = %+v, %v, want ErrDraftRunning", i, d, errs[i])
+					}
+					continue
+				}
+				if errs[i] != nil || d.JobID != first.JobID || d.Created {
+					t.Errorf("draft %d = %+v, %v, want it to join %s", i, d, errs[i], first.JobID)
+				}
+			}
+			var queued int
+			if err := e.st.Reader.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM jobs WHERE kind = ?`, plan.KindDraftWeek).Scan(&queued); err != nil {
+				t.Fatal(err)
+			}
+			if queued != 1 {
+				t.Errorf("%d draft jobs, want 1", queued)
+			}
+		})
 	}
 }
 
-func TestConfirmedDraftDoesNotJoinUnconfirmedJob(t *testing.T) {
+func TestConfirmedDraftWhileUnconfirmedDraftRuns(t *testing.T) {
 	e := newEnv(t)
 	e.start(t)
 	e.reply("first", fullWeek...)
 	e.mustDraft(t, false)
 
 	// An unconfirmed redraft is running when the plan is synced; the
-	// household then confirms a redraft, which must not join the job that
-	// will fail confirm_required.
+	// household then confirms a redraft. With a second worker idle, a
+	// second job would draft alongside the first, so the confirmed draft
+	// is refused and only the first job runs draft_week.
 	reversed := slices.Clone(fullWeek)
 	slices.Reverse(reversed)
 	started, release := make(chan struct{}), make(chan struct{})
 	r := e.weekReply("unconfirmed", fullWeek...)
 	r.Started, r.Release = started, release
 	e.model.QueueGenerate(r)
-	e.reply("confirmed", reversed...)
+	e.reply("concurrent", reversed...)
 	unconfirmed, err := e.svc.StartDraft(t.Context(), week, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	<-started
 	e.setStatus(t, plan.StatusSynced)
-	confirmed, err := e.svc.StartDraft(t.Context(), week, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !confirmed.Created || confirmed.JobID == unconfirmed.JobID {
-		t.Fatalf("confirmed draft = %+v, want its own job, not %s", confirmed, unconfirmed.JobID)
+	if d, err := e.svc.StartDraft(t.Context(), week, true); !errors.Is(err, plan.ErrDraftRunning) {
+		t.Fatalf("confirmed draft = %+v, %v, want ErrDraftRunning", d, err)
 	}
 	close(release)
 	if job := e.waitJob(t, unconfirmed.JobID); job.Status != jobs.StatusFailed || *job.Error != plan.ReasonConfirmRequired {
 		t.Errorf("unconfirmed job %s %v, want failed %s", job.Status, job.Error, plan.ReasonConfirmRequired)
 	}
-	if job := e.waitJob(t, confirmed.JobID); job.Status != jobs.StatusSucceeded {
-		t.Fatalf("confirmed job %s %v, want succeeded", job.Status, job.Error)
+	var queued int
+	if err := e.st.Reader.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM jobs WHERE kind = ?`, plan.KindDraftWeek).Scan(&queued); err != nil {
+		t.Fatal(err)
+	}
+	if queued != 2 {
+		t.Errorf("%d draft jobs, want the first and the unconfirmed redraft", queued)
 	}
 	p, err := e.svc.Get(t.Context(), week)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Status != plan.StatusChanged || *p.AINote != "confirmed" || !slices.Equal(dayNames(p), reversed) {
+	if p.Status != plan.StatusSynced || *p.AINote != "first" || !slices.Equal(dayNames(p), fullWeek) {
+		t.Errorf("plan = %s %q %v, want the synced first draft", p.Status, *p.AINote, dayNames(p))
+	}
+
+	// Asked again once the unconfirmed job has finished, the confirmed
+	// draft replaces the plan.
+	if p := e.mustDraft(t, true); p.Status != plan.StatusChanged || *p.AINote != "concurrent" || !slices.Equal(dayNames(p), reversed) {
 		t.Errorf("plan = %s %q %v, want the confirmed draft, changed", p.Status, *p.AINote, dayNames(p))
 	}
 }

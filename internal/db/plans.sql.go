@@ -34,30 +34,35 @@ func (q *Queries) CreateWeekPlan(ctx context.Context, arg CreateWeekPlanParams) 
 	return err
 }
 
-const getActiveDraftJobID = `-- name: GetActiveDraftJobID :one
-SELECT id FROM jobs
+const getActiveDraftJob = `-- name: GetActiveDraftJob :one
+SELECT id, CAST(json_extract(payload, '$.confirm') = 1 AS INTEGER) AS confirmed
+FROM jobs
 WHERE kind = ?1
 	AND status IN ('queued', 'running')
 	AND json_extract(payload, '$.week_start') = ?2
-	AND (CAST(?3 AS INTEGER) = 0 OR json_extract(payload, '$.confirm') = 1)
 ORDER BY id
 LIMIT 1
 `
 
-type GetActiveDraftJobIDParams struct {
+type GetActiveDraftJobParams struct {
 	Kind      string
 	WeekStart string
+}
+
+type GetActiveDraftJobRow struct {
+	ID        string
 	Confirmed int64
 }
 
-// The id of the job of kind queued or running for the week starting
-// week_start, one whose payload has confirm when confirmed is 1. Returns
-// sql.ErrNoRows when there is none.
-func (q *Queries) GetActiveDraftJobID(ctx context.Context, arg GetActiveDraftJobIDParams) (string, error) {
-	row := q.db.QueryRowContext(ctx, getActiveDraftJobID, arg.Kind, arg.WeekStart, arg.Confirmed)
-	var id string
-	err := row.Scan(&id)
-	return id, err
+// The job of kind queued or running for the week starting week_start,
+// with whether its payload has confirm. StartDraft enqueues a draft only
+// when there is none, so there is at most one. Returns sql.ErrNoRows when
+// there is none.
+func (q *Queries) GetActiveDraftJob(ctx context.Context, arg GetActiveDraftJobParams) (GetActiveDraftJobRow, error) {
+	row := q.db.QueryRowContext(ctx, getActiveDraftJob, arg.Kind, arg.WeekStart)
+	var i GetActiveDraftJobRow
+	err := row.Scan(&i.ID, &i.Confirmed)
+	return i, err
 }
 
 const getWeekPlan = `-- name: GetWeekPlan :one

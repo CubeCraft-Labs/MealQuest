@@ -71,6 +71,10 @@ var ErrDinnerNotFound = errors.New("dinner not found")
 // without confirm.
 var ErrConfirmRequired = errors.New("the plan was pushed to Calendar; drafting over it needs confirm")
 
+// ErrDraftRunning is a confirmed draft asked for while a draft of the week
+// asked for without confirm is queued or running.
+var ErrDraftRunning = errors.New("a draft of the week without confirm is already running; ask again when it finishes")
+
 // InvalidWeekError is a week start that is not a Monday date.
 type InvalidWeekError struct {
 	Value string
@@ -275,10 +279,11 @@ type Draft struct {
 
 // StartDraft enqueues the KindDraftWeek job drafting the week starting
 // weekStart, unless one is already queued or running for it, which it
-// returns instead with Created false. A confirmed draft joins only a
-// confirmed job, so a job asked for without confirm cannot fail it with
-// ReasonConfirmRequired. Drafting over a synced or changed plan needs
-// confirm, else it fails with ErrConfirmRequired and enqueues nothing.
+// returns instead with Created false, so a week has at most one draft in
+// flight. A confirmed draft joins only a confirmed job: while the week's
+// job was asked for without confirm, it fails with ErrDraftRunning and
+// enqueues nothing. Drafting over a synced or changed plan needs confirm,
+// else it fails with ErrConfirmRequired and enqueues nothing.
 func (s *Service) StartDraft(ctx context.Context, weekStart store.LocalDate, confirm bool) (Draft, error) {
 	if _, err := household.WeekDays(weekStart); err != nil {
 		return Draft{}, &InvalidWeekError{Value: weekStart.String()}
@@ -294,19 +299,18 @@ func (s *Service) StartDraft(ctx context.Context, weekStart store.LocalDate, con
 		case cur.Status != StatusDraft && !confirm:
 			return ErrConfirmRequired
 		}
-		confirmed := int64(0)
-		if confirm {
-			confirmed = 1
-		}
-		id, err := q.GetActiveDraftJobID(ctx, db.GetActiveDraftJobIDParams{Kind: KindDraftWeek, WeekStart: weekStart.String(), Confirmed: confirmed})
-		if err == nil {
-			d = Draft{JobID: id}
+		active, err := q.GetActiveDraftJob(ctx, db.GetActiveDraftJobParams{Kind: KindDraftWeek, WeekStart: weekStart.String()})
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return fmt.Errorf("plan: read draft job of %s: %w", weekStart, err)
+		case confirm && active.Confirmed != 1:
+			return ErrDraftRunning
+		default:
+			d = Draft{JobID: active.ID}
 			return nil
 		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("plan: read draft job of %s: %w", weekStart, err)
-		}
-		id, err = s.draftJob.EnqueueTx(ctx, tx, DraftJob{WeekStart: weekStart.String(), Confirm: confirm})
+		id, err := s.draftJob.EnqueueTx(ctx, tx, DraftJob{WeekStart: weekStart.String(), Confirm: confirm})
 		if err != nil {
 			return fmt.Errorf("plan: enqueue draft of %s: %w", weekStart, err)
 		}

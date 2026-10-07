@@ -72,14 +72,15 @@ JOIN week_plans ON week_plans.id = plan_days.plan_id
 WHERE week_plans.week_start = ? AND plan_days.dinner_id IS NOT NULL
 ORDER BY plan_days.date;
 
--- name: GetActiveDraftJobID :one
--- The id of the job of kind queued or running for the week starting
--- week_start, one whose payload has confirm when confirmed is 1. Returns
--- sql.ErrNoRows when there is none.
-SELECT id FROM jobs
+-- name: GetActiveDraftJob :one
+-- The job of kind queued or running for the week starting week_start,
+-- with whether its payload has confirm. StartDraft enqueues a draft only
+-- when there is none, so there is at most one. Returns sql.ErrNoRows when
+-- there is none.
+SELECT id, CAST(json_extract(payload, '$.confirm') = 1 AS INTEGER) AS confirmed
+FROM jobs
 WHERE kind = sqlc.arg(kind)
 	AND status IN ('queued', 'running')
 	AND json_extract(payload, '$.week_start') = sqlc.arg(week_start)
-	AND (CAST(sqlc.arg(confirmed) AS INTEGER) = 0 OR json_extract(payload, '$.confirm') = 1)
 ORDER BY id
 LIMIT 1;

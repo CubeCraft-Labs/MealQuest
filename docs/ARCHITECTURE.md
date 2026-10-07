@@ -345,8 +345,9 @@ automatic** (D-021).
   crock-pot dinner with known minutes, else null. `POST
   /api/v1/plans/{weekStart}/draft` takes `{confirm?}` and answers 202
   `{jobId}` for a `draft_week` job, or for the one already queued or
-  running for the week — a confirmed one when the draft is confirmed, so a
-  confirmed draft never joins an unconfirmed job. The job runs the `draft_week` skill on every Regular
+  running for the week, so a week has at most one draft in flight. A
+  confirmed draft while the week's job was asked for without confirm is
+  409 `draft_running` and enqueues nothing. The job runs the `draft_week` skill on every Regular
   and every Quest log dinner no other plan for the current or a later week
   has, with the household context and last week's dinners, and stores the
   week: a new plan is `draft`; a redraft keeps each day's

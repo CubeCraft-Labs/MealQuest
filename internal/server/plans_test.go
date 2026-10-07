@@ -184,16 +184,18 @@ func TestPostPlanDraft(t *testing.T) {
 		t.Errorf("POST draft of a new week = %d %v, want 202 with its own job", rec.Code, body)
 	}
 
-	// A confirmed draft does not join the unconfirmed one, but a second
-	// confirmed draft joins the first.
+	// A confirmed draft does not join the unconfirmed one and enqueues
+	// nothing.
 	rec, body = callDinners(t, e.h, http.MethodPost, plansPath+"2026-10-12/draft", `{"confirm":true}`)
-	confirmedID, _ := body["jobId"].(string)
-	if rec.Code != http.StatusAccepted || confirmedID == "" || confirmedID == jobID {
-		t.Errorf("confirmed POST draft = %d %v, want 202 with its own job", rec.Code, body)
+	if rec.Code != http.StatusConflict || errorCode(body) != "draft_running" {
+		t.Errorf("confirmed POST draft = %d %v, want 409 draft_running", rec.Code, body)
 	}
-	rec, body = callDinners(t, e.h, http.MethodPost, plansPath+"2026-10-12/draft", `{"confirm":true}`)
-	if rec.Code != http.StatusAccepted || body["jobId"] != confirmedID {
-		t.Errorf("second confirmed POST draft = %d %v, want 202 with job %s", rec.Code, body, confirmedID)
+	var queued int
+	if err := e.st.Reader.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM jobs WHERE kind = ?`, plan.KindDraftWeek).Scan(&queued); err != nil {
+		t.Fatal(err)
+	}
+	if queued != 2 {
+		t.Errorf("%d draft jobs, want one per week", queued)
 	}
 
 	rec, body = callDinners(t, e.h, http.MethodPost, plansPath+"2026-10-12/draft", `{"confirm":"yes"}`)

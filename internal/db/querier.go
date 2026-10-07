@@ -68,10 +68,11 @@ type Querier interface {
 	FinishSuggestionBatch(ctx context.Context, arg FinishSuggestionBatchParams) (int64, error)
 	// Returns sql.ErrNoRows until the row exists.
 	GetAISettings(ctx context.Context) (AiSetting, error)
-	// The id of the job of kind queued or running for the week starting
-	// week_start, one whose payload has confirm when confirmed is 1. Returns
-	// sql.ErrNoRows when there is none.
-	GetActiveDraftJobID(ctx context.Context, arg GetActiveDraftJobIDParams) (string, error)
+	// The job of kind queued or running for the week starting week_start,
+	// with whether its payload has confirm. StartDraft enqueues a draft only
+	// when there is none, so there is at most one. Returns sql.ErrNoRows when
+	// there is none.
+	GetActiveDraftJob(ctx context.Context, arg GetActiveDraftJobParams) (GetActiveDraftJobRow, error)
 	// The batch still pending or running, oldest first. Returns sql.ErrNoRows
 	// when there is none.
 	GetActiveSuggestionBatch(ctx context.Context) (SuggestionBatch, error)

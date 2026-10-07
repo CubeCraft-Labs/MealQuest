@@ -44,8 +44,9 @@ func getPlan(logger *slog.Logger, svc *plan.Service) http.HandlerFunc {
 
 // postPlanDraft enqueues the draft of the week and answers 202 with the
 // jobId that GET /jobs/{id} reports on, without waiting for the job. When
-// a draft of the week is already queued or running, confirmed if this one
-// is, it answers 202 with that job instead.
+// a draft of the week is already queued or running, it answers 202 with
+// that job instead, or 409 when this draft is confirmed and that one is
+// not.
 func postPlanDraft(logger *slog.Logger, svc *plan.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		week, ok := weekStartOrFail(w, r, logger)
@@ -105,8 +106,9 @@ func weekStartOrFail(w http.ResponseWriter, r *http.Request, logger *slog.Logger
 
 // writePlanError maps a plan.Service error to its API error: a week with
 // no plan or an unknown dinner is 404, a date outside the week is 400, and
-// drafting over a synced plan without confirm, or planning a dinner that
-// is neither a Regular nor in the Quest log, is 409.
+// drafting over a synced plan without confirm, a confirmed draft while an
+// unconfirmed one runs, or planning a dinner that is neither a Regular nor
+// in the Quest log, is 409.
 func writePlanError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, action string, err error) {
 	var day *plan.InvalidDayError
 	var week *plan.InvalidWeekError
@@ -120,6 +122,8 @@ func writePlanError(w http.ResponseWriter, r *http.Request, logger *slog.Logger,
 		writeError(w, r, logger, http.StatusConflict, "dinner_not_plannable", notPlannable.Error())
 	case errors.Is(err, plan.ErrConfirmRequired):
 		writeError(w, r, logger, http.StatusConflict, "confirm_required", err.Error())
+	case errors.Is(err, plan.ErrDraftRunning):
+		writeError(w, r, logger, http.StatusConflict, "draft_running", err.Error())
 	case errors.Is(err, plan.ErrNotFound):
 		writeError(w, r, logger, http.StatusNotFound, "not_found", "plan not found")
 	case errors.Is(err, plan.ErrDinnerNotFound):

@@ -226,6 +226,54 @@ func TestSuggestSideQuestsReasonNamesResolvedRegular(t *testing.T) {
 	})
 }
 
+func TestSuggestSideQuestsReasonMentionRule(t *testing.T) {
+	const none = "reason names none of its cited Regulars"
+	for name, tc := range map[string]struct {
+		extra  []string // Regulars added to household's
+		reason string
+		cited  string
+		why    string // "" when the Side quest is kept
+	}{
+		"exact name":                   {nil, "Like your Beef Chili, gone green.", "Beef Chili", ""},
+		"other case and spacing":       {nil, "Like your beef  CHILI, gone green.", "Beef Chili", ""},
+		"sentence punctuation":         {nil, `Green, like "Beef Chili" (yours).`, "Beef Chili", ""},
+		"possessive":                   {nil, "Beef Chili's spices, gone green.", "Beef Chili", ""},
+		"joined by punctuation":        {nil, "A Beef Chili-inspired stew.", "Beef Chili", ""},
+		"no mention":                   {nil, "Grilled skewers with a peanut sauce.", "Beef Chili", none},
+		"letters run on":               {[]string{"Ham"}, "Like your Hamburgers, glazed.", "Ham", none},
+		"stored punctuation written":   {[]string{"Easy Beef Chili!"}, "Your Easy Beef Chili! over corn chips.", "Easy Beef Chili!", ""},
+		"stored punctuation as period": {[]string{"Easy Beef Chili!"}, "Corn chips under your Easy Beef Chili.", "Easy Beef Chili!", ""},
+		"inside stored punctuation":    {[]string{"Easy Beef Chili!"}, "Your Easy Beef Chili! over corn chips.", "Beef Chili", none},
+		"inside before period":         {[]string{"Easy Beef Chili!"}, "Corn chips under your Easy Beef Chili.", "Beef Chili", none},
+		"longer name cited":            {[]string{"Easy Beef Chili"}, "Your Easy Beef Chili over corn chips.", "Easy Beef Chili", ""},
+		"shorter inside longer":        {[]string{"Easy Beef Chili"}, "Your Easy Beef Chili over corn chips.", "Beef Chili", none},
+		"longer not mentioned":         {[]string{"Easy Beef Chili"}, "Your Beef Chili over corn chips.", "Easy Beef Chili", none},
+		"shorter also on its own":      {[]string{"Easy Beef Chili"}, "The Beef Chili, not the Easy Beef Chili.", "Beef Chili", ""},
+		"punctuation-only difference":  {[]string{"Beef Chili!"}, "Your Beef Chili! over corn chips.", "Beef Chili!", ""},
+		"bare name inside punctuated":  {[]string{"Beef Chili!"}, "Your Beef Chili! over corn chips.", "Beef Chili", none},
+		"spelled alike by both":        {[]string{"Beef Chili!"}, "Corn chips under your Beef Chili.", "Beef Chili", none},
+	} {
+		t.Run(name, func(t *testing.T) {
+			in := household
+			in.Context.Regulars = slices.Clone(household.Context.Regulars)
+			for _, r := range tc.extra {
+				in.Context.Regulars = append(in.Context.Regulars, harness.RegularDinner{Name: r, Cuisine: "Tex-Mex", Method: "stovetop", Minutes: 30})
+			}
+			var f llm.Fake
+			f.QueueGenerate(reply(batch(sideQuest("Frito Pie", tc.reason, tc.cited))))
+			out, _, err := suggest(t, &f, in, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := SideQuests{Suggestions: []SideQuest{want("Frito Pie", oneLine(tc.reason), tc.cited)}}
+			if tc.why != "" {
+				result = SideQuests{Suggestions: []SideQuest{}, Dropped: []DroppedSideQuest{{Name: "Frito Pie", Why: tc.why}}}
+			}
+			assertSideQuests(t, out, result)
+		})
+	}
+}
+
 func TestSuggestSideQuestsDuplicatesDropped(t *testing.T) {
 	declined := sideQuest("The Best Homemade Chicken Tikka-Masala", "Spiced like your Chicken Fajitas.", "Chicken Fajitas")
 	oldDeclined := sideQuest("Fish Tacos!", "Tortillas like your Chicken Fajitas.", "Chicken Fajitas")

@@ -209,6 +209,7 @@ func (s suggestSideQuests) PostProcess(out SideQuests) (SideQuests, error) {
 		regulars.add(r.Name)
 		names = append(names, r.Name)
 	}
+	regulars.all = names
 	known := harness.NewDeduper(harness.DedupeSources{
 		Regulars: names,
 		QuestLog: s.in.Context.QuestLog,
@@ -245,6 +246,8 @@ type regularNames struct {
 	exact map[string][]string
 	// normalized is keyed by harness.Normalize of the name.
 	normalized map[string][]string
+	// all holds every Regular's name, in the household's order.
+	all []string
 }
 
 func exactName(name string) string { return strings.ToLower(oneLine(name)) }
@@ -309,25 +312,63 @@ func drop(q SideQuest, regulars regularNames, known *harness.Deduper, kept []Sid
 	return cited, ""
 }
 
-// named returns the Regulars text names, each found by find. Reading from
-// the left, the longest run of words find takes for one Regular, its outer
-// punctuation trimmed, is the Regular named there; a run naming several
-// Regulars names none. So "Your Easy Beef Chili." names "Easy Beef Chili"
-// and not "Beef Chili".
+// named returns the Regulars text names, by one rule. A mention of a
+// Regular is a place where text spells its name, ignoring case and spacing,
+// with the name's own outer punctuation optional ("Easy Beef Chili!" is
+// mentioned by "Easy Beef Chili." too) and no letter or digit just outside
+// it: the start or end of text, white space or punctuation must border it,
+// so "Beef Chili-inspired" and "Beef Chili's" mention "Beef Chili" while
+// "Beef Chilis" does not. A mention names its Regular unless a mention of a
+// different Regular covers the same text or more, so "Your Easy Beef
+// Chili." names "Easy Beef Chili" and not "Beef Chili", and text that two
+// Regulars spell alike names neither there.
 func (r regularNames) named(text string) []string {
-	words := strings.Fields(text)
-	var names []string
-	for i := 0; i < len(words); i++ {
-		for j := len(words); j > i; j-- {
-			run := strings.TrimFunc(strings.Join(words[i:j], " "), func(c rune) bool {
-				return !unicode.IsLetter(c) && !unicode.IsDigit(c)
-			})
-			if name, why := r.find(run); why == "" {
-				names = append(names, name)
-				i = j - 1
+	type mention struct {
+		name       string
+		start, end int
+	}
+	text = exactName(text)
+	var mentions []mention
+	for _, name := range r.all {
+		full := exactName(name)
+		core := strings.TrimFunc(full, isNotWord)
+		if core == "" {
+			continue
+		}
+		lead := full[:len(full)-len(strings.TrimLeftFunc(full, isNotWord))]
+		trail := full[len(lead)+len(core):]
+		for at := 0; ; {
+			i := strings.Index(text[at:], core)
+			if i < 0 {
 				break
 			}
+			start, end := at+i, at+i+len(core)
+			at = start + 1
+			before, _ := utf8.DecodeLastRuneInString(text[:start])
+			after, _ := utf8.DecodeRuneInString(text[end:])
+			if (start > 0 && !isNotWord(before)) || (end < len(text) && !isNotWord(after)) {
+				continue
+			}
+			if strings.HasSuffix(text[:start], lead) {
+				start -= len(lead)
+			}
+			if strings.HasPrefix(text[end:], trail) {
+				end += len(trail)
+			}
+			mentions = append(mentions, mention{name, start, end})
+		}
+	}
+	var names []string
+	for _, m := range mentions {
+		covered := slices.ContainsFunc(mentions, func(o mention) bool {
+			return o.name != m.name && o.start <= m.start && o.end >= m.end
+		})
+		if !covered && !slices.Contains(names, m.name) {
+			names = append(names, m.name)
 		}
 	}
 	return names
 }
+
+// isNotWord reports whether c is neither a letter nor a digit.
+func isNotWord(c rune) bool { return !unicode.IsLetter(c) && !unicode.IsDigit(c) }

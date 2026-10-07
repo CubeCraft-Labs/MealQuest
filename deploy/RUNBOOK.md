@@ -508,39 +508,61 @@ docker compose -f deploy/compose.yaml build
    point before the restart (see "Rollback to a previous SHA"). Check that
    Litestream is replicating and that its replica restores to the current
    data, with the commands from "Database — Litestream", "Restore the
-   database" and "Count check". First write `/tmp/mqcount.py` with the
-   `cat > /tmp/mqcount.py` command in "Count check", then:
+   database" and "Count check". First write `/tmp/mqcount.py` and
+   `/tmp/mqsnap.py` with the `cat` command in "Count check", then:
 
 ```sh
+cd /home/overseer/mealquest && (
+set -eu   # any failed step ends the verification with a nonzero status
 D=/var/lib/docker/volumes/mealquest-data/_data
+fail() { echo "$*" >&2; exit 1; }
+rm -rf /tmp/mqcheck
+mkdir /tmp/mqcheck
+trap 'st=$?; rm -rf /tmp/mqcheck; sudo sh -c "rm -f $D/predeploy-check.db*" || st=1; [ "$st" -eq 0 ] || echo "verification FAILED (status $st): do not restart" >&2; exit "$st"' EXIT
 
 # a. Replication is running: litestream up, no errors in its log, and the
-#    newest LTX file is from the latest writes.
-docker compose -f deploy/compose.yaml ps litestream    # up
-docker compose -f deploy/compose.yaml logs --since 24h litestream | grep -i error   # must print nothing
+#    newest LTX file (listed) is from the latest writes.
+[ -n "$(docker compose -f deploy/compose.yaml ps --status running --quiet litestream)" ] || fail "litestream is not running"
+log=$(docker compose -f deploy/compose.yaml logs --since 24h litestream)
+if printf '%s\n' "$log" | grep -i error; then fail "litestream logged errors in the last 24h"; fi
 docker compose -f deploy/compose.yaml exec -T litestream \
   litestream ltx -config /etc/litestream.yml -level all /data/mealquest.db
 
 # b. Restore the replica to a scratch file beside the live database (the
-#    live files are not touched), move it off the volume and copy the live
-#    database next to it.
-rm -rf /tmp/mqcheck && mkdir /tmp/mqcheck
+#    live files are not touched) and move it off the volume; then take a
+#    consistent snapshot of the live database next to it.
 docker compose -f deploy/compose.yaml run --rm --no-deps litestream \
   restore -config /etc/litestream.yml -o /data/predeploy-check.db /data/mealquest.db
 sudo sh -c "mv $D/predeploy-check.db* /tmp/mqcheck/"
-sudo sh -c "cp -a $D/mealquest.db* /tmp/mqcheck/" && sudo chown -R "$USER" /tmp/mqcheck
-sudo ls -la "$D"   # no predeploy-check.db left behind
+sudo python3 /tmp/mqsnap.py "$D/mealquest.db" /tmp/mqcheck/live.db
+sudo chown -R "$USER" /tmp/mqcheck
 
-# c. Count check both. The restored copy must report integrity ok and the
-#    same counts and content-sha256 as the live copy. If they differ, a
-#    write may have landed between b and c: run b and c again.
-python3 /tmp/mqcount.py /tmp/mqcheck/predeploy-check.db
-python3 /tmp/mqcount.py /tmp/mqcheck/mealquest.db
-rm -rf /tmp/mqcheck
+# c. Count check both: the restored replica must report integrity ok and
+#    exactly the live snapshot's counts and content-sha256.
+python3 /tmp/mqcount.py /tmp/mqcheck/predeploy-check.db > /tmp/mqcheck/restored.txt
+python3 /tmp/mqcount.py /tmp/mqcheck/live.db > /tmp/mqcheck/live.txt
+cat /tmp/mqcheck/restored.txt
+grep -qx 'integrity ok' /tmp/mqcheck/restored.txt || fail "the restored replica failed integrity_check"
+diff /tmp/mqcheck/restored.txt /tmp/mqcheck/live.txt || fail "the restored replica differs from the live snapshot"
 
-# d. The pre-deploy restore point: now, after the check, before the restart.
-date -u +%Y-%m-%dT%H:%M:%SZ        # note it for rollback, with the previous SHA
+# d. The pre-deploy restore point: now, after every check passed, before
+#    the restart.
+point=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+echo "pre-deploy restore point: $point"
+)
 ```
+
+   The verification runs in a subshell that stops at the first failed
+   step and, on the way out, removes `/tmp/mqcheck` and any
+   `predeploy-check.db` left on the volume, keeping the status (a failed
+   clean-up fails it too). Read it like this:
+
+   - `pre-deploy restore point:` followed by a UTC time, and `echo $?`
+     prints `0` — the backup is verified. Note the time for rollback, with
+     the previous SHA, and go on to step 3.
+   - `verification FAILED`, any other error, or a nonzero `echo $?` — no
+     restore point was printed. If only the counts differed, a write
+     landed between the restore and the snapshot: run the block again.
 
    **If any check fails, do not restart.** Production stays on the
    previous SHA (only the new image was built). Restore replication first
@@ -573,7 +595,9 @@ service applies at start-up (`internal/store/migrate.go`): the older build
 refuses a database holding a version in `schema_migrations` that is not one
 of its own migration files — the `*.sql` files directly in `migrations/`
 (`migrations/queries/` holds sqlc queries, not migrations). Compare the
-versions the live database has applied with the files the previous SHA has:
+versions a consistent snapshot of the live database has applied with the
+files the previous SHA has. First write `/tmp/mqsnap.py` with the `cat`
+command in "Count check", then:
 
 ```sh
 cd /home/overseer/mealquest && (
@@ -583,7 +607,7 @@ P=<previous SHA>
 rm -rf /tmp/mqcheck
 mkdir /tmp/mqcheck
 trap 'st=$?; rm -rf /tmp/mqcheck; [ "$st" -eq 0 ] || echo "check FAILED (status $st): stop and fix the cause" >&2; exit "$st"' EXIT
-sudo sh -c "cp -a $D/mealquest.db* /tmp/mqcheck/"
+sudo python3 /tmp/mqsnap.py "$D/mealquest.db" /tmp/mqcheck/mealquest.db
 sudo chown -R "$USER" /tmp/mqcheck
 git ls-tree --name-only "$P" migrations/ > /tmp/mqcheck/known   # top level only
 python3 - /tmp/mqcheck/mealquest.db /tmp/mqcheck/known <<'PY'
@@ -591,7 +615,7 @@ import sqlite3, sys
 applied = {v for (v,) in sqlite3.connect(sys.argv[1]).execute("select version from schema_migrations")}
 known = {n[len("migrations/"):-len(".sql")] for n in open(sys.argv[2]).read().split() if n.endswith(".sql")}
 if not applied or not known:
-    sys.exit("no versions read: check the database copy and the previous SHA, then run again")
+    sys.exit("no versions read: check the snapshot and the previous SHA, then run again")
 unknown = sorted(applied - known)
 print("unknown to the previous SHA:", " ".join(unknown) if unknown else "none")
 PY
@@ -599,8 +623,9 @@ PY
 ```
 
 The check runs in a subshell that stops at the first failed step — the
-copy, `git ls-tree` or the comparison — and removes `/tmp/mqcheck` on the
-way out without changing the status. Read it like this:
+snapshot or its integrity check, `git ls-tree` or the comparison — and
+removes `/tmp/mqcheck` on the way out without changing the status. Read it
+like this:
 
 - `unknown to the previous SHA: none` and `echo $?` prints `0` — no
   migration crossed: take the plain restart below.
@@ -763,9 +788,21 @@ To restore to a point in time, add `-timestamp 2026-10-05T23:00:00Z` (or
 application tables, a SHA-256 over every application row (first 16 hex
 digits; Litestream's own `_litestream*` tables are excluded) and
 `PRAGMA integrity_check`. Run it on a **copy** of the database, never on the
-live file; copy `-wal`/`-shm` along with it when the app is running.
+live file.
 
-`/tmp` is temporary, so write the script before every check:
+While the app or Litestream has the database open, the copy is a snapshot
+from `/tmp/mqsnap.py`: it opens the live database read-only, copies it
+with SQLite's online backup API (one consistent read, whatever is still in
+the WAL included) and exits nonzero unless the snapshot's
+`PRAGMA integrity_check` is `ok`. Never copy `mealquest.db` and its `-wal`
+as files while they are open: a checkpoint between the two copies leaves
+an older state that still reads cleanly. "Deploy" step 2 and "Rollback to
+a previous SHA" use the snapshot. With the stack stopped, as in "Restore
+the database" step 4, the files are closed and checkpointed, and a plain
+copy is consistent (a read-only open there would leave a `-wal` and
+`-shm` beside the restored file).
+
+`/tmp` is temporary, so write the scripts before every check:
 
 ```sh
 cat > /tmp/mqcount.py <<'EOF'
@@ -781,9 +818,24 @@ for t in tabs:
 print("tables", len(tabs), "content-sha256", h.hexdigest()[:16])
 print("integrity", c.execute("pragma integrity_check").fetchone()[0])
 EOF
+cat > /tmp/mqsnap.py <<'EOF'
+import os, sqlite3, sys
+src, dst = sys.argv[1], sys.argv[2]
+if os.path.exists(dst):
+    sys.exit(f"{dst} already exists")
+s = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+d = sqlite3.connect(dst)
+s.backup(d)
+s.close()
+result = d.execute("pragma integrity_check").fetchall()
+d.close()
+if result != [("ok",)]:
+    sys.exit(f"snapshot integrity_check failed: {result}")
+print("snapshot", dst, "integrity ok")
+EOF
 ```
 
-Then copy the database and run it:
+With the stack stopped, copy the database and run it:
 
 ```sh
 rm -rf /tmp/mqcheck && mkdir /tmp/mqcheck

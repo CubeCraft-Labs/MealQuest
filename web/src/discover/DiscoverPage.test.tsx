@@ -531,11 +531,21 @@ describe('DiscoverPage', () => {
       const server = stubServer([BOWLS, TIKKA], {
         'POST /api/v1/suggestions/s1/decline': () => {
           server.deck = [TIKKA]
+          server.activeBatch = { batch_id: 'b-j1', job_id: 'j1' }
           return declined(BOWLS, 'j1')
         },
-        'GET /api/v1/jobs/j1': () => jsonResponse(200, batchJob('j1', 'failed', [], 'model unavailable')),
-        'POST /api/v1/suggestions/batches': () => jsonResponse(202, { batch_id: 'b-j2', job_id: 'j2', trigger: 'manual', status: 'pending' }),
+        'GET /api/v1/jobs/j1': () => {
+          server.activeBatch = null
+          server.failedBatch = { batch_id: 'b-j1', job_id: 'j1' }
+          return jsonResponse(200, batchJob('j1', 'failed', [], 'model unavailable'))
+        },
+        'POST /api/v1/suggestions/batches': () => {
+          server.failedBatch = null
+          server.activeBatch = { batch_id: 'b-j2', job_id: 'j2' }
+          return jsonResponse(202, { batch_id: 'b-j2', job_id: 'j2', trigger: 'manual', status: 'pending' })
+        },
         'GET /api/v1/jobs/j2': () => {
+          server.activeBatch = null
           server.deck = [TIKKA, ORZO]
           return jsonResponse(200, batchJob('j2', 'succeeded', ['s3']))
         },
@@ -626,6 +636,36 @@ describe('DiscoverPage', () => {
       await waitFor(() => expect(screen.getAllByRole('article', { hidden: true })).toHaveLength(deck.length + 1), { timeout: 3000 })
       await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
       expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/batches'])
+    })
+
+    it.each([
+      ['once its job has been polled', false],
+      ['before its job has been polled', true],
+    ])('drops a failed batch %s once a read of the deck reports a later batch another session finished', async (_, slowPoll) => {
+      const poll = deferred()
+      const server = stubServer([BOWLS, TIKKA], {
+        'GET /api/v1/jobs/j1': () => (slowPoll ? poll.promise : jsonResponse(200, batchJob('j1', 'failed', [], 'ai_failed'))),
+      })
+      server.failedBatch = { batch_id: 'b-j1', job_id: 'j1' }
+      const queryClient = createQueryClient()
+      await renderPage(queryClient)
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+      if (slowPoll) await waitFor(() => expect(jobPolls(server.fetchMock)).toBe(1))
+      else expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't find new side quests. ai_failed")
+
+      // Another session's batch j2 succeeds, superseding j1's failure.
+      server.failedBatch = null
+      server.deck = [BOWLS, TIKKA, ORZO]
+      const reads = deckReads(server.fetchMock)
+      await act(() => queryClient.invalidateQueries({ queryKey: DECK_KEY }))
+      await waitFor(() => expect(deckReads(server.fetchMock)).toBe(reads + 1))
+      await waitFor(() => expect(screen.getAllByRole('article', { hidden: true })).toHaveLength(3))
+      // A poll of j1 still out when the deck moved on does not bring it back.
+      await act(async () => poll.resolve(jsonResponse(200, batchJob('j1', 'failed', [], 'ai_failed'))))
+
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(screen.queryByText('Finding new side quests…')).not.toBeInTheDocument()
+      expect(sent(server.fetchMock)).toEqual([])
     })
 
     it('follows the batch the deck reports running when the page opens, with skeleton cards rather than "All caught up"', async () => {

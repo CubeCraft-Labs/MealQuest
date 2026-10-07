@@ -100,17 +100,20 @@ export function DiscoverPage() {
   // decision started or joined, or the deck's active or failed batch, which
   // may have been started elsewhere or before the page opened.
   const [batchJobId, setBatchJobId] = useState<string | null>(null)
+  const job = useJob<unknown>(BATCH_JOB_KIND, batchJobId)
   // A read of the deck reporting a new active or failed batch follows its
-  // job from that render on; one reporting neither leaves the last job
-  // followed, so its end and any failure stay shown.
+  // job from that render on. One reporting neither leaves the last job
+  // followed, so its end stays shown — unless that job is known to have
+  // failed, by its poll or the deck's last read: the deck reports the newest
+  // batch's failure, so a later batch has superseded it, and it goes.
   const failedJobId = deck.data?.failedBatch?.job_id ?? null
   const deckJobId = deck.data?.activeBatch?.job_id ?? failedJobId
-  const [seenDeckJobId, setSeenDeckJobId] = useState<string | null>(null)
-  if (deckJobId !== seenDeckJobId) {
-    setSeenDeckJobId(deckJobId)
-    if (deckJobId !== null) setBatchJobId(deckJobId)
+  const [seenRead, setSeenRead] = useState({ at: 0, jobId: null as string | null, failedJobId: null as string | null })
+  if (deck.dataUpdatedAt !== seenRead.at) {
+    setSeenRead({ at: deck.dataUpdatedAt, jobId: deckJobId, failedJobId })
+    if (deckJobId !== null && deckJobId !== seenRead.jobId) setBatchJobId(deckJobId)
+    else if (deckJobId === null && batchJobId !== null && (job.status === 'failed' || batchJobId === seenRead.failedJobId)) setBatchJobId(null)
   }
-  const job = useJob<unknown>(BATCH_JOB_KIND, batchJobId)
 
   const top = cards?.[0]
   const [busy, setBusy] = useState(false)

@@ -29,9 +29,18 @@ export type SideQuest = {
 // Choice is the household's decision on a Side quest: Try it or Pass.
 export type Choice = 'try' | 'pass'
 
-// Batch is a POST /api/v1/suggestions/batches answer: the batch and the job
-// running it, which GET /api/v1/jobs/{id} reports on.
+// Batch is a POST /api/v1/suggestions/batches answer, or the deck's active
+// batch: the batch and the job running it, which GET /api/v1/jobs/{id}
+// reports on.
 export type Batch = { batch_id: string; job_id: string }
+
+// Deck is the deck as GET /api/v1/suggestions/deck reads it: the pending
+// Side quests, oldest first, and the batch pending or running, if any.
+export type Deck = { suggestions: SideQuest[]; activeBatch: Batch | null }
+
+function isBatch(body: unknown): body is Batch {
+  return isRecord(body) && typeof body.batch_id === 'string' && typeof body.job_id === 'string'
+}
 
 // BATCH_JOB_KIND is the kind of the job running a suggestion batch.
 export const BATCH_JOB_KIND = 'suggestion_batch'
@@ -82,17 +91,21 @@ function parseSideQuest(where: string, body: unknown): SideQuest {
   }
 }
 
-// useDeck is the pending Side quests, oldest first (GET
-// /api/v1/suggestions/deck).
+// useDeck is the pending Side quests, oldest first, and the batch pending
+// or running (GET /api/v1/suggestions/deck).
 export function useDeck() {
   const { apiFetch } = useApi()
   return useQuery({
     queryKey: DECK_KEY,
-    queryFn: async () => {
+    queryFn: async (): Promise<Deck> => {
       const where = `GET ${DECK_PATH}`
       const body = await apiFetch<unknown>(DECK_PATH)
       if (!isRecord(body) || !Array.isArray(body.suggestions)) throw new Error(`${where}: response has no suggestions list`)
-      return body.suggestions.map((suggestion) => parseSideQuest(where, suggestion))
+      if (body.active_batch !== null && !isBatch(body.active_batch)) throw new Error(`${where}: response has no active_batch`)
+      return {
+        suggestions: body.suggestions.map((suggestion) => parseSideQuest(where, suggestion)),
+        activeBatch: body.active_batch === null ? null : { batch_id: body.active_batch.batch_id, job_id: body.active_batch.job_id },
+      }
     },
   })
 }
@@ -141,9 +154,7 @@ export function useStartBatch() {
   return useMutation({
     mutationFn: async (): Promise<Batch> => {
       const body = await apiFetch<unknown>(BATCHES_PATH, { method: 'POST' })
-      if (!isRecord(body) || typeof body.batch_id !== 'string' || typeof body.job_id !== 'string') {
-        throw new Error(`POST ${BATCHES_PATH}: response is not a batch`)
-      }
+      if (!isBatch(body)) throw new Error(`POST ${BATCHES_PATH}: response is not a batch`)
       return { batch_id: body.batch_id, job_id: body.job_id }
     },
   })
@@ -153,9 +164,9 @@ export function useStartBatch() {
 // pending, after a failed decision on it: the Side quest when it does, null
 // when it does not, and undefined when that read failed, which says neither.
 // deck is the deck query's state, from the cache or useDeck.
-export function stillPending(deck: { status: string; data: SideQuest[] | undefined } | undefined, id: string): SideQuest | null | undefined {
+export function stillPending(deck: { status: string; data: Deck | undefined } | undefined, id: string): SideQuest | null | undefined {
   if (deck?.status !== 'success') return undefined
-  return deck.data!.find((q) => q.id === id) ?? null
+  return deck.data!.suggestions.find((q) => q.id === id) ?? null
 }
 
 // useDeciding is the ids of the Side quests whose decisions are pending:
@@ -173,7 +184,7 @@ export function useDeciding(): Set<string> {
 // (POST /api/v1/suggestions/{id}/decline) on the Side quest the household
 // decided on, whether or not a read of the deck has since taken it away.
 // The answer must be that suggestion, decided that way; the mutation's data
-// is the id of the replenish job the decision started, or null.
+// is the id of the replenish job the decision started or joined, or null.
 //
 // The decision is applied at once: the Side quest leaves the deck shown
 // while it is pending (see useDeciding) and, on Try it, its dinner joins the
@@ -222,7 +233,7 @@ export function useDecide() {
         // with the deck; the decision's own error is the one thrown.
         await queryClient
           .getQueryCache()
-          .build<SideQuest[]>(queryClient, { queryKey: DECK_KEY })
+          .build<Deck>(queryClient, { queryKey: DECK_KEY })
           .fetch(undefined, { cancelRefetch: true })
           .catch(() => undefined)
         throw error
@@ -252,9 +263,12 @@ export function useDecide() {
       }
       // A failed decision has read the deck already; any read since is newer.
       await queryClient.invalidateQueries({ queryKey: QUEST_LOG_KEY })
-      const pending = stillPending(queryClient.getQueryState<SideQuest[]>(DECK_KEY), quest.id)
+      const pending = stillPending(queryClient.getQueryState<Deck>(DECK_KEY), quest.id)
       if (pending === null || pending === undefined) return
-      queryClient.setQueryData<SideQuest[]>(DECK_KEY, (deck) => [pending, ...deck!.filter((q) => q.id !== pending.id)])
+      queryClient.setQueryData<Deck>(DECK_KEY, (deck) => ({
+        ...deck!,
+        suggestions: [pending, ...deck!.suggestions.filter((q) => q.id !== pending.id)],
+      }))
     },
   })
 }

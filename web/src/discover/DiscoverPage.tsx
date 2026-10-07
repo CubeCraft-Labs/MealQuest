@@ -91,13 +91,24 @@ export function DiscoverPage() {
   // The deck shown: the deck's newest read, less the Side quests being
   // decided, which a read landing mid-decision may still have pending.
   const inFlight = useDeciding()
-  const cards = deck.data?.filter((quest) => !inFlight.has(quest.id))
+  const cards = deck.data?.suggestions.filter((quest) => !inFlight.has(quest.id))
   const questLog = useQuestLog()
   const decision = useDecide()
   const startBatch = useStartBatch()
   // The job of the batch last known to be finding Side quests: the one Get
-  // more now started or joined, or the replenish a decision started.
+  // more now started or joined, the replenish a decision started or joined,
+  // or the deck's active batch, which may have been started elsewhere or
+  // before the page opened.
   const [batchJobId, setBatchJobId] = useState<string | null>(null)
+  // A read of the deck reporting a new active batch follows its job from
+  // that render on; one reporting none leaves the last job followed, so its
+  // end and any failure stay shown.
+  const activeJobId = deck.data?.activeBatch?.job_id ?? null
+  const [seenActiveJobId, setSeenActiveJobId] = useState<string | null>(null)
+  if (activeJobId !== seenActiveJobId) {
+    setSeenActiveJobId(activeJobId)
+    if (activeJobId !== null) setBatchJobId(activeJobId)
+  }
   const job = useJob<unknown>(BATCH_JOB_KIND, batchJobId)
 
   const top = cards?.[0]
@@ -146,8 +157,8 @@ export function DiscoverPage() {
     return true
   }, [])
   // send records a decision. A failed one stops the card's exit, so a card
-  // useDecide put back on the deck is at rest; a saved one that started a
-  // replenish batch follows its job.
+  // useDecide put back on the deck is at rest; a saved one that started or
+  // joined a replenish batch follows its job.
   const send = useCallback(
     (variables: { quest: SideQuest; choice: Choice }) => {
       leaving.current = variables.quest.id
@@ -293,6 +304,9 @@ export function DiscoverPage() {
     function onKeyDown(event: KeyboardEvent) {
       if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
       if (isEditable(event.target)) return
+      // A modal over the page (the Quest log sheet or its confirmation) makes
+      // the deck inert: its keys are the modal's, not the deck's.
+      if (deckRef.current === null || deckRef.current.closest('[inert]') !== null) return
       if (event.key === 'ArrowLeft') decide('pass')
       else if (event.key === 'ArrowRight') decide('try')
       else return
@@ -320,6 +334,17 @@ export function DiscoverPage() {
   const pending = decision.isError ? stillPending(deck, decision.variables.quest.id) : undefined
   const retryable = pending !== undefined && pending !== null
 
+  // What went wrong asking for or finding more Side quests, shown whatever
+  // the deck has: a replenish can fail while cards remain. While Get more now
+  // is asking again, the last batch's failure is not the news.
+  const batchFailure = startBatch.isPending ? null : startBatch.isError ? (
+    <ErrorBanner onRetry={getMore}>Couldn't ask for more side quests. {startBatch.error.message}</ErrorBanner>
+  ) : batchError === null ? null : jobRunning ? (
+    <ErrorBanner onRetry={job.poll}>Couldn't check on new side quests. {batchError.message}</ErrorBanner>
+  ) : (
+    <ErrorBanner onRetry={getMore}>Couldn't find new side quests. {batchError.message}</ErrorBanner>
+  )
+
   let body
   if (deck.isError) {
     body = <ErrorBanner onRetry={() => void deck.refetch()}>Couldn't load your side quests. {deck.error.message}</ErrorBanner>
@@ -334,32 +359,33 @@ export function DiscoverPage() {
           ))}
         </div>
         {finding && <p className={styles.finding}>Finding new side quests…</p>}
-        {jobRunning && batchError !== null && (
-          <ErrorBanner onRetry={job.poll}>Couldn't check on new side quests. {batchError.message}</ErrorBanner>
-        )}
       </section>
     )
   } else if (top === undefined) {
     body = (
-      <>
-        {startBatch.isError && (
-          <ErrorBanner onRetry={getMore}>Couldn't ask for more side quests. {startBatch.error.message}</ErrorBanner>
-        )}
-        {batchError !== null && (
-          <ErrorBanner onRetry={getMore}>Couldn't find new side quests. {batchError.message}</ErrorBanner>
-        )}
-        <EmptyState title="All caught up" action={{ label: 'Get more now', onClick: getMore }}>
-          New side quests arrive Sunday.
-        </EmptyState>
-      </>
+      <EmptyState title="All caught up" action={{ label: 'Get more now', onClick: getMore }}>
+        New side quests arrive Sunday.
+      </EmptyState>
     )
   } else {
+    const shown = cards!.slice(0, DECK_DEPTH.length)
     body = (
       <>
+        {/* The deck keeps all three depths: a short deck fills those it has
+            no card for with skeleton cards while a batch finds more Side
+            quests, and with blank cards, the stack's edge, while none is
+            coming. */}
         <div ref={deckRef} className={styles.deck}>
-          {cards!.slice(0, DECK_DEPTH.length).map((quest, depth) => (
+          {shown.map((quest, depth) => (
             <DeckCard key={quest.id} quest={quest} depth={depth} swipe={depth === 0 ? swipe : undefined} />
           ))}
+          {DECK_DEPTH.slice(shown.length).map((depth) =>
+            finding ? (
+              <Skeleton key={depth} data-testid="skeleton-card" className={`${styles.skeletonCard} ${styles[`depth${depth}`]}`} />
+            ) : (
+              <div key={depth} data-testid="blank-card" aria-hidden="true" className={`${styles.blankCard} ${styles[`depth${depth}`]}`} />
+            ),
+          )}
         </div>
         <div className={styles.actions}>
           <IconButton ref={passRef} label="Pass" size={62} tone="neutral" showLabel disabled={busy} onClick={() => decide('pass')}>
@@ -369,6 +395,7 @@ export function DiscoverPage() {
             <Icon icon={Heart} size="nav" />
           </IconButton>
         </div>
+        {finding && <p className={styles.finding}>Finding new side quests…</p>}
       </>
     )
   }
@@ -386,6 +413,7 @@ export function DiscoverPage() {
         <ErrorBanner onRetry={() => void questLog.refetch()}>Couldn't load the Quest log. {questLog.error.message}</ErrorBanner>
       )}
       {body}
+      {batchFailure}
       {/* A failed decision is shown whatever the deck has come to since. */}
       {decision.isError &&
         (retryable ? (

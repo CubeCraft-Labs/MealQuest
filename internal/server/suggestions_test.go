@@ -148,8 +148,44 @@ func TestSuggestionDecisions(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("decline = %d: %s", rec.Code, rec.Body)
 	}
-	if id, _ := body["replenish_job_id"].(string); id == "" {
-		t.Errorf("decline leaving 4 = %v, want a replenish_job_id", body)
+	replenish, _ := body["replenish_job_id"].(string)
+	if replenish == "" {
+		t.Fatalf("decline leaving 4 = %v, want a replenish_job_id", body)
+	}
+
+	// A fourth decision joins the batch already pending and reports its job.
+	rec, body = callDinners(t, h, http.MethodPost, suggestionsPath+"/"+ids[3]+"/accept", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("accept = %d: %s", rec.Code, rec.Body)
+	}
+	if body["replenish_job_id"] != replenish {
+		t.Errorf("accept leaving 3 = %v, want replenish_job_id %s", body, replenish)
+	}
+}
+
+func TestSuggestionDeckActiveBatch(t *testing.T) {
+	t.Parallel()
+	h, _, _ := newSuggestionsRouter(t, "Pho")
+
+	rec, body := callDinners(t, h, http.MethodGet, suggestionsPath+"/deck", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET deck = %d: %s", rec.Code, rec.Body)
+	}
+	if active, ok := body["active_batch"]; !ok || active != nil {
+		t.Fatalf("deck = %v, want active_batch null", body)
+	}
+
+	rec, started := callDinners(t, h, http.MethodPost, suggestionsPath+"/batches", "")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("POST batches = %d: %s", rec.Code, rec.Body)
+	}
+	rec, body = callDinners(t, h, http.MethodGet, suggestionsPath+"/deck", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET deck = %d: %s", rec.Code, rec.Body)
+	}
+	active, _ := body["active_batch"].(map[string]any)
+	if active == nil || active["batch_id"] != started["batch_id"] || active["job_id"] != started["job_id"] || active["status"] != "pending" {
+		t.Errorf("deck active_batch = %v, want the started batch %v", body["active_batch"], started)
 	}
 }
 

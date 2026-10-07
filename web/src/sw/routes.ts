@@ -29,9 +29,10 @@ export interface RouteRequest {
 // photos and fonts stay available offline.
 export const cacheVersions = {
   precache: 'v1',
-  // v2 retires the v1 API cache, whose dinner responses still carried the
-  // pasted recipe_url.
-  api: 'v2',
+  // v2 retired the v1 API cache, whose dinner responses still carried the
+  // pasted recipe_url; v3 retires the v2 API cache, whose recipe-candidate
+  // responses used the full URL as candidate_id.
+  api: 'v3',
   media: 'v1',
   fonts: 'v1',
 } as const

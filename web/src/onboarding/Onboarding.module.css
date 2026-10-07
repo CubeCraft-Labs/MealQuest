@@ -229,6 +229,18 @@
   color: var(--color-accent-700);
 }
 
+/* Step 3: why notifications are not on after asking for them. */
+.notOn {
+  margin: var(--space-4) 0 0;
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.4;
+  color: var(--color-text);
+}
+
 /* Step 3: back to step 2 when the server wants more Regulars. */
 .recover {
   margin-top: var(--space-3);

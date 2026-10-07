@@ -2,7 +2,10 @@ package dinners
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -282,7 +285,9 @@ func reasonFor(err error, fromURL bool) string {
 
 // Candidate is a recipe page offered to ground a dinner in.
 type Candidate struct {
-	// CandidateID is the page's URL; Fix.CandidateID grounds it.
+	// CandidateID is an opaque id for the page, resolved by the server:
+	// Fix.CandidateID grounds it. The page's URL is never returned, as it
+	// may carry a token.
 	CandidateID string `json:"candidate_id"`
 	Title       string `json:"title"`
 	SiteName    string `json:"site_name"`
@@ -291,10 +296,39 @@ type Candidate struct {
 	Minutes  *int    `json:"minutes"`
 }
 
+// offerLifetime is how long the candidates Candidates offers a dinner
+// ground it; tests shorten it.
+var offerLifetime = 30 * time.Minute
+
+// now is the clock offer lifetimes are measured on; tests advance it.
+var now = time.Now
+
+// offerSet is the candidates last offered for a dinner: the page URL of
+// each candidate id. They ground the dinner until deadline; expiry drops
+// the set from offers once it has passed.
+type offerSet struct {
+	urls     map[string]string
+	deadline time.Time
+	expiry   *time.Timer
+}
+
+// offerSearch is a Candidates search running for a dinner. It is stale
+// once the dinner's offers are cleared, and then stores none.
+type offerSearch struct {
+	stale bool
+}
+
 // Candidates searches for dinner id's name and returns up to MaxCandidates
-// recipe pages to ground it in, best first; the list may be empty. A
-// search that fails wraps recipes.ErrSearchFailed.
+// recipe pages to ground it in, best first; the list may be empty. They
+// replace the dinner's earlier candidates: one not offered again no longer
+// grounds it. They ground it for offerLifetime, and not at all once it is
+// grounded by hand or archived, even while this search runs. A search that
+// fails wraps recipes.ErrSearchFailed.
 func (s *Service) Candidates(ctx context.Context, id string) ([]Candidate, error) {
+	// Tracked before the dinner is read: grounding or archiving it after
+	// the read makes this search stale.
+	keep, done := s.trackOffers(id)
+	defer done()
 	row, err := s.get(ctx, id)
 	if err != nil {
 		return nil, err
@@ -304,14 +338,111 @@ func (s *Service) Candidates(ctx context.Context, id string) ([]Candidate, error
 		return nil, err
 	}
 	out := make([]Candidate, len(offers))
+	urls := make(map[string]string, len(offers))
 	for i, o := range offers {
-		out[i] = Candidate{CandidateID: o.URL, Title: o.Title, SiteName: o.SiteName, Minutes: o.Minutes}
+		cid := s.candidateID(row.ID, o.URL)
+		urls[cid] = o.URL
+		out[i] = Candidate{CandidateID: cid, Title: o.Title, SiteName: o.SiteName, Minutes: o.Minutes}
 		if o.PhotoID != "" {
 			u := PhotoURL(o.PhotoID)
 			out[i].PhotoURL = &u
 		}
 	}
+	if row.Status != StatusArchived {
+		keep(urls)
+	}
 	return out, nil
+}
+
+// trackOffers registers a Candidates search for dinner id. It returns keep,
+// which stores urls as the dinner's offers for offerLifetime unless
+// clearOffers has run for it since, and done, to call when the search ends.
+func (s *Service) trackOffers(id string) (keep func(urls map[string]string), done func()) {
+	search := &offerSearch{}
+	s.offersMu.Lock()
+	if s.offerSearches[id] == nil {
+		s.offerSearches[id] = make(map[*offerSearch]struct{})
+	}
+	s.offerSearches[id][search] = struct{}{}
+	s.offersMu.Unlock()
+	keep = func(urls map[string]string) {
+		s.offersMu.Lock()
+		defer s.offersMu.Unlock()
+		if search.stale {
+			return
+		}
+		s.dropOffers(id)
+		set := &offerSet{urls: urls, deadline: now().Add(offerLifetime)}
+		// expiry waits for offersMu, so it finds set stored even when it
+		// fires at once, and drops set only, never offers stored later.
+		set.expiry = time.AfterFunc(offerLifetime, func() {
+			s.offersMu.Lock()
+			defer s.offersMu.Unlock()
+			if s.offers[id] == set {
+				delete(s.offers, id)
+			}
+		})
+		s.offers[id] = set
+	}
+	done = func() {
+		s.offersMu.Lock()
+		delete(s.offerSearches[id], search)
+		if len(s.offerSearches[id]) == 0 {
+			delete(s.offerSearches, id)
+		}
+		s.offersMu.Unlock()
+	}
+	return keep, done
+}
+
+// clearOffers drops dinner id's offers and makes every Candidates search
+// running for it stale, so no candidate offered before grounds it. Call
+// it once the dinner is grounded by hand or archived.
+func (s *Service) clearOffers(id string) {
+	s.offersMu.Lock()
+	defer s.offersMu.Unlock()
+	s.dropOffers(id)
+	for search := range s.offerSearches[id] {
+		search.stale = true
+	}
+}
+
+// dropOffers drops dinner id's offers and stops their expiry. The caller
+// holds offersMu.
+func (s *Service) dropOffers(id string) {
+	if set := s.offers[id]; set != nil {
+		set.expiry.Stop()
+		delete(s.offers, id)
+	}
+}
+
+// candidateID is the opaque id of the page at rawURL as a candidate for
+// dinner id: the same page is offered under the same id until the service
+// restarts, and the id reveals nothing of the URL.
+func (s *Service) candidateID(id, rawURL string) string {
+	mac := hmac.New(sha256.New, s.offerKey)
+	mac.Write([]byte(id + "\x00" + rawURL))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)[:16])
+}
+
+// candidateURL is the page URL of candidate cid last offered for dinner id.
+// A cid not among the dinner's live offers, or whose page is not a valid
+// recipe link, is a *ValidationError. Offers past their deadline are not
+// live, even before their expiry drops them.
+func (s *Service) candidateURL(id, cid string) (string, error) {
+	var raw string
+	var ok bool
+	s.offersMu.Lock()
+	if set := s.offers[id]; set != nil && now().Before(set.deadline) {
+		raw, ok = set.urls[cid]
+	}
+	s.offersMu.Unlock()
+	if ok {
+		if u, err := checkRecipeURL(raw); err == nil {
+			return u.String(), nil
+		}
+	}
+	return "", invalid("candidate_id", "is not a candidate from recipe-candidates; reload the candidates")
 }
 
 // Fix grounds a dinner by hand: exactly one of a candidate from
@@ -367,6 +498,11 @@ func (s *Service) Ground(ctx context.Context, id string, f Fix, updatedBy string
 	if cur.Status == StatusArchived {
 		return Dinner{}, ErrArchived
 	}
+	if f.CandidateID != nil {
+		if link, err = s.candidateURL(cur.ID, *f.CandidateID); err != nil {
+			return Dinner{}, err
+		}
+	}
 	groundCtx, cancel := context.WithTimeout(ctx, groundTimeout)
 	defer cancel()
 	gr, err := s.grounder.GroundURL(groundCtx, link)
@@ -401,6 +537,7 @@ func (s *Service) Ground(ctx context.Context, id string, f Fix, updatedBy string
 	if err != nil {
 		return Dinner{}, fmt.Errorf("%w: dinner %s: record: %w", ErrGroundFailed, id, err)
 	}
+	s.clearOffers(cur.ID)
 	return fromRow(row), nil
 }
 
@@ -422,9 +559,10 @@ func (s *Service) groundRejected(ctx context.Context, id string) error {
 }
 
 // groundManual stores m as dinner id's recipe, with its ingredients and
-// steps, and records it on the dinner, all in one transaction. A missing
-// or archived dinner is ErrNotFound or ErrArchived; any other failure
-// wraps ErrGroundFailed.
+// steps, and records it on the dinner, all in one transaction; the
+// dinner's candidates then no longer ground it. A missing or archived
+// dinner is ErrNotFound or ErrArchived; any other failure wraps
+// ErrGroundFailed.
 func (s *Service) groundManual(ctx context.Context, id string, m ManualRecipe, updatedBy string) (Dinner, error) {
 	var row db.Dinner
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
@@ -522,6 +660,7 @@ func (s *Service) groundManual(ctx context.Context, id string, m ManualRecipe, u
 	if err != nil {
 		return Dinner{}, fmt.Errorf("%w: dinner %s: %w", ErrGroundFailed, id, err)
 	}
+	s.clearOffers(row.ID)
 	return fromRow(row), nil
 }
 
@@ -550,11 +689,8 @@ func (f Fix) validate() (link string, manual *ManualRecipe, err error) {
 	}
 	switch {
 	case f.CandidateID != nil:
-		u, err := checkRecipeURL(*f.CandidateID)
-		if err != nil {
-			return "", nil, invalid("candidate_id", "is not a candidate from recipe-candidates")
-		}
-		return u.String(), nil, nil
+		// Ground resolves the candidate to its page.
+		return "", nil, nil
 	case f.RecipeURL != nil:
 		u, err := checkRecipeURL(*f.RecipeURL)
 		if err != nil {

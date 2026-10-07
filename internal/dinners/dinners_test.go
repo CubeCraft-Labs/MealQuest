@@ -16,8 +16,10 @@ import (
 func TestCreateRegularNeverNamesFromLink(t *testing.T) {
 	t.Parallel()
 	e := newUnstartedEnv(t)
-	const link = "https://c.example/stew-key-abcdefghijklmno?sig=zyxwvut#frag"
-	leaks := []string{"c.example", "key", "abcdefghijklmno", "sig", "zyxwvut", "frag"}
+	const link = "https://c.example/stew-key-abcdefghijklmno?sig=zyxwvut#lookup"
+	// Each leak holds a character no ULID has (Crockford base32 has no I, L,
+	// O, U, "-", "." or "/"), so a dinner's id never matches one.
+	leaks := []string{link, "c.example", "stew-key", "abcdefghijklmno", "sig", "zyxwvut", "lookup"}
 	check := func(what, text string) {
 		t.Helper()
 		lower := strings.ToLower(text)

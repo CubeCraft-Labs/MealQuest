@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -211,6 +212,39 @@ func TestCreateByRecipeURLGroundsThatURL(t *testing.T) {
 	}
 	if q := e.search.Queries(); len(q) != 0 {
 		t.Errorf("searched %q; a recipe_url is grounded directly", q)
+	}
+}
+
+// TestCreateByRecipeURLClearsLink: once background grounding resolves a
+// pasted link, which may carry a personal token, the dinner no longer
+// stores it; the recipe it grounded in records the page.
+func TestCreateByRecipeURLClearsLink(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	const link = "https://c.example/recipes/beef-stew?access_token=personal-token-abc123"
+	e.pages.Bodies[link] = recipestest.RecipePage("Beef Stew", "Stew Co", "https://c.example/stew.jpg", 150)
+	e.model.QueueGenerate(recipestest.NormalizedReply("oven", 150))
+
+	c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr("Beef stew"), RecipeURL: ptr(link)}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job := e.waitJob(t, *c.GroundingJobID); job.Status != jobs.StatusSucceeded {
+		t.Fatalf("job = %+v", job)
+	}
+	row := e.dinner(t, c.ID)
+	if row.GroundingStatus != "grounded" || !row.RecipeID.Valid {
+		t.Fatalf("dinner = %+v, want grounded", row)
+	}
+	if row.RecipeUrl.Valid {
+		t.Errorf("recipe_url = %q after grounding, want cleared", row.RecipeUrl.String)
+	}
+	rec, err := db.New(e.st.Reader).GetRecipe(t.Context(), row.RecipeID.String)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.SourceUrl != link {
+		t.Errorf("recipe source = %q, want %q", rec.SourceUrl, link)
 	}
 }
 
@@ -642,6 +676,26 @@ func failedDinner(t *testing.T, e *env, name string) string {
 	return c.ID
 }
 
+// candidateID returns the candidate_id Candidates offers dinner id for the
+// page titled title.
+func candidateID(t *testing.T, e *env, id, title string) string {
+	t.Helper()
+	got, err := e.svc.Candidates(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range got {
+		if c.Title == title {
+			if strings.Contains(c.CandidateID, "://") {
+				t.Fatalf("candidate_id = %q, want an opaque id, not the page URL", c.CandidateID)
+			}
+			return c.CandidateID
+		}
+	}
+	t.Fatalf("candidates = %+v, want one titled %q", got, title)
+	return ""
+}
+
 func TestCandidates(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
@@ -664,13 +718,24 @@ func TestCandidates(t *testing.T) {
 	}
 	first, second := got[0], got[1]
 	wantPhoto := dinners.PhotoURL(e.dinner(t, c.ID).PhotoID.String)
-	if first.CandidateID != curryA || first.Title != "Chicken Curry" || first.SiteName != "Curry House" ||
+	if first.Title != "Chicken Curry" || first.SiteName != "Curry House" ||
 		first.PhotoURL == nil || *first.PhotoURL != wantPhoto || first.Minutes == nil || *first.Minutes != 40 {
 		t.Errorf("first = %+v, want the stored curryA with photo %s", first, wantPhoto)
 	}
-	if second.CandidateID != curryB || second.Title != "Easy Weeknight Curry" || second.SiteName != "B Kitchen" ||
+	if second.Title != "Easy Weeknight Curry" || second.SiteName != "B Kitchen" ||
 		second.PhotoURL != nil || second.Minutes == nil || *second.Minutes != 25 {
 		t.Errorf("second = %+v, want curryB without a photo", second)
+	}
+	if first.CandidateID == "" || first.CandidateID == second.CandidateID ||
+		first.CandidateID == curryA || second.CandidateID == curryB {
+		t.Errorf("candidate ids = %q, %q, want distinct opaque ids", first.CandidateID, second.CandidateID)
+	}
+	again, err := e.svc.Candidates(t.Context(), c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != 2 || again[0].CandidateID != first.CandidateID || again[1].CandidateID != second.CandidateID {
+		t.Errorf("candidates again = %+v, want the same ids", again)
 	}
 
 	if _, err := e.svc.Candidates(t.Context(), "nope"); !errors.Is(err, dinners.ErrNotFound) {
@@ -702,9 +767,11 @@ func TestFixViaCandidate(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
 	id := failedDinner(t, e, "Mystery curry")
+	e.search.Results["Mystery curry"] = []recipes.Candidate{{URL: curryA}, {URL: curryB}}
+	cid := candidateID(t, e, id, "Easy Weeknight Curry")
 	e.model.QueueGenerate(recipestest.NormalizedReply("stovetop", 25))
 
-	d, err := e.svc.Ground(t.Context(), id, dinners.Fix{CandidateID: ptr(curryB)}, "member-2")
+	d, err := e.svc.Ground(t.Context(), id, dinners.Fix{CandidateID: ptr(cid)}, "member-2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -721,6 +788,207 @@ func TestFixViaCandidate(t *testing.T) {
 	}
 }
 
+// wantStaleCandidate checks that candidate cid no longer grounds dinner
+// id: Ground refuses it as invalid, and the dinner is unchanged.
+func wantStaleCandidate(t *testing.T, e *env, id, cid string) {
+	t.Helper()
+	before := e.dinner(t, id)
+	_, err := e.svc.Ground(t.Context(), id, dinners.Fix{CandidateID: ptr(cid)}, member)
+	var invalid *dinners.ValidationError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("stale candidate: err = %v, want *ValidationError", err)
+	}
+	if after := e.dinner(t, id); after != before {
+		t.Errorf("dinner changed by a stale candidate: %+v, was %+v", after, before)
+	}
+}
+
+// TestGroundingOrArchivingClearsCandidates: once a dinner is grounded by
+// hand — by candidate, link or manual recipe — or archived, the service
+// holds none of its candidates' URLs and none of them grounds it.
+func TestGroundingOrArchivingClearsCandidates(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		// clear grounds or archives dinner id, offered candidate cid.
+		clear func(t *testing.T, e *env, id, cid string)
+		// archived says the dinner ends archived, which Ground refuses
+		// before it reads a candidate.
+		archived bool
+	}{
+		{"candidate", func(t *testing.T, e *env, id, cid string) {
+			e.model.QueueGenerate(recipestest.NormalizedReply("stovetop", 40))
+			if _, err := e.svc.Ground(t.Context(), id, dinners.Fix{CandidateID: ptr(cid)}, member); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"link", func(t *testing.T, e *env, id, _ string) {
+			e.model.QueueGenerate(recipestest.NormalizedReply("oven", 150))
+			if _, err := e.svc.Ground(t.Context(), id, dinners.Fix{RecipeURL: ptr(stew)}, member); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"manual", func(t *testing.T, e *env, id, _ string) {
+			m := &dinners.ManualRecipe{Ingredients: []string{"1 chicken"}, Minutes: ptr(40), Method: ptr("stovetop")}
+			if _, err := e.svc.Ground(t.Context(), id, dinners.Fix{Manual: m}, member); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"archive", func(t *testing.T, e *env, id, _ string) {
+			if _, err := e.svc.Archive(t.Context(), id, member); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			e := newEnv(t)
+			id := failedDinner(t, e, "Mystery curry")
+			e.search.Results["Mystery curry"] = []recipes.Candidate{{URL: curryA}, {URL: curryB}}
+			cidA := candidateID(t, e, id, "Chicken Curry")
+			cidB := candidateID(t, e, id, "Easy Weeknight Curry")
+
+			tt.clear(t, e, id, cidA)
+			if e.svc.HasOffers(id) {
+				t.Errorf("service still holds the candidates of dinner %s", id)
+			}
+			if !tt.archived {
+				wantStaleCandidate(t, e, id, cidB)
+			}
+		})
+	}
+}
+
+// TestCandidatesRunningWhenCleared: a candidate search still running when
+// its dinner is grounded by hand or archived stores none of the candidates
+// it returns, so none of them grounds the dinner.
+func TestCandidatesRunningWhenCleared(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		clear func(t *testing.T, e *env, id string)
+		// archived says the dinner ends archived.
+		archived bool
+	}{
+		{"manual", func(t *testing.T, e *env, id string) {
+			m := &dinners.ManualRecipe{Ingredients: []string{"1 chicken"}, Minutes: ptr(40), Method: ptr("stovetop")}
+			if _, err := e.svc.Ground(t.Context(), id, dinners.Fix{Manual: m}, member); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"archive", func(t *testing.T, e *env, id string) {
+			if _, err := e.svc.Archive(t.Context(), id, member); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			e := newEnv(t)
+			id := failedDinner(t, e, "Mystery curry")
+			e.search.Results["Mystery curry"] = []recipes.Candidate{{URL: curryA}}
+			asked := len(e.search.Queries())
+			gate := make(chan struct{})
+			e.search.Gate = gate
+
+			type result struct {
+				got []dinners.Candidate
+				err error
+			}
+			done := make(chan result, 1)
+			go func() {
+				got, err := e.svc.Candidates(t.Context(), id)
+				done <- result{got, err}
+			}()
+			deadline := time.Now().Add(10 * time.Second)
+			for len(e.search.Queries()) == asked {
+				if time.Now().After(deadline) {
+					t.Fatal("candidate search never started")
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			tt.clear(t, e, id)
+			close(gate)
+			r := <-done
+			if r.err != nil {
+				t.Fatal(r.err)
+			}
+			if len(r.got) != 1 {
+				t.Fatalf("candidates = %+v, want curryA", r.got)
+			}
+			if e.svc.HasOffers(id) {
+				t.Errorf("a search finishing after dinner %s was cleared stored its candidates", id)
+			}
+			if !tt.archived {
+				wantStaleCandidate(t, e, id, r.got[0].CandidateID)
+			}
+		})
+	}
+}
+
+// TestCandidatesExpire: once their lifetime passes, a dinner's candidates
+// are dropped and no longer ground it, with no other search running.
+func TestCandidatesExpire(t *testing.T) {
+	dinners.SetOfferLifetime(t, 0)
+	e := newEnv(t)
+	id := failedDinner(t, e, "Mystery curry")
+	e.search.Results["Mystery curry"] = []recipes.Candidate{{URL: curryA}}
+	cid := candidateID(t, e, id, "Chicken Curry")
+
+	waitNoOffers(t, e)
+	wantStaleCandidate(t, e, id, cid)
+}
+
+// TestCandidatesExpireBeforeEviction: once their lifetime passes, a
+// dinner's candidates no longer ground it, even while the service still
+// holds them because their eviction has not run yet.
+func TestCandidatesExpireBeforeEviction(t *testing.T) {
+	dinners.SetOfferLifetime(t, time.Hour)
+	e := newEnv(t)
+	id := failedDinner(t, e, "Mystery curry")
+	e.search.Results["Mystery curry"] = []recipes.Candidate{{URL: curryA}}
+	cid := candidateID(t, e, id, "Chicken Curry")
+
+	dinners.AdvanceClock(t, time.Hour)
+	if !e.svc.HasOffers(id) {
+		t.Fatal("candidates evicted already, want them held until their timer fires")
+	}
+	wantStaleCandidate(t, e, id, cid)
+}
+
+// TestExpiredCandidatesNotHeld: the service holds no dinner's candidates
+// past their lifetime, however many dinners were offered some.
+func TestExpiredCandidatesNotHeld(t *testing.T) {
+	dinners.SetOfferLifetime(t, 50*time.Millisecond)
+	e := newEnv(t)
+	names := map[string]string{"Mystery curry": curryA, "Other curry": curryB}
+	ids := make([]string, 0, len(names))
+	for name, u := range names {
+		ids = append(ids, failedDinner(t, e, name))
+		e.search.Results[name] = []recipes.Candidate{{URL: u}}
+	}
+	for _, id := range ids {
+		if _, err := e.svc.Candidates(t.Context(), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitNoOffers(t, e)
+}
+
+// waitNoOffers waits for the service to hold no dinner's candidates.
+func waitNoOffers(t *testing.T, e *env) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for n := e.svc.OfferCount(); n > 0; n = e.svc.OfferCount() {
+		if time.Now().After(deadline) {
+			t.Fatalf("service still holds the expired candidates of %d dinners", n)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // TestFixReplacesPendingLink: fixing a Regular added from a link that held
 // no recipe drops that link, so it no longer blocks adding the link again,
 // while the link of the recipe chosen does.
@@ -729,12 +997,18 @@ func TestFixReplacesPendingLink(t *testing.T) {
 	const lost = "https://gone.example/recipes/lamb-tagine"
 	tests := []struct {
 		name string
-		fix  dinners.Fix
+		// fix is the fix for dinner id.
+		fix func(t *testing.T, e *env, id string) dinners.Fix
 		// linkTaken is the recipe link the fixed dinner now has, if any.
 		linkTaken string
 	}{
-		{"candidate", dinners.Fix{CandidateID: ptr(curryB)}, curryB},
-		{"manual", dinners.Fix{Manual: &dinners.ManualRecipe{Ingredients: []string{"1 lamb"}, Minutes: ptr(90), Method: ptr("oven")}}, ""},
+		{"candidate", func(t *testing.T, e *env, id string) dinners.Fix {
+			e.search.Results["Weeknight dinner"] = []recipes.Candidate{{URL: curryB}}
+			return dinners.Fix{CandidateID: ptr(candidateID(t, e, id, "Easy Weeknight Curry"))}
+		}, curryB},
+		{"manual", func(*testing.T, *env, string) dinners.Fix {
+			return dinners.Fix{Manual: &dinners.ManualRecipe{Ingredients: []string{"1 lamb"}, Minutes: ptr(90), Method: ptr("oven")}}
+		}, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -752,7 +1026,7 @@ func TestFixReplacesPendingLink(t *testing.T) {
 				t.Fatal(err)
 			}
 			e.model.QueueGenerate(recipestest.NormalizedReply("stovetop", 25))
-			if _, err := e.svc.Ground(t.Context(), c.ID, tt.fix, member); err != nil {
+			if _, err := e.svc.Ground(t.Context(), c.ID, tt.fix(t, e, c.ID), member); err != nil {
 				t.Fatal(err)
 			}
 			row, err := db.New(e.st.Reader).GetDinner(t.Context(), c.ID)
@@ -855,7 +1129,8 @@ func TestFixValidation(t *testing.T) {
 	tests := map[string]dinners.Fix{
 		"nothing":           {},
 		"two":               {CandidateID: ptr(curryA), RecipeURL: ptr(stew)},
-		"candidate not URL": {CandidateID: ptr("cand-1")},
+		"unknown candidate": {CandidateID: ptr("cand-1")},
+		"candidate a URL":   {CandidateID: ptr(curryA)},
 		"http link":         {RecipeURL: ptr("http://a.example/x")},
 		"no ingredients":    {Manual: &dinners.ManualRecipe{Minutes: ptr(20), Method: ptr("oven")}},
 		"blank ingredient":  {Manual: &dinners.ManualRecipe{Ingredients: []string{" "}, Minutes: ptr(20), Method: ptr("oven")}},

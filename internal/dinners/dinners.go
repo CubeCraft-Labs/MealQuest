@@ -7,6 +7,7 @@ package dinners
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -140,6 +141,18 @@ type Service struct {
 	// by dinner id, so archiving or renaming a dinner can stop them.
 	groundingsMu sync.Mutex
 	groundings   map[string]map[*runningGrounding]struct{}
+
+	// offerKey keys the candidate ids Candidates offers, so they are
+	// opaque and stable for this process.
+	offerKey []byte
+	// offersMu guards offers and offerSearches. offers holds, by dinner
+	// id, the candidates last offered by Candidates until they expire, so
+	// a candidate id is resolved here and its URL never leaves the server.
+	// offerSearches holds the Candidates searches running, by dinner id,
+	// so clearing a dinner's offers keeps them from storing theirs.
+	offersMu      sync.Mutex
+	offers        map[string]*offerSet
+	offerSearches map[string]map[*offerSearch]struct{}
 }
 
 // NewService returns a service over st that grounds dinners with grounder
@@ -156,7 +169,8 @@ func NewService(st *store.Store, grounder *recipes.Grounder, runner *jobs.Runner
 	case logger == nil:
 		return nil, errors.New("dinners: nil logger")
 	}
-	s := &Service{st: st, grounder: grounder, logger: logger, groundings: make(map[string]map[*runningGrounding]struct{})}
+	s := &Service{st: st, grounder: grounder, logger: logger, groundings: make(map[string]map[*runningGrounding]struct{}), offerKey: make([]byte, 32), offers: make(map[string]*offerSet), offerSearches: make(map[string]map[*offerSearch]struct{})}
+	rand.Read(s.offerKey) // never fails: it crashes the program instead
 	kind, err := jobs.Register(runner, KindGroundDinner, s.runGroundJob, Reasons...)
 	if err != nil {
 		return nil, err
@@ -384,7 +398,8 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 
 // Archive sets dinner id's status to archived, recording updatedBy. The row
 // is kept, so its name still counts for Side quest dedupe. A
-// KindGroundDinner job running for it is stopped.
+// KindGroundDinner job running for it is stopped, and its candidates no
+// longer ground it.
 func (s *Service) Archive(ctx context.Context, id, updatedBy string) (Dinner, error) {
 	if updatedBy == "" {
 		return Dinner{}, errors.New("dinners: archive: no member to record as updated_by")
@@ -401,6 +416,7 @@ func (s *Service) Archive(ctx context.Context, id, updatedBy string) (Dinner, er
 		return Dinner{}, fmt.Errorf("dinners: archive %s: %w", id, err)
 	}
 	s.stopGroundings(row.ID, math.MaxInt64)
+	s.clearOffers(row.ID)
 	return fromRow(row), nil
 }
 

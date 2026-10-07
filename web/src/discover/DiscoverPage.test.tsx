@@ -654,7 +654,11 @@ describe('DiscoverPage', () => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     })
 
-    it('keeps the confirmation open while a removal is under way: Keep it, Escape and the scrim do nothing', async () => {
+    it.each([
+      ['Keep it', (confirm: HTMLElement) => fireEvent.click(within(confirm).getByRole('button', { name: 'Keep it' }))],
+      ['Escape', (confirm: HTMLElement) => fireEvent.keyDown(confirm, { key: 'Escape' })],
+      ['the scrim', (confirm: HTMLElement) => fireEvent.click(confirm.previousElementSibling!)],
+    ])('keeps the confirmation and sends one removal once Remove is activated: %s and a second Remove at once do nothing', async (_, dismiss) => {
       const archive = deferred()
       const server = stubQuestLog([PAD_THAI, GUMBO], { 'DELETE /api/v1/dinners/q1': () => archive.promise })
       await renderPage()
@@ -662,20 +666,46 @@ describe('DiscoverPage', () => {
 
       fireEvent.click(within(sheet).getByRole('button', { name: 'Remove Pad thai' }))
       const confirm = screen.getByRole('dialog', { name: 'Remove Pad thai?' })
-      fireEvent.click(within(confirm).getByRole('button', { name: 'Remove' }))
-      expect(await within(confirm).findByRole('button', { name: 'Removing…' })).toBeDisabled()
-      const keepIt = within(confirm).getByRole('button', { name: 'Keep it' })
-      expect(keepIt).toBeDisabled()
+      const removeButton = within(confirm).getByRole('button', { name: 'Remove' })
+      // Straight after Remove, without waiting for the pending request to render.
+      fireEvent.click(removeButton)
+      fireEvent.click(removeButton)
+      dismiss(confirm)
+      expect(screen.getByRole('dialog', { name: 'Remove Pad thai?' })).toBe(confirm)
 
-      fireEvent.click(keepIt)
-      fireEvent.keyDown(confirm, { key: 'Escape' })
-      fireEvent.click(confirm.previousElementSibling!)
+      expect(await within(confirm).findByRole('button', { name: 'Removing…' })).toBeDisabled()
+      expect(within(confirm).getByRole('button', { name: 'Keep it' })).toBeDisabled()
+      dismiss(confirm)
       expect(screen.getByRole('dialog', { name: 'Remove Pad thai?' })).toBe(confirm)
 
       server.questLogDinners.dinners = [GUMBO]
       await act(async () => archive.resolve(jsonResponse(200, { ...PAD_THAI, status: 'archived' })))
       await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Remove Pad thai?' })).not.toBeInTheDocument())
       expect(names(sheet)).toEqual(['Shrimp gumbo'])
+      expect(sent(server.fetchMock)).toEqual(['DELETE /api/v1/dinners/q1'])
+    })
+
+    it('keeps focus in the confirmation, off its disabled buttons, while a removal is under way', async () => {
+      const archive = deferred()
+      const server = stubQuestLog([PAD_THAI, GUMBO], { 'DELETE /api/v1/dinners/q1': () => archive.promise })
+      await renderPage()
+      const sheet = await openSheet(2)
+
+      fireEvent.click(within(sheet).getByRole('button', { name: 'Remove Pad thai' }))
+      const confirm = screen.getByRole('dialog', { name: 'Remove Pad thai?' })
+      const removeButton = within(confirm).getByRole('button', { name: 'Remove' })
+      removeButton.focus()
+      fireEvent.click(removeButton)
+      expect(removeButton).toBeDisabled()
+      expect(confirm).toHaveFocus()
+
+      expect(await within(confirm).findByRole('button', { name: 'Removing…' })).toBeDisabled()
+      expect(confirm).toHaveFocus()
+
+      server.questLogDinners.dinners = [GUMBO]
+      await act(async () => archive.resolve(jsonResponse(200, { ...PAD_THAI, status: 'archived' })))
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Remove Pad thai?' })).not.toBeInTheDocument())
+      expect(within(sheet).getByRole('button', { name: 'Remove Shrimp gumbo' })).toHaveFocus()
     })
 
     it('keeps a dinner whose removal the server refuses, saying why', async () => {

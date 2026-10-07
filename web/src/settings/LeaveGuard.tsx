@@ -1,4 +1,4 @@
-import { useEffect, useId, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, type ReactNode } from 'react'
 import { useBlocker } from 'react-router'
 import { Button } from '../ui/Button.tsx'
 import { Sheet } from '../ui/Sheet.tsx'
@@ -58,12 +58,20 @@ export function Confirm({
   onConfirm,
 }: ConfirmProps) {
   const titleId = useId()
+  const sheetRef = useRef<HTMLDivElement>(null)
+  // A focused button that becomes disabled loses focus to the page, outside
+  // the dialog; the dialog takes it instead.
+  useLayoutEffect(() => {
+    const dialog = sheetRef.current?.closest<HTMLElement>('[role="dialog"]')
+    const active = document.activeElement
+    if (dialog && active instanceof HTMLElement && active.matches(':disabled') && dialog.contains(active)) dialog.focus()
+  }, [busy, dismissible])
   function dismiss() {
     if (dismissible) onCancel()
   }
   return (
     <Sheet open={open} onClose={dismiss} aria-labelledby={titleId}>
-      <div className={styles.sheet}>
+      <div ref={sheetRef} className={styles.sheet}>
         <h2 id={titleId} className={styles.title}>
           {title}
         </h2>

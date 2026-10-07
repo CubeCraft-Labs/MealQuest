@@ -42,6 +42,11 @@ export function QuestLogSheet({ open, dinners, onClose }: QuestLogSheetProps) {
   const removed = useRef<{ id: string; index: number } | null>(null)
   const removeButtons = useRef(new Map<string, HTMLButtonElement>())
   const sheetRef = useRef<HTMLDivElement>(null)
+  // Whether a removal has been sent and not yet settled. The ref is set as
+  // Remove is activated, so a dismissal or a second Remove that arrives before
+  // the next render is already refused; the state renders it.
+  const sending = useRef(false)
+  const [sendingShown, setSendingShown] = useState(false)
 
   // Once a removal's confirmation has closed and the dinner has left the list,
   // focus goes to the remove button of the dinner now in its place, or of the
@@ -57,9 +62,27 @@ export function QuestLogSheet({ open, dinners, onClose }: QuestLogSheetProps) {
     else sheetRef.current!.closest<HTMLElement>('[role="dialog"]')!.focus()
   }, [removing, dinners])
 
+  function setSending(value: boolean) {
+    sending.current = value
+    setSendingShown(value)
+  }
+
   function cancelRemove() {
+    if (sending.current) return
     remove.reset()
     setRemoving(null)
+  }
+
+  function confirmRemove() {
+    if (sending.current) return
+    setSending(true)
+    remove.mutate(removing!, {
+      onSuccess: (_data, dinner) => {
+        removed.current = { id: dinner.id, index: dinners.findIndex((d) => d.id === dinner.id) }
+        setRemoving(null)
+      },
+      onSettled: () => setSending(false),
+    })
   }
 
   return (
@@ -108,21 +131,14 @@ export function QuestLogSheet({ open, dinners, onClose }: QuestLogSheetProps) {
       <Confirm
         open={removing !== null}
         title={`Remove ${removing?.name ?? ''}?`}
-        confirmLabel={remove.isPending ? 'Removing…' : 'Remove'}
+        confirmLabel={sendingShown ? 'Removing…' : 'Remove'}
         cancelLabel="Keep it"
-        busy={remove.isPending}
+        busy={sendingShown}
         // Once the removal is sent, it stands: the confirmation stays until it settles.
-        dismissible={!remove.isPending}
+        dismissible={!sendingShown}
         error={remove.isError ? `Couldn't remove it. ${remove.error.message}` : null}
         onCancel={cancelRemove}
-        onConfirm={() =>
-          remove.mutate(removing!, {
-            onSuccess: (_data, dinner) => {
-              removed.current = { id: dinner.id, index: dinners.findIndex((d) => d.id === dinner.id) }
-              setRemoving(null)
-            },
-          })
-        }
+        onConfirm={confirmRemove}
       >
         It leaves your Quest log for good.
       </Confirm>

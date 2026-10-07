@@ -205,7 +205,8 @@ func actorOrFail(w http.ResponseWriter, r *http.Request, logger *slog.Logger) (a
 // an archived dinner is 409 dinner_archived and one changed while grounding
 // 409 ground_conflict. Any other grounding failure, by candidate, link or
 // manual recipe, wraps dinners.ErrGroundFailed and is 500, logged by reason
-// and dinner id only.
+// and dinner id only, as is any other failure finding candidates, which
+// wraps dinners.ErrCandidatesFailed.
 func writeDinnerError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, action string, err error) {
 	var invalid *dinners.ValidationError
 	var dup *dinners.DuplicateError
@@ -230,6 +231,12 @@ func writeDinnerError(w http.ResponseWriter, r *http.Request, logger *slog.Logge
 		// token, and dependency errors, so only the reason and dinner are
 		// logged.
 		logger.ErrorContext(r.Context(), action, "reason", "ground_failed", "dinner_id", chi.URLParam(r, "id"))
+		writeError(w, r, logger, http.StatusInternalServerError, "internal", "internal error")
+	case errors.Is(err, dinners.ErrCandidatesFailed):
+		// The error may quote a candidate's URL, which can carry a
+		// personal token, and dependency errors, so only the reason and
+		// dinner are logged.
+		logger.ErrorContext(r.Context(), action, "reason", "candidates_failed", "dinner_id", chi.URLParam(r, "id"))
 		writeError(w, r, logger, http.StatusInternalServerError, "internal", "internal error")
 	case errors.Is(err, dinners.ErrArchived):
 		writeError(w, r, logger, http.StatusConflict, "dinner_archived", "the dinner is archived")

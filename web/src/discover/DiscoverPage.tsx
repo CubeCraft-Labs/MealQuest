@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Heart, X } from 'lucide-react'
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react'
 import { useJob } from '../api/index.ts'
 import { Card } from '../ui/Card.tsx'
 import { EmptyState } from '../ui/EmptyState.tsx'
@@ -19,6 +19,7 @@ import {
   type Choice,
 } from './api.ts'
 import { DeckCard, DECK_DEPTH } from './DeckCard.tsx'
+import { bump, fadeOut, isAbort, pass, prefersReducedMotion, promote, tryIt, type Exit } from './motion.ts'
 import styles from './DiscoverPage.module.css'
 
 // isEditable says whether a key press belongs to a field being typed in,
@@ -32,7 +33,8 @@ function isEditable(target: EventTarget | null): boolean {
 
 // QuestLogPill is the "Quest log · N" pill. It shows and hides the names
 // of the dinners in the Quest log; the Quest log sheet replaces this list.
-function QuestLogPill({ dinners }: { dinners: { id: string; name: string }[] }) {
+// ref is the visible pill, which Try it bumps.
+function QuestLogPill({ dinners, ref }: { dinners: { id: string; name: string }[]; ref: Ref<HTMLSpanElement> }) {
   const [open, setOpen] = useState(false)
   const listId = useId()
   return (
@@ -44,7 +46,7 @@ function QuestLogPill({ dinners }: { dinners: { id: string; name: string }[] }) 
         aria-controls={open ? listId : undefined}
         onClick={() => setOpen(!open)}
       >
-        <span className={styles.questLog}>Quest log · {dinners.length}</span>
+        <span ref={ref} className={styles.questLog}>Quest log · {dinners.length}</span>
       </button>
       {open && (
         <Card id={listId} tone="muted" className={styles.questLogList}>
@@ -64,10 +66,12 @@ function QuestLogPill({ dinners }: { dinners: { id: string; name: string }[] }) 
 }
 
 // DiscoverPage is mock 1a: the deck of Side quests to Try it or Pass, one
-// at a time from the top card. Every decision — the buttons, the ← / →
-// keys, Retry — goes through submit, which does nothing while one is in
-// flight. The lock is a ref, set before the decision is sent, so a second
-// press before the next render cannot send another.
+// at a time from the top card. A decision from the buttons or the ← / → keys
+// throws the top card out (motion.ts) and sends the decision once it is
+// gone; Retry sends a refused one again. Input is locked from the press
+// until the decision settles: the lock is a ref, set before anything
+// starts, so a second press before the next render does nothing, and busy
+// mirrors it to disable the buttons.
 export function DiscoverPage() {
   const queryClient = useQueryClient()
   const deck = useDeck()
@@ -77,7 +81,7 @@ export function DiscoverPage() {
   const job = useJob<unknown>(BATCH_JOB_KIND, startBatch.data?.job_id ?? null)
 
   const top = deck.data?.[0]
-  const busy = decision.isPending
+  const [busy, setBusy] = useState(false)
   const jobRunning = startBatch.isSuccess && job.status !== 'succeeded' && job.status !== 'failed'
   const finding = startBatch.isPending || jobRunning
 
@@ -94,26 +98,89 @@ export function DiscoverPage() {
   // batch's job, or an unreadable result.
   const batchError = job.error ?? batch.error
 
+  const deckRef = useRef<HTMLDivElement>(null)
+  const passRef = useRef<HTMLButtonElement>(null)
+  const tryRef = useRef<HTMLButtonElement>(null)
+  const questLogRef = useRef<HTMLSpanElement>(null)
+  // The top card's exit while it runs or its decision is unsettled, and the
+  // Side quest the last decision sent was for, until the deck moves past it.
+  const exit = useRef<Exit | null>(null)
+  const leaving = useRef<string | null>(null)
+
   const { mutate: mutateDecision } = decision
   const deciding = useRef(false)
-  const submit = useCallback(
+  const lock = useCallback(() => {
+    if (deciding.current) return false
+    deciding.current = true
+    setBusy(true)
+    return true
+  }, [])
+  // send records a decision. A refused one puts the card back.
+  const send = useCallback(
     (variables: { id: string; choice: Choice }) => {
-      if (deciding.current) return
-      deciding.current = true
+      leaving.current = variables.id
       mutateDecision(variables, {
+        onError: () => {
+          exit.current?.cancel()
+          exit.current = null
+          leaving.current = null
+        },
         onSettled: () => {
           deciding.current = false
+          setBusy(false)
         },
       })
     },
     [mutateDecision],
   )
+  const submit = useCallback(
+    (variables: { id: string; choice: Choice }) => {
+      if (lock()) send(variables)
+    },
+    [lock, send],
+  )
+  // decide bumps the button, throws the top card out — or, motion reduced,
+  // fades it — then sends the decision; Try it bumps the Quest log pill too.
   const decide = useCallback(
     (choice: Choice) => {
-      if (top !== undefined) submit({ id: top.id, choice })
+      if (top === undefined || !lock()) return
+      const card = deckRef.current!.querySelector('article')!
+      const reduced = prefersReducedMotion()
+      let run: Exit
+      if (reduced) {
+        run = fadeOut(card)
+      } else {
+        bump((choice === 'try' ? tryRef : passRef).current!)
+        run = choice === 'try' ? tryIt(card) : pass(card)
+      }
+      exit.current = run
+      run.finished.then(
+        () => {
+          // The Quest log pill is missing while the Quest log fails to load.
+          if (choice === 'try' && !reduced && questLogRef.current !== null) bump(questLogRef.current)
+          send({ id: top.id, choice })
+        },
+        (error: unknown) => {
+          if (!isAbort(error)) throw error
+        },
+      )
     },
-    [top, submit],
+    [top, lock, send],
   )
+
+  // Leaving the page stops an exit before its decision is sent.
+  useEffect(() => () => exit.current?.cancel(), [])
+
+  // Once the deck moves past the card a decision was sent for, the cards
+  // behind it move up a depth.
+  const topId = top?.id
+  useLayoutEffect(() => {
+    if (leaving.current === null || leaving.current === topId) return
+    leaving.current = null
+    exit.current = null
+    if (topId === undefined || prefersReducedMotion()) return
+    promote([...deckRef.current!.querySelectorAll<HTMLElement>(':scope > article')])
+  }, [topId])
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -170,16 +237,16 @@ export function DiscoverPage() {
   } else {
     body = (
       <>
-        <div className={styles.deck}>
+        <div ref={deckRef} className={styles.deck}>
           {deck.data.slice(0, DECK_DEPTH.length).map((quest, depth) => (
             <DeckCard key={quest.id} quest={quest} depth={depth} />
           ))}
         </div>
         <div className={styles.actions}>
-          <IconButton label="Pass" size={62} tone="neutral" showLabel disabled={busy} onClick={() => decide('pass')}>
+          <IconButton ref={passRef} label="Pass" size={62} tone="neutral" showLabel disabled={busy} onClick={() => decide('pass')}>
             <Icon icon={X} size="nav" />
           </IconButton>
-          <IconButton label="Try it" size={62} tone="teal" showLabel disabled={busy} onClick={() => decide('try')}>
+          <IconButton ref={tryRef} label="Try it" size={62} tone="teal" showLabel disabled={busy} onClick={() => decide('try')}>
             <Icon icon={Heart} size="nav" />
           </IconButton>
         </div>
@@ -199,7 +266,7 @@ export function DiscoverPage() {
           <p className={styles.kicker}>Discover</p>
           <h1 className={styles.title}>Side quests</h1>
         </div>
-        {questLog.isSuccess && <QuestLogPill dinners={questLog.data} />}
+        {questLog.isSuccess && <QuestLogPill ref={questLogRef} dinners={questLog.data} />}
       </header>
       {questLog.isError && (
         <ErrorBanner onRetry={() => void questLog.refetch()}>Couldn't load the Quest log. {questLog.error.message}</ErrorBanner>

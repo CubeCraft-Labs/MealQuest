@@ -17,7 +17,7 @@ export type DeckCardProps = {
 // DeckCard is one Side quest in the deck. Only the top card is read out and
 // reachable; the cards behind it are the stack's edge, kept rendered so they
 // can be promoted. Its "Try it!" and "Pass" stamps stay hidden until a
-// decision shows them.
+// decision shows them, and its shade until Pass folds it (see motion.ts).
 export function DeckCard({ quest, depth }: DeckCardProps) {
   const top = depth === 0
   const titleId = `side-quest-${quest.id}`
@@ -38,12 +38,13 @@ export function DeckCard({ quest, depth }: DeckCardProps) {
           <strong>Why this?</strong> {quest.reason}
         </p>
       </div>
-      <span className={`${styles.stamp} ${styles.tryStamp}`} aria-hidden="true">
+      <span className={`${styles.stamp} ${styles.tryStamp}`} data-part="try-stamp" aria-hidden="true">
         Try it!
       </span>
       <span className={`${styles.stamp} ${styles.passStamp}`} aria-hidden="true">
         Pass
       </span>
+      <span className={styles.shade} data-part="shade" />
     </article>
   )
 }

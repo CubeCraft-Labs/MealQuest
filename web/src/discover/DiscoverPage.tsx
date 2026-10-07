@@ -88,7 +88,8 @@ function QuestLogPill({ dinners, ref }: { dinners: { id: string; name: string }[
 // DiscoverPage is mock 1a: the deck of Side quests to Try it or Pass, one
 // at a time from the top card. A decision from the buttons, the ← / → keys
 // or a swipe of the top card throws it out (motion.ts) and sends the
-// decision once it is gone; Retry sends a refused one again. Input is
+// decision once it is gone, taking the card off the deck at once (see
+// useDecide); Retry sends a refused one again. Input is
 // locked from the press until the decision settles: the lock is a ref, set
 // before anything starts, so a second press before the next render does
 // nothing, and busy mirrors it to disable the buttons.
@@ -98,22 +99,27 @@ export function DiscoverPage() {
   const questLog = useQuestLog()
   const decision = useDecide()
   const startBatch = useStartBatch()
-  const job = useJob<unknown>(BATCH_JOB_KIND, startBatch.data?.job_id ?? null)
+  // The job of the batch last known to be finding Side quests: the one Get
+  // more now started or joined, or the replenish a decision started.
+  const [batchJobId, setBatchJobId] = useState<string | null>(null)
+  const job = useJob<unknown>(BATCH_JOB_KIND, batchJobId)
 
   const top = deck.data?.[0]
   const [busy, setBusy] = useState(false)
-  const jobRunning = startBatch.isSuccess && job.status !== 'succeeded' && job.status !== 'failed'
+  const jobRunning = batchJobId !== null && job.status !== 'succeeded' && job.status !== 'failed'
   const finding = startBatch.isPending || jobRunning
+  const { mutate: mutateStartBatch } = startBatch
+  const getMore = useCallback(() => mutateStartBatch(undefined, { onSuccess: (b) => setBatchJobId(b.job_id) }), [mutateStartBatch])
 
   // The batch's result as far as it has gone, or why it cannot be read.
   const batch = useMemo(() => {
     if (job.result === null) return { stored: 0, error: null }
     try {
-      return { stored: parseBatchResult(`GET /api/v1/jobs/${startBatch.data?.job_id}`, job.result).suggestion_ids.length, error: null }
+      return { stored: parseBatchResult(`GET /api/v1/jobs/${batchJobId}`, job.result).suggestion_ids.length, error: null }
     } catch (error) {
       return { stored: 0, error: error as Error }
     }
-  }, [job.result, startBatch.data?.job_id])
+  }, [job.result, batchJobId])
   // The job's failure, the latest poll's failure, an answer that is not the
   // batch's job, or an unreadable result.
   const batchError = job.error ?? batch.error
@@ -122,8 +128,8 @@ export function DiscoverPage() {
   const passRef = useRef<HTMLButtonElement>(null)
   const tryRef = useRef<HTMLButtonElement>(null)
   const questLogRef = useRef<HTMLSpanElement>(null)
-  // The top card's exit while it runs or its decision is unsettled, and the
-  // Side quest the last decision sent was for, until the deck moves past it.
+  // The top card's exit until its decision settles, and the Side quest the
+  // last decision sent was for, until the deck moves past it.
   const exit = useRef<Exit | null>(null)
   const leaving = useRef<string | null>(null)
   const drag = useRef<Drag | null>(null)
@@ -143,17 +149,21 @@ export function DiscoverPage() {
     setBusy(true)
     return true
   }, [])
-  // send records a decision. A refused one puts the card back.
+  // send records a decision. A refused one puts the card back; a saved one
+  // that started a replenish batch follows its job.
   const send = useCallback(
     (variables: { id: string; choice: Choice }) => {
       leaving.current = variables.id
       mutateDecision(variables, {
+        onSuccess: (replenishJobId) => {
+          if (replenishJobId !== null) setBatchJobId(replenishJobId)
+        },
         onError: () => {
           exit.current?.cancel()
-          exit.current = null
           leaving.current = null
         },
         onSettled: () => {
+          exit.current = null
           deciding.current = false
           setBusy(false)
         },
@@ -278,7 +288,6 @@ export function DiscoverPage() {
   useLayoutEffect(() => {
     if (leaving.current === null || leaving.current === topId) return
     leaving.current = null
-    exit.current = null
     if (topId === undefined || prefersReducedMotion()) return
     promote([...deckRef.current!.querySelectorAll<HTMLElement>(':scope > article')])
   }, [topId])
@@ -307,7 +316,9 @@ export function DiscoverPage() {
   let body
   if (deck.isError) {
     body = <ErrorBanner onRetry={() => void deck.refetch()}>Couldn't load your side quests. {deck.error.message}</ErrorBanner>
-  } else if (deck.isPending || (deck.data.length === 0 && finding)) {
+  } else if (deck.isPending || (deck.data.length === 0 && (finding || decision.isPending))) {
+    // An empty deck is not caught up while a batch finds more Side quests,
+    // or while the last decision may yet start one or come back refused.
     body = (
       <section aria-busy="true" aria-label="Side quests loading" className={styles.loading}>
         <div className={styles.deck}>
@@ -325,12 +336,12 @@ export function DiscoverPage() {
     body = (
       <>
         {startBatch.isError && (
-          <ErrorBanner onRetry={() => startBatch.mutate()}>Couldn't ask for more side quests. {startBatch.error.message}</ErrorBanner>
+          <ErrorBanner onRetry={getMore}>Couldn't ask for more side quests. {startBatch.error.message}</ErrorBanner>
         )}
         {batchError !== null && (
-          <ErrorBanner onRetry={() => startBatch.mutate()}>Couldn't find new side quests. {batchError.message}</ErrorBanner>
+          <ErrorBanner onRetry={getMore}>Couldn't find new side quests. {batchError.message}</ErrorBanner>
         )}
-        <EmptyState title="All caught up" action={{ label: 'Get more now', onClick: () => startBatch.mutate() }}>
+        <EmptyState title="All caught up" action={{ label: 'Get more now', onClick: getMore }}>
           New side quests arrive Sunday.
         </EmptyState>
       </>

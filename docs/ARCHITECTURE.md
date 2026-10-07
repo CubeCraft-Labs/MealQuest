@@ -334,6 +334,31 @@ automatic** (D-021).
   the decision's own transaction, so a decision is never recorded without
   the replenish it calls for; when they cannot be written, neither is the
   decision, and a retry decides again.
+- Weekly plans (`plan.Service`). `{weekStart}` is a household-local Monday
+  (`YYYY-MM-DD`); any other value is 400 `invalid_week`. `GET
+  /api/v1/plans/{weekStart}` returns `{id, week_start, week_label, status,
+  ai_note, calendar_synced_at, updated_at, days}`, or 404 when the week has
+  no plan; `days` are the seven days Monday first, each `{date, dinner: {id,
+  name, photo, minutes, method, origin}, is_new, start_by}`. `is_new` means
+  the dinner was planned from the Quest log; `start_by` is the household's
+  dinner time on that date minus `minutes_total`, computed on read, for a
+  crock-pot dinner with known minutes, else null. `POST
+  /api/v1/plans/{weekStart}/draft` takes `{confirm?}` and answers 202
+  `{job_id}` for a `draft_week` job, or for the one already queued or
+  running for the week. The job runs the `draft_week` skill on every Regular
+  and every Quest log dinner no other plan for the current or a later week
+  has, with the household context and last week's dinners, and stores the
+  week: a new plan is `draft`; a redraft keeps each day's
+  `calendar_event_id`, and a `synced` or `changed` plan becomes `changed`.
+  Drafting over a `synced` or `changed` plan needs `{"confirm": true}`, else
+  409 `confirm_required`; a plan synced while an unconfirmed draft runs is
+  left as it is and the job fails `confirm_required`. A pool under seven
+  dinners fails the job `not_enough_dinners`, draft_week failing
+  `ai_failed`. `PUT /api/v1/plans/{weekStart}/days/{date}` takes
+  `{dinner_id}`, a Regular or Quest log dinner, swaps the day, recomputes
+  `is_new`, moves a `synced` plan to `changed`, and answers 200 with the
+  plan. A date outside the week is 400 `invalid_date`, an unknown dinner or
+  a week with no plan 404, and any other dinner 409 `dinner_not_plannable`.
 - `/health` — liveness.
 - Everything else serves the embedded PWA with SPA fallback.
 

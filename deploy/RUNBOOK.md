@@ -491,12 +491,66 @@ Every deploy builds the image on the host from the checked-out commit.
 
 ### Deploy
 
+1. Check out and build the release. Nothing restarts yet; production
+   keeps running the previous SHA.
+
 ```sh
 cd /home/overseer/mealquest
 git fetch origin
 git rev-parse --short HEAD          # the SHA being replaced: note it for rollback
 git checkout --detach origin/main   # or a release tag
 docker compose -f deploy/compose.yaml build
+```
+
+2. **Verify a restorable pre-deploy point — before the restart.** The
+   restart applies any new migrations, and an older SHA refuses the
+   upgraded schema, so the only rollback is restoring the database to a
+   point before the restart (see "Rollback to a previous SHA"). Check that
+   Litestream is replicating and that its replica restores to the current
+   data, with the commands from "Database — Litestream", "Restore the
+   database" and "Count check" (`/tmp/mqcount.py`):
+
+```sh
+D=/var/lib/docker/volumes/mealquest-data/_data
+
+# a. Replication is running: litestream up, no errors in its log, and the
+#    newest LTX file is from the latest writes.
+docker compose -f deploy/compose.yaml ps litestream    # up
+docker compose -f deploy/compose.yaml logs --since 24h litestream | grep -i error   # must print nothing
+docker compose -f deploy/compose.yaml exec -T litestream \
+  litestream ltx -config /etc/litestream.yml -level all /data/mealquest.db
+
+# b. Restore the replica to a scratch file beside the live database (the
+#    live files are not touched), move it off the volume and copy the live
+#    database next to it.
+rm -rf /tmp/mqcheck && mkdir /tmp/mqcheck
+docker compose -f deploy/compose.yaml run --rm --no-deps litestream \
+  restore -config /etc/litestream.yml -o /data/predeploy-check.db /data/mealquest.db
+sudo sh -c "mv $D/predeploy-check.db* /tmp/mqcheck/"
+sudo sh -c "cp -a $D/mealquest.db* /tmp/mqcheck/" && sudo chown -R "$USER" /tmp/mqcheck
+sudo ls -la "$D"   # no predeploy-check.db left behind
+
+# c. Count check both. The restored copy must report integrity ok and the
+#    same counts and content-sha256 as the live copy. If they differ, a
+#    write may have landed between b and c: run b and c again.
+python3 /tmp/mqcount.py /tmp/mqcheck/predeploy-check.db
+python3 /tmp/mqcount.py /tmp/mqcheck/mealquest.db
+rm -rf /tmp/mqcheck
+
+# d. The pre-deploy restore point: now, after the check, before the restart.
+date -u +%Y-%m-%dT%H:%M:%SZ        # note it for rollback, with the previous SHA
+```
+
+   **If any check fails, do not restart.** Production stays on the
+   previous SHA (only the new image was built). Restore replication first
+   — `docker compose -f deploy/compose.yaml up -d --force-recreate
+   litestream`, then read its log for the cause (NAS reachable, key,
+   host key) — and repeat this step until it passes. Never deploy a
+   release on an unverified backup.
+
+3. Restart and check the deployed release.
+
+```sh
 sudo systemctl restart mealquest    # applies the firewall, then down + up -d
 docker compose -f deploy/compose.yaml ps   # mealquest healthy, litestream up, searxng healthy
 curl -fsS http://10.60.1.14:8090/health
@@ -504,8 +558,8 @@ curl -s -o /dev/null -w "%{http_code}\n" https://mealquest.cubecraftlabs.com/hea
 git rev-parse HEAD                  # the deployed SHA
 ```
 
-Record the deployed SHA, the previous SHA and the date in the Maestro task
-for the release. Migrations run at start-up; the service refuses to start
+Record the deployed SHA, the previous SHA, the pre-deploy restore point
+and the date in the Maestro task for the release. Migrations run at start-up; the service refuses to start
 if the database has an applied migration it does not know.
 
 If `deploy/.env.example` gained a variable, add it to `deploy/.env` before
@@ -524,9 +578,10 @@ curl -fsS http://10.60.1.14:8090/health
 
 A rollback across a release that added a migration fails at start-up
 (the older binary refuses the newer schema). In that case restore the
-database to a point before the upgrade — "Restore the database" with
-`-timestamp` set just before the deploy — then start the older SHA.
-Changes made since that point are lost; say so to the household.
+database to the pre-deploy restore point recorded in step 2 of "Deploy" —
+"Restore the database" with `-timestamp <pre-deploy restore point>` — then
+start the older SHA. Changes made since that point are lost; say so to the
+household.
 
 ## Backups
 

@@ -370,9 +370,12 @@ automatic** (D-021).
   plan. A date outside the week is 400 `invalid_date`, an unknown dinner or
   a week with no plan 404, any other dinner 409 `dinner_not_plannable`, and
   a dinner already on another day of the week 409 `dinner_already_planned`.
-- Rotation check (`plan.Service`, D-021). `MarkTried(date)`, which the
-  `rotation_check` schedule calls for the household-local day just past,
-  moves every `quest_log` dinner planned on that date, on a plan of any
+- Rotation check (`plan.Service`, D-021). This release provides the
+  `MarkTried` service method and the rotation review read and decide APIs
+  below. The `rotation_check` schedule that is to call `MarkTried` for the
+  household-local day just past is planned (Feature 20, the scheduler) and
+  not wired yet: nothing in production calls `MarkTried`, so no Rotation
+  check opens automatically. `MarkTried(date)` moves every `quest_log` dinner planned on that date, on a plan of any
   status, to `tried` and opens a `pending` `rotation_reviews` row for it;
   a dinner already checked for that date is left as it is, so it is
   idempotent. `GET /api/v1/rotation-reviews` returns `{reviews}`, the

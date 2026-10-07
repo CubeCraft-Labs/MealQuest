@@ -1,5 +1,5 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useApi } from '../api/index.ts'
+import { hashKey, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { ApiError, useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { DIFFICULTIES, DINNERS_PATH, oneOf, photoId, type Difficulty } from '../dinners/api.ts'
 
@@ -137,9 +137,14 @@ export function useStartBatch() {
 }
 
 // Decided is the context a decision's optimistic update leaves for its
-// rollback: whether the Side quest was taken off the deck, and the mark of
-// the Quest log entry it added, if it added one.
-type Decided = { taken: boolean; adding: symbol | null }
+// rollback: whether the Side quest was taken off the deck, the mark of the
+// Quest log entry it added, if it added one, and what the reads of the deck
+// that landed since have said of the Side quest.
+type Decided = { taken: boolean; adding: symbol | null; reads: DeckReads }
+
+// DeckReads follows the reads of the deck that land while a decision is in
+// flight: gone is whether the latest left the Side quest out.
+type DeckReads = { gone: boolean; stop: () => void }
 
 // useDecide records Try it (POST /api/v1/suggestions/{id}/accept) or Pass
 // (POST /api/v1/suggestions/{id}/decline) on the Side quest the household
@@ -150,11 +155,13 @@ type Decided = { taken: boolean; adding: symbol | null }
 // The decision is applied at once: the Side quest leaves the deck and, on
 // Try it, its dinner joins the Quest log unless it is there already. A
 // refused decision puts the Side quest back on top of the deck if it took
-// it off, takes out of the Quest log only the entry it added, and reads the
-// Quest log again, since the decision may have been saved all the same. A
-// saved one reads the Quest log again, and the deck too once fewer than
-// REFILL_BELOW Side quests are left in it or a read of the deck started
-// before the decision was saved.
+// it off and no read of the deck since has left it out, takes out of the
+// Quest log only the entry it added, and reads the Quest log again, since
+// the decision may have been saved all the same. A failure without an
+// answer from the server, which may have saved it, reads the deck again
+// too. A saved one reads the Quest log again, and the deck too once fewer
+// than REFILL_BELOW Side quests are left in it or a read of the deck
+// started before the decision was saved.
 export function useDecide() {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
@@ -183,17 +190,26 @@ export function useDecide() {
       const deck = queryClient.getQueryData<SideQuest[]>(DECK_KEY)
       const taken = deck !== undefined && deck.some((q) => q.id === quest.id)
       if (taken) queryClient.setQueryData<SideQuest[]>(DECK_KEY, deck.filter((q) => q.id !== quest.id))
+      const reads: DeckReads = { gone: false, stop: () => {} }
+      const deckHash = hashKey(DECK_KEY)
+      reads.stop = queryClient.getQueryCache().subscribe((event) => {
+        if (event.type !== 'updated' || event.query.queryHash !== deckHash || event.action.type !== 'success' || event.action.manual) return
+        reads.gone = !(event.action.data as SideQuest[]).some((q) => q.id === quest.id)
+      })
       // A stale deck can offer a Side quest whose dinner a read of the Quest
       // log already has.
       const dinners = queryClient.getQueryData<QuestLogDinner[]>(QUEST_LOG_KEY)
-      if (choice !== 'try' || dinners === undefined || dinners.some((d) => d.id === quest.dinner_id)) return { taken, adding: null }
+      if (choice !== 'try' || dinners === undefined || dinners.some((d) => d.id === quest.dinner_id)) return { taken, adding: null, reads }
       const adding = Symbol(quest.dinner_id)
       queryClient.setQueryData<QuestLogDinner[]>(QUEST_LOG_KEY, dinners.concat({ id: quest.dinner_id, name: quest.name, adding }))
-      return { taken, adding }
+      return { taken, adding, reads }
     },
-    onError: (_error, { quest }, context) => {
-      const { taken, adding } = context!
-      if (taken) queryClient.setQueryData<SideQuest[]>(DECK_KEY, (deck) => deck && [quest, ...deck.filter((q) => q.id !== quest.id)])
+    onError: (error, { quest }, context) => {
+      const { taken, adding, reads } = context!
+      if (taken && !reads.gone) queryClient.setQueryData<SideQuest[]>(DECK_KEY, (deck) => deck && [quest, ...deck.filter((q) => q.id !== quest.id)])
+      // An API error answer is the server refusing the decision; anything
+      // else may have come after it saved it.
+      if (!(error instanceof ApiError)) void queryClient.invalidateQueries({ queryKey: DECK_KEY })
       if (adding === null) return
       // A read of the Quest log that landed meanwhile has replaced the entry.
       queryClient.setQueryData<QuestLogDinner[]>(QUEST_LOG_KEY, (dinners) => dinners?.filter((d) => d.adding !== adding))
@@ -210,5 +226,6 @@ export function useDecide() {
         queryClient.invalidateQueries({ queryKey: QUEST_LOG_KEY }),
       ])
     },
+    onSettled: (_data, _error, _variables, context) => context?.reads.stop(),
   })
 }

@@ -736,6 +736,41 @@ describe('DiscoverPage', () => {
       expect(screen.getByRole('heading', { name: 'All caught up' })).toBeInTheDocument()
     })
 
+    it('keeps a card off the deck when a read during its decision left it out and the answer is lost, and reads the deck again', async () => {
+      let lose!: (error: Error) => void
+      const accept = new Promise<Response>((_, reject) => (lose = reject))
+      let late: ReturnType<typeof deferred> | null = null
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], {
+        'POST /api/v1/suggestions/s1/accept': () => accept,
+        [`GET ${DECK}`]: () => late?.promise ?? jsonResponse(200, { suggestions: server.deck }),
+      })
+      const queryClient = createQueryClient()
+      await renderPage(queryClient)
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+      await waitFor(() => expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept']))
+
+      // The decision is saved, and a read of the deck started during it
+      // answers without the Side quest; then the answer to the decision is
+      // lost on the way back.
+      late = deferred()
+      const delayed = late
+      await act(async () => void queryClient.invalidateQueries({ queryKey: DECK_KEY }))
+      late = null
+      server.deck = [TIKKA, ORZO, PAELLA]
+      await act(async () => delayed.resolve(jsonResponse(200, { suggestions: server.deck })))
+      const reads = deckReads(server.fetchMock)
+      await act(async () => lose(new TypeError('Failed to fetch')))
+
+      await screen.findByRole('alert')
+      expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument()
+      // The decision may have been saved: the deck is read again.
+      await waitFor(() => expect(deckReads(server.fetchMock)).toBe(reads + 1))
+      expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument()
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+    })
+
     it('reads the deck again once a saved decision leaves fewer than 3 cards', async () => {
       const server = stubServer([BOWLS, TIKKA, ORZO], {
         'POST /api/v1/suggestions/s1/decline': () => {

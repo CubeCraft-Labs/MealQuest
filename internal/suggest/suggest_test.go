@@ -329,7 +329,7 @@ func (e *env) deckNames(t *testing.T) []string {
 		t.Fatal(err)
 	}
 	names := []string{}
-	for _, s := range deck {
+	for _, s := range deck.Suggestions {
 		names = append(names, s.Name)
 	}
 	return names
@@ -362,15 +362,15 @@ func TestBatchStoresGroundedSideQuests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(deck) != 2 {
-		t.Fatalf("deck has %d suggestions, want 2", len(deck))
+	if len(deck.Suggestions) != 2 {
+		t.Fatalf("deck has %d suggestions, want 2", len(deck.Suggestions))
 	}
 	want := []struct{ name, reason, regular string }{
 		{"Chicken Shawarma Bowls", "Spiced chicken, like your Chicken Fajitas.", "Chicken Fajitas"},
 		{"Chili Verde", "Your Beef Chili gone green.", "Beef Chili"},
 	}
 	for i, w := range want {
-		s := deck[i]
+		s := deck.Suggestions[i]
 		if s.ID != res.SuggestionIDs[i] || s.Name != w.name || s.Reason != w.reason || s.Status != suggest.StatusPending {
 			t.Errorf("deck[%d] = %+v, want %s pending with reason %q", i, s, w.name, w.reason)
 		}
@@ -452,6 +452,33 @@ func TestDeckIsOldestFirst(t *testing.T) {
 	}
 }
 
+func TestDeckReportsTheActiveBatch(t *testing.T) {
+	e := newEnv(t) // runner not started: the batch stays pending
+	e.seedDeck(t, "Pho")
+	deck, err := e.svc.Deck(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deck.ActiveBatch != nil {
+		t.Fatalf("active batch = %+v with none pending or running, want nil", deck.ActiveBatch)
+	}
+	b, err := e.svc.StartBatch(t.Context(), suggest.TriggerManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deck, err = e.svc.Deck(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deck.Suggestions) != 1 {
+		t.Errorf("deck has %d suggestions, want 1", len(deck.Suggestions))
+	}
+	want := suggest.Batch{ID: b.ID, JobID: b.JobID, Trigger: suggest.TriggerManual, Status: suggest.BatchPending}
+	if deck.ActiveBatch == nil || *deck.ActiveBatch != want {
+		t.Errorf("active batch = %+v, want %+v", deck.ActiveBatch, want)
+	}
+}
+
 func TestDeckLeavesOutDinnersNoLongerSuggested(t *testing.T) {
 	e := newEnv(t)
 	ids := e.seedDeck(t, "Pho", "Ramen")
@@ -459,7 +486,7 @@ func TestDeckLeavesOutDinnersNoLongerSuggested(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.New(e.st.Writer).ArchiveDinner(t.Context(), db.ArchiveDinnerParams{ID: sug[0].DinnerID, UpdatedAt: store.Now().String()}); err != nil {
+	if _, err := db.New(e.st.Writer).ArchiveDinner(t.Context(), db.ArchiveDinnerParams{ID: sug.Suggestions[0].DinnerID, UpdatedAt: store.Now().String()}); err != nil {
 		t.Fatal(err)
 	}
 	if got := e.deckNames(t); !slices.Equal(got, []string{"Ramen"}) {
@@ -608,8 +635,10 @@ func TestReplenishIsSingleFlight(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.ReplenishJobID != nil {
-		t.Errorf("second decision enqueued replenish job %s while one is pending", *second.ReplenishJobID)
+	// The second decision joins the pending batch and reports its job, so a
+	// client that did not start it can follow it.
+	if second.ReplenishJobID == nil || *second.ReplenishJobID != *first.ReplenishJobID {
+		t.Errorf("second decision replenish job = %v, want the pending batch's job %s", second.ReplenishJobID, *first.ReplenishJobID)
 	}
 	manual, err := e.svc.StartBatch(t.Context(), suggest.TriggerManual)
 	if err != nil {

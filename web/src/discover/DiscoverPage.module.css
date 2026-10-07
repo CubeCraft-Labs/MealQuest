@@ -224,6 +224,14 @@
   border-radius: var(--radius-card);
 }
 
+/* A blank card holds a depth a short deck has no card for, as the stack's
+   edge, in that depth's place and colour. */
+.blankCard {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-card);
+}
+
 .skeletonCard.depth0,
 .skeletonCard.depth1,
 .skeletonCard.depth2 {

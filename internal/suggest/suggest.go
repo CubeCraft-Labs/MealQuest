@@ -261,25 +261,54 @@ type Suggestion struct {
 	CreatedAt       string   `json:"created_at"`
 }
 
-// Deck returns the pending suggestions whose dinner is still suggested,
-// oldest first.
-func (s *Service) Deck(ctx context.Context) ([]Suggestion, error) {
-	rows, err := db.New(s.st.Reader).ListDeck(ctx)
+// Deck is the household's deck: the pending suggestions whose dinner is
+// still suggested, oldest first, and the batch pending or running, if any,
+// so a client can follow the job producing more.
+type Deck struct {
+	Suggestions []Suggestion `json:"suggestions"`
+	ActiveBatch *Batch       `json:"active_batch"`
+}
+
+// Deck reads the deck and its active batch in one read transaction, so
+// both come from the same snapshot.
+func (s *Service) Deck(ctx context.Context) (deck Deck, err error) {
+	tx, err := s.st.Reader.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("suggest: list deck: %w", err)
+		return Deck{}, fmt.Errorf("suggest: begin deck read: %w", err)
 	}
-	out := make([]Suggestion, len(rows))
+	defer func() {
+		err = errors.Join(err, tx.Rollback())
+	}()
+	q := db.New(tx)
+	rows, err := q.ListDeck(ctx)
+	if err != nil {
+		return Deck{}, fmt.Errorf("suggest: list deck: %w", err)
+	}
+	deck.Suggestions = make([]Suggestion, len(rows))
 	for i, row := range rows {
-		out[i], err = fromRow(row.Suggestion, row.Dinner)
+		deck.Suggestions[i], err = fromRow(row.Suggestion, row.Dinner)
 		if err != nil {
-			return nil, err
+			return Deck{}, err
 		}
 	}
-	return out, nil
+	cur, err := q.GetActiveSuggestionBatch(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return deck, nil
+	}
+	if err != nil {
+		return Deck{}, fmt.Errorf("suggest: read active batch: %w", err)
+	}
+	jobID, err := q.GetSuggestionBatchJobID(ctx, db.GetSuggestionBatchJobIDParams{Kind: KindSuggestionBatch, BatchID: cur.ID})
+	if err != nil {
+		return Deck{}, fmt.Errorf("suggest: read job of batch %s: %w", cur.ID, err)
+	}
+	deck.ActiveBatch = &Batch{ID: cur.ID, JobID: jobID, Trigger: cur.Trigger, Status: cur.Status}
+	return deck, nil
 }
 
 // Decision is a suggestion once decided, with the id of the replenish
-// batch's job when the decision started one.
+// batch's job when the decision called for one: the batch it started, or
+// the one already pending or running that it joined.
 type Decision struct {
 	Suggestion     Suggestion `json:"suggestion"`
 	ReplenishJobID *string    `json:"replenish_job_id"`
@@ -303,8 +332,8 @@ func (s *Service) Decline(ctx context.Context, id, updatedBy string) (Decision, 
 // dinnerStatus. Repeating a decision changes nothing and returns the
 // suggestion as it is; the opposite decision is a *DecidedError. A
 // decision that leaves the deck under ReplenishBelow starts a replenish
-// batch unless one is already pending or running, in the decision's own
-// transaction: the decision is never recorded without the replenish it
+// batch, or joins the one already pending or running, in the decision's own
+// transaction, and returns its job id either way: the decision is never recorded without the replenish it
 // calls for, and a failure to start the batch records neither.
 func (s *Service) decide(ctx context.Context, id, decision, dinnerStatus, updatedBy string) (Decision, error) {
 	if updatedBy == "" {
@@ -369,8 +398,7 @@ func (s *Service) decide(ctx context.Context, id, decision, dinnerStatus, update
 	if err != nil {
 		return Decision{}, err
 	}
-	created := replenish != nil && replenish.Created
-	if created {
+	if replenish != nil && replenish.Created {
 		s.batchJob.Wake()
 	}
 	sug, err := fromRow(row.Suggestion, row.Dinner)
@@ -378,7 +406,7 @@ func (s *Service) decide(ctx context.Context, id, decision, dinnerStatus, update
 		return Decision{}, err
 	}
 	d := Decision{Suggestion: sug}
-	if created {
+	if replenish != nil {
 		d.ReplenishJobID = &replenish.JobID
 	}
 	return d, nil

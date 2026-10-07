@@ -107,7 +107,7 @@ describe('App routes', () => {
     mockViewport(390)
     stubFetchByPath({
       ...SIGNED_IN,
-      '/api/v1/suggestions/deck': () => jsonResponse(200, { suggestions: [] }),
+      '/api/v1/suggestions/deck': () => jsonResponse(200, { suggestions: [], active_batch: null }),
       '/api/v1/dinners?status=quest_log': () => jsonResponse(200, { dinners: [] }),
     })
     renderAt('/discover')

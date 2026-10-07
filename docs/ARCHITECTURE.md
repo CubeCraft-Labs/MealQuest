@@ -310,9 +310,11 @@ automatic** (D-021).
   block the next.
   `GET /api/v1/suggestions/deck` returns `{suggestions: [{id, dinner_id,
   name, photo_url, difficulty, method, minutes_total, cuisine, reason,
-  cited_regular_ids, status, dinner_status, decided_at, created_at}]}`:
-  the `pending` suggestions whose dinner is still `suggested`, oldest
-  first. `POST /api/v1/suggestions/{id}/accept` (Try it) sets the
+  cited_regular_ids, status, dinner_status, decided_at, created_at}],
+  active_batch}`: the `pending` suggestions whose dinner is still
+  `suggested`, oldest first, and the batch `pending` or `running`
+  (`{batch_id, job_id, trigger, status}`, or null), read in one snapshot,
+  so a client that did not start the batch can follow its job. `POST /api/v1/suggestions/{id}/accept` (Try it) sets the
   suggestion `accepted` and moves its dinner to `quest_log`; `POST
   /api/v1/suggestions/{id}/decline` (Pass) sets it `declined` and archives
   the dinner; every later batch, and the household context's passed list,
@@ -323,9 +325,9 @@ automatic** (D-021).
   and answers 200; the opposite decision is 409 `suggestion_decided`, a
   suggestion whose dinner left the deck some other way 409
   `dinner_not_suggested`, and an unknown id 404. A decision that leaves
-  fewer than 5 in the deck starts a `replenish` batch, whose job id it
-  returns, unless a batch is already pending or running
-  (`replenish_job_id` is then null). The batch and its job are written in
+  fewer than 5 in the deck starts a `replenish` batch, or joins the batch
+  already pending or running, and returns that batch's job id either way
+  (`replenish_job_id` is null when the deck keeps 5 or more). The batch and its job are written in
   the decision's own transaction, so a decision is never recorded without
   the replenish it calls for; when they cannot be written, neither is the
   decision, and a retry decides again.

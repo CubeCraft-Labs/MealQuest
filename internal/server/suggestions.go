@@ -10,10 +10,6 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/suggest"
 )
 
-type deck struct {
-	Suggestions []suggest.Suggestion `json:"suggestions"`
-}
-
 // postSuggestionBatch starts a manual suggestion batch and answers 202 with
 // its batch_id and the job_id that GET /jobs/{id} reports on, without
 // waiting for the job. When a batch is already pending or running it
@@ -30,15 +26,15 @@ func postSuggestionBatch(logger *slog.Logger, svc *suggest.Service) http.Handler
 }
 
 // getSuggestionDeck answers GET /suggestions/deck with the pending
-// suggestions, oldest first.
+// suggestions, oldest first, and the batch pending or running, or null.
 func getSuggestionDeck(logger *slog.Logger, svc *suggest.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		list, err := svc.Deck(r.Context())
+		d, err := svc.Deck(r.Context())
 		if err != nil {
 			writeSuggestionError(w, r, logger, "list suggestion deck", err)
 			return
 		}
-		writeJSON(w, r, logger, http.StatusOK, deck{Suggestions: list})
+		writeJSON(w, r, logger, http.StatusOK, d)
 	}
 }
 

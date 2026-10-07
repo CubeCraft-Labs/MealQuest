@@ -1177,38 +1177,98 @@ func TestFixInFlightWhenDinnerChanges(t *testing.T) {
 	}
 }
 
-// TestFixInFlightKeepsMemberEdits: a method or difficulty a member sets
-// while a link is grounding is kept; what they left alone takes the link's
-// recipe.
+// TestFixInFlightKeepsMemberEdits: a method, minutes or difficulty a
+// member sets while a link is grounding is kept; a field they left alone
+// takes the link's recipe, even one already set before grounding began.
 func TestFixInFlightKeepsMemberEdits(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
-	id := failedDinner(t, e, "Grandma's stew")
-	e.model.QueueGenerate(recipestest.NormalizedReply("oven", 150))
-	e.pages.Gate = make(chan struct{})
+	// Every field is set before grounding, then one is changed in flight.
+	before := dinners.Patch{Method: ptr("stovetop"), MinutesTotal: ptr(45), Difficulty: ptr("easy")}
+	tests := []struct {
+		name  string
+		edit  dinners.Patch
+		field string
+	}{
+		{"method", dinners.Patch{Method: ptr("grill")}, "method"},
+		{"minutes", dinners.Patch{MinutesTotal: ptr(20)}, "minutes_total"},
+		{"difficulty", dinners.Patch{Difficulty: ptr("medium")}, "difficulty"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			e := newEnv(t)
+			id := failedDinner(t, e, "Grandma's stew")
+			if _, err := e.svc.Update(t.Context(), id, before, member); err != nil {
+				t.Fatal(err)
+			}
+			e.model.QueueGenerate(recipestest.NormalizedReply("oven", 150))
+			e.pages.Gate = make(chan struct{})
 
-	done := make(chan error, 1)
-	go func() {
-		_, err := e.svc.Ground(context.Background(), id, dinners.Fix{RecipeURL: ptr(stew)}, member)
-		done <- err
-	}()
-	e.waitFetched(t, stew)
-	if _, err := e.svc.Update(t.Context(), id, dinners.Patch{Method: ptr("grill"), Difficulty: ptr("easy")}, member); err != nil {
-		t.Fatal(err)
-	}
-	close(e.pages.Gate)
+			done := make(chan error, 1)
+			go func() {
+				_, err := e.svc.Ground(context.Background(), id, dinners.Fix{RecipeURL: ptr(stew)}, member)
+				done <- err
+			}()
+			e.waitFetched(t, stew)
+			if _, err := e.svc.Update(t.Context(), id, tt.edit, member); err != nil {
+				t.Fatal(err)
+			}
+			close(e.pages.Gate)
 
-	if err := <-done; err != nil {
-		t.Fatal(err)
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			row := e.dinner(t, id)
+			if row.GroundingStatus != dinners.GroundingGrounded || !row.RecipeID.Valid {
+				t.Fatalf("dinner = %+v, want grounded in the link's recipe", row)
+			}
+			var recipe fields
+			if err := e.st.Reader.QueryRowContext(t.Context(),
+				`SELECT method, minutes_total, difficulty FROM recipes WHERE id = ?`, row.RecipeID.String,
+			).Scan(&recipe.method, &recipe.minutes, &recipe.difficulty); err != nil {
+				t.Fatal(err)
+			}
+			old, edited := patchFields(before), patchFields(tt.edit)
+			want := recipe
+			switch tt.field {
+			case "method":
+				want.method = edited.method
+			case "minutes_total":
+				want.minutes = edited.minutes
+			case "difficulty":
+				want.difficulty = edited.difficulty
+			}
+			if recipe.method == old.method || recipe.minutes == old.minutes || recipe.difficulty == old.difficulty {
+				t.Fatalf("recipe %+v shares a value with the dinner before grounding %+v", recipe, old)
+			}
+			got := fields{row.Method.String, row.MinutesTotal.Int64, row.Difficulty.String}
+			if got != want {
+				t.Errorf("method, minutes, difficulty = %+v, want %+v: the %s edit kept, the rest from the recipe", got, want, tt.field)
+			}
+		})
 	}
-	row := e.dinner(t, id)
-	if row.GroundingStatus != dinners.GroundingGrounded || !row.RecipeID.Valid {
-		t.Errorf("dinner = %+v, want grounded in the link's recipe", row)
+}
+
+// fields are a dinner's or recipe's method, minutes_total and difficulty.
+type fields struct {
+	method     string
+	minutes    int64
+	difficulty string
+}
+
+// patchFields returns the fields p sets, zero where it sets none.
+func patchFields(p dinners.Patch) fields {
+	var f fields
+	if p.Method != nil {
+		f.method = *p.Method
 	}
-	if row.Method.String != "grill" || row.Difficulty.String != "easy" || row.MinutesTotal.Int64 != 150 {
-		t.Errorf("method, difficulty, minutes = %q, %q, %d; want grill and easy kept, 150 from the recipe",
-			row.Method.String, row.Difficulty.String, row.MinutesTotal.Int64)
+	if p.MinutesTotal != nil {
+		f.minutes = int64(*p.MinutesTotal)
 	}
+	if p.Difficulty != nil {
+		f.difficulty = *p.Difficulty
+	}
+	return f
 }
 
 // TestFixArchivedDinner: an archived dinner cannot be grounded by hand.

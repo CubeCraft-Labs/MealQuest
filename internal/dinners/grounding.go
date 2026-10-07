@@ -76,7 +76,7 @@ var groundTimeout = GroundTimeout
 // runs past GroundTimeout; the dinner is left as it was.
 var ErrGroundTimeout = errors.New("dinners: grounding the recipe took too long")
 
-// ErrGroundFailed wraps any failure grounding a candidate or link by hand.
+// ErrGroundFailed wraps any unexpected failure grounding a dinner by hand.
 // Its text may quote the link and dependency errors, so it is never
 // logged.
 var ErrGroundFailed = errors.New("dinners: grounding the recipe failed")
@@ -343,8 +343,9 @@ type ManualRecipe struct {
 // link, or recording it on the dinner, wraps ErrGroundFailed; a page that
 // cannot ground the dinner is also a *recipes.ErrUngroundable. A dinner
 // renamed, archived or grounded some other way while a candidate or link
-// was grounding is ErrGroundConflict or ErrArchived. None of these changes
-// the dinner.
+// was grounding is ErrGroundConflict or ErrArchived. A missing dinner is
+// ErrNotFound; any other failure, by candidate, link or manual recipe,
+// wraps ErrGroundFailed. None of these changes the dinner.
 func (s *Service) Ground(ctx context.Context, id string, f Fix, updatedBy string) (Dinner, error) {
 	if updatedBy == "" {
 		return Dinner{}, errors.New("dinners: ground: no member to record as updated_by")
@@ -357,8 +358,11 @@ func (s *Service) Ground(ctx context.Context, id string, f Fix, updatedBy string
 		return s.groundManual(ctx, id, *manual, updatedBy)
 	}
 	cur, err := s.get(ctx, id)
-	if err != nil {
+	if errors.Is(err, ErrNotFound) {
 		return Dinner{}, err
+	}
+	if err != nil {
+		return Dinner{}, fmt.Errorf("%w: dinner %s: %w", ErrGroundFailed, id, err)
 	}
 	if cur.Status == StatusArchived {
 		return Dinner{}, ErrArchived
@@ -418,7 +422,9 @@ func (s *Service) groundRejected(ctx context.Context, id string) error {
 }
 
 // groundManual stores m as dinner id's recipe, with its ingredients and
-// steps, and records it on the dinner, all in one transaction.
+// steps, and records it on the dinner, all in one transaction. A missing
+// or archived dinner is ErrNotFound or ErrArchived; any other failure
+// wraps ErrGroundFailed.
 func (s *Service) groundManual(ctx context.Context, id string, m ManualRecipe, updatedBy string) (Dinner, error) {
 	var row db.Dinner
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
@@ -510,8 +516,11 @@ func (s *Service) groundManual(ctx context.Context, id string, m ManualRecipe, u
 		}
 		return nil
 	})
-	if err != nil {
+	if errors.Is(err, ErrNotFound) || errors.Is(err, ErrArchived) {
 		return Dinner{}, err
+	}
+	if err != nil {
+		return Dinner{}, fmt.Errorf("%w: dinner %s: %w", ErrGroundFailed, id, err)
 	}
 	return fromRow(row), nil
 }

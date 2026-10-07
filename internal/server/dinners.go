@@ -202,7 +202,8 @@ func actorOrFail(w http.ResponseWriter, r *http.Request, logger *slog.Logger) (a
 // up is 409 not_configured; a search or model failure is 502; grounding by
 // hand that runs past dinners.GroundTimeout is 504 ground_timeout; grounding
 // an archived dinner is 409 dinner_archived and one changed while grounding
-// 409 ground_conflict. Any other grounding failure is 500, logged by reason
+// 409 ground_conflict. Any other grounding failure, by candidate, link or
+// manual recipe, wraps dinners.ErrGroundFailed and is 500, logged by reason
 // and dinner id only.
 func writeDinnerError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, action string, err error) {
 	var invalid *dinners.ValidationError

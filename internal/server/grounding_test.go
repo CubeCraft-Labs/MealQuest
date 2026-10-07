@@ -279,6 +279,45 @@ func TestPostGroundViaRecipeURLDinnerWriteFailure(t *testing.T) {
 	}
 }
 
+// TestPostGroundUnexpectedFailures: grounding by hand that fails reading
+// the dinner, or storing a manual recipe, is a 500 logged by reason and
+// dinner id, never with the database error.
+func TestPostGroundUnexpectedFailures(t *testing.T) {
+	t.Parallel()
+	const (
+		// Renaming a column every dinner read selects fails the read.
+		breakRead = `ALTER TABLE dinners RENAME COLUMN cuisine TO cuisine_gone`
+		// The trigger's message stands in for the database error.
+		breakStore = `CREATE TRIGGER refuse_recipes BEFORE INSERT ON recipes BEGIN SELECT RAISE(ABORT, 'disk full'); END`
+		manual     = `{"manual":{"ingredients":["1 lb beef"],"steps":["Brown."],"minutes":240,"method":"crockpot"}}`
+	)
+	for _, tc := range []struct {
+		name, sabotage, fix, leak string
+	}{
+		{"link read", breakRead, `{"recipe_url":"` + stewPage + `"}`, "cuisine"},
+		{"manual read", breakRead, manual, "cuisine"},
+		{"manual store", breakStore, manual, "disk full"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			e := newDinnersEnv(t).withRecipes(t)
+			id := createDinner(t, e.h, `{"name":"Sunday stew"}`)
+			if _, err := e.st.Writer.ExecContext(t.Context(), tc.sabotage); err != nil {
+				t.Fatal(err)
+			}
+
+			rec, body := callDinners(t, e.h, http.MethodPost, dinnersPath+"/"+id+"/ground", tc.fix)
+			if rec.Code != http.StatusInternalServerError || errorCode(body) != "internal" {
+				t.Errorf("POST = %d %s, want 500 internal", rec.Code, rec.Body)
+			}
+			logs := e.logs.String()
+			if strings.Contains(logs, tc.leak) || !strings.Contains(logs, "reason=ground_failed") || !strings.Contains(logs, "dinner_id="+id) {
+				t.Errorf("logs = %q, want reason=ground_failed and the dinner id, without the database error", logs)
+			}
+		})
+	}
+}
+
 // TestPostGroundArchived: grounding an archived dinner by hand is a 409.
 func TestPostGroundArchived(t *testing.T) {
 	t.Parallel()

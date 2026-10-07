@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { DIFFICULTIES, DINNERS_PATH, oneOf, photoId, type Difficulty } from '../dinners/api.ts'
@@ -8,9 +8,11 @@ export const DECK_PATH = `${SUGGESTIONS_PATH}/deck`
 export const BATCHES_PATH = `${SUGGESTIONS_PATH}/batches`
 export const QUEST_LOG_PATH = `${DINNERS_PATH}?status=quest_log`
 
-// DECK_KEY is the deck's query; QUEST_LOG_KEY the Quest log's.
+// DECK_KEY is the deck's query; QUEST_LOG_KEY the Quest log's;
+// DECIDE_KEY the decisions'.
 export const DECK_KEY = ['suggestions', 'deck'] as const
 export const QUEST_LOG_KEY = ['dinners', 'quest_log'] as const
+const DECIDE_KEY = ['suggestions', 'decide'] as const
 
 // SideQuest is a pending suggestion as the deck shows it. dinner_id is the
 // dinner Try it moves to the Quest log; photo_id is the stored photo's id,
@@ -139,20 +141,32 @@ export function stillPending(deck: { status: string; data: SideQuest[] | undefin
   return deck.data!.find((q) => q.id === id) ?? null
 }
 
+// useDeciding is the ids of the Side quests whose decisions are pending:
+// sent and not yet settled. The deck shown leaves them out, whatever a read
+// of the deck has said meanwhile.
+export function useDeciding(): Set<string> {
+  const ids = useMutationState<string>({
+    filters: { mutationKey: DECIDE_KEY, status: 'pending' },
+    select: (mutation) => (mutation.state.variables as { quest: SideQuest }).quest.id,
+  })
+  return new Set(ids)
+}
+
 // useDecide records Try it (POST /api/v1/suggestions/{id}/accept) or Pass
 // (POST /api/v1/suggestions/{id}/decline) on the Side quest the household
 // decided on, whether or not a read of the deck has since taken it away.
 // The answer must be that suggestion, decided that way; the mutation's data
 // is the id of the replenish job the decision started, or null.
 //
-// The decision is applied at once: the Side quest leaves the deck and, on
-// Try it, its dinner joins the Quest log unless it is there already.
-// Nothing else is worked out here: the server is the record of both. However
-// the decision ends, saved or failed, the deck and the Quest log are read
-// again, and the decision is pending until those reads land, so the next one
-// (which DiscoverPage locks out until then) cannot start under them. A read
-// under way when the decision ends is replaced by the read made after it,
-// and DiscoverPage's batch reads wait for that one rather than replace it.
+// The decision is applied at once: the Side quest leaves the deck shown
+// while it is pending (see useDeciding) and, on Try it, its dinner joins the
+// Quest log unless it is there already. Nothing else is worked out here:
+// the server is the record of both. However the decision ends, saved or
+// failed, the deck and the Quest log are read again, and the decision is
+// pending until those reads land, so the next one (which DiscoverPage locks
+// out until then) cannot start under them. A read under way when the
+// decision ends is replaced by the read made after it, and DiscoverPage's
+// batch reads wait for that one rather than replace it.
 // A failed decision waits for the deck read it makes itself. Whether its
 // Side quest is still pending is then the deck query's to say, from its
 // newest successful read: once the reads have landed, a Side quest the deck
@@ -181,6 +195,7 @@ export function useDecide() {
   }
 
   return useMutation<string | null, Error, { quest: SideQuest; choice: Choice }>({
+    mutationKey: DECIDE_KEY,
     mutationFn: async ({ quest, choice }) => {
       try {
         return await send(quest.id, choice)
@@ -197,7 +212,6 @@ export function useDecide() {
       }
     },
     onMutate: ({ quest, choice }) => {
-      queryClient.setQueryData<SideQuest[]>(DECK_KEY, (deck) => deck?.filter((q) => q.id !== quest.id))
       if (choice !== 'try') return
       // A stale deck can offer a Side quest whose dinner the Quest log has.
       queryClient.setQueryData<QuestLogDinner[]>(QUEST_LOG_KEY, (dinners) =>

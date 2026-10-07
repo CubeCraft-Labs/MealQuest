@@ -13,6 +13,7 @@ import {
   DECK_KEY,
   parseBatchResult,
   stillPending,
+  useDeciding,
   useDeck,
   useDecide,
   useQuestLog,
@@ -100,6 +101,10 @@ function QuestLogPill({ dinners, ref }: { dinners: { id: string; name: string }[
 export function DiscoverPage() {
   const queryClient = useQueryClient()
   const deck = useDeck()
+  // The deck shown: the deck's newest read, less the Side quests being
+  // decided, which a read landing mid-decision may still have pending.
+  const inFlight = useDeciding()
+  const cards = deck.data?.filter((quest) => !inFlight.has(quest.id))
   const questLog = useQuestLog()
   const decision = useDecide()
   const startBatch = useStartBatch()
@@ -108,7 +113,7 @@ export function DiscoverPage() {
   const [batchJobId, setBatchJobId] = useState<string | null>(null)
   const job = useJob<unknown>(BATCH_JOB_KIND, batchJobId)
 
-  const top = deck.data?.[0]
+  const top = cards?.[0]
   const [busy, setBusy] = useState(false)
   const jobRunning = batchJobId !== null && job.status !== 'succeeded' && job.status !== 'failed'
   const finding = startBatch.isPending || jobRunning
@@ -331,7 +336,7 @@ export function DiscoverPage() {
   let body
   if (deck.isError) {
     body = <ErrorBanner onRetry={() => void deck.refetch()}>Couldn't load your side quests. {deck.error.message}</ErrorBanner>
-  } else if (deck.isPending || (deck.data.length === 0 && (finding || decision.isPending))) {
+  } else if (deck.isPending || (cards!.length === 0 && (finding || decision.isPending))) {
     // An empty deck is not caught up while a batch finds more Side quests,
     // or while the last decision may yet start one or come back refused.
     body = (
@@ -365,7 +370,7 @@ export function DiscoverPage() {
     body = (
       <>
         <div ref={deckRef} className={styles.deck}>
-          {deck.data.slice(0, DECK_DEPTH.length).map((quest, depth) => (
+          {cards!.slice(0, DECK_DEPTH.length).map((quest, depth) => (
             <DeckCard key={quest.id} quest={quest} depth={depth} swipe={depth === 0 ? swipe : undefined} />
           ))}
         </div>

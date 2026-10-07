@@ -653,6 +653,78 @@ describe('DiscoverPage', () => {
       ])
     })
 
+    it('keeps the card off the deck while its decision is unanswered when a read of the deck lands with it still pending, then reads the deck again once it is saved', async () => {
+      const decline = deferred()
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], { 'POST /api/v1/suggestions/s1/decline': () => decline.promise })
+      const queryClient = createQueryClient()
+      await renderPage(queryClient)
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Pass' }))
+      await waitFor(() => expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/decline']))
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+
+      // A read of the deck lands before the decision is saved, with the Side
+      // quest still pending: the card stays off the deck.
+      await act(async () => await queryClient.refetchQueries({ queryKey: DECK_KEY }))
+      await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)))
+      expect(deckReads(server.fetchMock)).toBe(2)
+      expect(queryClient.getQueryData<{ id: string }[]>(DECK_KEY)?.map((q) => q.id)).toEqual(['s1', 's2', 's3', 's4'])
+      expect(screen.getAllByRole('article', { hidden: true }).map((card) => card.querySelector('h2')!.textContent)).toEqual([
+        'Crock pot chicken tikka masala',
+        'Lemon garlic shrimp orzo',
+        'Sheet pan paella',
+      ])
+
+      // Once it is saved, the deck read after it is the deck shown.
+      server.deck = [TIKKA, ORZO, PAELLA]
+      decline.resolve(declined(BOWLS))
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Pass' })).toBeEnabled())
+      expect(deckReads(server.fetchMock)).toBe(3)
+      expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument()
+      expect(screen.getAllByRole('article', { hidden: true }).map((card) => card.querySelector('h2')!.textContent)).toEqual([
+        'Crock pot chicken tikka masala',
+        'Lemon garlic shrimp orzo',
+        'Sheet pan paella',
+      ])
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+
+    it('keeps the card off the deck while its decision is unanswered when a read of the deck lands with it still pending, then puts it back on top with a Retry once it is refused', async () => {
+      const accept = deferred()
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], { 'POST /api/v1/suggestions/s1/accept': () => accept.promise })
+      const queryClient = createQueryClient()
+      await renderPage(queryClient)
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+      await waitFor(() => expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept']))
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+
+      // A read of the deck lands mid-decision, in the server's order.
+      server.deck = [TIKKA, BOWLS, ORZO, PAELLA]
+      await act(async () => await queryClient.refetchQueries({ queryKey: DECK_KEY }))
+      await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)))
+      expect(deckReads(server.fetchMock)).toBe(2)
+      expect(screen.getAllByRole('article', { hidden: true }).map((card) => card.querySelector('h2')!.textContent)).toEqual([
+        'Crock pot chicken tikka masala',
+        'Lemon garlic shrimp orzo',
+        'Sheet pan paella',
+      ])
+
+      // The server refuses it; the deck read after it still has it pending.
+      accept.resolve(errorResponse(400, 'invalid_request'))
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent("Couldn't save that choice.")
+      expect(within(alert).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+      expect(deckReads(server.fetchMock)).toBe(3)
+      expect(screen.getAllByRole('article', { hidden: true }).map((card) => card.querySelector('h2')!.textContent)).toEqual([
+        'Korean beef bowls',
+        'Crock pot chicken tikka masala',
+        'Lemon garlic shrimp orzo',
+      ])
+    })
+
     it('leaves the Quest log count alone for a dinner already in it, on Try it and on its refusal', async () => {
       const accept = deferred()
       stubServer([BOWLS, TIKKA, ORZO, PAELLA], {

@@ -202,8 +202,13 @@
   cursor: pointer;
 }
 
-.rebuild:hover {
+.rebuild:hover:not(:disabled) {
   background: var(--color-neutral-100);
+}
+
+.rebuild:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .loading {

@@ -596,5 +596,88 @@ describe('PlanPage', () => {
       expect(screen.getByRole('dialog', { name: 'Swap Friday' })).toBeInTheDocument()
       expect(puts(fetchMock)).toEqual([])
     })
+
+    // leaveAndReturn goes to next week and back, remounting this week's board.
+    async function leaveAndReturn() {
+      fireEvent.click(screen.getByRole('button', { name: 'Next week' }))
+      expect(await screen.findByRole('button', { name: 'Draft this week' })).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Previous week' }))
+      await screen.findByText('FRI · NEW')
+    }
+
+    it('sends one swap at a time even after leaving the week and coming back', async () => {
+      let answer!: (response: Response) => void
+      const fetchMock = stubServer({
+        [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+        [`GET ${NEXT_WEEK}`]: () => errorResponse(404, 'not_found'),
+        ...lists,
+        [`PUT ${FRIDAY}`]: () => new Promise<Response>((resolve) => (answer = resolve)),
+      })
+      await renderPage()
+
+      fireEvent.click(await within(await openFriday()).findByRole('button', { name: /Lemon orzo/ }))
+      await waitFor(() => expect(puts(fetchMock)).toHaveLength(1))
+      await leaveAndReturn()
+
+      // Friday's swap is still pending: Monday does not open.
+      fireEvent.click(within(tile('MON')).getByRole('button'))
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Rebuild week' })).toBeDisabled()
+
+      await act(async () => answer(jsonResponse(200, swappedBody())))
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Rebuild week' })).toBeEnabled())
+      fireEvent.click(within(tile('MON')).getByRole('button'))
+      expect(screen.getByRole('dialog', { name: 'Swap Monday' })).toBeInTheDocument()
+      expect(puts(fetchMock)).toHaveLength(1)
+    })
+
+    it('shows the failure of a swap that ended while the week was left', async () => {
+      let refuse!: () => void
+      stubServer({
+        [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+        [`GET ${NEXT_WEEK}`]: () => errorResponse(404, 'not_found'),
+        ...lists,
+        [`PUT ${FRIDAY}`]: () => new Promise<Response>((resolve) => (refuse = () => resolve(errorResponse(409, 'dinner_not_plannable')))),
+      })
+      await renderPage()
+
+      fireEvent.click(await within(await openFriday()).findByRole('button', { name: /Lemon orzo/ }))
+      fireEvent.click(screen.getByRole('button', { name: 'Next week' }))
+      expect(await screen.findByRole('button', { name: 'Draft this week' })).toBeInTheDocument()
+      await act(async () => refuse())
+      fireEvent.click(screen.getByRole('button', { name: 'Previous week' }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't swap Friday's dinner. dinner_not_plannable message")
+      expect(within(tile('FRI')).getByText('Pizza night')).toBeInTheDocument()
+    })
+
+    it('waits for a pending swap before Rebuild week, keeping its failure', async () => {
+      let refuse!: () => void
+      const fetchMock = stubServer({
+        [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+        ...lists,
+        [`PUT ${FRIDAY}`]: () => new Promise<Response>((resolve) => (refuse = () => resolve(errorResponse(409, 'dinner_not_plannable')))),
+        [`POST ${DRAFT}`]: () => jsonResponse(202, { jobId: 'j1' }),
+        [`GET ${JOB}`]: () => jsonResponse(200, draftJob('running')),
+      })
+      await renderPage()
+
+      fireEvent.click(await within(await openFriday()).findByRole('button', { name: /Lemon orzo/ }))
+      await screen.findByText('FRI · NEW')
+      const rebuild = screen.getByRole('button', { name: 'Rebuild week' })
+      expect(rebuild).toBeDisabled()
+      fireEvent.click(rebuild)
+      expect(posts(fetchMock)).toEqual([])
+
+      await act(async () => refuse())
+      expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't swap Friday's dinner. dinner_not_plannable message")
+      expect(within(tile('FRI')).getByText('Pizza night')).toBeInTheDocument()
+
+      // Once it has failed, Rebuild week drafts, leaving the failure behind.
+      fireEvent.click(screen.getByRole('button', { name: 'Rebuild week' }))
+      await waitFor(() => expect(posts(fetchMock)).toEqual([`${DRAFT} {}`]))
+      expect(await screen.findByText('Drafting your week…')).toBeInTheDocument()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
   })
 })

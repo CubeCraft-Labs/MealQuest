@@ -166,7 +166,7 @@ function WeekBoard({ weekStart, timezone, onWeek }: { weekStart: string; timezon
     // A draft asked for again leaves the last one's failure, and a failed
     // swap's, behind.
     setJobId(null)
-    swap.reset()
+    swap.dismiss()
     mutate(
       { weekStart, confirm },
       {
@@ -177,14 +177,17 @@ function WeekBoard({ weekStart, timezone, onWeek }: { weekStart: string; timezon
     )
   }
   // rebuild drafts the week, asking first over a plan pushed to Calendar.
+  // It waits for a swap of the week still pending, which may yet fail: the
+  // Rebuild week tile is disabled meanwhile.
   function rebuild() {
+    if (swap.pending) return
     if (plan.data && pushedToCalendar(plan.data.status)) setConfirming(true)
     else start(false)
   }
 
-  const failure = swap.isError ? (
-    <ErrorBanner onRetry={() => swapIn(swap.variables)}>
-      Couldn't swap {weekdayName(swap.variables.date)}'s dinner. {swap.error.message}
+  const failure = swap.failed !== null ? (
+    <ErrorBanner onRetry={() => swapIn(swap.failed!.swap)}>
+      Couldn't swap {weekdayName(swap.failed.swap.date)}'s dinner. {swap.failed.error.message}
     </ErrorBanner>
   ) : startDraft.isError ? (
     <ErrorBanner onRetry={rebuild}>Couldn't start drafting this week. {startDraft.error.message}</ErrorBanner>
@@ -205,11 +208,12 @@ function WeekBoard({ weekStart, timezone, onWeek }: { weekStart: string; timezon
     setSwappingDate(null)
     swap.mutate(chosen)
   }
-  // openSwap opens the swap sheet on a day. One swap is sent at a time: the
-  // plan the server answers it with must not overwrite another still pending.
+  // openSwap opens the swap sheet on a day. One swap of the week is sent at
+  // a time, even across leaving the week and coming back: the plan the
+  // server answers it with must not overwrite another still pending.
   function openSwap(date: string) {
-    if (swap.isPending) return
-    swap.reset()
+    if (swap.pending) return
+    swap.dismiss()
     setSwappingDate(date)
   }
 
@@ -253,7 +257,7 @@ function WeekBoard({ weekStart, timezone, onWeek }: { weekStart: string; timezon
             />
           ))}
           <li className={styles.rebuildCell}>
-            <button type="button" className={styles.rebuild} onClick={rebuild}>
+            <button type="button" className={styles.rebuild} onClick={rebuild} disabled={swap.pending}>
               <Icon icon={Plus} size="inline" />
               Rebuild week
             </button>

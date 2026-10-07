@@ -129,7 +129,8 @@ type Service struct {
 
 // NewService returns a service over st that drafts with draft and
 // registers the KindDraftWeek job on runner, which must not have started
-// yet.
+// yet. The kind is service-only: StartDraft, which keeps one draft in
+// flight per week, is the only way to enqueue it.
 func NewService(st *store.Store, draft Drafter, runner *jobs.Runner, logger *slog.Logger) (*Service, error) {
 	switch {
 	case st == nil:
@@ -144,6 +145,9 @@ func NewService(st *store.Store, draft Drafter, runner *jobs.Runner, logger *slo
 	s := &Service{st: st, draft: draft, logger: logger}
 	kind, err := jobs.Register(runner, KindDraftWeek, s.runDraft, Reasons...)
 	if err != nil {
+		return nil, err
+	}
+	if err := kind.ServiceOnly(); err != nil {
 		return nil, err
 	}
 	s.draftJob = kind

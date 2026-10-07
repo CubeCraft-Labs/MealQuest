@@ -204,6 +204,32 @@ func TestPostPlanDraft(t *testing.T) {
 	}
 }
 
+// TestDraftWeekNotEnqueuedThroughJobs checks POST /api/v1/jobs refuses a
+// draft_week job, so a confirmed draft cannot run beside the week's
+// unconfirmed one: POST /plans/{weekStart}/draft is the only way to start
+// a draft.
+func TestDraftWeekNotEnqueuedThroughJobs(t *testing.T) {
+	t.Parallel()
+	e := newPlansRouter(t)
+
+	rec, _ := callDinners(t, e.h, http.MethodPost, plansPath+"2026-10-12/draft", "{}")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("POST draft = %d: %s", rec.Code, rec.Body)
+	}
+	rec, body := callDinners(t, e.h, http.MethodPost, "/api/v1/jobs",
+		`{"kind":"`+plan.KindDraftWeek+`","payload":{"week_start":"2026-10-12","confirm":true}}`)
+	if rec.Code != http.StatusBadRequest || errorCode(body) != "service_only_kind" {
+		t.Errorf("POST job %s = %d %v, want 400 service_only_kind", plan.KindDraftWeek, rec.Code, body)
+	}
+	var queued int
+	if err := e.st.Reader.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM jobs WHERE kind = ?`, plan.KindDraftWeek).Scan(&queued); err != nil {
+		t.Fatal(err)
+	}
+	if queued != 1 {
+		t.Errorf("%d draft jobs, want only the one POST draft enqueued", queued)
+	}
+}
+
 func TestSimultaneousPostPlanDraftsShareOneJob(t *testing.T) {
 	t.Parallel()
 	e := newPlansRouter(t)

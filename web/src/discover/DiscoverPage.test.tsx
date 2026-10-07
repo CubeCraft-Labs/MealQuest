@@ -676,8 +676,40 @@ describe('DiscoverPage', () => {
       expect(screen.getByText('Quest log · 2')).toBeInTheDocument()
     })
 
-    it('shows a decision refused because the deck changed during the exit, with Retry', async () => {
-      const server = stubServer([BOWLS])
+    it('takes out of the Quest log only the entry a refused Try it added, after a read of the Quest log lands during it', async () => {
+      const accept = deferred()
+      const questLog = [{ id: 'q0', name: 'Quest 0' }]
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], {
+        'POST /api/v1/suggestions/s1/accept': () => accept.promise,
+        [`GET ${QUEST_LOG}`]: () => jsonResponse(200, { dinners: questLog }),
+      })
+      const queryClient = createQueryClient()
+      await renderPage(queryClient)
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+      await screen.findByText('Quest log · 1')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+      await waitFor(() => expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept']))
+      expect(screen.getByText('Quest log · 2')).toBeInTheDocument()
+
+      // The decision is saved, and a read of the Quest log lands with its
+      // dinner in it; then the answer to the decision is lost.
+      questLog.push({ id: 'dinner-s1', name: 'Korean beef bowls' })
+      await act(async () => await queryClient.invalidateQueries({ queryKey: ['dinners', 'quest_log'] }))
+      accept.resolve(errorResponse(500, 'internal'))
+      await screen.findByRole('alert')
+      expect(screen.getByText('Quest log · 2')).toBeInTheDocument()
+      // The answer was lost, so the Quest log is read again.
+      const questLogReads = () => server.fetchMock.mock.calls.filter(([input]) => String(input) === QUEST_LOG).length
+      await waitFor(() => expect(questLogReads()).toBe(3))
+      expect(screen.getByText('Quest log · 2')).toBeInTheDocument()
+    })
+
+    it('sends a decision for the card thrown out even when a read of the deck took it away during the exit, and Retry sends it again', async () => {
+      let refuse = true
+      const server = stubServer([BOWLS], {
+        'POST /api/v1/suggestions/s1/accept': () => (refuse ? errorResponse(500, 'internal') : accepted(BOWLS)),
+      })
       const queryClient = createQueryClient()
       const animations = stubAnimate({ autoFinish: false })
       await renderPage(queryClient)
@@ -692,9 +724,16 @@ describe('DiscoverPage', () => {
       await finishRunning(animations)
       await finishRunning(animations)
       const alert = await screen.findByRole('alert')
-      expect(alert).toHaveTextContent("Couldn't save that choice. suggestion s1 is not in the deck")
-      expect(within(alert).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
-      expect(sent(server.fetchMock)).toEqual([])
+      expect(alert).toHaveTextContent("Couldn't save that choice.")
+      expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept'])
+      // The read had taken the card away: refused, it is not put back.
+      expect(screen.queryByRole('article')).not.toBeInTheDocument()
+
+      refuse = false
+      fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+      await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+      expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept', 'POST /api/v1/suggestions/s1/accept'])
+      expect(screen.getByRole('heading', { name: 'All caught up' })).toBeInTheDocument()
     })
 
     it('reads the deck again once a saved decision leaves fewer than 3 cards', async () => {

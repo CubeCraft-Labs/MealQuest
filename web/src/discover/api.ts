@@ -38,7 +38,9 @@ export const BATCH_JOB_KIND = 'suggestion_batch'
 export type BatchResult = { batch_id: string; stage: string; suggestion_ids: string[]; dropped: number }
 
 // QuestLogDinner is a dinner in the Quest log, as the Quest log pill lists it.
-export type QuestLogDinner = { id: string; name: string }
+// adding marks the entry a Try it put in before it was saved, so its
+// rollback takes out that entry and no other.
+export type QuestLogDinner = { id: string; name: string; adding?: symbol }
 
 // REFILL_BELOW is the deck size, the depths the deck shows, under which a
 // saved decision reads the deck again.
@@ -135,26 +137,29 @@ export function useStartBatch() {
 }
 
 // Decided is the context a decision's optimistic update leaves for its
-// rollback: the Side quest taken off the deck, and whether its dinner was
-// added to the Quest log.
-type Decided = { quest: SideQuest; added: boolean }
+// rollback: whether the Side quest was taken off the deck, and the mark of
+// the Quest log entry it added, if it added one.
+type Decided = { taken: boolean; adding: symbol | null }
 
 // useDecide records Try it (POST /api/v1/suggestions/{id}/accept) or Pass
-// (POST /api/v1/suggestions/{id}/decline). The answer must be that
-// suggestion, decided that way; the mutation's data is the id of the
-// replenish job the decision started, or null.
+// (POST /api/v1/suggestions/{id}/decline) on the Side quest the household
+// decided on, whether or not a read of the deck has since taken it away.
+// The answer must be that suggestion, decided that way; the mutation's data
+// is the id of the replenish job the decision started, or null.
 //
 // The decision is applied at once: the Side quest leaves the deck and, on
 // Try it, its dinner joins the Quest log unless it is there already. A
-// refused decision puts the Side quest back on top of the deck and takes
-// out of the Quest log only the dinner it added. A saved one reads the Quest
-// log again, and the deck too once fewer than REFILL_BELOW Side quests are
-// left in it or a read of the deck started before the decision was saved.
+// refused decision puts the Side quest back on top of the deck if it took
+// it off, takes out of the Quest log only the entry it added, and reads the
+// Quest log again, since the decision may have been saved all the same. A
+// saved one reads the Quest log again, and the deck too once fewer than
+// REFILL_BELOW Side quests are left in it or a read of the deck started
+// before the decision was saved.
 export function useDecide() {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: async ({ id, choice }: { id: string; choice: Choice }): Promise<string | null> => {
+    mutationFn: async ({ quest: { id }, choice }: { quest: SideQuest; choice: Choice }): Promise<string | null> => {
       const action = choice === 'try' ? 'accept' : 'decline'
       const path = `${SUGGESTIONS_PATH}/${encodeURIComponent(id)}/${action}`
       const body = await apiFetch<unknown>(path, { method: 'POST' })
@@ -171,30 +176,30 @@ export function useDecide() {
       }
       return body.replenish_job_id
     },
-    onMutate: async ({ id, choice }): Promise<Decided> => {
+    onMutate: async ({ quest, choice }): Promise<Decided> => {
       // A read already under way would answer with the Side quest still
       // pending, undoing the update.
       await Promise.all([queryClient.cancelQueries({ queryKey: DECK_KEY }), queryClient.cancelQueries({ queryKey: QUEST_LOG_KEY })])
-      const quest = queryClient.getQueryData<SideQuest[]>(DECK_KEY)?.find((q) => q.id === id)
-      if (quest === undefined) throw new Error(`suggestion ${id} is not in the deck`)
-      queryClient.setQueryData<SideQuest[]>(DECK_KEY, (deck) => deck?.filter((q) => q.id !== id))
+      const deck = queryClient.getQueryData<SideQuest[]>(DECK_KEY)
+      const taken = deck !== undefined && deck.some((q) => q.id === quest.id)
+      if (taken) queryClient.setQueryData<SideQuest[]>(DECK_KEY, deck.filter((q) => q.id !== quest.id))
       // A stale deck can offer a Side quest whose dinner a read of the Quest
       // log already has.
       const dinners = queryClient.getQueryData<QuestLogDinner[]>(QUEST_LOG_KEY)
-      const added = choice === 'try' && dinners !== undefined && !dinners.some((d) => d.id === quest.dinner_id)
-      if (added) queryClient.setQueryData<QuestLogDinner[]>(QUEST_LOG_KEY, dinners.concat({ id: quest.dinner_id, name: quest.name }))
-      return { quest, added }
+      if (choice !== 'try' || dinners === undefined || dinners.some((d) => d.id === quest.dinner_id)) return { taken, adding: null }
+      const adding = Symbol(quest.dinner_id)
+      queryClient.setQueryData<QuestLogDinner[]>(QUEST_LOG_KEY, dinners.concat({ id: quest.dinner_id, name: quest.name, adding }))
+      return { taken, adding }
     },
-    onError: (_error, _variables, context) => {
-      // onMutate refusing leaves nothing to undo.
-      if (context === undefined) return
-      const { quest, added } = context
-      queryClient.setQueryData<SideQuest[]>(DECK_KEY, (deck) => deck && [quest, ...deck.filter((q) => q.id !== quest.id)])
-      if (added) {
-        queryClient.setQueryData<QuestLogDinner[]>(QUEST_LOG_KEY, (dinners) => dinners?.filter((d) => d.id !== quest.dinner_id))
-      }
+    onError: (_error, { quest }, context) => {
+      const { taken, adding } = context!
+      if (taken) queryClient.setQueryData<SideQuest[]>(DECK_KEY, (deck) => deck && [quest, ...deck.filter((q) => q.id !== quest.id)])
+      if (adding === null) return
+      // A read of the Quest log that landed meanwhile has replaced the entry.
+      queryClient.setQueryData<QuestLogDinner[]>(QUEST_LOG_KEY, (dinners) => dinners?.filter((d) => d.adding !== adding))
+      void queryClient.invalidateQueries({ queryKey: QUEST_LOG_KEY })
     },
-    onSuccess: async (_replenishJobId, { id }) => {
+    onSuccess: async (_replenishJobId, { quest: { id } }) => {
       // A read that landed while the decision was in flight may have put
       // the Side quest back, and one still under way may yet: invalidating
       // cancels it for a read made after the decision was saved.

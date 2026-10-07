@@ -17,6 +17,7 @@ import {
   useQuestLog,
   useStartBatch,
   type Choice,
+  type SideQuest,
 } from './api.ts'
 import { DeckCard, DECK_DEPTH, type SwipeHandlers } from './DeckCard.tsx'
 import {
@@ -152,8 +153,8 @@ export function DiscoverPage() {
   // send records a decision. A refused one puts the card back; a saved one
   // that started a replenish batch follows its job.
   const send = useCallback(
-    (variables: { id: string; choice: Choice }) => {
-      leaving.current = variables.id
+    (variables: { quest: SideQuest; choice: Choice }) => {
+      leaving.current = variables.quest.id
       mutateDecision(variables, {
         onSuccess: (replenishJobId) => {
           if (replenishJobId !== null) setBatchJobId(replenishJobId)
@@ -172,7 +173,7 @@ export function DiscoverPage() {
     [mutateDecision],
   )
   const submit = useCallback(
-    (variables: { id: string; choice: Choice }) => {
+    (variables: { quest: SideQuest; choice: Choice }) => {
       if (lock()) send(variables)
     },
     [lock, send],
@@ -217,7 +218,7 @@ export function DiscoverPage() {
         () => {
           // The Quest log pill is missing while the Quest log fails to load.
           if (choice === 'try' && !reduced && questLogRef.current !== null) bump(questLogRef.current)
-          send({ id: top.id, choice })
+          send({ quest: top, choice })
         },
         (error: unknown) => {
           if (!isAbort(error)) throw error

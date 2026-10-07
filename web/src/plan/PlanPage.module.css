@@ -1,0 +1,589 @@
+/* Plan · Draft board (mock 1f) and plan manager (mocks 2c, 2d). */
+.page {
+  box-sizing: border-box;
+}
+
+.board {
+  box-sizing: border-box;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.mobilePage {
+  max-width: 440px;
+  padding-top: 8px;
+}
+
+/* The grid fills the screen below the header: the main area's 32 px top and
+   bottom padding (AppShell) is taken back off the viewport height. */
+.tabletPage .board {
+  min-height: calc(100dvh - 64px);
+}
+
+/* Desktop: the board beside the 290 px right panel, which runs the full
+   height of the screen to its right edge over the main area's padding. */
+.desktopPage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 290px;
+  min-height: 100dvh;
+  margin: -32px -36px -32px 0;
+}
+
+.desktopPage .board {
+  padding: 32px 36px 32px 0;
+}
+
+.header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.heading {
+  min-width: 0;
+}
+
+.kicker {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-accent-700);
+}
+
+.titleRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 26px;
+  font-weight: 400;
+  line-height: 1.1;
+}
+
+.weekNav {
+  flex: none;
+  display: flex;
+  gap: 8px;
+}
+
+/* The assistant: a 32 px grape "Q" avatar beside its note. */
+.assistant {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.avatar {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+  color: var(--on-accent);
+  font-family: var(--font-heading);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.bubble {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 4px 18px 18px 18px;
+  background: var(--color-surface);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+/* Two columns of 86 px day tiles; the 8th cell is "+ Rebuild week". */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tile {
+  box-sizing: border-box;
+  display: flex;
+  min-height: 86px;
+  border-radius: 22px;
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+/* The whole tile is the button that opens the swap sheet. */
+.tileButton {
+  box-sizing: border-box;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: stretch;
+  gap: 6px;
+  padding: 12px;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* A Quest-log pick. */
+.newTile {
+  background: var(--color-accent-2-300);
+}
+
+.dayKicker {
+  display: block;
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-neutral-700);
+}
+
+.newTile .dayKicker {
+  color: var(--color-accent-2-900);
+}
+
+.dinner {
+  display: block;
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.startBy {
+  display: block;
+  margin: 4px 0 0;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--color-neutral-700);
+}
+
+.newTile .startBy {
+  color: var(--color-accent-2-900);
+}
+
+/* The day being swapped, while the swap sheet is open: the page background
+   ringed in grape, its name muted. */
+.swapping {
+  background: var(--color-bg);
+  box-shadow: inset 0 0 0 2px var(--color-accent);
+}
+
+.swapping .dayKicker {
+  color: var(--color-accent-700);
+}
+
+.swapping .dinner,
+.swapping .startBy {
+  color: var(--color-neutral-600);
+}
+
+.rebuildCell {
+  display: flex;
+}
+
+.rebuild {
+  box-sizing: border-box;
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 86px;
+  padding: 12px;
+  border: 2px dashed var(--color-neutral-400);
+  border-radius: 22px;
+  background: transparent;
+  color: var(--color-neutral-700);
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.rebuild:hover:not(:disabled) {
+  background: var(--color-neutral-100);
+}
+
+.rebuild:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.loading {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.skeletonTile {
+  height: 86px;
+  border-radius: 22px;
+}
+
+.drafting {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+  text-align: center;
+  color: var(--color-neutral-700);
+}
+
+/* An action with nothing behind it yet (Push to Calendar until Feature 16,
+   the shopping list until Feature 17): it keeps focus, so hovering, tapping
+   or focusing it shows the tooltip. */
+.unavailable {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.pushButton {
+  min-height: 50px;
+}
+
+.unavailable [aria-disabled='true'] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Unavailable, it neither darkens nor presses. */
+.unavailable .primary[aria-disabled='true']:hover,
+.unavailable .primary[aria-disabled='true']:active {
+  background: var(--color-accent);
+  transform: none;
+}
+
+.unavailable .outline[aria-disabled='true']:hover,
+.unavailable .outline[aria-disabled='true']:active {
+  background: transparent;
+  transform: none;
+}
+
+.hint {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 100%;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-text);
+  color: var(--color-bg);
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: center;
+  box-shadow: var(--shadow-md);
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* In the plan manager's header the tooltip opens below, at the action's
+   right edge. */
+.below .hint {
+  top: calc(100% + 8px);
+  bottom: auto;
+  left: auto;
+  right: 0;
+  transform: none;
+  width: 240px;
+  max-width: none;
+  z-index: 1;
+}
+
+.unavailable:hover .hint,
+.unavailable [aria-disabled='true']:focus + .hint {
+  visibility: visible;
+}
+
+/* The plan manager's header: kicker and title beside the week buttons, over
+   the sync status and the actions. */
+.wideHeader {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.titleBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.wideTitle {
+  margin: 4px 0 0;
+  font-family: var(--font-heading);
+  font-size: 40px;
+  font-weight: 400;
+  line-height: 1.1;
+}
+
+.tabletPage .wideTitle {
+  font-size: 36px;
+}
+
+.wideHeader .kicker {
+  font-size: 12px;
+}
+
+.wideHeader .weekNav {
+  align-items: center;
+  gap: 12px;
+}
+
+.thisWeek {
+  min-height: 44px;
+  padding: 10px 16px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.thisWeek:hover {
+  background: var(--color-neutral-100);
+}
+
+.actionBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+/* The status keeps to one line; the actions wrap under it when the row is
+   too narrow for both. */
+.status {
+  flex: 1 0 auto;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-neutral-700);
+}
+
+.synced {
+  color: var(--color-accent-2-800);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.action {
+  min-height: 44px;
+  padding: 0 18px;
+  white-space: nowrap;
+}
+
+/* The week: seven columns, each a day label over its card. A column is
+   never narrower than 112 px, which holds a dinner's words whole and the
+   tag beside the swap icon; where seven of those do not fit (tablet's
+   narrow end, desktop beside the panel) the week scrolls sideways. Its 8 px
+   padding, taken back by the margin, keeps the swap icons' hit boxes and
+   focus rings inside the scroll area. */
+.week {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(112px, 1fr));
+  gap: 12px;
+  margin: -8px;
+  padding: 8px;
+  overflow-x: auto;
+  list-style: none;
+}
+
+.column {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dayLabel {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+  padding: 0 4px;
+}
+
+.dayName {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-neutral-700);
+}
+
+.dayNumber {
+  font-family: var(--font-heading);
+  font-size: 22px;
+  color: var(--color-text);
+}
+
+.card {
+  position: relative;
+  box-sizing: border-box;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px;
+  border-radius: 26px;
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.tablet .card {
+  gap: 8px;
+  padding: 10px;
+  border-radius: 24px;
+}
+
+/* A Side quest's card. */
+.sideQuestCard {
+  background: var(--color-accent-2-200);
+}
+
+.cardPhoto {
+  width: 100%;
+  height: 110px;
+}
+
+.tablet .cardPhoto {
+  height: 96px;
+}
+
+.cardName {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 17px;
+  line-height: 1.15;
+  overflow-wrap: break-word;
+}
+
+.tablet .cardName {
+  font-size: 16px;
+}
+
+.cardMinutes,
+.cardStartBy {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--color-neutral-800);
+}
+
+.cardStartBy {
+  font-weight: 700;
+}
+
+.sideQuestCard .cardMinutes,
+.sideQuestCard .cardStartBy {
+  color: var(--color-accent-2-900);
+}
+
+.cardFooter {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* The day a dragged dinner drops on: a dashed 2.5 px grape border on
+   grape-100 over the card, saying which dinner it replaces. */
+.dropTarget {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 4px;
+  padding: 12px;
+  border: 2.5px dashed var(--color-accent);
+  border-radius: inherit;
+  background: var(--color-accent-100);
+  text-align: center;
+}
+
+.dropTitle {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 16px;
+  color: var(--color-accent-700);
+}
+
+.dropReplaces {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-neutral-700);
+  overflow-wrap: break-word;
+}
+
+/* The swap icon sits bare on the card, beside the tag: its 44 px hit box
+   keeps the 16 px footprint of its icon, reaching over the card's padding
+   and the tag. */
+.cardFooter .swapButton {
+  margin: -14px;
+}
+
+.cardFooter .cardTag {
+  margin-right: auto;
+  padding: 3px 8px;
+}
+
+.swapButton > span {
+  background: transparent;
+  color: var(--color-neutral-700);
+}
+
+.skeletonCard {
+  height: 300px;
+  border-radius: 26px;
+}

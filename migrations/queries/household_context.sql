@@ -1,11 +1,17 @@
 -- Reads for the AI household context block (internal/ai/harness).
 
--- name: ListRecentDeclinedNames :many
--- The names the most recently declined suggestions were suggested under,
--- newest first; renaming their dinners does not change them.
-SELECT name
-FROM suggestions
-WHERE status = 'declined'
+-- name: ListRecentPassedNames :many
+-- The most recent names the household turned down, newest first, as
+-- ListPassedNames has them.
+SELECT name FROM (
+	SELECT name, decided_at, id
+	FROM suggestions
+	WHERE status = 'declined'
+	UNION ALL
+	SELECT name, decided_at, id
+	FROM rotation_reviews
+	WHERE decision = 'drop'
+)
 ORDER BY decided_at DESC, id DESC
 LIMIT ?;
 

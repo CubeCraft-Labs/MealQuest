@@ -52,20 +52,26 @@ func (q *Queries) ListPlannedDinners(ctx context.Context, arg ListPlannedDinners
 	return items, nil
 }
 
-const listRecentDeclinedNames = `-- name: ListRecentDeclinedNames :many
+const listRecentPassedNames = `-- name: ListRecentPassedNames :many
 
-SELECT name
-FROM suggestions
-WHERE status = 'declined'
+SELECT name FROM (
+	SELECT name, decided_at, id
+	FROM suggestions
+	WHERE status = 'declined'
+	UNION ALL
+	SELECT name, decided_at, id
+	FROM rotation_reviews
+	WHERE decision = 'drop'
+)
 ORDER BY decided_at DESC, id DESC
 LIMIT ?
 `
 
 // Reads for the AI household context block (internal/ai/harness).
-// The names the most recently declined suggestions were suggested under,
-// newest first; renaming their dinners does not change them.
-func (q *Queries) ListRecentDeclinedNames(ctx context.Context, limit int64) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, listRecentDeclinedNames, limit)
+// The most recent names the household turned down, newest first, as
+// ListPassedNames has them.
+func (q *Queries) ListRecentPassedNames(ctx context.Context, limit int64) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listRecentPassedNames, limit)
 	if err != nil {
 		return nil, err
 	}

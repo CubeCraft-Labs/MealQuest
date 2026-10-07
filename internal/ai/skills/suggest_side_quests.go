@@ -30,8 +30,9 @@ type SideQuestsRequest struct {
 	Needed int
 	// Pending holds the names of the Side quests not yet tried or passed.
 	Pending []string
-	// Declined holds the name of every passed Side quest, not only the
-	// recent ones Context holds.
+	// Declined holds every passed name — each passed Side quest and each
+	// dinner a Rotation check dropped — not only the recent ones Context
+	// holds.
 	Declined []string
 }
 

@@ -1,0 +1,129 @@
+import { useId, useState } from 'react'
+import { useRegulars } from '../dinners/api.ts'
+import { useQuestLog, type QuestLogDinner } from '../discover/api.ts'
+import { details } from '../discover/QuestLogSheet.tsx'
+import { ErrorBanner } from '../ui/ErrorBanner.tsx'
+import { ListRow } from '../ui/ListRow.tsx'
+import { Photo } from '../ui/Photo.tsx'
+import { Segmented } from '../ui/Segmented.tsx'
+import { Sheet } from '../ui/Sheet.tsx'
+import { Skeleton } from '../ui/Skeleton.tsx'
+import { Tag } from '../ui/Tag.tsx'
+import type { PlanDay, PlanDinner, Swap } from './api.ts'
+import { weekdayName } from './week.ts'
+import styles from './SwapSheet.module.css'
+
+// Source is a list a dinner is swapped in from.
+export type Source = 'quest_log' | 'regulars'
+
+export const sourceNames: Record<Source, string> = { quest_log: 'Quest log', regulars: 'Regulars' }
+
+export const emptyLists: Record<Source, string> = {
+  quest_log: 'Your Quest log is empty — swipe right on a Side quest to add one.',
+  regulars: 'You have no Regulars yet.',
+}
+
+// planDinner is a listed dinner as it is planned on a day.
+export function planDinner(dinner: QuestLogDinner): PlanDinner {
+  return { id: dinner.id, name: dinner.name, photo_id: dinner.photo_id, minutes: dinner.minutes_total, method: dinner.method }
+}
+
+export type SwapSheetProps = {
+  // The day being swapped.
+  day: PlanDay
+  // The ids of the dinners already on the week's plan.
+  planned: ReadonlySet<string>
+  onSwap: (swap: Swap) => void
+  onClose: () => void
+}
+
+// SwapSheet is the mobile swap sheet: the Quest log and the Regulars, as
+// desktop's plan panel lists them, segmented "Quest log · N | Regulars · N",
+// each dinner with its 48 px photo, name, difficulty and minutes. Choosing a
+// dinner swaps it into the day; a dinner already this week can't be chosen.
+export function SwapSheet({ day, planned, onSwap, onClose }: SwapSheetProps) {
+  const titleId = useId()
+  const questLog = useQuestLog()
+  const regulars = useRegulars()
+  const [source, setSource] = useState<Source>('quest_log')
+  const lists = { quest_log: questLog, regulars }
+  const list = lists[source]
+
+  const label = (s: Source) => {
+    const dinners = lists[s].data
+    return dinners === undefined ? sourceNames[s] : `${sourceNames[s]} · ${dinners.length}`
+  }
+
+  let body
+  if (list.isError) {
+    body = (
+      <ErrorBanner onRetry={() => void list.refetch()}>
+        Couldn't load your {sourceNames[source]}. {list.error.message}
+      </ErrorBanner>
+    )
+  } else if (list.isPending) {
+    body = (
+      <div aria-busy="true" aria-label={`${sourceNames[source]} loading`} className={styles.rows}>
+        {Array.from({ length: 3 }, (_, i) => (
+          <Skeleton key={i} className={styles.skeletonRow} />
+        ))}
+      </div>
+    )
+  } else if (list.data.length === 0) {
+    body = <p className={styles.empty}>{emptyLists[source]}</p>
+  } else {
+    body = (
+      <ul aria-label={sourceNames[source]} className={styles.rows}>
+        {list.data.map((dinner: QuestLogDinner) => {
+          const already = planned.has(dinner.id)
+          return (
+            <li key={dinner.id}>
+              <ListRow
+                className={already ? styles.already : undefined}
+                leading={
+                  // The row's name already says what the photo shows.
+                  <span aria-hidden="true">
+                    <Photo id={dinner.photo_id} name={dinner.name} radius="var(--radius-md)" sizes="48px" className={styles.photo} />
+                  </span>
+                }
+                title={dinner.name}
+                meta={details(dinner)}
+                // A dinner already this week is no button: it can't be chosen.
+                onClick={
+                  already
+                    ? undefined
+                    : () =>
+                        onSwap({ date: day.date, dinner: planDinner(dinner), fromQuestLog: source === 'quest_log' })
+                }
+                trailing={already && <Tag>Already this week</Tag>}
+              />
+            </li>
+          )
+        })}
+      </ul>
+    )
+  }
+
+  return (
+    <Sheet open onClose={onClose} aria-labelledby={titleId}>
+      <div className={styles.sheet}>
+        <div>
+          <h2 id={titleId} className={styles.title}>
+            Swap {weekdayName(day.date)}
+          </h2>
+          <p className={styles.replaces}>Replaces {day.dinner.name}</p>
+        </div>
+        <Segmented
+          label="Swap in from"
+          options={[
+            { value: 'quest_log', label: label('quest_log') },
+            { value: 'regulars', label: label('regulars') },
+          ]}
+          value={source}
+          onValueChange={setSource}
+        />
+        {body}
+      </div>
+    </Sheet>
+  )
+}

@@ -228,6 +228,7 @@ type RotationReview struct {
 	PlanDate  string
 	Status    string
 	Decision  sql.NullString
+	Name      sql.NullString
 	DecidedAt sql.NullString
 	UpdatedBy sql.NullString
 	CreatedAt string
@@ -316,4 +317,5 @@ type WeekPlan struct {
 	CalendarSyncedAt sql.NullString
 	CreatedAt        string
 	UpdatedAt        string
+	Revision         int64
 }

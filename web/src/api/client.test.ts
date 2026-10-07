@@ -225,4 +225,14 @@ describe('network status', () => {
     await expect(api.apiFetch('/api/v1/recipes/01J9ZR')).resolves.toEqual({ id: '01J9ZR' })
     expect(api.network.offline()).toBe(false)
   })
+
+  it('says whether a read is the service worker\'s cached copy', async () => {
+    const cached = jsonResponse(200, { id: '01J9ZR' })
+    cached.headers.set(cacheFallbackHeader, '1')
+    stubFetch(cached, jsonResponse(200, { id: '01J9ZR' }))
+    const api = createApiClient(fakeLocation(), createNetworkStatus(window), createVerifiedSession(localStorage))
+
+    await expect(api.apiRead('/api/v1/recipes/01J9ZR')).resolves.toEqual({ body: { id: '01J9ZR' }, cached: true })
+    await expect(api.apiRead('/api/v1/recipes/01J9ZR')).resolves.toEqual({ body: { id: '01J9ZR' }, cached: false })
+  })
 })

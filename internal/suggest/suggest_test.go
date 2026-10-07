@@ -21,6 +21,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes/recipestest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
@@ -646,7 +647,7 @@ func TestDeclineIsIdempotent(t *testing.T) {
 	if got := e.dinnerStatus(t, s.DinnerID); got != "archived" {
 		t.Errorf("dinner status after refused accept = %s, want archived", got)
 	}
-	names, err := db.New(e.st.Reader).ListDeclinedSuggestionNames(t.Context())
+	names, err := db.New(e.st.Reader).ListPassedNames(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -909,6 +910,74 @@ func TestLaterBatchNeverResuggestsRenamedPass(t *testing.T) {
 	e.mu.Unlock()
 	if !slices.Equal(in.Declined, []string{"Chicken Shawarma Bowls"}) || !slices.Equal(in.Context.Passed, []string{"Chicken Shawarma Bowls"}) {
 		t.Errorf("replenish batch declined %v, passed %v; want the name it was suggested under in both", in.Declined, in.Context.Passed)
+	}
+}
+
+// TestLaterBatchNeverResuggestsRenamedDrop drops a tried dinner at its
+// Rotation check ("Not for us"), renames its archived dinner, and checks
+// the next batch still refuses the name it was dropped under.
+func TestLaterBatchNeverResuggestsRenamedDrop(t *testing.T) {
+	e := newEnv(t)
+	ctx := t.Context()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dinnerSvc, err := dinners.NewService(e.st, e.grounder, e.runner, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fail := func(context.Context, string, skills.WeekRequest) (skills.Week, error) {
+		return skills.Week{}, errors.New("no draft in this test")
+	}
+	planSvc, err := plan.NewService(e.st, fail, e.runner, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := e.dinner(t, "Pad Thai", "quest_log")
+	q := db.New(e.st.Writer)
+	now := store.Now().String()
+	planID := store.NewID()
+	if err := q.CreateWeekPlan(ctx, db.CreateWeekPlanParams{ID: planID, WeekStart: "2026-10-12", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.PutPlanDay(ctx, db.PutPlanDayParams{ID: store.NewID(), PlanID: planID, Date: "2026-10-14",
+		DinnerID: sql.NullString{String: id, Valid: true}, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	day, err := store.ParseLocalDate("2026-10-14")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := planSvc.MarkTried(ctx, day); err != nil || n != 1 {
+		t.Fatalf("MarkTried = %d, %v, want 1", n, err)
+	}
+	if _, err := planSvc.DecideReview(ctx, id, plan.DecisionDrop, member); err != nil {
+		t.Fatal(err)
+	}
+	renamed := "Peanut Noodles"
+	if _, err := dinnerSvc.Update(ctx, id, dinners.Patch{Name: &renamed}, member); err != nil {
+		t.Fatal(err)
+	}
+
+	// The respelled dropped dish would ground, so only the passed names
+	// keep it out of the deck.
+	e.recipe(t, "pad thai!")
+	e.recipe(t, "Beef Ragu")
+	e.reply(
+		sideQuest("pad thai!", "Noodles, like your Chicken Fajitas.", "Chicken Fajitas"),
+		sideQuest("Beef Ragu", "Slow beef like your Beef Chili.", "Beef Chili"),
+	)
+	e.start(t)
+	res := e.runBatch(t)
+	if len(res.SuggestionIDs) != 1 || res.Dropped != 1 {
+		t.Errorf("batch result = %+v, want 1 kept and the dropped dish dropped", res)
+	}
+	if got := e.deckNames(t); !slices.Equal(got, []string{"Beef Ragu"}) {
+		t.Errorf("deck = %v, want [Beef Ragu]", got)
+	}
+	e.mu.Lock()
+	in := e.inputs[0]
+	e.mu.Unlock()
+	if !slices.Equal(in.Declined, []string{"Pad Thai"}) || !slices.Equal(in.Context.Passed, []string{"Pad Thai"}) {
+		t.Errorf("batch declined %v, passed %v; want the name it was dropped under in both", in.Declined, in.Context.Passed)
 	}
 }
 

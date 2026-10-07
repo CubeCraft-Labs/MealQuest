@@ -21,6 +21,8 @@ type Querier interface {
 	// Drops references to the runs created before the cutoff, so the purge
 	// can delete them.
 	ClearWeekPlanAIRunsBefore(ctx context.Context, cutoff string) (int64, error)
+	// How many suggestions ListDeck returns.
+	CountDeck(ctx context.Context) (int64, error)
 	// How many Regulars the household has; archived dinners are not counted.
 	CountRegularDinners(ctx context.Context) (int64, error)
 	CreateAIRun(ctx context.Context, arg CreateAIRunParams) error
@@ -32,6 +34,11 @@ type Querier interface {
 	CreatePhoto(ctx context.Context, arg CreatePhotoParams) (Photo, error)
 	CreateRecipeIngredient(ctx context.Context, arg CreateRecipeIngredientParams) error
 	CreateRecipeStep(ctx context.Context, arg CreateRecipeStepParams) error
+	CreateSuggestion(ctx context.Context, arg CreateSuggestionParams) error
+	CreateSuggestionBatch(ctx context.Context, arg CreateSuggestionBatchParams) (SuggestionBatch, error)
+	// Records the household's decision on a pending suggestion; one already
+	// decided is left as it is (0 rows).
+	DecideSuggestion(ctx context.Context, arg DecideSuggestionParams) (int64, error)
 	DeleteAIRunsBefore(ctx context.Context, cutoff string) (int64, error)
 	DeleteRecipeIngredients(ctx context.Context, recipeID string) error
 	DeleteRecipeSteps(ctx context.Context, recipeID string) error
@@ -42,6 +49,11 @@ type Querier interface {
 	// archived dinner is left as it is; archiving stopped its grounding. Run at
 	// boot, after the job runner fails the jobs a previous process left running.
 	FailOrphanedPendingDinnerGroundings(ctx context.Context, arg FailOrphanedPendingDinnerGroundingsParams) (int64, error)
+	// Fails every batch still pending or running whose job is no longer queued
+	// or running: the process stopped before enqueuing the job or before its
+	// handler recorded a result. Run at boot, after the job runner fails the
+	// jobs a previous process left running.
+	FailOrphanedSuggestionBatches(ctx context.Context, arg FailOrphanedSuggestionBatchesParams) (int64, error)
 	// Records why the background grounding of an unarchived dinner still
 	// pending at the grounding_revision it was grounded for failed; a dinner
 	// grounded some other way, renamed or archived meanwhile is left as it is
@@ -49,8 +61,14 @@ type Querier interface {
 	FailPendingDinnerGrounding(ctx context.Context, arg FailPendingDinnerGroundingParams) (int64, error)
 	// Fails every job left running, at boot before any worker starts.
 	FailRunningJobs(ctx context.Context, arg FailRunningJobsParams) (int64, error)
+	// Records a pending or running batch as done or failed; a batch already
+	// finished is left as it is (0 rows).
+	FinishSuggestionBatch(ctx context.Context, arg FinishSuggestionBatchParams) (int64, error)
 	// Returns sql.ErrNoRows until the row exists.
 	GetAISettings(ctx context.Context) (AiSetting, error)
+	// The batch still pending or running, oldest first. Returns sql.ErrNoRows
+	// when there is none.
+	GetActiveSuggestionBatch(ctx context.Context) (SuggestionBatch, error)
 	// Returns sql.ErrNoRows until the row exists.
 	GetChatSettings(ctx context.Context) (ChatSetting, error)
 	GetDinner(ctx context.Context, id string) (Dinner, error)
@@ -67,6 +85,10 @@ type Querier interface {
 	GetRecipeBySourceURL(ctx context.Context, sourceUrl string) (Recipe, error)
 	// Returns sql.ErrNoRows until the row exists.
 	GetRecipeSearchSettings(ctx context.Context) (RecipeSearchSetting, error)
+	// A suggestion with its dinner. Returns sql.ErrNoRows for an unknown id.
+	GetSuggestion(ctx context.Context, id string) (GetSuggestionRow, error)
+	// The id of the job that runs batch batch_id.
+	GetSuggestionBatchJobID(ctx context.Context, arg GetSuggestionBatchJobIDParams) (string, error)
 	// Records a dinner's grounding by hand (grounded or manual) and clears any
 	// grounding_error and pasted recipe_url: the recipe chosen replaces the
 	// link. It writes only an unarchived dinner still as it was observed
@@ -82,6 +104,11 @@ type Querier interface {
 	// minutes_total or difficulty already set is kept: a pending dinner has
 	// them only when a member edited them while it was grounding.
 	GroundPendingDinner(ctx context.Context, arg GroundPendingDinnerParams) (int64, error)
+	// The pending suggestions whose dinner is still suggested, oldest first,
+	// with their dinners.
+	ListDeck(ctx context.Context) ([]ListDeckRow, error)
+	// The name of every declined suggestion's dinner, oldest decision first.
+	ListDeclinedSuggestionNames(ctx context.Context) ([]string, error)
 	ListDinnersByStatus(ctx context.Context, status string) ([]Dinner, error)
 	// The planned dinners dated from from_date up to but not including
 	// to_date, oldest first. Days with no dinner are left out.
@@ -94,10 +121,17 @@ type Querier interface {
 	// Every dinner a new or renamed dinner must not repeat, with the
 	// source_url of the recipe it is grounded in (NULL while it has none).
 	ListUnarchivedDinners(ctx context.Context) ([]ListUnarchivedDinnersRow, error)
+	// Moves a dinner still suggested to status (quest_log or archived),
+	// recording updated_by; a dinner no longer suggested is left as it is
+	// (0 rows).
+	MoveSuggestedDinner(ctx context.Context, arg MoveSuggestedDinnerParams) (int64, error)
 	// Stores a partial result of a running job.
 	PublishJobResult(ctx context.Context, arg PublishJobResultParams) (int64, error)
 	// An unknown id returns sql.ErrNoRows.
 	SetDinnerFavorite(ctx context.Context, arg SetDinnerFavoriteParams) (Dinner, error)
+	// Marks a pending batch running; a batch in any other status is left as
+	// it is (0 rows).
+	StartSuggestionBatch(ctx context.Context, arg StartSuggestionBatchParams) (int64, error)
 	SucceedJob(ctx context.Context, arg SucceedJobParams) (int64, error)
 	// An unknown id returns sql.ErrNoRows.
 	ToggleDinnerFavorite(ctx context.Context, arg ToggleDinnerFavoriteParams) (Dinner, error)

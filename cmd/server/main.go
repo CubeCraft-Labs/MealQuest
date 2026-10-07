@@ -27,6 +27,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secretbox"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/server"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/suggest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/migrations"
 )
 
@@ -106,6 +107,10 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	suggestSvc, err := suggest.NewService(db, grounder, sideQuests(ai, guard), runner, logger)
+	if err != nil {
+		return err
+	}
 
 	sessions, err := auth.NewSessionManager(db, cfg.SessionIdle, cfg.SessionMax)
 	if err != nil {
@@ -123,7 +128,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, search, ai, dinnerSvc, runner, photos, frontend.Assets())
+	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, search, ai, dinnerSvc, suggestSvc, runner, photos, frontend.Assets())
 	if err != nil {
 		return err
 	}
@@ -143,6 +148,11 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	// queued or running is failed as interrupted, before any request can
 	// create one.
 	if _, err := dinnerSvc.FailInterruptedGroundings(ctx); err != nil {
+		return err
+	}
+	// Likewise a suggestion batch with no job left to run it, so it does
+	// not block every later batch.
+	if _, err := suggestSvc.FailInterruptedBatches(ctx); err != nil {
 		return err
 	}
 	srv := &http.Server{
@@ -247,7 +257,8 @@ func newJobRunner(db *store.Store, logger *slog.Logger) (*jobs.Runner, *jobKinds
 
 // registerJobKinds registers the framework's job kinds on runner. A feature
 // service registers its own kinds when it is built, before the runner
-// starts (dinners.NewService registers dinners.KindGroundDinner).
+// starts (dinners.NewService registers dinners.KindGroundDinner and
+// suggest.NewService suggest.KindSuggestionBatch).
 func registerJobKinds(runner *jobs.Runner) (*jobKinds, error) {
 	builtins, err := jobs.RegisterBuiltins(runner)
 	if err != nil {
@@ -265,6 +276,18 @@ func normalizer(ai *aisettings.Service, guard *harness.Guard) recipes.Normalizer
 			return skills.NormalizedRecipe{}, err
 		}
 		return skills.NormalizeRecipe(ctx, cfg, scope, in)
+	}
+}
+
+// sideQuests runs suggest_side_quests with the AI settings current at each
+// run, sharing guard.
+func sideQuests(ai *aisettings.Service, guard *harness.Guard) suggest.Suggester {
+	return func(ctx context.Context, scope string, in skills.SideQuestsRequest) (skills.SideQuests, error) {
+		cfg, err := ai.HarnessConfig(ctx, guard)
+		if err != nil {
+			return skills.SideQuests{}, err
+		}
+		return skills.SuggestSideQuests(ctx, cfg, scope, in)
 	}
 }
 

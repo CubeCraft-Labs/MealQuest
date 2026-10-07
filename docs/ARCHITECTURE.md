@@ -260,6 +260,47 @@ automatic** (D-021).
   dinner, is 500, logged with a fixed reason and the dinner id only —
   never the link, which can carry a personal token, or dependency error
   text.
+- Side quest suggestions (`suggest.Service`). `POST
+  /api/v1/suggestions/batches` creates a `manual` batch and enqueues its
+  `suggestion_batch` job, answering 202 `{batch_id, job_id, trigger,
+  status}` without waiting; while a batch is `pending` or `running` it
+  answers 202 with that batch instead, so at most one runs at a time (the
+  check and insert share one write transaction). The job reads the
+  household context, the deck's names and every declined name, runs
+  `suggest_side_quests` for 5 Side quests (scope: the batch id), then
+  grounds the survivors in the model's order with `Grounder.GroundMany`,
+  as many as are still wanted at a time, until 5 are kept or none are
+  left. A Side quest no recipe grounds is dropped; each round's grounded
+  ones are stored before the next — a dinner with status `suggested`,
+  origin `side_quest`, grounding_status `grounded` with the recipe's
+  recipe_id, photo_id, method, minutes_total and difficulty and the
+  model's cuisine, and a `pending` suggestion with the reason and
+  `cited_regular_ids` — unless a dinner it repeats was added, or a Regular
+  it cites renamed or archived, while it was grounding. The job publishes
+  `{batch_id, stage, suggestion_ids, dropped}` as it goes (`suggesting`,
+  `grounding`, `done`). It fails with `no_regulars`, `ai_failed` (the
+  skill or `normalize_recipe` failed; no Side quest is made up instead,
+  D-017), `search_not_configured` or `search_failed`, and the batch is set
+  `failed`; Side quests stored before the failure stay in the deck. At
+  boot, after the job runner fails the jobs a previous process left
+  running, every batch still `pending` or `running` with no job queued or
+  running is set `failed`, so it does not block the next.
+  `GET /api/v1/suggestions/deck` returns `{suggestions: [{id, dinner_id,
+  name, photo_url, difficulty, method, minutes_total, cuisine, reason,
+  cited_regular_ids, status, dinner_status, decided_at, created_at}]}`:
+  the `pending` suggestions whose dinner is still `suggested`, oldest
+  first. `POST /api/v1/suggestions/{id}/accept` (Try it) sets the
+  suggestion `accepted` and moves its dinner to `quest_log`; `POST
+  /api/v1/suggestions/{id}/decline` (Pass) sets it `declined` and archives
+  the dinner, whose name every later batch reads as declined. Both record
+  the session's subject as the dinner's `updated_by` and answer 200
+  `{suggestion, replenish_job_id}`. Repeating a decision changes nothing
+  and answers 200; the opposite decision is 409 `suggestion_decided`, a
+  suggestion whose dinner left the deck some other way 409
+  `dinner_not_suggested`, and an unknown id 404. A decision that leaves
+  fewer than 5 in the deck starts a `replenish` batch, whose job id it
+  returns, unless a batch is already pending or running
+  (`replenish_job_id` is then null).
 - `/health` — liveness.
 - Everything else serves the embedded PWA with SPA fallback.
 

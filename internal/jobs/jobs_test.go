@@ -645,7 +645,6 @@ func TestFinalWriteErrorIsRetried(t *testing.T) {
 func TestBlockedFinalWriteDoesNotHoldShutdown(t *testing.T) {
 	st := migratedStore(t)
 	r := newRunner(t, st, 1)
-	r.recordTimeout = 100 * time.Millisecond
 	started, finish := make(chan struct{}), make(chan struct{})
 	k := register(t, r, "count", func(ctx context.Context, p countPayload, publish func(countResult) error) (countResult, error) {
 		close(started)
@@ -676,9 +675,11 @@ func TestBlockedFinalWriteDoesNotHoldShutdown(t *testing.T) {
 		stop()
 		close(stopped)
 	}()
+	// The final write's attempt ends after 5 seconds; well past that, the
+	// worker is waiting for the writer with no bound.
 	select {
 	case <-stopped:
-	case <-time.After(5 * time.Second):
+	case <-time.After(15 * time.Second):
 		conn.Close()
 		<-stopped
 		t.Fatal("worker waited for a held writer through shutdown")

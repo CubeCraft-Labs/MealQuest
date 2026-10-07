@@ -51,7 +51,9 @@ func (r batchResult) PublicJSON() ([]byte, error) { return json.Marshal(r) }
 // instead. Each round's grounded Side quests are stored before the next
 // round starts, so the deck fills as the batch goes. The batch ends done
 // or failed; Side quests stored before a failure stay in the deck. When
-// recording the batch's end fails, so does the job.
+// recording the batch's end fails, so does the job; when it times out at
+// shutdown, the job is left running and the batch with it, for the next
+// start to fail.
 func (s *Service) runBatch(ctx context.Context, p BatchJob, publish func(batchResult) error) (batchResult, error) {
 	n, err := db.New(s.st.Writer).StartSuggestionBatch(ctx, db.StartSuggestionBatchParams{
 		UpdatedAt: store.Now().String(),
@@ -64,14 +66,13 @@ func (s *Service) runBatch(ctx context.Context, p BatchJob, publish func(batchRe
 		return batchResult{}, fmt.Errorf("suggest: batch %s is not pending", p.BatchID)
 	}
 	res, err := s.fill(ctx, p.BatchID, publish)
-	write := context.WithoutCancel(ctx)
 	if err == nil {
-		if err := s.finishBatch(write, p.BatchID, BatchDone); err != nil {
+		if err := s.finishBatch(ctx, p.BatchID, BatchDone); err != nil {
 			return batchResult{}, err
 		}
 		return res, nil
 	}
-	finishErr := s.finishBatch(write, p.BatchID, BatchFailed)
+	finishErr := s.finishBatch(ctx, p.BatchID, BatchFailed)
 	if ctx.Err() != nil {
 		return batchResult{}, errors.Join(ctx.Err(), finishErr)
 	}

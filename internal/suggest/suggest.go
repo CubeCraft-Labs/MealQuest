@@ -217,11 +217,16 @@ func (s *Service) startBatch(ctx context.Context, tx *sql.Tx, trigger string) (B
 	return Batch{ID: row.ID, JobID: jobID, Trigger: row.Trigger, Status: row.Status, Created: true}, nil
 }
 
-// finishBatch records running batch id as status. Its job's handler
-// returns any error, so the job never ends succeeded with the batch still
-// running; the runner keeps only a code, so the error is logged too.
+// finishBatch records running batch id as status, with
+// jobs.FinalWriteContext: the write is made even when ctx has been
+// cancelled, but a writer that stays busy cannot hold its worker past
+// jobs.FinalWriteTimeout. Its job's handler returns any error, so the job
+// never ends succeeded with the batch still running; the runner keeps only
+// a code, so the error is logged too.
 func (s *Service) finishBatch(ctx context.Context, id, status string) error {
-	n, err := db.New(s.st.Writer).FinishSuggestionBatch(ctx, db.FinishSuggestionBatchParams{
+	write, cancel := jobs.FinalWriteContext(ctx)
+	defer cancel()
+	n, err := db.New(s.st.Writer).FinishSuggestionBatch(write, db.FinishSuggestionBatchParams{
 		Status:    status,
 		UpdatedAt: store.Now().String(),
 		ID:        id,

@@ -63,10 +63,20 @@ const (
 	retryMax = 5 * time.Second
 )
 
-// recordTimeout bounds each attempt at a job's final write, so a writer
-// connection that stays busy cannot hold a stopping worker, and with it
-// shutdown, open.
-const recordTimeout = 5 * time.Second
+// FinalWriteTimeout bounds each attempt at a job's final write, and at a
+// handler's own last write, so a writer connection that stays busy cannot
+// hold a stopping worker, and with it shutdown, open.
+const FinalWriteTimeout = 5 * time.Second
+
+// FinalWriteContext returns the context for one attempt at a final write
+// of a job: it is not cancelled with ctx, so a job that finishes during
+// shutdown is still recorded, but it ends after FinalWriteTimeout. A
+// handler makes its own last write, the one recording what the job did,
+// with it too, and returns the error when the attempt times out, so its
+// worker can stop; the next Start fails the job as interrupted.
+func FinalWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), FinalWriteTimeout)
+}
 
 // codePattern is the form of every failure code: lower-case snake case.
 var codePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
@@ -137,8 +147,6 @@ type Runner struct {
 	wake chan struct{}
 	// claim claims the oldest queued job, marking it running at now.
 	claim func(ctx context.Context, now sql.NullString) (db.Job, error)
-	// recordTimeout bounds each attempt at a job's final write.
-	recordTimeout time.Duration
 
 	mu       sync.Mutex
 	handlers map[string]handler
@@ -159,13 +167,12 @@ func NewRunner(st *store.Store, logger *slog.Logger, workers int) (*Runner, erro
 		return nil, fmt.Errorf("jobs: %d workers, want at least 1", workers)
 	}
 	return &Runner{
-		st:            st,
-		logger:        logger,
-		workers:       workers,
-		wake:          make(chan struct{}, workers),
-		claim:         db.New(st.Writer).ClaimNextJob,
-		recordTimeout: recordTimeout,
-		handlers:      make(map[string]handler),
+		st:       st,
+		logger:   logger,
+		workers:  workers,
+		wake:     make(chan struct{}, workers),
+		claim:    db.New(st.Writer).ClaimNextJob,
+		handlers: make(map[string]handler),
 	}, nil
 }
 
@@ -493,14 +500,14 @@ func (r *Runner) fail(ctx context.Context, logger *slog.Logger, id, code string)
 // record makes a job's final write, which must change the one running job.
 // A database error is retried with backoff until the write lands, so a
 // worker never moves on from a job it has finished while leaving it
-// running. Each attempt is made even when ctx has been cancelled, and is
-// bounded by r.recordTimeout; once ctx is cancelled, a failed or timed-out
-// attempt is not retried and the job stays running, so the next Start
-// fails it as interrupted.
+// running. Each attempt is made with FinalWriteContext, so even when ctx
+// has been cancelled, and is bounded by FinalWriteTimeout; once ctx is
+// cancelled, a failed or timed-out attempt is not retried and the job
+// stays running, so the next Start fails it as interrupted.
 func (r *Runner) record(ctx context.Context, logger *slog.Logger, what string, write func(context.Context) (int64, error)) {
 	backoff := retryMin
 	for {
-		attempt, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.recordTimeout)
+		attempt, cancel := FinalWriteContext(ctx)
 		n, err := write(attempt)
 		cancel()
 		if err == nil {

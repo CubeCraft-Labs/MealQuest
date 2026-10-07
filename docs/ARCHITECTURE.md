@@ -287,7 +287,10 @@ automatic** (D-021).
   recording the batch's end fails, its job fails; the job runner retries
   a job's final status write with backoff until it lands, each attempt
   bounded at 5 seconds; at shutdown an attempt that fails or times out is
-  not retried, and the next start fails the job as interrupted. Each time a
+  not retried, and the next start fails the job as interrupted. Recording
+  the batch's end is bounded the same way (one attempt, 5 seconds, made
+  even during shutdown), so a busy writer cannot hold a stopping worker;
+  a batch whose end timed out is left `running` with its job. Each time a
   batch is started, before the active batch is selected, every batch
   still `pending` or `running` with no job queued or running (the process
   stopped, or recording its end failed) is set `failed`, so it does not

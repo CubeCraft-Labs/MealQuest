@@ -1029,6 +1029,113 @@ func TestBatchRecoversWhenRecordingItsEndAndItsJobsEndFail(t *testing.T) {
 	}
 }
 
+func TestBlockedBatchEndDoesNotHoldShutdown(t *testing.T) {
+	e := newEnv(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := e.runner.Start(ctx); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	stopped := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		<-stopped
+	})
+	e.search.Gate = make(chan struct{})
+	e.search.Err = errors.New("search down")
+	e.reply(sideQuest("Chili Verde", "Your Beef Chili gone green.", "Beef Chili"))
+
+	b, err := e.svc.StartBatch(t.Context(), suggest.TriggerManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for len(e.search.Queries()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("batch never searched")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Hold the only writer connection, so recording the batch's end
+	// waits for it once the search fails.
+	conn, err := e.st.Writer.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waits := e.st.Writer.Stats().WaitCount
+	close(e.search.Gate)
+	for e.st.Writer.Stats().WaitCount == waits {
+		if time.Now().After(deadline) {
+			conn.Close()
+			t.Fatal("batch end never waited for the writer")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	go func() {
+		e.runner.Wait()
+		close(stopped)
+	}()
+	cancel()
+	// Each final write's attempt ends after jobs.FinalWriteTimeout; well
+	// past that, the worker is waiting for the writer with no bound.
+	select {
+	case <-stopped:
+	case <-time.After(jobs.FinalWriteTimeout + 10*time.Second):
+		conn.Close()
+		<-stopped
+		t.Fatal("worker waited for a held writer through shutdown")
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.batchStatus(t, b.ID); got != suggest.BatchRunning {
+		t.Fatalf("after shutdown batch status = %s, want left running", got)
+	}
+
+	// The next process fails the job as interrupted, and the batch no
+	// longer blocks the next one.
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	next, err := jobs.NewRunner(e.st, logger, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refuse := func(context.Context, string, skills.SideQuestsRequest) (skills.SideQuests, error) {
+		return skills.SideQuests{}, errors.New("not wanted")
+	}
+	svc, err := suggest.NewService(e.st, e.grounder, refuse, next, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextCtx, nextCancel := context.WithCancel(context.Background())
+	if err := next.Start(nextCtx); err != nil {
+		nextCancel()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		nextCancel()
+		next.Wait()
+	})
+	job, err := next.Get(t.Context(), b.JobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != jobs.StatusFailed || job.Error == nil || *job.Error != jobs.CodeInterrupted {
+		t.Fatalf("interrupted job = %+v, want failed with %q", job, jobs.CodeInterrupted)
+	}
+	again, err := svc.StartBatch(t.Context(), suggest.TriggerManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.Created || again.ID == b.ID {
+		t.Errorf("next batch = %+v, want a new one", again)
+	}
+	if got := e.batchStatus(t, b.ID); got != suggest.BatchFailed {
+		t.Errorf("interrupted batch status = %s, want failed", got)
+	}
+}
+
 func TestStartBatchRefusesUnknownTrigger(t *testing.T) {
 	e := newEnv(t)
 	if _, err := e.svc.StartBatch(t.Context(), "whenever"); err == nil {

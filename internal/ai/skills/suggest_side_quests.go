@@ -320,8 +320,9 @@ func drop(q SideQuest, regulars regularNames, known *harness.Deduper, kept []Sid
 // Chilis" does not, nor does "Cafe" with a combining accent after it
 // mention "Cafe". Punctuation at either end of the name, with any spacing
 // beside it, is optional, and a mention takes it in only where text spells
-// it and the border still holds after it: "Easy Beef Chili!" is mentioned
-// by "Easy Beef Chili." too, and by "Easy Beef Chili!x" without its "!". A
+// it, spaced in any way, and the border still holds after it: "Easy Beef
+// Chili!" is mentioned by "Easy Beef Chili." too, by "Easy Beef Chili !"
+// with its "!", and by "Easy Beef Chili!x" without its "!". A
 // combining mark is part of its letter, never punctuation. A mention names
 // its Regular unless a mention of a different Regular covers the same text
 // or more, so "Your Easy Beef Chili." names "Easy Beef Chili" and not "Beef
@@ -356,11 +357,11 @@ func (r regularNames) named(text string) []string {
 			if !bordered(start, end) {
 				continue
 			}
-			if strings.HasSuffix(text[:start], lead) && bordered(start-len(lead), end) {
-				start -= len(lead)
+			if s := spelledBefore(text, start, lead); s >= 0 && bordered(s, end) {
+				start = s
 			}
-			if strings.HasPrefix(text[end:], trail) && bordered(start, end+len(trail)) {
-				end += len(trail)
+			if e := spelledAfter(text, end, trail); e >= 0 && bordered(start, e) {
+				end = e
 			}
 			mentions = append(mentions, mention{name, start, end})
 		}
@@ -375,6 +376,33 @@ func (r regularNames) named(text string) []string {
 		}
 	}
 	return names
+}
+
+// spelledAfter returns where outer ends when text spells it from at,
+// ignoring spacing, or -1 when text does not.
+func spelledAfter(text string, at int, outer string) int {
+	for _, c := range strings.Join(strings.Fields(outer), "") {
+		at = len(text) - len(strings.TrimLeftFunc(text[at:], unicode.IsSpace))
+		if !strings.HasPrefix(text[at:], string(c)) {
+			return -1
+		}
+		at += utf8.RuneLen(c)
+	}
+	return at
+}
+
+// spelledBefore returns where outer starts when text spells it up to at,
+// ignoring spacing, or -1 when text does not.
+func spelledBefore(text string, at int, outer string) int {
+	punct := []rune(strings.Join(strings.Fields(outer), ""))
+	for i := len(punct) - 1; i >= 0; i-- {
+		at = len(strings.TrimRightFunc(text[:at], unicode.IsSpace))
+		if !strings.HasSuffix(text[:at], string(punct[i])) {
+			return -1
+		}
+		at -= utf8.RuneLen(punct[i])
+	}
+	return at
 }
 
 // isWord reports whether c is a letter, a mark on one or a digit.

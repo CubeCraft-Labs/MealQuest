@@ -642,6 +642,64 @@ func TestFinalWriteErrorIsRetried(t *testing.T) {
 	}
 }
 
+func TestBlockedFinalWriteDoesNotHoldShutdown(t *testing.T) {
+	st := migratedStore(t)
+	r := newRunner(t, st, 1)
+	r.recordTimeout = 100 * time.Millisecond
+	started, finish := make(chan struct{}), make(chan struct{})
+	k := register(t, r, "count", func(ctx context.Context, p countPayload, publish func(countResult) error) (countResult, error) {
+		close(started)
+		<-finish
+		return countResult{Done: p.Steps}, nil
+	})
+	stop := start(t, r)
+	id := enqueue(t, k, countPayload{Steps: 3})
+	<-started
+
+	// Hold the only writer connection, so the job's final write waits for it.
+	conn, err := st.Writer.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waits := st.Writer.Stats().WaitCount
+	close(finish)
+	deadline := time.Now().Add(5 * time.Second)
+	for st.Writer.Stats().WaitCount == waits {
+		if time.Now().After(deadline) {
+			t.Fatal("final write never waited for the writer")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		conn.Close()
+		<-stopped
+		t.Fatal("worker waited for a held writer through shutdown")
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if job := waitFor(t, r, id, func(Job) bool { return true }); job.Status != StatusRunning {
+		t.Fatalf("after shutdown job = %+v, want left running", job)
+	}
+	second := newRunner(t, st, 1)
+	register(t, second, "count", func(context.Context, countPayload, func(countResult) error) (countResult, error) {
+		return countResult{}, nil
+	})
+	start(t, second)
+	if job := waitFor(t, second, id, finished); job.Status != StatusFailed || job.Error == nil || *job.Error != CodeInterrupted {
+		t.Errorf("interrupted job = %+v, want failed with %q", job, CodeInterrupted)
+	}
+}
+
 func TestRunnerEnqueueByKindName(t *testing.T) {
 	t.Parallel()
 	st := migratedStore(t)

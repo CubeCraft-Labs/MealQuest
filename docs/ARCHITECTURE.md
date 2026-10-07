@@ -285,7 +285,9 @@ automatic** (D-021).
   D-017), `search_not_configured` or `search_failed`, and the batch is set
   `failed`; Side quests stored before the failure stay in the deck. If
   recording the batch's end fails, its job fails; the job runner retries
-  a job's final status write with backoff until it lands. Each time a
+  a job's final status write with backoff until it lands, each attempt
+  bounded at 5 seconds; at shutdown an attempt that fails or times out is
+  not retried, and the next start fails the job as interrupted. Each time a
   batch is started, before the active batch is selected, every batch
   still `pending` or `running` with no job queued or running (the process
   stopped, or recording its end failed) is set `failed`, so it does not

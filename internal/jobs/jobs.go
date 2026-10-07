@@ -63,6 +63,11 @@ const (
 	retryMax = 5 * time.Second
 )
 
+// recordTimeout bounds each attempt at a job's final write, so a writer
+// connection that stays busy cannot hold a stopping worker, and with it
+// shutdown, open.
+const recordTimeout = 5 * time.Second
+
 // codePattern is the form of every failure code: lower-case snake case.
 var codePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 
@@ -132,6 +137,8 @@ type Runner struct {
 	wake chan struct{}
 	// claim claims the oldest queued job, marking it running at now.
 	claim func(ctx context.Context, now sql.NullString) (db.Job, error)
+	// recordTimeout bounds each attempt at a job's final write.
+	recordTimeout time.Duration
 
 	mu       sync.Mutex
 	handlers map[string]handler
@@ -152,12 +159,13 @@ func NewRunner(st *store.Store, logger *slog.Logger, workers int) (*Runner, erro
 		return nil, fmt.Errorf("jobs: %d workers, want at least 1", workers)
 	}
 	return &Runner{
-		st:       st,
-		logger:   logger,
-		workers:  workers,
-		wake:     make(chan struct{}, workers),
-		claim:    db.New(st.Writer).ClaimNextJob,
-		handlers: make(map[string]handler),
+		st:            st,
+		logger:        logger,
+		workers:       workers,
+		wake:          make(chan struct{}, workers),
+		claim:         db.New(st.Writer).ClaimNextJob,
+		recordTimeout: recordTimeout,
+		handlers:      make(map[string]handler),
 	}, nil
 }
 
@@ -485,13 +493,16 @@ func (r *Runner) fail(ctx context.Context, logger *slog.Logger, id, code string)
 // record makes a job's final write, which must change the one running job.
 // A database error is retried with backoff until the write lands, so a
 // worker never moves on from a job it has finished while leaving it
-// running. Each attempt is made even when ctx has been cancelled; once it
-// is, a failed attempt is not retried and the job stays running, so the
-// next Start fails it as interrupted.
+// running. Each attempt is made even when ctx has been cancelled, and is
+// bounded by r.recordTimeout; once ctx is cancelled, a failed or timed-out
+// attempt is not retried and the job stays running, so the next Start
+// fails it as interrupted.
 func (r *Runner) record(ctx context.Context, logger *slog.Logger, what string, write func(context.Context) (int64, error)) {
 	backoff := retryMin
 	for {
-		n, err := write(context.WithoutCancel(ctx))
+		attempt, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.recordTimeout)
+		n, err := write(attempt)
+		cancel()
 		if err == nil {
 			if n != 1 {
 				logger.ErrorContext(ctx, what, "error", "job is not running")

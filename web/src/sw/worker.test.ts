@@ -1,7 +1,8 @@
 // The service worker itself needs worker globals, so these tests read its
 // source: they pin the parts routes.ts cannot express — the API cache's
 // strategy, the font strategy's expiration, the font route's place ahead of
-// the precache route and network-only requests left to the browser.
+// the precache route, network-only requests left to the browser and stale
+// caches deleted on activate.
 import { describe, expect, it } from 'vitest'
 import source from '../sw.ts?raw'
 
@@ -35,6 +36,12 @@ describe('service worker source', () => {
     )
     expect(source).toContain('registerRoute(answered, handle, method)')
     expect(source).not.toContain('registerRoute(() => true')
+  })
+
+  it('deletes every stale cache on activate', () => {
+    expect(source).toMatch(
+      /self\.addEventListener\('activate', \(event\) => \{\s*const current = \[workboxCacheNames\.precache, \.\.\.Object\.values\(cacheNames\)\][\s\S]*?staleCaches\(names, current\)\.map\(\(name\) => caches\.delete\(name\)\)/,
+    )
   })
 
   it('activates a waiting worker when the update prompt sends SKIP_WAITING', () => {

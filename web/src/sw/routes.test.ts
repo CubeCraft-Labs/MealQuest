@@ -146,11 +146,20 @@ describe('cache names', () => {
   it('all start with mealquest-', () => {
     for (const name of Object.values(cacheNames)) expect(name).toMatch(/^mealquest-/)
   })
+
+  it('are v2, so activate deletes the v1 caches', () => {
+    // v1 API responses held dinners with the pasted recipe_url, which can
+    // carry a personal token; offline, the worker would still serve them.
+    expect(cacheNames.api).toBe('mealquest-api-v2')
+    const current = ['mealquest-precache-v2', ...Object.values(cacheNames)]
+    const v1 = ['mealquest-precache-v1', 'mealquest-api-v1', 'mealquest-media-v1', 'mealquest-fonts-v1']
+    expect(staleCaches([...v1, ...current], current)).toEqual(v1)
+  })
 })
 
 describe('staleCaches', () => {
   it('deletes only MealQuest caches that are not current', () => {
-    const current = ['mealquest-precache-v1', ...Object.values(cacheNames)]
+    const current = ['mealquest-precache-v2', ...Object.values(cacheNames)]
     const names = [
       ...current,
       'mealquest-precache',

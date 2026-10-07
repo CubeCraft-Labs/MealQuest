@@ -496,10 +496,19 @@ func checkRecipeURL(raw string) (*url.URL, error) {
 	return u, nil
 }
 
+// credentialWords end the name nameFromURL takes from a slug: a pasted link
+// can carry a personal token in its path, as in /stew-access_token-abc123,
+// and the name is shown in every dinner response.
+var credentialWords = map[string]bool{
+	"access": true, "api": true, "apikey": true, "auth": true, "credential": true,
+	"credentials": true, "passcode": true, "password": true, "passwd": true,
+	"secret": true, "session": true, "sig": true, "signature": true, "token": true,
+}
+
 // nameFromURL names a dinner from the last path segment of u: separators
-// become spaces, a file extension and words of only digits are dropped and
-// the first letter is capitalized, so
-// https://example.com/recipes/12345/chicken-tikka-masala/ is
+// become spaces, a file extension and words holding a digit are dropped, the
+// name ends at the first of credentialWords and the first letter is
+// capitalized, so https://example.com/recipes/12345/chicken-tikka-masala/ is
 // "Chicken tikka masala". ok is false when no usable name is left.
 func nameFromURL(u *url.URL) (name string, ok bool) {
 	segments := strings.FieldsFunc(u.Path, func(r rune) bool { return r == '/' })
@@ -512,8 +521,12 @@ func nameFromURL(u *url.URL) (name string, ok bool) {
 	}
 	var words []string
 	for _, w := range strings.FieldsFunc(slug, func(r rune) bool { return r == '-' || r == '_' || r == '+' || unicode.IsSpace(r) }) {
-		if strings.IndexFunc(w, func(r rune) bool { return !unicode.IsDigit(r) }) >= 0 {
-			words = append(words, strings.ToLower(w))
+		w = strings.ToLower(w)
+		if credentialWords[w] {
+			break
+		}
+		if strings.IndexFunc(w, unicode.IsDigit) < 0 {
+			words = append(words, w)
 		}
 	}
 	name = strings.Join(words, " ")

@@ -25,7 +25,9 @@ export interface RouteRequest {
 }
 
 // Bumping the version renames every cache; activate then deletes the old ones.
-export const cacheVersion = 'v1'
+// v2 drops v1 API responses, whose dinners still carried the pasted
+// recipe_url.
+export const cacheVersion = 'v2'
 export const cachePrefix = 'mealquest-'
 
 export const cacheNames = {

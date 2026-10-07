@@ -266,6 +266,36 @@ func TestDinnerResponsesHideRecipeURL(t *testing.T) {
 	}
 }
 
+// TestDinnerResponsesHideTokenInLinkPath: a personal token can sit in the
+// link's last path segment, which names the dinner, so the name stops before
+// it and neither the create response nor a later list read shows it.
+func TestDinnerResponsesHideTokenInLinkPath(t *testing.T) {
+	t.Parallel()
+	router, _ := newDinnersRouter(t)
+
+	const link = "https://c.example/recipes/stew-access_token-personaltokenabc123"
+	rec, body := callDinners(t, router, http.MethodPost, dinnersPath, `{"recipe_url":"`+link+`"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: %s", rec.Code, rec.Body)
+	}
+	if body["name"] != "Stew" {
+		t.Errorf("name = %v, want Stew", body["name"])
+	}
+	created := rec.Body.String()
+	rec, _ = callDinners(t, router, http.MethodGet, dinnersPath+"?status=regular", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET status=regular = %d: %s", rec.Code, rec.Body)
+	}
+	for _, resp := range []struct{ name, body string }{{"create", created}, {"list", rec.Body.String()}} {
+		lower := strings.ToLower(resp.body)
+		for _, secret := range []string{"personaltokenabc123", "abc123", "access", "token"} {
+			if strings.Contains(lower, secret) {
+				t.Errorf("%s response contains %q: %s", resp.name, secret, resp.body)
+			}
+		}
+	}
+}
+
 func TestCreateDinnerDuplicate(t *testing.T) {
 	t.Parallel()
 	router, st := newDinnersRouter(t)

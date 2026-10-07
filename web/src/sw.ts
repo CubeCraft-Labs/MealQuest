@@ -28,7 +28,7 @@ declare const self: ServiceWorkerGlobalScope & {
   __WB_MANIFEST: Array<{ url: string; revision: string | null }>
 }
 
-// The precache becomes mealquest-precache-v1.
+// The precache becomes mealquest-precache-v2.
 setCacheNameDetails({ prefix: 'mealquest', precache: 'precache', suffix: cacheVersion })
 
 const day = 24 * 60 * 60

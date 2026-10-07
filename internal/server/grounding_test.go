@@ -204,6 +204,57 @@ func TestGetRecipeCandidatesSearchFails(t *testing.T) {
 	}
 }
 
+// TestGetRecipeCandidatesStoredLookupFailure: a candidate whose stored
+// recipe cannot be read, or is stored incomplete, is a 500 logged by reason
+// and dinner id, never with the candidate's URL, which can carry a personal
+// token, or the database error.
+func TestGetRecipeCandidatesStoredLookupFailure(t *testing.T) {
+	t.Parallel()
+	const (
+		token = "personal-token-abc123"
+		host  = "secret-candidate.example"
+		page  = "https://" + host + "/curry?access_token=" + token
+	)
+	for _, tc := range []struct {
+		name, sabotage string
+		leaks          []string
+	}{
+		// Renaming a column the lookup selects fails the read.
+		{"lookup", `ALTER TABLE recipes RENAME COLUMN yield TO yield_gone`, []string{"no such column", "yield"}},
+		// A recipe stored without its photo, method or difficulty is
+		// incomplete.
+		{"incomplete", `INSERT INTO recipes (id, source_url, title, raw_jsonld, fetched_at, created_at, updated_at)
+			VALUES ('r-incomplete', '` + page + `', 'Curry', '{}', 'now', 'now', 'now')`, []string{"r-incomplete", "no photo"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			e := newDinnersEnv(t)
+			e.search.Results["Chicken curry"] = []recipes.Candidate{{URL: page}}
+			id := createDinner(t, e.h, `{"name":"Chicken curry"}`) // runner not started: stays pending
+			if _, err := e.st.Writer.ExecContext(t.Context(), tc.sabotage); err != nil {
+				t.Fatal(err)
+			}
+
+			rec, body := callDinners(t, e.h, http.MethodGet, dinnersPath+"/"+id+"/recipe-candidates", "")
+			if rec.Code != http.StatusInternalServerError || errorCode(body) != "internal" {
+				t.Errorf("GET = %d %s, want 500 internal", rec.Code, rec.Body)
+			}
+			logs := e.logs.String()
+			for _, secret := range append([]string{page, host, token, "access_token"}, tc.leaks...) {
+				if strings.Contains(rec.Body.String(), secret) {
+					t.Errorf("response contains %q: %s", secret, rec.Body)
+				}
+				if strings.Contains(logs, secret) {
+					t.Errorf("logs contain %q: %s", secret, logs)
+				}
+			}
+			if !strings.Contains(logs, "reason=candidates_failed") || !strings.Contains(logs, "dinner_id="+id) {
+				t.Errorf("logs = %q, want reason=candidates_failed and the dinner id", logs)
+			}
+		})
+	}
+}
+
 func TestPostGroundViaCandidate(t *testing.T) {
 	t.Parallel()
 	e := newDinnersEnv(t).withRecipes(t)

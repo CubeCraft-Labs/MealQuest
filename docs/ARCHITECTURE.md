@@ -240,7 +240,12 @@ automatic** (D-021).
   (kept in memory, so a restart means fetching the candidates again) at
   the `grounding_revision` it was searched at, so a candidate offered
   before any rename is refused even if the name is changed back; the
-  page's URL, which may carry a token, is never returned or cached.
+  page's URL, which may carry a token, is never returned or cached. An
+  unknown dinner is 404, recipe search not set up 409 `not_configured` and
+  a search failure 502 `search_failed`; any other failure, such as a
+  stored recipe that cannot be read, is 500, logged with a fixed reason
+  and the dinner id only — never a candidate's URL or dependency error
+  text.
   `POST /api/v1/dinners/{id}/ground` takes exactly one of `{candidate_id}`,
   `{recipe_url}` (both grounded with `GroundURL`, setting `grounded`) or `{manual: {ingredients[], steps[], minutes,
   method}}` (1–100 ingredient lines, up to 100 steps, each non-blank and at

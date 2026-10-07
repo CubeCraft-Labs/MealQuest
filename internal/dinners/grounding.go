@@ -85,6 +85,11 @@ var ErrGroundTimeout = errors.New("dinners: grounding the recipe took too long")
 // logged.
 var ErrGroundFailed = errors.New("dinners: grounding the recipe failed")
 
+// ErrCandidatesFailed wraps any unexpected failure finding a dinner's
+// candidates. Its text may quote a candidate's URL and dependency errors,
+// so it is never logged.
+var ErrCandidatesFailed = errors.New("dinners: finding recipe candidates failed")
+
 // ErrArchived is grounding an archived dinner by hand.
 var ErrArchived = errors.New("dinner archived")
 
@@ -332,19 +337,24 @@ type offerSearch struct {
 // replace the dinner's earlier candidates: one not offered again no longer
 // grounds it. They ground it for offerLifetime, and not at all once it is
 // grounded by hand, renamed or archived, even while this search runs. A
-// search that fails wraps recipes.ErrSearchFailed.
+// missing dinner is ErrNotFound; any other failure wraps
+// ErrCandidatesFailed, and a search that fails also wraps
+// recipes.ErrSearchFailed.
 func (s *Service) Candidates(ctx context.Context, id string) ([]Candidate, error) {
 	// Tracked before the dinner is read: grounding, renaming or archiving
 	// it after the read keeps this search from storing what it found.
 	keep, done := s.trackOffers(id)
 	defer done()
 	row, err := s.get(ctx, id)
-	if err != nil {
+	if errors.Is(err, ErrNotFound) {
 		return nil, err
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: dinner %s: %w", ErrCandidatesFailed, id, err)
 	}
 	offers, err := s.grounder.Candidates(ctx, row.Name, row.Name, MaxCandidates)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: dinner %s: %w", ErrCandidatesFailed, id, err)
 	}
 	out := make([]Candidate, len(offers))
 	urls := make(map[string]string, len(offers))

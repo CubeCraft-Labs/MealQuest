@@ -516,15 +516,31 @@ cd /home/overseer/mealquest && (
 set -eu   # any failed step ends the verification with a nonzero status
 D=/var/lib/docker/volumes/mealquest-data/_data
 fail() { echo "$*" >&2; exit 1; }
+point=
 rm -rf /tmp/mqcheck
 mkdir /tmp/mqcheck
-trap 'st=$?; rm -rf /tmp/mqcheck; sudo sh -c "rm -f $D/predeploy-check.db*" || st=1; [ "$st" -eq 0 ] || echo "verification FAILED (status $st): do not restart" >&2; exit "$st"' EXIT
+# On the way out, run both clean-ups whatever happens, keep any failure,
+# and print the restore point only if every check and clean-up succeeded.
+trap 'st=$?
+rm -rf /tmp/mqcheck || st=1
+sudo sh -c "rm -f $D/predeploy-check.db*" || st=1
+if [ "$st" -eq 0 ] && [ -n "$point" ]; then echo "pre-deploy restore point: $point"
+else [ "$st" -ne 0 ] || st=1; echo "verification FAILED (status $st): do not restart" >&2; fi
+exit "$st"' EXIT
 
 # a. Replication is running: litestream up, no errors in its log, and the
-#    newest LTX file (listed) is from the latest writes.
-[ -n "$(docker compose -f deploy/compose.yaml ps --status running --quiet litestream)" ] || fail "litestream is not running"
-log=$(docker compose -f deploy/compose.yaml logs --since 24h litestream)
-if printf '%s\n' "$log" | grep -i error; then fail "litestream logged errors in the last 24h"; fi
+#    newest LTX file (listed) is from the latest writes. Each command's own
+#    status is checked: grep exits 0 on a match, 1 on none, 2+ on an error.
+id=$(docker compose -f deploy/compose.yaml ps --status running --quiet litestream) || fail "docker compose ps failed"
+[ -n "$id" ] || fail "litestream is not running"
+docker compose -f deploy/compose.yaml logs --since 24h litestream > /tmp/mqcheck/litestream.log || fail "docker compose logs failed"
+gs=0
+grep -i error /tmp/mqcheck/litestream.log > /tmp/mqcheck/litestream.errors || gs=$?
+case "$gs" in
+  0) cat /tmp/mqcheck/litestream.errors; fail "litestream logged errors in the last 24h";;
+  1) ;;   # no match: no errors logged
+  *) fail "the litestream log scan failed (status $gs)";;
+esac
 docker compose -f deploy/compose.yaml exec -T litestream \
   litestream ltx -config /etc/litestream.yml -level all /data/mealquest.db
 
@@ -536,6 +552,7 @@ docker compose -f deploy/compose.yaml run --rm --no-deps litestream \
 sudo sh -c "mv $D/predeploy-check.db* /tmp/mqcheck/"
 sudo python3 /tmp/mqsnap.py "$D/mealquest.db" /tmp/mqcheck/live.db
 sudo chown -R "$USER" /tmp/mqcheck
+sudo ls -ln "$D"   # mealquest.db-wal and -shm owned by 10001, not 0: see "Count check"
 
 # c. Count check both: the restored replica must report integrity ok and
 #    exactly the live snapshot's counts and content-sha256.
@@ -546,23 +563,28 @@ grep -qx 'integrity ok' /tmp/mqcheck/restored.txt || fail "the restored replica 
 diff /tmp/mqcheck/restored.txt /tmp/mqcheck/live.txt || fail "the restored replica differs from the live snapshot"
 
 # d. The pre-deploy restore point: now, after every check passed, before
-#    the restart.
+#    the restart. It is printed on the way out, once the clean-ups succeed.
 point=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-echo "pre-deploy restore point: $point"
 )
 ```
 
    The verification runs in a subshell that stops at the first failed
-   step and, on the way out, removes `/tmp/mqcheck` and any
-   `predeploy-check.db` left on the volume, keeping the status (a failed
-   clean-up fails it too). Read it like this:
+   step. On the way out it always attempts both clean-ups — removing
+   `/tmp/mqcheck` and any `predeploy-check.db` left on the volume — and a
+   failed clean-up fails the verification too. The restore point is
+   printed last, and only when every check and both clean-ups succeeded.
+   Read it like this:
 
    - `pre-deploy restore point:` followed by a UTC time, and `echo $?`
-     prints `0` — the backup is verified. Note the time for rollback, with
-     the previous SHA, and go on to step 3.
+     prints `0` — the backup is verified and cleaned up. Note the time for
+     rollback, with the previous SHA, and go on to step 3.
    - `verification FAILED`, any other error, or a nonzero `echo $?` — no
      restore point was printed. If only the counts differed, a write
-     landed between the restore and the snapshot: run the block again.
+     landed between the restore and the snapshot: run the block again. If
+     a clean-up failed, remove what it names by hand before running the
+     block again.
+   - The `ls` in step b shows `mealquest.db-wal` or `-shm` owned by `0`
+     — stop, as in "Count check", even if the rest passed.
 
    **If any check fails, do not restart.** Production stays on the
    previous SHA (only the new image was built). Restore replication first
@@ -801,6 +823,17 @@ a previous SHA" use the snapshot. With the stack stopped, as in "Restore
 the database" step 4, the files are closed and checkpointed, and a plain
 copy is consistent (a read-only open there would leave a `-wal` and
 `-shm` beside the restored file).
+
+`mode=ro` stops writes through the snapshot's own connection, but SQLite
+can still create a missing `-wal` or `-shm` beside the database, and under
+`sudo` it would be owned by root. The live snapshot therefore expects the
+app and Litestream to be running and holding the existing
+`mealquest.db-wal` and `mealquest.db-shm`, owned by `10001`. If
+`sudo ls -ln "$D"` after a live snapshot shows either sidecar owned by
+`0` — the snapshot created it — stop before going further: check
+`docker compose -f deploy/compose.yaml ps` (mealquest and litestream
+running) and, with the cause understood, return the sidecars to
+`10001:10001` before proceeding.
 
 `/tmp` is temporary, so write the scripts before every check:
 

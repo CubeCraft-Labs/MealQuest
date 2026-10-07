@@ -53,10 +53,15 @@ const (
 	// ReasonPlanChanged: the plan was edited while draft_week ran, so the
 	// draft does not replace the edit.
 	ReasonPlanChanged = "plan_changed"
+	// ReasonPoolChanged: a dinner the draft planned left the pool while
+	// draft_week ran (archived, tried, or its Quest log dinner planned on
+	// another week), so the draft is not stored; drafting again uses the
+	// pool as it is now.
+	ReasonPoolChanged = "pool_changed"
 )
 
 // Reasons are every draft failure reason.
-var Reasons = []string{ReasonNotEnoughDinners, ReasonAIFailed, ReasonConfirmRequired, ReasonPlanChanged}
+var Reasons = []string{ReasonNotEnoughDinners, ReasonAIFailed, ReasonConfirmRequired, ReasonPlanChanged, ReasonPoolChanged}
 
 // ContextBudget is the character budget of the household context
 // draft_week is given (see harness.BuildContext).
@@ -70,6 +75,10 @@ var ErrNotFound = errors.New("plan not found")
 
 // ErrDinnerNotFound is a swap to an unknown dinner.
 var ErrDinnerNotFound = errors.New("dinner not found")
+
+// ErrDinnerAlreadyPlanned is a swap to a dinner already on another day of
+// the week.
+var ErrDinnerAlreadyPlanned = errors.New("the dinner is already on another day of this week")
 
 // ErrConfirmRequired is a draft over a synced or changed plan asked for
 // without confirm.
@@ -337,9 +346,10 @@ func (s *Service) StartDraft(ctx context.Context, weekStart store.LocalDate, con
 // Swap plans dinnerID on date of the week starting weekStart, marking the
 // day new when the dinner is in the Quest log. Swapping a synced plan
 // makes it changed. The week must have a plan (else ErrNotFound), date
-// must be one of its days (else *InvalidDayError), and the dinner must be
-// a Regular or in the Quest log (else ErrDinnerNotFound or
-// *DinnerNotPlannableError). It returns the plan as swapped.
+// must be one of its days (else *InvalidDayError), the dinner must be a
+// Regular or in the Quest log (else ErrDinnerNotFound or
+// *DinnerNotPlannableError), and it must not be on another day of the
+// week (else ErrDinnerAlreadyPlanned). It returns the plan as swapped.
 func (s *Service) Swap(ctx context.Context, weekStart store.LocalDate, date, dinnerID string) (Plan, error) {
 	dates, err := household.WeekDays(weekStart)
 	if err != nil {
@@ -368,6 +378,13 @@ func (s *Service) Swap(ctx context.Context, weekStart store.LocalDate, date, din
 		}
 		if !slices.Contains(plannable, d.Status) {
 			return &DinnerNotPlannableError{Status: d.Status}
+		}
+		days, err := q.ListPlanDays(ctx, cur.ID)
+		if err != nil {
+			return fmt.Errorf("plan: read days of %s: %w", cur.ID, err)
+		}
+		if slices.ContainsFunc(days, func(r db.ListPlanDaysRow) bool { return r.Date != day.String() && r.Dinner.ID == d.ID }) {
+			return ErrDinnerAlreadyPlanned
 		}
 		now := store.Now().String()
 		n, err := q.SwapPlanDay(ctx, db.SwapPlanDayParams{

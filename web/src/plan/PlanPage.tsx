@@ -2,6 +2,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { CalendarDays, Check, ChevronLeft, ChevronRight, Plus, RefreshCw, ShoppingCart } from 'lucide-react'
 import { useEffect, useId, useMemo, useState, type ReactNode } from 'react'
 import { useJob } from '../api/index.ts'
+import { QUEST_LOG_KEY } from '../discover/api.ts'
 import { Confirm } from '../settings/LeaveGuard.tsx'
 import { methodLabels } from '../settings/RegularsSettingsPage.tsx'
 import { formatClockTime, useHouseholdSettings } from '../settings/api.ts'
@@ -57,6 +58,7 @@ const draftFailures: Record<string, string> = {
   ai_failed: "The AI assistant couldn't draft it.",
   confirm_required: 'The plan was pushed to Calendar while it was drafting.',
   plan_changed: 'The plan was edited while it was drafting.',
+  pool_changed: 'A dinner it picked was archived, tried or planned for another week while it was drafting.',
   internal_error: 'Something went wrong on the server.',
 }
 
@@ -239,12 +241,14 @@ function WeekBoard({
 
   // Once the job ends the plan is read again: a succeeded draft is followed
   // until that read lands; a failed one stays shown, and may have met a
-  // plan changed meanwhile.
+  // plan changed meanwhile. The Quest log is read again too, as after a
+  // swap: the draft may have planned some of it.
   const [readJobId, setReadJobId] = useState<string | null>(null)
   const ended = job.status === 'succeeded' || job.status === 'failed'
   useEffect(() => {
     if (!ended) return
     let active = true
+    void queryClient.invalidateQueries({ queryKey: QUEST_LOG_KEY })
     void queryClient.invalidateQueries({ queryKey: planKey(weekStart) }).then(() => {
       if (active) setReadJobId(jobId)
     })

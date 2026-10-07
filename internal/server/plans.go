@@ -107,8 +107,8 @@ func weekStartOrFail(w http.ResponseWriter, r *http.Request, logger *slog.Logger
 // writePlanError maps a plan.Service error to its API error: a week with
 // no plan or an unknown dinner is 404, a date outside the week is 400, and
 // drafting over a synced plan without confirm, a confirmed draft while an
-// unconfirmed one runs, or planning a dinner that is neither a Regular nor
-// in the Quest log, is 409.
+// unconfirmed one runs, planning a dinner that is neither a Regular nor in
+// the Quest log, or one already on another day of the week, is 409.
 func writePlanError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, action string, err error) {
 	var day *plan.InvalidDayError
 	var week *plan.InvalidWeekError
@@ -120,6 +120,8 @@ func writePlanError(w http.ResponseWriter, r *http.Request, logger *slog.Logger,
 		writeError(w, r, logger, http.StatusBadRequest, "invalid_week", week.Error())
 	case errors.As(err, &notPlannable):
 		writeError(w, r, logger, http.StatusConflict, "dinner_not_plannable", notPlannable.Error())
+	case errors.Is(err, plan.ErrDinnerAlreadyPlanned):
+		writeError(w, r, logger, http.StatusConflict, "dinner_already_planned", err.Error())
 	case errors.Is(err, plan.ErrConfirmRequired):
 		writeError(w, r, logger, http.StatusConflict, "confirm_required", err.Error())
 	case errors.Is(err, plan.ErrDraftRunning):

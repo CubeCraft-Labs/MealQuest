@@ -36,9 +36,9 @@ func (r draftResult) PublicJSON() ([]byte, error) { return json.Marshal(r) }
 // Regulars and the Quest log dinners no other current or later plan has,
 // given the household context and last week's dinners, and the draft is
 // stored as the week's plan if the plan is still as it was before
-// draft_week ran. A pool under seven dinners fails with
-// ReasonNotEnoughDinners and draft_week failing with ReasonAIFailed; no
-// week is made up instead.
+// draft_week ran and every dinner it planned is still in the pool. A pool
+// under seven dinners fails with ReasonNotEnoughDinners and draft_week
+// failing with ReasonAIFailed; no week is made up instead.
 func (s *Service) runDraft(ctx context.Context, p DraftJob, _ func(draftResult) error) (draftResult, error) {
 	weekStart, err := ParseWeekStart(p.WeekStart)
 	if err != nil {
@@ -68,7 +68,7 @@ func (s *Service) runDraft(ctx context.Context, p DraftJob, _ func(draftResult) 
 	for _, w := range week.Warnings {
 		s.logger.InfoContext(ctx, "week draft warning", "week_start", p.WeekStart, "warning", w)
 	}
-	planID, err := s.storeDraft(ctx, weekStart, p.Confirm, base, week)
+	planID, err := s.storeDraft(ctx, weekStart, household.WeekStart(in.Context.Today), p.Confirm, base, week)
 	if err != nil {
 		return draftResult{}, err
 	}
@@ -142,11 +142,28 @@ func (s *Service) request(ctx context.Context, weekStart store.LocalDate) (skill
 // draft was asked for without confirm is left as it is, failing with
 // ReasonConfirmRequired, and so is a plan no longer at revision base (the
 // revision before draft_week ran, or noPlan), failing with
-// ReasonPlanChanged.
-func (s *Service) storeDraft(ctx context.Context, weekStart store.LocalDate, confirm bool, base int64, week skills.Week) (string, error) {
+// ReasonPlanChanged. The pool is read again, as of thisWeek like the pool
+// draft_week was given: a day whose dinner is no longer in it, or is in it
+// as a Regular rather than the Quest log or the other way round, leaves
+// everything as it is, failing with ReasonPoolChanged.
+func (s *Service) storeDraft(ctx context.Context, weekStart, thisWeek store.LocalDate, confirm bool, base int64, week skills.Week) (string, error) {
 	var planID string
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		q := db.New(tx)
+		rows, err := q.ListDraftPool(ctx, db.ListDraftPoolParams{FromWeekStart: thisWeek.String(), WeekStart: weekStart.String()})
+		if err != nil {
+			return fmt.Errorf("plan: list draft pool: %w", err)
+		}
+		pool := make(map[string]string, len(rows))
+		for _, d := range rows {
+			pool[d.ID] = d.Status
+		}
+		for _, d := range week.Days {
+			status, ok := pool[d.DinnerID]
+			if !ok || (status == dinners.StatusQuestLog) != d.IsNew {
+				return &jobs.Failure{Code: ReasonPoolChanged}
+			}
+		}
 		now := store.Now().String()
 		note := sql.NullString{String: week.Note, Valid: week.Note != ""}
 		cur, err := q.GetWeekPlan(ctx, weekStart.String())

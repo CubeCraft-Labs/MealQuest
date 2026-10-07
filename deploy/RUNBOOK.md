@@ -495,12 +495,15 @@ Every deploy builds the image on the host from the checked-out commit.
    keeps running the previous SHA.
 
 ```sh
-cd /home/overseer/mealquest
-git fetch origin
-git rev-parse --short HEAD          # the SHA being replaced: note it for rollback
-git checkout --detach origin/main   # or a release tag
+cd /home/overseer/mealquest &&
+git fetch origin &&
+git rev-parse --short HEAD &&         # the SHA being replaced: note it for rollback
+git checkout --detach origin/main &&  # or a release tag
 docker compose -f deploy/compose.yaml build
 ```
+
+   Each command runs only if the one before it succeeded. If `echo $?`
+   then prints anything but `0`, stop: nothing has restarted.
 
 2. **Verify a restorable pre-deploy point — before the restart.** The
    restart applies any new migrations, and an older SHA refuses the
@@ -517,8 +520,6 @@ set -eu   # any failed step ends the verification with a nonzero status
 D=/var/lib/docker/volumes/mealquest-data/_data
 fail() { echo "$*" >&2; exit 1; }
 point=
-rm -rf /tmp/mqcheck
-mkdir /tmp/mqcheck
 # On the way out, run both clean-ups whatever happens, keep any failure,
 # and print the restore point only if every check and clean-up succeeded.
 trap 'st=$?
@@ -527,6 +528,8 @@ sudo sh -c "rm -f $D/predeploy-check.db*" || st=1
 if [ "$st" -eq 0 ] && [ -n "$point" ]; then echo "pre-deploy restore point: $point"
 else [ "$st" -ne 0 ] || st=1; echo "verification FAILED (status $st): do not restart" >&2; fi
 exit "$st"' EXIT
+rm -rf /tmp/mqcheck
+mkdir /tmp/mqcheck
 
 # a. Replication is running: litestream up, no errors in its log, and the
 #    newest LTX file (listed) is from the latest writes. Each command's own
@@ -626,9 +629,14 @@ cd /home/overseer/mealquest && (
 set -eu   # any failed step ends the check with a nonzero status
 D=/var/lib/docker/volumes/mealquest-data/_data
 P=<previous SHA>
+# On the way out, remove /tmp/mqcheck whatever happens, keep any failure,
+# and report every nonzero exit.
+trap 'st=$?
+rm -rf /tmp/mqcheck || st=1
+if [ "$st" -ne 0 ]; then echo "check FAILED (status $st): stop and fix the cause" >&2; fi
+exit "$st"' EXIT
 rm -rf /tmp/mqcheck
 mkdir /tmp/mqcheck
-trap 'st=$?; rm -rf /tmp/mqcheck; [ "$st" -eq 0 ] || echo "check FAILED (status $st): stop and fix the cause" >&2; exit "$st"' EXIT
 sudo python3 /tmp/mqsnap.py "$D/mealquest.db" /tmp/mqcheck/mealquest.db
 sudo chown -R "$USER" /tmp/mqcheck
 git ls-tree --name-only "$P" migrations/ > /tmp/mqcheck/known   # top level only
@@ -645,8 +653,9 @@ PY
 ```
 
 The check runs in a subshell that stops at the first failed step — the
-snapshot or its integrity check, `git ls-tree` or the comparison — and
-removes `/tmp/mqcheck` on the way out without changing the status. Read it
+snapshot or its integrity check, `git ls-tree` or the comparison. On the
+way out it always attempts to remove `/tmp/mqcheck`, and a failed removal
+fails the check too; every nonzero exit prints `check FAILED`. Read it
 like this:
 
 - `unknown to the previous SHA: none` and `echo $?` prints `0` — no
@@ -655,17 +664,25 @@ like this:
   prints `0` — the older build does not know them: the migration-crossing
   path below is required.
 - `check FAILED`, any other error, or a nonzero `echo $?` — stop and fix
-  the cause, then run the check again. Do not pick a path.
+  the cause, then run the check again. Do not pick a path, even if an
+  `unknown to the previous SHA:` line was printed before it. If the
+  clean-up failed, remove `/tmp/mqcheck` by hand first.
 
 **No migration crossed** — rebuild and restart the older SHA:
 
 ```sh
-git checkout --detach <previous SHA>
-docker compose -f deploy/compose.yaml build
-sudo systemctl restart mealquest
-docker compose -f deploy/compose.yaml ps
+git checkout --detach <previous SHA> &&
+docker compose -f deploy/compose.yaml build &&
+sudo systemctl restart mealquest &&
+docker compose -f deploy/compose.yaml ps &&
 curl -fsS http://10.60.1.14:8090/health
 ```
+
+Each command runs only if the one before it succeeded, so the health
+check answers only for the older SHA. If `echo $?` then prints anything
+but `0`, the rollback is not done: the first error names the failed step,
+and if it came before the restart, production is still on the release
+being rolled back from.
 
 **A migration crossed** — the older binary refuses the newer schema, so the
 database is restored first and the older SHA started after. Changes made
@@ -674,9 +691,12 @@ since the pre-deploy restore point are lost; say so to the household.
 1. Check out and build the older SHA. Nothing restarts yet.
 
 ```sh
-git checkout --detach <previous SHA>
+git checkout --detach <previous SHA> &&
 docker compose -f deploy/compose.yaml build
 ```
+
+   If `echo $?` then prints anything but `0`, stop: the database has not
+   been touched and nothing has restarted.
 
 2. Run "Restore the database" steps 1–4, adding
    `-timestamp <pre-deploy restore point>` (recorded in step 2 of
@@ -838,7 +858,7 @@ running) and, with the cause understood, return the sidecars to
 `/tmp` is temporary, so write the scripts before every check:
 
 ```sh
-cat > /tmp/mqcount.py <<'EOF'
+cat > /tmp/mqcount.py <<'EOF' &&
 import sqlite3, sys, hashlib
 c = sqlite3.connect(sys.argv[1])
 tabs = [r[0] for r in c.execute("select name from sqlite_master where type=\"table\" and name not like \"sqlite_%\" and name not like \"_litestream%\" order by name")]
@@ -867,6 +887,9 @@ if result != [("ok",)]:
 print("snapshot", dst, "integrity ok")
 EOF
 ```
+
+The second file is written only if the first was; `echo $?` must then
+print `0` before either script is used.
 
 With the stack stopped, copy the database and run it:
 

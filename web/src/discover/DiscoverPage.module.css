@@ -1,0 +1,264 @@
+/* Discover · Side quests (mock 1a). */
+.page {
+  box-sizing: border-box;
+  max-width: 440px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding-top: 8px;
+}
+
+.header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.kicker {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-accent-700);
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 30px;
+  font-weight: 400;
+  line-height: 1.1;
+}
+
+/* The Quest log count pill. */
+.questLog {
+  flex: none;
+  padding: 7px 12px;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent-2-200);
+  color: var(--color-accent-2-800);
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* The deck: three cards stacked in the same box, the top one in front. */
+.deck {
+  position: relative;
+  height: 440px;
+  perspective: 1000px;
+}
+
+.card {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  color: var(--color-text);
+}
+
+.depth0 {
+  z-index: 3;
+  transform: none;
+  background: var(--color-neutral-100);
+  box-shadow: var(--shadow-lg);
+}
+
+.depth1 {
+  z-index: 2;
+  transform: translateY(8px) scale(0.95);
+  background: var(--color-surface);
+}
+
+.depth2 {
+  z-index: 1;
+  transform: translateY(16px) scale(0.9);
+  background: var(--color-neutral-300);
+}
+
+.photo {
+  flex: none;
+  width: calc(100% - 20px);
+  height: 220px;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 20px 0;
+}
+
+.name {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 24px;
+  font-weight: 400;
+  line-height: 1.1;
+}
+
+.difficulty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-neutral-700);
+}
+
+.dots {
+  display: flex;
+  gap: 3px;
+}
+
+.dot,
+.dotFilled {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--color-neutral-300);
+}
+
+.dotFilled {
+  background: var(--color-accent);
+}
+
+/* The "Why this?" box. */
+.why {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: var(--color-accent-2-100);
+  color: var(--color-accent-2-900);
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+/* The decision stamps, hidden until a decision shows them. */
+.stamp {
+  position: absolute;
+  top: 26px;
+  padding: 6px 14px;
+  border: 3px solid;
+  border-radius: 14px;
+  font-family: var(--font-heading);
+  font-size: 24px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.tryStamp {
+  left: 22px;
+  transform: rotate(-12deg);
+  border-color: var(--color-accent-2-700);
+  background: var(--color-accent-2-100);
+  color: var(--color-accent-2-800);
+}
+
+.passStamp {
+  right: 22px;
+  transform: rotate(12deg);
+  border-color: var(--color-neutral-800);
+  background: var(--color-neutral-100);
+  color: var(--color-neutral-900);
+}
+
+/* Pass and Try it: a 62 px circle over an 11 px label, one button each. */
+.actions {
+  display: flex;
+  justify-content: center;
+  gap: 28px;
+  margin-top: 4px;
+}
+
+.action {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 62px;
+  min-height: 62px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-neutral-700);
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.circle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 62px;
+  height: 62px;
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-md);
+  transition: transform 100ms var(--ease-out-soft);
+}
+
+.action:active:not(:disabled) .circle {
+  transform: scale(0.97);
+}
+
+.pass {
+  background: var(--color-neutral-100);
+  color: var(--color-text);
+}
+
+.tryIt {
+  background: var(--color-accent-2-600);
+  color: var(--on-accent);
+}
+
+/* Skeleton cards while the deck loads or a batch finds Side quests. */
+.loading {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.deck > .skeletonCard {
+  position: absolute;
+  inset: 0;
+  height: auto;
+  border-radius: var(--radius-card);
+}
+
+.skeletonCard.depth0,
+.skeletonCard.depth1,
+.skeletonCard.depth2 {
+  background: var(--color-surface);
+  box-shadow: none;
+}
+
+.finding {
+  margin: 0;
+  text-align: center;
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-neutral-700);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .circle {
+    transition: none;
+  }
+}

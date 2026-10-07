@@ -959,6 +959,55 @@ func TestRenameSameNormalizedNameRefusesOldCandidates(t *testing.T) {
 	}
 }
 
+// TestCandidatesBetweenRenameAndClearKept: a candidate search that reads
+// a dinner after its rename commits, and stores its candidates before the
+// rename clears the dinner's offers, keeps them: they ground the renamed
+// dinner, while one offered before the rename does not, even when a search
+// that read the dinner before the rename finishes after them.
+func TestCandidatesBetweenRenameAndClearKept(t *testing.T) {
+	// Unstarted, so the dinner stays pending with its jobs queued.
+	e := newUnstartedEnv(t)
+	e.search.Results["Beef stew"] = []recipes.Candidate{{URL: stew}}
+	c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr("Chicken curry")}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := candidateID(t, e, c.ID, "Chicken Curry")
+	before := e.dinner(t, c.ID)
+
+	var fresh string
+	dinners.SetUpdateCommitted(t, func() {
+		fresh = candidateID(t, e, c.ID, "Beef Stew")
+		e.svc.StoreOffers(c.ID, map[string]string{old: curryA}, before.GroundingRevision)
+	})
+	if _, err := e.svc.Update(t.Context(), c.ID, dinners.Patch{Name: ptr("Beef stew")}, member); err != nil {
+		t.Fatal(err)
+	}
+	if fresh == "" {
+		t.Fatal("no candidate search ran between the rename and clearing offers")
+	}
+	if !e.svc.HasOffers(c.ID) {
+		t.Fatalf("clearing offers after the rename dropped the candidates found at its revision for dinner %s", c.ID)
+	}
+	wantStaleCandidate(t, e, c.ID, old)
+
+	e.model.QueueGenerate(recipestest.NormalizedReply("oven", 150))
+	g, err := e.svc.Ground(t.Context(), c.ID, dinners.Fix{CandidateID: ptr(fresh)}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.GroundingStatus != dinners.GroundingGrounded || g.RecipeID == nil {
+		t.Fatalf("dinner = %+v, want grounded for the new name", g)
+	}
+	rec, err := db.New(e.st.Reader).GetRecipe(t.Context(), *g.RecipeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.SourceUrl != stew {
+		t.Errorf("recipe source = %s, want %s", rec.SourceUrl, stew)
+	}
+}
+
 // TestRenameBackDuringCandidatesRefusesThem: a candidate search that read
 // a dinner as A and finishes after renames A -> B -> A have committed, but
 // before either has cleared the dinner's offers, stores candidates that

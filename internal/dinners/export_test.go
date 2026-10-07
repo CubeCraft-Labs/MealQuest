@@ -49,6 +49,14 @@ func (s *Service) HasOffers(id string) bool {
 	return ok
 }
 
+// StoreOffers stores urls as dinner id's offers, as a Candidates search
+// that read the dinner at grounding_revision revision would on finishing.
+func (s *Service) StoreOffers(id string, urls map[string]string, revision int64) {
+	keep, done := s.trackOffers(id)
+	defer done()
+	keep(urls, revision)
+}
+
 // OfferCount is the number of dinners whose candidates the service holds.
 func (s *Service) OfferCount() int {
 	s.offersMu.Lock()

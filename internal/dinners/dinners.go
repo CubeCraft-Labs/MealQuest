@@ -149,7 +149,7 @@ type Service struct {
 	// id, the candidates last offered by Candidates until they expire, so
 	// a candidate id is resolved here and its URL never leaves the server.
 	// offerSearches holds the Candidates searches running, by dinner id,
-	// so clearing a dinner's offers keeps them from storing theirs.
+	// so clearing a dinner's offers keeps them from storing stale ones.
 	offersMu      sync.Mutex
 	offers        map[string]*offerSet
 	offerSearches map[string]map[*offerSearch]struct{}
@@ -388,7 +388,7 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 	}
 	if renamed {
 		updateCommitted()
-		s.clearOffers(row.ID)
+		s.clearOffers(row.ID, row.GroundingRevision)
 	}
 	if regrounding {
 		s.stopGroundings(row.ID, row.GroundingRevision)
@@ -426,7 +426,7 @@ func (s *Service) Archive(ctx context.Context, id, updatedBy string) (Dinner, er
 		return Dinner{}, fmt.Errorf("dinners: archive %s: %w", id, err)
 	}
 	s.stopGroundings(row.ID, math.MaxInt64)
-	s.clearOffers(row.ID)
+	s.clearOffers(row.ID, math.MaxInt64)
 	return fromRow(row), nil
 }
 

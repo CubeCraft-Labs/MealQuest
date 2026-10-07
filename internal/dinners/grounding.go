@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -319,10 +320,11 @@ type offerSet struct {
 	expiry   *time.Timer
 }
 
-// offerSearch is a Candidates search running for a dinner. It is stale
-// once the dinner's offers are cleared, and then stores none.
+// offerSearch is a Candidates search running for a dinner. It stores no
+// offers found at a grounding_revision below below, which clearing the
+// dinner's offers raises.
 type offerSearch struct {
-	stale bool
+	below int64
 }
 
 // Candidates searches for dinner id's name and returns up to MaxCandidates
@@ -333,7 +335,7 @@ type offerSearch struct {
 // search that fails wraps recipes.ErrSearchFailed.
 func (s *Service) Candidates(ctx context.Context, id string) ([]Candidate, error) {
 	// Tracked before the dinner is read: grounding, renaming or archiving
-	// it after the read makes this search stale.
+	// it after the read keeps this search from storing what it found.
 	keep, done := s.trackOffers(id)
 	defer done()
 	row, err := s.get(ctx, id)
@@ -363,8 +365,9 @@ func (s *Service) Candidates(ctx context.Context, id string) ([]Candidate, error
 
 // trackOffers registers a Candidates search for dinner id. It returns keep,
 // which stores urls, found for the dinner at grounding_revision revision,
-// as its offers for offerLifetime unless clearOffers has run for it since,
-// and done, to call when the search ends.
+// as its offers for offerLifetime unless clearOffers has run for it since
+// with a revision above that, or offers found at a later revision are
+// stored, and done, to call when the search ends.
 func (s *Service) trackOffers(id string) (keep func(urls map[string]string, revision int64), done func()) {
 	search := &offerSearch{}
 	s.offersMu.Lock()
@@ -376,7 +379,12 @@ func (s *Service) trackOffers(id string) (keep func(urls map[string]string, revi
 	keep = func(urls map[string]string, revision int64) {
 		s.offersMu.Lock()
 		defer s.offersMu.Unlock()
-		if search.stale {
+		if revision < search.below {
+			return
+		}
+		if set := s.offers[id]; set != nil && set.revision > revision {
+			// Found at a later revision, so the earlier search's offers
+			// are already stale.
 			return
 		}
 		s.dropOffers(id)
@@ -403,15 +411,20 @@ func (s *Service) trackOffers(id string) (keep func(urls map[string]string, revi
 	return keep, done
 }
 
-// clearOffers drops dinner id's offers and makes every Candidates search
-// running for it stale, so no candidate offered before grounds it. Call
-// it once the dinner is grounded by hand, renamed or archived.
-func (s *Service) clearOffers(id string) {
+// clearOffers drops dinner id's offers found at a grounding_revision below
+// below and keeps every Candidates search running for it from storing
+// such offers, so none of them grounds it. Offers found at below or above
+// are kept. Call it with math.MaxInt64 once the dinner is grounded by hand
+// or archived, and with its new revision once it is renamed: a search
+// that read the rename meanwhile keeps its offers.
+func (s *Service) clearOffers(id string, below int64) {
 	s.offersMu.Lock()
 	defer s.offersMu.Unlock()
-	s.dropOffers(id)
+	if set := s.offers[id]; set != nil && set.revision < below {
+		s.dropOffers(id)
+	}
 	for search := range s.offerSearches[id] {
-		search.stale = true
+		search.below = max(search.below, below)
 	}
 }
 
@@ -547,7 +560,7 @@ func (s *Service) Ground(ctx context.Context, id string, f Fix, updatedBy string
 	if err != nil {
 		return Dinner{}, fmt.Errorf("%w: dinner %s: record: %w", ErrGroundFailed, id, err)
 	}
-	s.clearOffers(cur.ID)
+	s.clearOffers(cur.ID, math.MaxInt64)
 	return fromRow(row), nil
 }
 
@@ -670,7 +683,7 @@ func (s *Service) groundManual(ctx context.Context, id string, m ManualRecipe, u
 	if err != nil {
 		return Dinner{}, fmt.Errorf("%w: dinner %s: %w", ErrGroundFailed, id, err)
 	}
-	s.clearOffers(row.ID)
+	s.clearOffers(row.ID, math.MaxInt64)
 	return fromRow(row), nil
 }
 

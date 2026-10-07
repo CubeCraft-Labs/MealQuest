@@ -186,12 +186,12 @@ func TestCreateDinnerByURL(t *testing.T) {
 	router, _ := newDinnersRouter(t)
 
 	link := "https://www.example.com/recipes/12345/beef-and-broccoli-stir-fry/"
-	rec, body := callDinners(t, router, http.MethodPost, dinnersPath, `{"recipe_url":"`+link+`"}`)
+	rec, body := callDinners(t, router, http.MethodPost, dinnersPath, `{"name":"Stir fry night","recipe_url":"`+link+`"}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201: %s", rec.Code, rec.Body)
 	}
 	for k, v := range map[string]any{
-		"name":             "Beef and broccoli stir fry",
+		"name":             "Stir fry night",
 		"status":           "regular",
 		"origin":           "regular",
 		"grounding_status": "pending",
@@ -211,18 +211,17 @@ func TestCreateDinnerByURL(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("unrelated name = %d: %s", rec.Code, rec.Body)
 	}
-	rec, body = callDinners(t, router, http.MethodPost, dinnersPath, `{"recipe_url":"`+link+`"}`)
+	rec, body = callDinners(t, router, http.MethodPost, dinnersPath, `{"name":"Beef and broccoli","recipe_url":"`+link+`"}`)
 	if rec.Code != http.StatusConflict || errorCode(body) != "duplicate_dinner" {
 		t.Errorf("same link again = %d %v, want 409 duplicate_dinner", rec.Code, body)
 	}
 
 	for _, tc := range []struct{ name, body string }{
-		{"plain http", `{"recipe_url":"http://example.com/recipes/chili"}`},
-		{"not a URL", `{"recipe_url":"chili"}`},
-		{"credentials", `{"recipe_url":"https://me:pw@example.com/recipes/chili"}`},
-		{"no name in path", `{"recipe_url":"https://example.com/"}`},
-		{"numeric slug", `{"recipe_url":"https://example.com/recipe/98765"}`},
-		{"both fields", `{"name":"Chili","recipe_url":"https://example.com/recipes/chili"}`},
+		{"plain http", `{"name":"Chili","recipe_url":"http://example.com/recipes/chili"}`},
+		{"not a URL", `{"name":"Chili","recipe_url":"chili"}`},
+		{"credentials", `{"name":"Chili","recipe_url":"https://me:pw@example.com/recipes/chili"}`},
+		{"link without a name", `{"recipe_url":"https://example.com/recipes/chili"}`},
+		{"filler name with a link", `{"name":"The Best Easy Recipe","recipe_url":"https://example.com/recipes/chili"}`},
 		{"neither field", `{}`},
 	} {
 		rec, body := callDinners(t, router, http.MethodPost, dinnersPath, tc.body)
@@ -240,7 +239,7 @@ func TestDinnerResponsesHideRecipeURL(t *testing.T) {
 	router, st := newDinnersRouter(t)
 
 	const link = "https://c.example/recipes/stew?access_token=personal-token-abc123"
-	rec, body := callDinners(t, router, http.MethodPost, dinnersPath, `{"recipe_url":"`+link+`"}`)
+	rec, body := callDinners(t, router, http.MethodPost, dinnersPath, `{"name":"Stew","recipe_url":"`+link+`"}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201: %s", rec.Code, rec.Body)
 	}
@@ -266,29 +265,36 @@ func TestDinnerResponsesHideRecipeURL(t *testing.T) {
 	}
 }
 
-// TestDinnerResponsesHideTokenInLinkPath: a personal token can sit in the
-// link's last path segment, which names the dinner, so the name stops before
-// it and neither the create response nor a later list read shows it.
+// TestDinnerResponsesHideTokenInLinkPath: a personal token can sit
+// anywhere in a link's path, even as plain letters, so a dinner added from
+// a link is named only by the household and neither the create response, a
+// later list read nor the duplicate error for the same link shows any of
+// the link.
 func TestDinnerResponsesHideTokenInLinkPath(t *testing.T) {
 	t.Parallel()
 	router, _ := newDinnersRouter(t)
 
-	const link = "https://c.example/recipes/stew-access_token-personaltokenabc123"
-	rec, body := callDinners(t, router, http.MethodPost, dinnersPath, `{"recipe_url":"`+link+`"}`)
+	const link = "https://c.example/recipes/stew-key-abcdefghijklmno"
+	rec, body := callDinners(t, router, http.MethodPost, dinnersPath, `{"name":"Sunday stew","recipe_url":"`+link+`"}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201: %s", rec.Code, rec.Body)
 	}
-	if body["name"] != "Stew" {
-		t.Errorf("name = %v, want Stew", body["name"])
+	if body["name"] != "Sunday stew" {
+		t.Errorf("name = %v, want Sunday stew", body["name"])
 	}
 	created := rec.Body.String()
 	rec, _ = callDinners(t, router, http.MethodGet, dinnersPath+"?status=regular", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET status=regular = %d: %s", rec.Code, rec.Body)
 	}
-	for _, resp := range []struct{ name, body string }{{"create", created}, {"list", rec.Body.String()}} {
+	listed := rec.Body.String()
+	rec, _ = callDinners(t, router, http.MethodPost, dinnersPath, `{"name":"Beef stew","recipe_url":"`+link+`"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("same link again = %d, want 409: %s", rec.Code, rec.Body)
+	}
+	for _, resp := range []struct{ name, body string }{{"create", created}, {"list", listed}, {"duplicate", rec.Body.String()}} {
 		lower := strings.ToLower(resp.body)
-		for _, secret := range []string{"personaltokenabc123", "abc123", "access", "token"} {
+		for _, secret := range []string{"c.example", "recipes", "key", "abcdefghijklmno"} {
 			if strings.Contains(lower, secret) {
 				t.Errorf("%s response contains %q: %s", resp.name, secret, resp.body)
 			}
@@ -311,10 +317,10 @@ func TestCreateDinnerDuplicate(t *testing.T) {
 			t.Errorf("%q: %d %v, want 409 duplicate_dinner", name, rec.Code, body)
 		}
 	}
-	// A slug naming the same dish is a duplicate too.
-	rec, body := callDinners(t, router, http.MethodPost, dinnersPath, `{"recipe_url":"https://example.com/easy-chicken-tikka-masala.html"}`)
+	// A name repeating the dish is a duplicate with a link too.
+	rec, body := callDinners(t, router, http.MethodPost, dinnersPath, `{"name":"Chicken tikka masala","recipe_url":"https://example.com/other-curry.html"}`)
 	if rec.Code != http.StatusConflict {
-		t.Errorf("URL slug duplicate = %d %v, want 409", rec.Code, body)
+		t.Errorf("named duplicate with a link = %d %v, want 409", rec.Code, body)
 	}
 
 	var n int

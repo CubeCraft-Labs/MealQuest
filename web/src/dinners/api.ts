@@ -33,8 +33,10 @@ export type Regular = {
   pending?: true
 }
 
-// NewRegular is a POST /api/v1/dinners body: a name or a recipe link.
-export type NewRegular = { name: string } | { recipe_url: string }
+// NewRegular is a POST /api/v1/dinners body: the household's name for the
+// dinner, with the recipe link to ground it in when one was pasted. A
+// dinner is never named from its link, which may carry private details.
+export type NewRegular = { name: string; recipe_url?: string }
 
 // RegularPatch is a PATCH /api/v1/dinners/{id} body; every field is optional.
 export type RegularPatch = Partial<{ name: string; method: Method; minutes_total: number; difficulty: Difficulty }>
@@ -195,10 +197,9 @@ function settle(queryClient: QueryClient) {
 
 let pendingIds = 0
 
-// useAddRegular adds a Regular by name or recipe link (POST
-// /api/v1/dinners). It shows in the list at once — a link under the link
-// itself until the server names it — and is taken out again if the server
-// refuses it.
+// useAddRegular adds a Regular by name, with or without a recipe link (POST
+// /api/v1/dinners). It shows in the list at once under its name and is
+// taken out again if the server refuses it.
 export function useAddRegular() {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
@@ -210,7 +211,7 @@ export function useAddRegular() {
       const id = `pending-${++pendingIds}`
       const optimistic: CachedRegular = {
         id,
-        name: 'name' in add ? add.name : add.recipe_url,
+        name: add.name,
         method: null,
         minutes_total: null,
         difficulty: null,

@@ -192,21 +192,33 @@ describe('RegularsSettingsPage', () => {
     expect(screen.getByRole('heading', { level: 2, name: 'On rotation · 2' })).toBeInTheDocument()
   })
 
-  it('adds a Regular from a pasted recipe link', async () => {
-    const link = 'https://example.com/recipes/12345/beef-stew/'
+  it('adds a Regular from a pasted recipe link under the name the household gives it', async () => {
+    const link = 'https://example.com/recipes/stew-key-abcdefghijklmno'
     const server = stubServer([], {
-      'POST /api/v1/dinners': () => {
-        const created = dinnerBody('d9', 'Beef stew', { grounding_status: 'pending' })
+      'POST /api/v1/dinners': (body) => {
+        const created = dinnerBody('d9', (body as { name: string }).name, { grounding_status: 'pending' })
         server.regulars = [created]
         return jsonResponse(201, { ...created, grounding_job_id: 'job-1' })
       },
     })
     await renderPage()
 
-    add(link)
-    expect(await screen.findByText('Beef stew')).toBeInTheDocument()
-    expect(sent(server.fetchMock)).toEqual([{ request: 'POST /api/v1/dinners', body: { recipe_url: link } }])
-    expect(within(row('Beef stew')).getByText('Finding recipe…')).toBeInTheDocument()
+    fireEvent.change(addField(), { target: { value: ` ${link} ` } })
+    // A link alone cannot be added: it never names a dinner.
+    expect(screen.getByRole('button', { name: 'Add Regular' })).toBeDisabled()
+    const name = screen.getByRole('textbox', { name: 'Dinner name' })
+    expect(name).toHaveAccessibleDescription(/never names a dinner/)
+    fireEvent.change(name, { target: { value: ' Sunday stew ' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add Regular' }))
+
+    expect(addField()).toHaveValue('')
+    expect(screen.queryByRole('textbox', { name: 'Dinner name' })).not.toBeInTheDocument()
+    expect(await screen.findByText('Sunday stew')).toBeInTheDocument()
+    expect(sent(server.fetchMock)).toEqual([
+      { request: 'POST /api/v1/dinners', body: { name: 'Sunday stew', recipe_url: link } },
+    ])
+    expect(within(row('Sunday stew')).getByText('Finding recipe…')).toBeInTheDocument()
+    expect(document.body).not.toHaveTextContent(/example\.com|abcdefghijklmno|key/i)
   })
 
   it('takes back an add the server refuses and says why', async () => {

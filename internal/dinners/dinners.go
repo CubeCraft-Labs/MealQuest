@@ -16,7 +16,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"unicode"
 	"unicode/utf8"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
@@ -79,7 +78,10 @@ type Dinner struct {
 	UpdatedAt      string  `json:"updated_at"`
 }
 
-// NewRegular is a Regular to add: exactly one of Name and RecipeURL.
+// NewRegular is a Regular to add: its Name, which the household always
+// gives, and optionally the RecipeURL to ground it in. The name is never
+// taken from the link: a pasted link may carry a personal token anywhere in
+// it, and the name is shown in every dinner response.
 type NewRegular struct {
 	Name      *string
 	RecipeURL *string
@@ -171,10 +173,9 @@ type Created struct {
 	GroundingJobID *string `json:"grounding_job_id"`
 }
 
-// CreateRegular adds a Regular named by r.Name, or by the last path segment
-// of r.RecipeURL (whose recipe grounding later replaces), with status and
-// origin regular and grounding_status pending, recording updatedBy, and
-// enqueues the KindGroundDinner job that grounds it. It returns without
+// CreateRegular adds a Regular named r.Name, keeping r.RecipeURL for
+// grounding when given, with status and origin regular and grounding_status
+// pending, recording updatedBy, and enqueues the KindGroundDinner job that grounds it. It returns without
 // waiting for the job. A name repeating an unarchived dinner is a
 // *DuplicateError. When the job cannot be enqueued, the stored dinner is
 // returned with grounding_status failed (ReasonGroundingError) and no job
@@ -224,34 +225,24 @@ func (s *Service) createRegular(ctx context.Context, r NewRegular, updatedBy str
 	if updatedBy == "" {
 		return db.Dinner{}, errors.New("dinners: create: no member to record as updated_by")
 	}
-	var name string
+	if r.Name == nil {
+		return db.Dinner{}, invalid("name", "give the dinner's name, with or without a recipe_url")
+	}
+	name, err := checkName(*r.Name)
+	if err != nil {
+		return db.Dinner{}, err
+	}
 	var recipeURL sql.NullString
-	switch {
-	case r.Name != nil && r.RecipeURL != nil:
-		return db.Dinner{}, invalid("name", "give a name or a recipe_url, not both")
-	case r.Name != nil:
-		n, err := checkName(*r.Name)
-		if err != nil {
-			return db.Dinner{}, err
-		}
-		name = n
-	case r.RecipeURL != nil:
+	if r.RecipeURL != nil {
 		u, err := checkRecipeURL(*r.RecipeURL)
 		if err != nil {
 			return db.Dinner{}, err
 		}
-		n, ok := nameFromURL(u)
-		if !ok {
-			return db.Dinner{}, invalid("recipe_url", "the link does not name a dinner; add it by name instead")
-		}
-		name = n
 		recipeURL = sql.NullString{String: u.String(), Valid: true}
-	default:
-		return db.Dinner{}, invalid("name", "give a name or a recipe_url")
 	}
 
 	var row db.Dinner
-	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+	err = s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		q := db.New(tx)
 		if err := checkUnique(ctx, q, "", name, recipeURL); err != nil {
 			return err
@@ -494,60 +485,6 @@ func checkRecipeURL(raw string) (*url.URL, error) {
 		return nil, invalid("recipe_url", "must not carry a user name or password")
 	}
 	return u, nil
-}
-
-// credentialWords end the name nameFromURL takes from a slug: a pasted link
-// can carry a personal token in its path, as in /stew-access_token-abc123,
-// and the name is shown in every dinner response.
-var credentialWords = map[string]bool{
-	"access": true, "accesstoken": true, "api": true, "apikey": true, "auth": true,
-	"authtoken": true, "bearer": true, "credential": true, "credentials": true,
-	"jwt": true, "passcode": true, "password": true, "passwd": true, "secret": true,
-	"session": true, "sig": true, "signature": true, "token": true,
-}
-
-// maxSlugWordChars bounds a word nameFromURL keeps: a longer run of letters
-// is more likely a token than a dish.
-const maxSlugWordChars = 20
-
-// nameFromURL names a dinner from the last path segment of u: separators
-// become spaces, a file extension is dropped, only words of at most
-// maxSlugWordChars letters are kept, the name ends at the first of
-// credentialWords and the first letter is capitalized, so
-// https://example.com/recipes/12345/chicken-tikka-masala/ is
-// "Chicken tikka masala". ok is false when no usable name is left.
-func nameFromURL(u *url.URL) (name string, ok bool) {
-	segments := strings.FieldsFunc(u.Path, func(r rune) bool { return r == '/' })
-	if len(segments) == 0 {
-		return "", false
-	}
-	slug := segments[len(segments)-1]
-	if i := strings.LastIndexByte(slug, '.'); i > 0 {
-		slug = slug[:i]
-	}
-	var words []string
-	for _, w := range strings.FieldsFunc(slug, func(r rune) bool { return r == '-' || r == '_' || r == '+' || unicode.IsSpace(r) }) {
-		w = strings.ToLower(w)
-		if credentialWords[w] {
-			break
-		}
-		if utf8.RuneCountInString(w) <= maxSlugWordChars && strings.IndexFunc(w, notLetter) < 0 {
-			words = append(words, w)
-		}
-	}
-	name = strings.Join(words, " ")
-	if r, size := utf8.DecodeRuneInString(name); r != utf8.RuneError {
-		name = string(unicode.ToUpper(r)) + name[size:]
-	}
-	if _, err := checkName(name); err != nil {
-		return "", false
-	}
-	return name, true
-}
-
-// notLetter reports whether r is neither a letter nor a combining mark.
-func notLetter(r rune) bool {
-	return !unicode.IsLetter(r) && !unicode.IsMark(r)
 }
 
 // checkUnique returns a *DuplicateError when name is harness.Similar to an

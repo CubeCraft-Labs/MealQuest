@@ -1,44 +1,74 @@
-package dinners
+package dinners_test
 
 import (
-	"net/url"
+	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
+
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 )
 
-func TestNameFromURL(t *testing.T) {
+// TestCreateRegularNeverNamesFromLink: a Regular added with a recipe link
+// is named only by the household, so no part of the link — host, path,
+// query or fragment — is stored as its name or shown in a dinner or a
+// duplicate error, even a token of plain letters in the path.
+func TestCreateRegularNeverNamesFromLink(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		link string
-		want string // "" means no usable name
-	}{
-		{"https://example.com/recipes/12345/chicken-tikka-masala/", "Chicken tikka masala"},
-		{"https://example.com/recipe/beef_stew.html", "Beef stew"},
-		{"https://example.com/2024/05/best-ever-chili-123", "Best ever chili"},
-		{"https://example.com/crème-brûlée", "Crème brûlée"},
-		{"https://example.com/recipes/chili?utm=1#notes", "Chili"},
-		{"https://example.com/", ""},
-		{"https://example.com/recipe/98765", ""},
-		{"https://example.com/the-best-easy-recipe", ""},
-		{"https://example.com/best-chili-v2", "Best chili"},
-		{"https://example.com/stew-access_token-personaltokenabc123", "Stew"},
-		{"https://example.com/stew-token-abcdefghijk", "Stew"},
-		{"https://example.com/chili-api-key-zyxwvut", "Chili"},
-		{"https://example.com/stew-x7k2p9q4", "Stew"},
-		{"https://example.com/recipes/token-abcdefghijk", ""},
-		{"https://example.com/key-lime-pie", "Key lime pie"},
-		{"https://example.com/stew-t=abcdef", "Stew"},
-		{"https://example.com/stew-accesstoken-abcdefghijk", "Stew"},
-		{"https://example.com/stew-abcdefghijklmnopqrstuvwxyz", "Stew"},
-		{"https://example.com/cre%CC%80me-bru%CC%82le%CC%81e", "Cre\u0300me bru\u0302le\u0301e"},
-	}
-	for _, tt := range tests {
-		u, err := url.Parse(tt.link)
-		if err != nil {
-			t.Fatal(err)
-		}
-		got, ok := nameFromURL(u)
-		if got != tt.want || ok != (tt.want != "") {
-			t.Errorf("nameFromURL(%s) = %q, %v; want %q", tt.link, got, ok, tt.want)
+	e := newUnstartedEnv(t)
+	const link = "https://c.example/stew-key-abcdefghijklmno?sig=zyxwvut#frag"
+	leaks := []string{"c.example", "key", "abcdefghijklmno", "sig", "zyxwvut", "frag"}
+	check := func(what, text string) {
+		t.Helper()
+		lower := strings.ToLower(text)
+		for _, leak := range leaks {
+			if strings.Contains(lower, leak) {
+				t.Errorf("%s contains %q: %s", what, leak, text)
+			}
 		}
 	}
+
+	_, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{RecipeURL: ptr(link)}, member)
+	var verr *dinners.ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("link without a name: err = %v, want a *ValidationError", err)
+	}
+	check("validation error", verr.Error())
+
+	c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr(" Sunday stew "), RecipeURL: ptr(link)}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Name != "Sunday stew" {
+		t.Errorf("name = %q, want the household's %q", c.Name, "Sunday stew")
+	}
+	created, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("create response", string(created))
+	row := e.dinner(t, c.ID)
+	check("stored name", row.Name+" "+row.NormalizedName)
+	if row.RecipeUrl.String != link {
+		t.Errorf("stored recipe_url = %q, want %q kept for grounding", row.RecipeUrl.String, link)
+	}
+
+	list, err := e.svc.List(t.Context(), dinners.StatusRegular)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := json.Marshal(list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("list response", string(listed))
+
+	// The same link under another name is still a duplicate, and its error
+	// names the existing dinner by the household's name.
+	_, err = e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr("Weeknight chili"), RecipeURL: ptr(link)}, member)
+	var dup *dinners.DuplicateError
+	if !errors.As(err, &dup) || dup.Existing.ID != c.ID {
+		t.Fatalf("same link again: err = %v, want a duplicate of %s", err, c.ID)
+	}
+	check("duplicate error", dup.Error())
 }

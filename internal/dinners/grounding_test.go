@@ -194,7 +194,7 @@ func TestCreateByRecipeURLGroundsThatURL(t *testing.T) {
 	e := newEnv(t)
 	e.model.QueueGenerate(recipestest.NormalizedReply("oven", 150))
 
-	c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{RecipeURL: ptr(stew)}, member)
+	c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr("Beef stew"), RecipeURL: ptr(stew)}, member)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestCreateGroundingFailureRecordsReason(t *testing.T) {
 		reason string
 	}{
 		{"no candidates", dinners.NewRegular{Name: ptr("Unknown dish")}, nil, dinners.ReasonNoRecipe},
-		{"unusable link", dinners.NewRegular{RecipeURL: ptr("https://gone.example/recipes/lost-soup")}, nil, dinners.ReasonRecipeUnusable},
+		{"unusable link", dinners.NewRegular{Name: ptr("Lost soup"), RecipeURL: ptr("https://gone.example/recipes/lost-soup")}, nil, dinners.ReasonRecipeUnusable},
 		{"search fails", dinners.NewRegular{Name: ptr("Chicken curry")}, func(e *env) { e.search.Err = recipes.ErrSearchRateLimited }, dinners.ReasonSearchFailed},
 		{"model fails", dinners.NewRegular{Name: ptr("Chicken curry")}, func(e *env) {
 			// One provider failure per candidate tried.
@@ -375,7 +375,7 @@ func TestRenameLinkWhilePendingGroundsNewName(t *testing.T) {
 	e.search.Results["Beef stew"] = []recipes.Candidate{{URL: stew}}
 	e.model.QueueGenerate(recipestest.NormalizedReply("oven", 150))
 
-	c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{RecipeURL: ptr(curryA)}, member)
+	c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr("Chicken curry"), RecipeURL: ptr(curryA)}, member)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -740,7 +740,7 @@ func TestFixReplacesPendingLink(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			e := newEnv(t)
-			c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{RecipeURL: ptr(lost)}, member)
+			c, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr("Lamb roast"), RecipeURL: ptr(lost)}, member)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -763,11 +763,11 @@ func TestFixReplacesPendingLink(t *testing.T) {
 				t.Errorf("recipe_url = %q after the fix, want the unusable link dropped", row.RecipeUrl.String)
 			}
 
-			if _, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{RecipeURL: ptr(lost)}, member); err != nil {
+			if _, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr("Lentil soup"), RecipeURL: ptr(lost)}, member); err != nil {
 				t.Errorf("adding the dropped link again: %v, want added", err)
 			}
 			if tt.linkTaken != "" {
-				_, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{RecipeURL: ptr(tt.linkTaken)}, member)
+				_, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr("Curry night"), RecipeURL: ptr(tt.linkTaken)}, member)
 				var dup *dinners.DuplicateError
 				if !errors.As(err, &dup) || dup.Existing.ID != c.ID {
 					t.Errorf("adding the fixed dinner's recipe link: err = %v, want a duplicate of %s", err, c.ID)

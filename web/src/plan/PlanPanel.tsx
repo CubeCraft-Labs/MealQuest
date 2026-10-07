@@ -60,7 +60,7 @@ function Grip() {
 // Draggable is a dinner of the panel or the strip, dragged onto a day to
 // swap it in: a button whose content is the row or the chip. While it is
 // dragged it is a dashed ghost, and with a pointer a copy of it floats
-// under the pointer, lifted and tilted.
+// below right of the pointer, lifted and tilted.
 function Draggable({
   dinner,
   fromQuestLog,

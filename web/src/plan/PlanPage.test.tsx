@@ -1035,13 +1035,14 @@ describe.each([
   const float = () => screen.queryByTestId('drag-float')
 
   // press, move and release drive pointer 3 on the draggable: down at
-  // (100, 100), moved over an element (or none), and let go there.
+  // (100, 100), moved over an element (or none) at (160, 140) or the given
+  // point, and let go there.
   function press(draggable: Element) {
     fireEvent.pointerDown(draggable, { pointerId: 3, isPrimary: true, button: 0, clientX: 100, clientY: 100 })
   }
-  function move(draggable: Element, over: Element | null) {
+  function move(draggable: Element, over: Element | null, [clientX, clientY] = [160, 140]) {
     hovered = over
-    fireEvent.pointerMove(draggable, { pointerId: 3, isPrimary: true, clientX: 160, clientY: 140 })
+    fireEvent.pointerMove(draggable, { pointerId: 3, isPrimary: true, clientX, clientY })
   }
   function release(draggable: Element) {
     fireEvent.pointerUp(draggable, { pointerId: 3, isPrimary: true, button: 0, clientX: 160, clientY: 140 })
@@ -1079,6 +1080,10 @@ describe.each([
     expect(declaredStyle(copy).boxShadow).toBe('var(--shadow-lg)')
     expect(declaredStyle(copy).transform).toBe('rotate(-3deg)')
     expect(declaredStyle(copy).pointerEvents).toBe('none')
+    // Offset 48 px below right of the pointer at (160, 140), clear of the
+    // day's text under it.
+    expect(copy.style.left).toBe('208px')
+    expect(copy.style.top).toBe('188px')
     expect(announcer()).toHaveTextContent('Picked up Lemon orzo.')
     const target = within(column('Friday')).getByText('Drop to swap').parentElement!
     expect(target).toHaveTextContent('Drop to swapReplaces Pizza night')
@@ -1108,6 +1113,23 @@ describe.each([
     expect(screen.queryByText('Pizza night')).not.toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(puts(fetchMock)).toHaveLength(1)
+  })
+
+  it('flips the floating copy to the left of and above the pointer where it would leave the viewport', async () => {
+    stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')), ...dragLists })
+    await renderPage()
+    await screen.findByText('Pizza night')
+    const orzo = await quest('Lemon orzo')
+    vi.spyOn(orzo, 'getBoundingClientRect').mockReturnValue(DOMRect.fromRect({ x: 90, y: 90, width: 240, height: 60 }))
+
+    press(orzo)
+    const [x, y] = [window.innerWidth - 100, window.innerHeight - 40]
+    move(orzo, document.body, [x, y])
+    const copy = float()!
+    expect(copy.style.width).toBe('240px')
+    expect(copy.style.left).toBe(`${x - 48 - 240}px`)
+    expect(copy.style.top).toBe(`${y - 48 - 60}px`)
+    release(orzo)
   })
 
   it('cancels a drag let go over no day, or cancelled, with no swap', async () => {

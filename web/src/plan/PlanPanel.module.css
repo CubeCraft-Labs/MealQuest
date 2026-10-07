@@ -208,8 +208,9 @@
   opacity: 0.55;
 }
 
-/* The dragged copy floating under the pointer: lifted with the large
-   shadow and tilted -3deg. It lets the pointer through to the day under it. */
+/* The dragged copy floating below right of the pointer: lifted with the
+   large shadow and tilted -3deg. It lets the pointer through to the day
+   under it. */
 .floating {
   position: fixed;
   z-index: 10;

@@ -238,8 +238,8 @@ automatic** (D-021).
   an opaque id the server resolves to the page it last offered that dinner
   (kept in memory, so a restart means fetching the candidates again); the
   page's URL, which may carry a token, is never returned or cached.
-  `POST /api/v1/dinners/{id}/ground` takes exactly one of `{candidate_id}`, `{recipe_url}` (both grounded with `GroundURL`,
-  setting `grounded`) or `{manual: {ingredients[], steps[], minutes,
+  `POST /api/v1/dinners/{id}/ground` takes exactly one of `{candidate_id}`,
+  `{recipe_url}` (both grounded with `GroundURL`, setting `grounded`) or `{manual: {ingredients[], steps[], minutes,
   method}}` (1–100 ingredient lines, up to 100 steps, each non-blank and at
   most 500 characters; minutes 1–1440). A manual recipe is stored as typed
   — no model runs — as a `recipes` row whose source_url is

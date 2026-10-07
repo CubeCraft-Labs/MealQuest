@@ -11,7 +11,7 @@ import { Icon } from '../ui/Icon.tsx'
 import { IconButton } from '../ui/IconButton.tsx'
 import { Skeleton } from '../ui/Skeleton.tsx'
 import { Tag } from '../ui/Tag.tsx'
-import { DRAFT_JOB_KIND, parseDraftResult, planKey, usePlan, useStartDraft, type PlanDay, type PlanStatus } from './api.ts'
+import { DRAFT_JOB_KIND, parseDraftResult, planKey, usePlan, useStartDraft, type DraftResult, type PlanDay, type PlanStatus } from './api.ts'
 import { addDays, defaultWeek, localNow, weekdayKicker, weekLabel } from './week.ts'
 import styles from './PlanPage.module.css'
 
@@ -90,31 +90,44 @@ function WeekBoard({ weekStart, timezone, onWeek }: { weekStart: string; timezon
   const label = weekLabel(weekStart)
 
   // The draft's result, once the job has succeeded, or why it cannot be read.
-  const resultError = useMemo(() => {
-    if (job.status !== 'succeeded') return null
+  const result = useMemo((): { draft: DraftResult | null; error: Error | null } => {
+    if (job.status !== 'succeeded') return { draft: null, error: null }
     try {
-      parseDraftResult(`GET /api/v1/jobs/${jobId}`, weekStart, job.result)
-      return null
+      return { draft: parseDraftResult(`GET /api/v1/jobs/${jobId}`, weekStart, job.result), error: null }
     } catch (error) {
-      return error as Error
+      return { draft: null, error: error as Error }
     }
   }, [job.status, job.result, jobId, weekStart])
 
   // Once the job ends the plan is read again: a succeeded draft is followed
-  // until that read lands, which then shows it; a failed one stays shown,
-  // and may have met a plan changed meanwhile.
+  // until that read lands; a failed one stays shown, and may have met a
+  // plan changed meanwhile.
+  const [readJobId, setReadJobId] = useState<string | null>(null)
   const ended = job.status === 'succeeded' || job.status === 'failed'
-  const drafted = job.status === 'succeeded' && resultError === null
   useEffect(() => {
     if (!ended) return
     let active = true
     void queryClient.invalidateQueries({ queryKey: planKey(weekStart) }).then(() => {
-      if (active && drafted) setJobId(null)
+      if (active) setReadJobId(jobId)
     })
     return () => {
       active = false
     }
-  }, [queryClient, ended, drafted, weekStart])
+  }, [queryClient, ended, jobId, weekStart])
+
+  // The plan read shows once it is the one drafted; no plan, or another
+  // one, is an error rather than an empty or stale board.
+  const { draft } = result
+  const read = draft !== null && readJobId === jobId && plan.isSuccess
+  const landed = read && plan.data?.id === draft.plan_id
+  const resultError =
+    result.error ??
+    (read && !landed
+      ? new Error(plan.data === null ? `The week has no plan, not draft ${draft.plan_id}.` : `The week's plan is not draft ${draft.plan_id}.`)
+      : null)
+  useEffect(() => {
+    if (landed) setJobId(null)
+  }, [landed])
 
   const drafting = startDraft.isPending || (jobId !== null && job.status !== 'failed' && resultError === null)
 

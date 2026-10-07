@@ -46,8 +46,10 @@ function planBody(status: string, names = NAMES) {
   }
 }
 
-function draftJob(status: string, error: string | null = null) {
-  const result = status === 'succeeded' ? { week_start: '2026-10-05', plan_id: 'plan-2' } : null
+// draftJob is job j1 drafting the week of Oct 5 into plan planId: a
+// redraft keeps the plan's id.
+function draftJob(status: string, error: string | null = null, planId = 'plan-1') {
+  const result = status === 'succeeded' ? { week_start: '2026-10-05', plan_id: planId } : null
   return { id: 'j1', kind: 'draft_week', status, result, error }
 }
 
@@ -289,6 +291,34 @@ describe('PlanPage', () => {
     job = draftJob('running')
     fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
     await waitFor(() => expect(posts(fetchMock)).toEqual([`${DRAFT} {}`, `${DRAFT} {}`]))
+    expect(await screen.findByRole('region', { name: 'Drafting this week' })).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['the week has no plan', null, 'The week has no plan, not draft plan-1.'],
+    ['the week has another plan', { ...planBody('draft'), id: 'plan-9' }, "The week's plan is not draft plan-1."],
+  ])('shows a succeeded draft with Retry when %s once read', async (_, landed, message) => {
+    let plan: unknown = null
+    let job = draftJob('running')
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => (plan === null ? errorResponse(404, 'not_found') : jsonResponse(200, plan)),
+      [`POST ${DRAFT}`]: () => jsonResponse(202, { jobId: 'j1' }),
+      [`GET ${JOB}`]: () => jsonResponse(200, job),
+    })
+    await renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Draft this week' }))
+    expect(await screen.findByRole('region', { name: 'Drafting this week' })).toBeInTheDocument()
+    plan = landed
+    job = draftJob('succeeded')
+    const alert = await screen.findByRole('alert', {}, { timeout: 3000 })
+    expect(alert).toHaveTextContent(`Couldn't read the draft. ${message}`)
+    expect(screen.queryByTestId('skeleton-tile')).not.toBeInTheDocument()
+
+    job = draftJob('running')
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(posts(fetchMock)).toHaveLength(2))
     expect(await screen.findByRole('region', { name: 'Drafting this week' })).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })

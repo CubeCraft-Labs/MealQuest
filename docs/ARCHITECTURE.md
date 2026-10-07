@@ -194,7 +194,9 @@ automatic** (D-021).
   `GET /api/v1/dinners?status=regular|quest_log` returns
   `{dinners: [...]}` ordered by normalized name, each with `photo_url`
   (`/media/photos/{photo_id}-400.jpg`, or null) and `grounding_status`;
-  any other status is 400. `PATCH /api/v1/dinners/{id}` edits `name`
+  any other status is 400. The Quest log (`quest_log`) is the dinners
+  accepted and not yet scheduled: one on the plan for the household's
+  current week (by its timezone) or a later week is left out. `PATCH /api/v1/dinners/{id}` edits `name`
   (deduplicated against the other unarchived dinners), `method`
   (`stovetop` / `oven` / `crockpot` / `grill` / `other`), `minutes_total`
   (1–1440) and `difficulty` (`easy` / `medium` / `hard`); invalid values

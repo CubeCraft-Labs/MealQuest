@@ -19,6 +19,19 @@ SELECT * FROM dinners
 WHERE status = ?
 ORDER BY normalized_name, id;
 
+-- name: ListUnplannedQuestLogDinners :many
+-- The Quest log: dinners with status quest_log that no plan for the week
+-- starting from_week_start or later has on any day.
+SELECT * FROM dinners
+WHERE status = 'quest_log'
+  AND NOT EXISTS (
+	SELECT 1 FROM plan_days
+	JOIN week_plans ON week_plans.id = plan_days.plan_id
+	WHERE plan_days.dinner_id = dinners.id
+	  AND week_plans.week_start >= sqlc.arg(from_week_start)
+  )
+ORDER BY normalized_name, id;
+
 -- name: CountRegularDinners :one
 -- How many Regulars the household has; archived dinners are not counted.
 SELECT COUNT(*) FROM dinners

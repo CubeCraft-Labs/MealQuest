@@ -7,7 +7,7 @@ import styles from './DiscoverPage.module.css'
 // DECK_DEPTH is the depths the deck shows, top card first.
 export const DECK_DEPTH = [0, 1, 2] as const
 
-const DIFFICULTY_LABEL: Record<Difficulty, string> = { easy: 'Easy', medium: 'Medium', hard: 'Hard' }
+export const DIFFICULTY_LABEL: Record<Difficulty, string> = { easy: 'Easy', medium: 'Medium', hard: 'Hard' }
 
 // SwipeHandlers are the pointer handlers that drag the top card.
 export type SwipeHandlers = Pick<

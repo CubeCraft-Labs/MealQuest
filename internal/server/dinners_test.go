@@ -11,9 +11,11 @@ import (
 	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/llm"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes/recipestest"
@@ -66,6 +68,10 @@ func (b *logBuffer) String() string {
 func newDinnersEnv(t *testing.T) *dinnersEnv {
 	t.Helper()
 	st := newTestStore(t)
+	// The Quest log is read against the household's current week.
+	if err := household.SeedSettings(context.Background(), st, "America/New_York"); err != nil {
+		t.Fatal(err)
+	}
 	e := &dinnersEnv{
 		st:     st,
 		search: &recipestest.Search{Results: map[string][]recipes.Candidate{}},
@@ -411,6 +417,61 @@ func TestListDinnersFiltersByStatus(t *testing.T) {
 		if rec.Code != http.StatusBadRequest || errorCode(body) != "invalid_dinner" {
 			t.Errorf("GET %q = %d %v, want 400 invalid_dinner", q, rec.Code, body)
 		}
+	}
+}
+
+// The Quest log leaves out a dinner on the plan for the household's current
+// week or a later one: it is scheduled already. A dinner on an earlier
+// week's plan only, or on none, is listed.
+func TestQuestLogLeavesOutPlannedDinners(t *testing.T) {
+	t.Parallel()
+	router, st := newDinnersRouter(t)
+	ctx := context.Background()
+	names := []string{"Bibimbap", "Gumbo", "Pho", "Ramen", "Tagine"}
+	ids := map[string]string{}
+	for _, name := range names {
+		id := createDinner(t, router, `{"name":"`+name+`"}`)
+		if _, err := st.Writer.ExecContext(ctx, `UPDATE dinners SET status = 'quest_log', origin = 'side_quest' WHERE id = ?`, id); err != nil {
+			t.Fatal(err)
+		}
+		ids[name] = id
+	}
+
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	thisWeek := household.WeekStart(household.Today(time.Now(), loc))
+	// day is the date days after the Monday weeks after this week's.
+	day := func(weeks, days int) string {
+		y, m, d := thisWeek.Date()
+		return time.Date(y, m, d+7*weeks+days, 0, 0, 0, 0, time.UTC).Format(time.DateOnly)
+	}
+	// Gumbo is on last week's plan only; Pho on this week's; Ramen on the
+	// week after next; Tagine on last week's and this week's.
+	plan := func(weeks int, dinners ...string) {
+		t.Helper()
+		weekStart := day(weeks, 0)
+		planID := "plan-" + weekStart
+		if _, err := st.Writer.ExecContext(ctx,
+			`INSERT INTO week_plans (id, week_start, status, created_at, updated_at) VALUES (?, ?, 'draft', 't', 't')`,
+			planID, weekStart); err != nil {
+			t.Fatal(err)
+		}
+		for i, name := range dinners {
+			if _, err := st.Writer.ExecContext(ctx,
+				`INSERT INTO plan_days (id, plan_id, date, dinner_id, is_new, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 't', 't')`,
+				planID+"-"+name, planID, day(weeks, i), ids[name]); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	plan(-1, "Gumbo", "Tagine")
+	plan(0, "Pho", "Tagine")
+	plan(2, "Ramen")
+
+	if got := strings.Join(listNames(t, router, "quest_log"), ","); got != "Bibimbap,Gumbo" {
+		t.Errorf("quest_log = %s, want Bibimbap,Gumbo", got)
 	}
 }
 

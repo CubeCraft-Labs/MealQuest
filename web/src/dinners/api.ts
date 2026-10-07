@@ -106,7 +106,8 @@ export function photoId(where: string, value: unknown): string | undefined {
   return decodeURIComponent(match[1])
 }
 
-function parseDinner(where: string, body: unknown): Regular {
+// parseDinner checks a dinner as the dinners API sends it.
+export function parseDinner(where: string, body: unknown): Regular {
   if (!isRecord(body) || typeof body.id !== 'string' || typeof body.name !== 'string') {
     throw new Error(`${where}: response is not a dinner`)
   }
@@ -141,7 +142,7 @@ function parseCandidate(where: string, body: unknown): RecipeCandidate {
   }
 }
 
-function dinnerPath(id: string): string {
+export function dinnerPath(id: string): string {
   return `${DINNERS_PATH}/${encodeURIComponent(id)}`
 }
 

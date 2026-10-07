@@ -383,8 +383,11 @@ func TestRenameLinkWhilePendingGroundsNewName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.GroundingStatus != dinners.GroundingPending || d.RecipeURL != nil {
-		t.Fatalf("renamed = %+v, want still pending with no recipe_url", d)
+	if d.GroundingStatus != dinners.GroundingPending {
+		t.Fatalf("renamed = %+v, want still pending", d)
+	}
+	if row, err := db.New(e.st.Reader).GetDinner(t.Context(), c.ID); err != nil || row.RecipeUrl.Valid {
+		t.Fatalf("renamed row = %+v (err %v), want no recipe_url", row, err)
 	}
 	e.start(t)
 
@@ -749,12 +752,15 @@ func TestFixReplacesPendingLink(t *testing.T) {
 				t.Fatal(err)
 			}
 			e.model.QueueGenerate(recipestest.NormalizedReply("stovetop", 25))
-			d, err := e.svc.Ground(t.Context(), c.ID, tt.fix, member)
+			if _, err := e.svc.Ground(t.Context(), c.ID, tt.fix, member); err != nil {
+				t.Fatal(err)
+			}
+			row, err := db.New(e.st.Reader).GetDinner(t.Context(), c.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if d.RecipeURL != nil {
-				t.Errorf("recipe_url = %q after the fix, want the unusable link dropped", *d.RecipeURL)
+			if row.RecipeUrl.Valid {
+				t.Errorf("recipe_url = %q after the fix, want the unusable link dropped", row.RecipeUrl.String)
 			}
 
 			if _, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{RecipeURL: ptr(lost)}, member); err != nil {

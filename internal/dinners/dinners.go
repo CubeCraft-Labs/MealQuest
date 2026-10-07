@@ -55,7 +55,9 @@ var listable = []string{StatusRegular, StatusQuestLog}
 // ErrNotFound is returned for an unknown dinner id.
 var ErrNotFound = errors.New("dinner not found")
 
-// Dinner is a dinner as the API shows it.
+// Dinner is a dinner as the API shows it. It has no recipe_url: a pasted
+// link may carry a personal token, so it stays in the database for
+// grounding and never leaves the server.
 type Dinner struct {
 	ID              string  `json:"id"`
 	Name            string  `json:"name"`
@@ -67,7 +69,6 @@ type Dinner struct {
 	Cuisine         *string `json:"cuisine"`
 	IsFavorite      bool    `json:"is_favorite"`
 	RecipeID        *string `json:"recipe_id"`
-	RecipeURL       *string `json:"recipe_url"`
 	PhotoURL        *string `json:"photo_url"`
 	GroundingStatus string  `json:"grounding_status"`
 	// GroundingError is why grounding failed, one of the Reason codes;
@@ -565,7 +566,6 @@ func fromRow(r db.Dinner) Dinner {
 		Cuisine:         nullString(r.Cuisine),
 		IsFavorite:      r.IsFavorite == 1,
 		RecipeID:        nullString(r.RecipeID),
-		RecipeURL:       nullString(r.RecipeUrl),
 		GroundingStatus: r.GroundingStatus,
 		GroundingError:  nullString(r.GroundingError),
 		UpdatedBy:       nullString(r.UpdatedBy),

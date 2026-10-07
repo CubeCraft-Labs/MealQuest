@@ -159,7 +159,6 @@ func TestCreateDinnerByName(t *testing.T) {
 		"origin":           "regular",
 		"grounding_status": "pending",
 		"is_favorite":      false,
-		"recipe_url":       nil,
 		"photo_url":        nil,
 		"method":           nil,
 		"minutes_total":    nil,
@@ -169,6 +168,9 @@ func TestCreateDinnerByName(t *testing.T) {
 		if got, ok := body[k]; !ok || got != v {
 			t.Errorf("%s = %#v (present %v), want %#v", k, got, ok, v)
 		}
+	}
+	if got, ok := body["recipe_url"]; ok {
+		t.Errorf("recipe_url = %#v, want no recipe_url in a dinner response", got)
 	}
 	var normalized, updatedBy string
 	if err := st.Reader.QueryRow(`SELECT normalized_name, updated_by FROM dinners WHERE id = ?`, body["id"]).Scan(&normalized, &updatedBy); err != nil {
@@ -190,7 +192,6 @@ func TestCreateDinnerByURL(t *testing.T) {
 	}
 	for k, v := range map[string]any{
 		"name":             "Beef and broccoli stir fry",
-		"recipe_url":       link,
 		"status":           "regular",
 		"origin":           "regular",
 		"grounding_status": "pending",
@@ -199,6 +200,10 @@ func TestCreateDinnerByURL(t *testing.T) {
 		if body[k] != v {
 			t.Errorf("%s = %#v, want %#v", k, body[k], v)
 		}
+	}
+	// The link stays on the server for grounding; responses never carry it.
+	if got, ok := body["recipe_url"]; ok {
+		t.Errorf("recipe_url = %#v, want no recipe_url in a dinner response", got)
 	}
 
 	// The same link again is a duplicate even though its name would differ.
@@ -224,6 +229,40 @@ func TestCreateDinnerByURL(t *testing.T) {
 		if rec.Code != http.StatusBadRequest || errorCode(body) != "invalid_dinner" {
 			t.Errorf("%s: %d %v, want 400 invalid_dinner", tc.name, rec.Code, body)
 		}
+	}
+}
+
+// TestDinnerResponsesHideRecipeURL: a pasted link may carry a personal
+// token, so neither the create response nor a later list read shows any
+// part of it, while the stored link still awaits grounding.
+func TestDinnerResponsesHideRecipeURL(t *testing.T) {
+	t.Parallel()
+	router, st := newDinnersRouter(t)
+
+	const link = "https://c.example/recipes/stew?access_token=personal-token-abc123"
+	rec, body := callDinners(t, router, http.MethodPost, dinnersPath, `{"recipe_url":"`+link+`"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: %s", rec.Code, rec.Body)
+	}
+	created := rec.Body.String()
+	rec, _ = callDinners(t, router, http.MethodGet, dinnersPath+"?status=regular", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET status=regular = %d: %s", rec.Code, rec.Body)
+	}
+	for _, resp := range []struct{ name, body string }{{"create", created}, {"list", rec.Body.String()}} {
+		for _, secret := range []string{link, "c.example", "access_token", "personal-token-abc123", "recipe_url"} {
+			if strings.Contains(resp.body, secret) {
+				t.Errorf("%s response contains %q: %s", resp.name, secret, resp.body)
+			}
+		}
+	}
+
+	var stored string
+	if err := st.Reader.QueryRow(`SELECT recipe_url FROM dinners WHERE id = ?`, body["id"]).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != link {
+		t.Errorf("stored recipe_url = %q, want %q kept for grounding", stored, link)
 	}
 }
 

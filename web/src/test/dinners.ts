@@ -10,7 +10,6 @@ export type DinnerBody = {
   cuisine: string | null
   is_favorite: boolean
   recipe_id: string | null
-  recipe_url: string | null
   photo_url: string | null
   grounding_status: string
   grounding_error: string | null
@@ -33,7 +32,6 @@ export function dinnerBody(id: string, name: string, overrides: Partial<DinnerBo
     cuisine: null,
     is_favorite: false,
     recipe_id: null,
-    recipe_url: null,
     photo_url: null,
     grounding_status: 'grounded',
     grounding_error: null,

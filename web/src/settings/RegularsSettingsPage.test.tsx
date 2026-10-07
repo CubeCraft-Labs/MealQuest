@@ -196,7 +196,7 @@ describe('RegularsSettingsPage', () => {
     const link = 'https://example.com/recipes/12345/beef-stew/'
     const server = stubServer([], {
       'POST /api/v1/dinners': () => {
-        const created = dinnerBody('d9', 'Beef stew', { grounding_status: 'pending', recipe_url: link })
+        const created = dinnerBody('d9', 'Beef stew', { grounding_status: 'pending' })
         server.regulars = [created]
         return jsonResponse(201, { ...created, grounding_job_id: 'job-1' })
       },

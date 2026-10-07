@@ -180,7 +180,8 @@ automatic** (D-021).
   each skill run, so a saved change applies to the next run.
 - Dinners (`dinners.Service`). `POST /api/v1/dinners` adds a Regular from
   exactly one of `{name}` or `{recipe_url}` (an https:// link, kept in
-  `recipe_url` for grounding) with status and origin `regular` and
+  `recipe_url` for grounding and never returned in a dinner response, as
+  it may carry a personal token) with status and origin `regular` and
   grounding_status `pending`, answering 201 with the dinner. A link's
   dinner is named from its last path segment (separators become spaces,
   an extension and all-digit words are dropped: `…/12345/beef-stew/` is

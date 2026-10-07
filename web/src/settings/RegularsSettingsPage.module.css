@@ -1,0 +1,302 @@
+/* Settings · Regular dinners. */
+.page {
+  box-sizing: border-box;
+  min-height: 100%;
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding-top: 6px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.kicker {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-accent-700);
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 28px;
+  font-weight: 400;
+}
+
+.shared {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 26px;
+  background: var(--color-accent-2-100);
+  color: var(--color-accent-2-900);
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+/* The add form: the add row, then the name field a pasted link needs. */
+.addForm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* The add field: the input fills the row beside the grape + button. */
+.add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.add > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.add .addInput {
+  width: 100%;
+}
+
+.loading {
+  height: 320px;
+  border-radius: 26px;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.groupLabel {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-neutral-700);
+}
+
+.card {
+  padding: 6px;
+  border: 1px solid var(--color-neutral-300);
+}
+
+.rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item + .item {
+  border-top: 1px solid var(--color-divider);
+}
+
+.pending {
+  opacity: 0.6;
+}
+
+.photo {
+  width: 48px;
+  height: 48px;
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin-top: 4px;
+}
+
+/* Beat the Tag's own tones whatever order the sheets load in. */
+.meta .finding {
+  background: var(--color-neutral-200);
+  color: var(--color-neutral-700);
+}
+
+.meta .found {
+  background: var(--color-accent-2-200);
+  color: var(--color-accent-2-800);
+}
+
+.meta .needs {
+  background: var(--color-accent-100);
+  color: var(--color-accent-800);
+}
+
+.filled {
+  color: var(--color-accent);
+  fill: currentColor;
+}
+
+.hint,
+.problem,
+.status {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.hint {
+  color: var(--color-neutral-700);
+}
+
+.problem {
+  font-weight: 700;
+  color: var(--color-accent-700);
+}
+
+.status {
+  color: var(--color-accent-2-800);
+}
+
+.status:empty {
+  display: none;
+}
+
+.sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+.sheetTitle {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 22px;
+  font-weight: 400;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: end;
+}
+
+/* Beside a dropdown, a minutes field matches its height. */
+.columns .paired {
+  width: 100%;
+  height: 56px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.label {
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-neutral-700);
+}
+
+.textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 120px;
+  padding: 14px 18px;
+  border: 1px solid var(--color-neutral-300);
+  border-radius: 22px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.actions {
+  display: grid;
+  gap: 10px;
+}
+
+.actions > button {
+  min-height: 52px;
+}
+
+.candidatesLoading {
+  height: 200px;
+  border-radius: 22px;
+}
+
+.candidates {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.candidate {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-width: 44px;
+  min-height: 72px;
+  padding: 8px 16px 8px 8px;
+  border: 1px solid var(--color-neutral-300);
+  border-radius: 22px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  text-align: start;
+  cursor: pointer;
+}
+
+.candidate:hover {
+  background: var(--color-neutral-200);
+}
+
+.candidatePhoto {
+  flex: none;
+  width: 56px;
+  height: 56px;
+}
+
+.candidateBody {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.candidateTitle {
+  font-family: var(--font-body);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.candidateSite {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-neutral-700);
+}
+
+/* A form locked while its save is pending. It lays out as if it were not
+   there. */
+.lock {
+  display: contents;
+}

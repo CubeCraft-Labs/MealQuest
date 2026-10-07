@@ -37,6 +37,9 @@ type settingsPatch struct {
 	SuggestionsTime  *string `json:"suggestions_time"`
 	ChatAutosendDow  *int    `json:"chat_autosend_dow"`
 	ChatAutosendTime *string `json:"chat_autosend_time"`
+	// OnboardingCompleted true sets onboarding_completed_at, which is
+	// itself read-only.
+	OnboardingCompleted *bool `json:"onboarding_completed"`
 }
 
 func getHouseholdSettings(logger *slog.Logger, svc *household.SettingsService) http.HandlerFunc {
@@ -110,7 +113,7 @@ func decodePatch[T any](body io.Reader) (T, error) {
 		if errors.As(err, &typeErr) {
 			return patch, fmt.Errorf("%s: want a JSON %s", typeErr.Field, typeErr.Type)
 		}
-		return patch, fmt.Errorf("invalid settings: %v", err)
+		return patch, fmt.Errorf("invalid request body: %v", err)
 	}
 	return patch, nil
 }

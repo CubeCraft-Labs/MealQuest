@@ -14,8 +14,11 @@ import (
 	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/aisettings"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/auth"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/config"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
@@ -75,7 +78,10 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	photos, err := recipes.NewPhotoCache(recipes.NewFetcher(), db, cfg.DataDir)
+	// One fetcher serves pages and photos, so its per-host spacing and
+	// page cache cover both.
+	fetcher := recipes.NewFetcher()
+	photos, err := recipes.NewPhotoCache(fetcher, db, cfg.DataDir)
 	if err != nil {
 		return err
 	}
@@ -85,6 +91,18 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	}
 
 	ai, err := aisettings.New(db, box, cfg.PublicURL.String())
+	if err != nil {
+		return err
+	}
+	guard, err := harness.NewGuard(harness.DefaultMaxCalls)
+	if err != nil {
+		return err
+	}
+	grounder, err := recipes.NewGrounder(db, search, fetcher, photos, normalizer(ai, guard))
+	if err != nil {
+		return err
+	}
+	dinnerSvc, err := dinners.NewService(db, grounder, runner, logger)
 	if err != nil {
 		return err
 	}
@@ -105,7 +123,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, search, ai, runner, photos, frontend.Assets())
+	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, search, ai, dinnerSvc, runner, photos, frontend.Assets())
 	if err != nil {
 		return err
 	}
@@ -119,6 +137,12 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		runner.Wait()
 	}()
 	if err := runner.Start(jobsCtx); err != nil {
+		return err
+	}
+	// With those jobs failed, a dinner still pending with no grounding job
+	// queued or running is failed as interrupted, before any request can
+	// create one.
+	if _, err := dinnerSvc.FailInterruptedGroundings(ctx); err != nil {
 		return err
 	}
 	srv := &http.Server{
@@ -202,7 +226,7 @@ func seedDefaults(ctx context.Context, db *store.Store, defaultTZ string) error 
 	return household.SeedNotificationPrefs(ctx, db)
 }
 
-// jobKinds enqueues every job kind the server runs.
+// jobKinds enqueues the framework's job kinds.
 type jobKinds struct {
 	builtins *jobs.Builtins
 }
@@ -221,14 +245,27 @@ func newJobRunner(db *store.Store, logger *slog.Logger) (*jobs.Runner, *jobKinds
 	return runner, kinds, nil
 }
 
-// registerJobKinds registers every job kind's handler on runner. Each
-// feature's job kinds are registered here.
+// registerJobKinds registers the framework's job kinds on runner. A feature
+// service registers its own kinds when it is built, before the runner
+// starts (dinners.NewService registers dinners.KindGroundDinner).
 func registerJobKinds(runner *jobs.Runner) (*jobKinds, error) {
 	builtins, err := jobs.RegisterBuiltins(runner)
 	if err != nil {
 		return nil, err
 	}
 	return &jobKinds{builtins: builtins}, nil
+}
+
+// normalizer runs normalize_recipe with the AI settings current at each
+// run, sharing guard.
+func normalizer(ai *aisettings.Service, guard *harness.Guard) recipes.Normalizer {
+	return func(ctx context.Context, scope string, in skills.RecipeText) (skills.NormalizedRecipe, error) {
+		cfg, err := ai.HarnessConfig(ctx, guard)
+		if err != nil {
+			return skills.NormalizedRecipe{}, err
+		}
+		return skills.NormalizeRecipe(ctx, cfg, scope, in)
+	}
 }
 
 // logListening logs the startup line. Only the public URL's origin is logged

@@ -70,7 +70,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-function renderAt(path: string, reducedMotion = false) {
+async function renderAt(path: string, reducedMotion = false) {
   mockViewport(MOBILE, { reducedMotion })
   stubFetchByPath(SETTINGS_API)
   render(
@@ -80,6 +80,8 @@ function renderAt(path: string, reducedMotion = false) {
       </ApiProviders>
     </InDataRouter>,
   )
+  // The routes wait for the household settings (OnboardingGate).
+  await screen.findByRole('navigation', { name: 'Primary' })
 }
 
 function nav() {
@@ -109,21 +111,21 @@ function animationsOf(element: Element) {
 }
 
 describe('BottomBar', () => {
-  it('places the pill on the active item without animating on first render', () => {
-    renderAt('/plan')
+  it('places the pill on the active item without animating on first render', async () => {
+    await renderAt('/plan')
     expect(pill().style.left).toBe('54px')
     expect(pill().style.width).toBe('110px')
     expect(pill()).toBeVisible()
     expect(animate).not.toHaveBeenCalled()
   })
 
-  it('hides the pill when no item is active', () => {
-    renderAt('/onboarding')
+  it('hides the pill when no item is active', async () => {
+    await renderAt('/cook-from-pantry')
     expect(pill()).not.toBeVisible()
   })
 
-  it('slides the pill from the old item to the new one over 420 ms on the spring curve', () => {
-    renderAt('/')
+  it('slides the pill from the old item to the new one over 420 ms on the spring curve', async () => {
+    await renderAt('/')
     fireEvent.click(link('Quick'))
 
     expect(animationsOf(pill())).toEqual([
@@ -139,8 +141,8 @@ describe('BottomBar', () => {
     expect(pill().style.width).toBe('110px')
   })
 
-  it('FLIPs every item that moved from its old left to its new one with the same timing', () => {
-    renderAt('/')
+  it('FLIPs every item that moved from its old left to its new one with the same timing', async () => {
+    await renderAt('/')
     fireEvent.click(link('Quick'))
 
     // Home shrinks from 110 to 48 px, so Plan and Discover shift 62 px left
@@ -163,8 +165,8 @@ describe('BottomBar', () => {
     expect(animationsOf(link('Settings'))).toEqual([])
   })
 
-  it('fades the new label in over 220 ms ease-out after 120 ms', () => {
-    renderAt('/')
+  it('fades the new label in over 220 ms ease-out after 120 ms', async () => {
+    await renderAt('/')
     fireEvent.click(link('Discover'))
 
     const label = within(link('Discover')).getByText('Discover')
@@ -180,14 +182,14 @@ describe('BottomBar', () => {
     ])
   })
 
-  it('does not animate when the active item stays the same', () => {
-    renderAt('/plan')
+  it('does not animate when the active item stays the same', async () => {
+    await renderAt('/plan')
     fireEvent.click(link('Plan'))
     expect(animate).not.toHaveBeenCalled()
   })
 
-  it('jumps the pill to the new item with no animation under reduced motion', () => {
-    renderAt('/', true)
+  it('jumps the pill to the new item with no animation under reduced motion', async () => {
+    await renderAt('/', true)
     fireEvent.click(link('Settings'))
 
     expect(link('Settings')).toHaveAttribute('aria-current', 'page')
@@ -196,8 +198,8 @@ describe('BottomBar', () => {
     expect(pill().style.width).toBe('110px')
   })
 
-  it('re-places the pill when the viewport resizes', () => {
-    renderAt('/discover')
+  it('re-places the pill when the viewport resizes', async () => {
+    await renderAt('/discover')
     expect(pill().style.left).toBe('102px')
     vi.spyOn(HTMLElement.prototype, 'offsetLeft', 'get').mockReturnValue(120)
     vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(96)
@@ -207,8 +209,8 @@ describe('BottomBar', () => {
     expect(animate).not.toHaveBeenCalled()
   })
 
-  it('starts a second slide from where the first one is on screen, not from its destination', () => {
-    renderAt('/')
+  it('starts a second slide from where the first one is on screen, not from its destination', async () => {
+    await renderAt('/')
     fireEvent.click(link('Quick'))
     const [firstPill] = runningOn(pill())
     const firstPlan = runningOn(link('Plan'))[0]!
@@ -247,8 +249,8 @@ describe('BottomBar', () => {
     ])
   })
 
-  it('stops a running slide and places the pill on the active item when the viewport resizes', () => {
-    renderAt('/')
+  it('stops a running slide and places the pill on the active item when the viewport resizes', async () => {
+    await renderAt('/')
     fireEvent.click(link('Quick'))
     const slide = [pill(), link('Plan'), link('Discover'), link('Quick')].flatMap(runningOn)
     expect(slide).toHaveLength(4)
@@ -269,7 +271,7 @@ describe('BottomBar', () => {
     const ready = new Promise<void>((resolve) => (fontsReady = resolve))
     Object.defineProperty(document, 'fonts', { configurable: true, value: { ready } })
     try {
-      renderAt('/discover')
+      await renderAt('/discover')
       vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(124)
       fontsReady()
       await ready
@@ -279,8 +281,8 @@ describe('BottomBar', () => {
     }
   })
 
-  it('crossfades the icon colour with a .2s colour transition', () => {
-    renderAt('/')
+  it('crossfades the icon colour with a .2s colour transition', async () => {
+    await renderAt('/')
     for (const item of within(nav()).getAllByRole('link')) {
       expect(declaredStyle(item).transition).toBe('color .2s')
     }

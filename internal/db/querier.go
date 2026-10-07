@@ -21,9 +21,14 @@ type Querier interface {
 	// Drops references to the runs created before the cutoff, so the purge
 	// can delete them.
 	ClearWeekPlanAIRunsBefore(ctx context.Context, cutoff string) (int64, error)
+	// How many Regulars the household has; archived dinners are not counted.
+	CountRegularDinners(ctx context.Context) (int64, error)
 	CreateAIRun(ctx context.Context, arg CreateAIRunParams) error
 	CreateDinner(ctx context.Context, arg CreateDinnerParams) (Dinner, error)
 	CreateJob(ctx context.Context, arg CreateJobParams) error
+	// A recipe the household typed in. Its source_url is a mealquest:manual:
+	// URN rather than a page, so it never matches a fetched page.
+	CreateManualRecipe(ctx context.Context, arg CreateManualRecipeParams) (Recipe, error)
 	CreatePhoto(ctx context.Context, arg CreatePhotoParams) (Photo, error)
 	CreateRecipeIngredient(ctx context.Context, arg CreateRecipeIngredientParams) error
 	CreateRecipeStep(ctx context.Context, arg CreateRecipeStepParams) error
@@ -31,6 +36,17 @@ type Querier interface {
 	DeleteRecipeIngredients(ctx context.Context, recipeID string) error
 	DeleteRecipeSteps(ctx context.Context, recipeID string) error
 	FailJob(ctx context.Context, arg FailJobParams) (int64, error)
+	// Fails every unarchived dinner still pending whose grounding job for its
+	// current grounding_revision is no longer queued or running: the process
+	// stopped before the job, or before its handler recorded a result. An
+	// archived dinner is left as it is; archiving stopped its grounding. Run at
+	// boot, after the job runner fails the jobs a previous process left running.
+	FailOrphanedPendingDinnerGroundings(ctx context.Context, arg FailOrphanedPendingDinnerGroundingsParams) (int64, error)
+	// Records why the background grounding of an unarchived dinner still
+	// pending at the grounding_revision it was grounded for failed; a dinner
+	// grounded some other way, renamed or archived meanwhile is left as it is
+	// (0 rows).
+	FailPendingDinnerGrounding(ctx context.Context, arg FailPendingDinnerGroundingParams) (int64, error)
 	// Fails every job left running, at boot before any worker starts.
 	FailRunningJobs(ctx context.Context, arg FailRunningJobsParams) (int64, error)
 	// Returns sql.ErrNoRows until the row exists.
@@ -51,6 +67,21 @@ type Querier interface {
 	GetRecipeBySourceURL(ctx context.Context, sourceUrl string) (Recipe, error)
 	// Returns sql.ErrNoRows until the row exists.
 	GetRecipeSearchSettings(ctx context.Context) (RecipeSearchSetting, error)
+	// Records a dinner's grounding by hand (grounded or manual) and clears any
+	// grounding_error and pasted recipe_url: the recipe chosen replaces the
+	// link. It writes only an unarchived dinner still as it was observed
+	// before grounding (same name, normalized_name, grounding_status,
+	// grounding_revision and recipe_id), so a dinner renamed, archived or
+	// grounded some other way meanwhile is left as it is. That dinner, or an
+	// unknown id, returns sql.ErrNoRows. A method, minutes_total or difficulty
+	// no longer as observed is kept: a member edited it while it was grounding.
+	GroundDinner(ctx context.Context, arg GroundDinnerParams) (Dinner, error)
+	// Records the background grounding of an unarchived dinner still pending at
+	// the grounding_revision it was grounded for; a dinner grounded some other
+	// way, renamed or archived meanwhile is left as it is (0 rows). A method,
+	// minutes_total or difficulty already set is kept: a pending dinner has
+	// them only when a member edited them while it was grounding.
+	GroundPendingDinner(ctx context.Context, arg GroundPendingDinnerParams) (int64, error)
 	ListDinnersByStatus(ctx context.Context, status string) ([]Dinner, error)
 	// The planned dinners dated from from_date up to but not including
 	// to_date, oldest first. Days with no dinner are left out.
@@ -60,11 +91,16 @@ type Querier interface {
 	ListRecentDeclinedNames(ctx context.Context, limit int64) ([]string, error)
 	ListRecipeIngredients(ctx context.Context, recipeID string) ([]RecipeIngredient, error)
 	ListRecipeSteps(ctx context.Context, recipeID string) ([]RecipeStep, error)
+	// Every dinner a new or renamed dinner must not repeat, with the
+	// source_url of the recipe it is grounded in (NULL while it has none).
+	ListUnarchivedDinners(ctx context.Context) ([]ListUnarchivedDinnersRow, error)
 	// Stores a partial result of a running job.
 	PublishJobResult(ctx context.Context, arg PublishJobResultParams) (int64, error)
 	// An unknown id returns sql.ErrNoRows.
 	SetDinnerFavorite(ctx context.Context, arg SetDinnerFavoriteParams) (Dinner, error)
 	SucceedJob(ctx context.Context, arg SucceedJobParams) (int64, error)
+	// An unknown id returns sql.ErrNoRows.
+	ToggleDinnerFavorite(ctx context.Context, arg ToggleDinnerFavoriteParams) (Dinner, error)
 	// An unknown id returns sql.ErrNoRows.
 	UpdateDinner(ctx context.Context, arg UpdateDinnerParams) (Dinner, error)
 	// Creates the single row (id 1) or replaces every column except id and

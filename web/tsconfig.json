@@ -19,5 +19,5 @@
     "noEmit": true
   },
   "include": ["src", "vite.config.ts", "manifest.json"],
-  "exclude": ["src/sw.ts"]
+  "exclude": ["src/sw.ts", "src/sw.test.ts"]
 }

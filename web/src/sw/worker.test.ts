@@ -2,6 +2,7 @@
 // source: they pin the parts routes.ts cannot express — the API cache's
 // strategy, the font strategy's expiration, the font route's place ahead of
 // the precache route and network-only requests left to the browser.
+// src/sw.test.ts runs the worker's activation against mocked Cache Storage.
 import { describe, expect, it } from 'vitest'
 import source from '../sw.ts?raw'
 

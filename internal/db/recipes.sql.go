@@ -10,6 +10,67 @@ import (
 	"database/sql"
 )
 
+const createManualRecipe = `-- name: CreateManualRecipe :one
+INSERT INTO recipes (
+	id, source_url, title, total_minutes, raw_jsonld, method,
+	minutes_total, fetched_at, created_at, updated_at
+) VALUES (
+	?, ?, ?, ?, ?, ?,
+	?, ?, ?, ?
+)
+RETURNING id, source_url, site_name, title, total_minutes, prep_minutes, cook_minutes, yield, raw_jsonld, fetched_at, created_at, updated_at, photo_id, method, difficulty, minutes_total
+`
+
+type CreateManualRecipeParams struct {
+	ID           string
+	SourceUrl    string
+	Title        string
+	TotalMinutes sql.NullInt64
+	RawJsonld    string
+	Method       sql.NullString
+	MinutesTotal sql.NullInt64
+	FetchedAt    string
+	CreatedAt    string
+	UpdatedAt    string
+}
+
+// A recipe the household typed in. Its source_url is a mealquest:manual:
+// URN rather than a page, so it never matches a fetched page.
+func (q *Queries) CreateManualRecipe(ctx context.Context, arg CreateManualRecipeParams) (Recipe, error) {
+	row := q.db.QueryRowContext(ctx, createManualRecipe,
+		arg.ID,
+		arg.SourceUrl,
+		arg.Title,
+		arg.TotalMinutes,
+		arg.RawJsonld,
+		arg.Method,
+		arg.MinutesTotal,
+		arg.FetchedAt,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	var i Recipe
+	err := row.Scan(
+		&i.ID,
+		&i.SourceUrl,
+		&i.SiteName,
+		&i.Title,
+		&i.TotalMinutes,
+		&i.PrepMinutes,
+		&i.CookMinutes,
+		&i.Yield,
+		&i.RawJsonld,
+		&i.FetchedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.PhotoID,
+		&i.Method,
+		&i.Difficulty,
+		&i.MinutesTotal,
+	)
+	return i, err
+}
+
 const createRecipeIngredient = `-- name: CreateRecipeIngredient :exec
 INSERT INTO recipe_ingredients (
 	id, recipe_id, position, raw_text, name, qty, unit, note,

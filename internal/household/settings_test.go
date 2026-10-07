@@ -3,10 +3,13 @@ package household
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/migrations"
 )
@@ -35,11 +38,33 @@ func migratedStore(t *testing.T, dir string) *store.Store {
 // seeded with zone America/New_York.
 func seededService(t *testing.T) *SettingsService {
 	t.Helper()
+	svc, _ := seededServiceStore(t)
+	return svc
+}
+
+// seededServiceStore is seededService with its store.
+func seededServiceStore(t *testing.T) (*SettingsService, *store.Store) {
+	t.Helper()
 	st := migratedStore(t, t.TempDir())
 	if err := SeedSettings(context.Background(), st, "America/New_York"); err != nil {
 		t.Fatal(err)
 	}
-	return NewSettingsService(st)
+	return NewSettingsService(st), st
+}
+
+// addDinners stores n dinners with status.
+func addDinners(t *testing.T, st *store.Store, status string, n int) {
+	t.Helper()
+	for range n {
+		id := store.NewID()
+		now := store.Now().String()
+		if _, err := db.New(st.Writer).CreateDinner(context.Background(), db.CreateDinnerParams{
+			ID: id, Name: "Dinner " + id, NormalizedName: "dinner " + strings.ToLower(id),
+			Status: status, Origin: "regular", GroundingStatus: "pending", CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func ptr[T any](v T) *T { return &v }
@@ -217,6 +242,70 @@ func TestUpdateAppliesPatchAndRecordsUpdatedBy(t *testing.T) {
 	}
 }
 
+func TestUpdateCompletesOnboardingOnce(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc, st := seededServiceStore(t)
+	addDinners(t, st, "regular", MinRegulars)
+
+	got, err := svc.Update(ctx, SettingsPatch{OnboardingCompleted: ptr(true)}, "sam")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OnboardingCompletedAt == nil || *got.OnboardingCompletedAt != got.UpdatedAt {
+		t.Fatalf("onboarding_completed_at = %v, want the update time %s", got.OnboardingCompletedAt, got.UpdatedAt)
+	}
+	first := *got.OnboardingCompletedAt
+
+	// Completing again keeps the first time.
+	got, err = svc.Update(ctx, SettingsPatch{OnboardingCompleted: ptr(true)}, "alex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OnboardingCompletedAt == nil || *got.OnboardingCompletedAt != first {
+		t.Errorf("second completion: onboarding_completed_at = %v, want %s", got.OnboardingCompletedAt, first)
+	}
+
+	// Other changes leave it alone.
+	got, err = svc.Update(ctx, SettingsPatch{DinnerTime: ptr("18:00")}, "sam")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OnboardingCompletedAt == nil || *got.OnboardingCompletedAt != first {
+		t.Errorf("after another change: onboarding_completed_at = %v, want %s", got.OnboardingCompletedAt, first)
+	}
+}
+
+// TestUpdateOnboardingNeedsMinRegulars: onboarding cannot be completed
+// with fewer than MinRegulars Regulars; archived and Quest log dinners do
+// not count.
+func TestUpdateOnboardingNeedsMinRegulars(t *testing.T) {
+	t.Parallel()
+	for regulars := range MinRegulars {
+		t.Run(fmt.Sprintf("%d Regulars", regulars), func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			svc, st := seededServiceStore(t)
+			addDinners(t, st, "regular", regulars)
+			addDinners(t, st, "archived", MinRegulars)
+			addDinners(t, st, "quest_log", MinRegulars)
+
+			_, err := svc.Update(ctx, SettingsPatch{OnboardingCompleted: ptr(true)}, "sam")
+			var verr *ValidationError
+			if !errors.As(err, &verr) || len(verr.Problems) != 1 || verr.Problems[0].Field != "onboarding_completed" {
+				t.Fatalf("Update = %v, want a ValidationError on onboarding_completed", err)
+			}
+			got, err := svc.Get(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.OnboardingCompletedAt != nil {
+				t.Errorf("onboarding_completed_at = %s after a refused completion, want null", *got.OnboardingCompletedAt)
+			}
+		})
+	}
+}
+
 func TestUpdateRequiresMember(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -259,6 +348,7 @@ func TestUpdateValidation(t *testing.T) {
 		{"dow 7", SettingsPatch{PlanDraftDow: ptr(7)}, []string{"plan_draft_dow"}},
 		{"dow -1", SettingsPatch{SuggestionsDow: ptr(-1)}, []string{"suggestions_dow"}},
 		{"dow 100", SettingsPatch{ChatAutosendDow: ptr(100)}, []string{"chat_autosend_dow"}},
+		{"onboarding undone", SettingsPatch{OnboardingCompleted: ptr(false)}, []string{"onboarding_completed"}},
 		{
 			"every problem is reported",
 			SettingsPatch{Timezone: ptr("Nowhere"), DinnerTime: ptr("5pm"), PlanDraftDow: ptr(9)},

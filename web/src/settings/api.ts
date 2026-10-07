@@ -37,13 +37,17 @@ export type HouseholdSettings = {
   suggestions_time: string
   chat_autosend_dow: number
   chat_autosend_time: string
+  // When the household finished onboarding; null until it has, and every
+  // app route sends it to /onboarding. Not editable in settings.
+  onboarding_completed_at: string | null
 }
+
+// HouseholdSettingsField is a household setting the settings pages edit.
+export type HouseholdSettingsField = Exclude<keyof HouseholdSettings, 'onboarding_completed_at'>
 
 // HouseholdSettingsPatch is the PATCH /api/v1/settings/household body: only
 // the fields that change.
-export type HouseholdSettingsPatch = Partial<HouseholdSettings>
-
-export type HouseholdSettingsField = keyof HouseholdSettings
+export type HouseholdSettingsPatch = Partial<Pick<HouseholdSettings, HouseholdSettingsField>>
 
 const householdTimeFields = [
   'dinner_time',
@@ -355,10 +359,13 @@ function parseHouseholdSettings(where: string, body: unknown): HouseholdSettings
     }
     days[field] = value
   }
-  return { timezone: body.timezone, ...times, ...days }
+  if (!isStringOrNull(body.onboarding_completed_at)) {
+    throw new Error(`${where}: onboarding_completed_at ${JSON.stringify(body.onboarding_completed_at)} is not a time or null`)
+  }
+  return { timezone: body.timezone, ...times, ...days, onboarding_completed_at: body.onboarding_completed_at }
 }
 
-const HOUSEHOLD_SETTINGS_KEY = ['settings', 'household'] as const
+export const HOUSEHOLD_SETTINGS_KEY = ['settings', 'household'] as const
 
 export function useHouseholdSettings() {
   const { apiFetch } = useApi()
@@ -377,6 +384,21 @@ export function useSaveHouseholdSettings() {
       parseHouseholdSettings(
         `PATCH ${HOUSEHOLD_SETTINGS_PATH}`,
         await apiFetch<unknown>(HOUSEHOLD_SETTINGS_PATH, { method: 'PATCH', body: patch }),
+      ),
+    onSuccess: (settings) => queryClient.setQueryData(HOUSEHOLD_SETTINGS_KEY, settings),
+  })
+}
+
+// useCompleteOnboarding records that the household finished onboarding: the
+// server sets onboarding_completed_at, which ends the first-run redirect.
+export function useCompleteOnboarding() {
+  const { apiFetch } = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async () =>
+      parseHouseholdSettings(
+        `PATCH ${HOUSEHOLD_SETTINGS_PATH}`,
+        await apiFetch<unknown>(HOUSEHOLD_SETTINGS_PATH, { method: 'PATCH', body: { onboarding_completed: true } }),
       ),
     onSuccess: (settings) => queryClient.setQueryData(HOUSEHOLD_SETTINGS_KEY, settings),
   })
@@ -417,6 +439,18 @@ export function householdSettingsProblems(error: Error): HouseholdSettingsProble
     }
   }
   return problems
+}
+
+// needsMoreRegulars reports whether error is the server refusing to finish
+// onboarding because the household has fewer than three Regulars
+// (internal/household MinRegulars) — the only refusal of
+// {"onboarding_completed": true}.
+export function needsMoreRegulars(error: Error): boolean {
+  return (
+    error instanceof ApiError &&
+    error.code === 'invalid_settings' &&
+    error.message.startsWith(`${invalidHouseholdPrefix}onboarding_completed: `)
+  )
 }
 
 // aiStatus is the AI assistant row's status line: the provider and the

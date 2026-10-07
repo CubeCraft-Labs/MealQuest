@@ -18,7 +18,7 @@ import { CacheFirst, NetworkOnly, type Strategy } from 'workbox-strategies'
 import { createApiStrategy } from './sw/apiStrategy'
 import {
   cacheNames,
-  cacheVersion,
+  cacheVersions,
   routeFor,
   staleCaches,
   type Route,
@@ -29,7 +29,7 @@ declare const self: ServiceWorkerGlobalScope & {
 }
 
 // The precache becomes mealquest-precache-v1.
-setCacheNameDetails({ prefix: 'mealquest', precache: 'precache', suffix: cacheVersion })
+setCacheNameDetails({ prefix: 'mealquest', precache: 'precache', suffix: cacheVersions.precache })
 
 const day = 24 * 60 * 60
 

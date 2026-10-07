@@ -599,16 +599,45 @@ point=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 3. Restart and check the deployed release.
 
 ```sh
+cd /home/overseer/mealquest && (
+set -eu   # any failed step ends the check with a nonzero status
+fail() { echo "$*" >&2; exit 1; }
+sha=
+# On the way out, print the deployed SHA only if every check passed.
+trap 'st=$?
+if [ "$st" -eq 0 ] && [ -n "$sha" ]; then echo "deployed SHA: $sha"
+else [ "$st" -ne 0 ] || st=1; echo "deploy FAILED (status $st): no SHA is deployed" >&2; fi
+exit "$st"' EXIT
 sudo systemctl restart mealquest    # applies the firewall, then down + up -d
-docker compose -f deploy/compose.yaml ps   # mealquest healthy, litestream up, searxng healthy
+docker compose -f deploy/compose.yaml ps
+for s in mealquest litestream searxng; do
+  id=$(docker compose -f deploy/compose.yaml ps --status running --quiet "$s") || fail "docker compose ps failed"
+  [ -n "$id" ] || fail "$s is not running"
+done
 curl -fsS http://10.60.1.14:8090/health
-curl -s -o /dev/null -w "%{http_code}\n" https://mealquest.cubecraftlabs.com/health   # 200
-git rev-parse HEAD                  # the deployed SHA
+code=$(curl -sS -o /dev/null -w "%{http_code}" https://mealquest.cubecraftlabs.com/health)
+[ "$code" = 200 ] || fail "the public /health returned $code, not 200"
+sha=$(git rev-parse HEAD)   # the checked-out SHA, now running and healthy
+)
 ```
 
-Record the deployed SHA, the previous SHA, the pre-deploy restore point
-and the date in the Maestro task for the release. Migrations run at start-up; the service refuses to start
-if the database has an applied migration it does not know.
+   The check stops at the first failed step and prints the SHA last, only
+   when the restart, all three services running and both health checks
+   succeeded. `restart` returns once `mealquest` is healthy (Litestream
+   waits for it); SearXNG may still show `health: starting` for its first
+   15 seconds.
+
+   - `deployed SHA:` followed by the SHA, and `echo $?` prints `0` —
+     record that SHA, the previous SHA, the pre-deploy restore point and
+     the date in the Maestro task for the release.
+   - `deploy FAILED`, any other error, or a nonzero `echo $?` — record
+     nothing as deployed: the release is not running healthy, and after a
+     failed restart the stack may be down. Read
+     `journalctl -u mealquest` and `docker compose -f deploy/compose.yaml
+     logs`, then fix the cause or roll back ("Rollback to a previous SHA").
+
+Migrations run at start-up; the service refuses to start if the database
+has an applied migration it does not know.
 
 If `deploy/.env.example` gained a variable, add it to `deploy/.env` before
 the restart; the service fails fast at boot naming any missing required variable.
@@ -671,18 +700,35 @@ like this:
 **No migration crossed** — rebuild and restart the older SHA:
 
 ```sh
-git checkout --detach <previous SHA> &&
-docker compose -f deploy/compose.yaml build &&
-sudo systemctl restart mealquest &&
-docker compose -f deploy/compose.yaml ps &&
+cd /home/overseer/mealquest && (
+set -eu   # any failed step ends the rollback with a nonzero status
+P=<previous SHA>
+fail() { echo "$*" >&2; exit 1; }
+sha=
+# On the way out, print the running SHA only if every check passed.
+trap 'st=$?
+if [ "$st" -eq 0 ] && [ -n "$sha" ]; then echo "rolled back to: $sha"
+else [ "$st" -ne 0 ] || st=1; echo "rollback FAILED (status $st)" >&2; fi
+exit "$st"' EXIT
+git checkout --detach "$P"
+docker compose -f deploy/compose.yaml build
+sudo systemctl restart mealquest
+docker compose -f deploy/compose.yaml ps
+for s in mealquest litestream searxng; do
+  id=$(docker compose -f deploy/compose.yaml ps --status running --quiet "$s") || fail "docker compose ps failed"
+  [ -n "$id" ] || fail "$s is not running"
+done
 curl -fsS http://10.60.1.14:8090/health
+sha=$(git rev-parse HEAD)
+)
 ```
 
-Each command runs only if the one before it succeeded, so the health
-check answers only for the older SHA. If `echo $?` then prints anything
-but `0`, the rollback is not done: the first error names the failed step,
-and if it came before the restart, production is still on the release
-being rolled back from.
+Each step runs only if the one before it succeeded, so the health
+check answers only for the older SHA. Only `rolled back to:` followed by
+the SHA, with `echo $?` printing `0`, means the rollback is done. On
+`rollback FAILED` or a nonzero `echo $?` it is not: the first error names
+the failed step, and if it came before the restart, production is still
+on the release being rolled back from.
 
 **A migration crossed** — the older binary refuses the newer schema, so the
 database is restored first and the older SHA started after. Changes made
@@ -788,11 +834,20 @@ database it replaced. So all three files are moved aside together, with
 Litestream's local state directory `.mealquest.db-litestream`, before the
 restore — and the restore runs into an empty volume.
 
-Run from `/home/overseer/mealquest`:
+Steps 1–3:
 
 ```sh
+cd /home/overseer/mealquest && (
+set -eu   # any failed step ends the restore with a nonzero status
 D=/var/lib/docker/volumes/mealquest-data/_data
 A=/var/tmp/mealquest-restore-aside-$(date +%Y%m%d%H%M)
+fail() { echo "$*" >&2; exit 1; }
+# On the way out, name the aside directory; on any failure the stack
+# stays stopped.
+trap 'st=$?
+if [ "$st" -eq 0 ]; then echo "restored mealquest.db; the old files are in $A: run step 4"
+else echo "restore FAILED (status $st): leave the stack stopped; anything moved aside is in $A" >&2; fi
+exit "$st"' EXIT
 
 # 1. Stop the whole stack (app and Litestream). Nothing may hold the
 #    database open; a clean close checkpoints the WAL into mealquest.db.
@@ -805,24 +860,54 @@ sudo mkdir "$A"
 for f in mealquest.db mealquest.db-wal mealquest.db-shm .mealquest.db-litestream; do
   if sudo test -e "$D/$f"; then sudo mv "$D/$f" "$A/"; fi
 done
-sudo ls -la "$D"   # must list only media/
+left=$(sudo ls -A "$D")
+[ "$left" = media ] || fail "the volume must hold only media/, not: $left"
 
 # 3. Restore from the NAS. --no-deps keeps the app stopped so it cannot
 #    create a fresh, empty database first.
 docker compose -f deploy/compose.yaml run --rm --no-deps litestream \
   restore -config /etc/litestream.yml -o /data/mealquest.db /data/mealquest.db
-sudo ls -la "$D"   # mealquest.db only: no -wal, no -shm
-
-# 4. Check the restored file before starting the app (see "Count check").
-
-# 5. Start the stack and check health.
-sudo systemctl start mealquest
-docker compose -f deploy/compose.yaml ps
-curl -s -o /dev/null -w "health %{http_code}\n" http://10.60.1.14:8090/health
+left=$(sudo ls -A "$D")
+[ "$left" = "$(printf 'mealquest.db\nmedia')" ] || fail "the volume must hold only mealquest.db and media/ (no -wal, no -shm), not: $left"
+)
 ```
 
 To restore to a point in time, add `-timestamp 2026-10-05T23:00:00Z` (or
 `-txid`) to the `restore` command.
+
+The block stops at the first failed step. Only `restored mealquest.db`
+with `echo $?` printing `0` lets you go on; on `restore FAILED` leave the
+stack stopped, fix the cause and run the block again (a new aside
+directory is made; the earlier one keeps what it holds).
+
+4. Check the restored file before starting the app: run the copy block
+   in "Count check".
+
+5. Start the stack and check health, only after step 4 passed:
+
+```sh
+cd /home/overseer/mealquest && (
+set -eu   # any failed step ends the check with a nonzero status
+fail() { echo "$*" >&2; exit 1; }
+sha=
+# On the way out, print the running SHA only if every check passed.
+trap 'st=$?
+if [ "$st" -eq 0 ] && [ -n "$sha" ]; then echo "stack running and healthy at $sha"
+else [ "$st" -ne 0 ] || st=1; echo "start FAILED (status $st)" >&2; fi
+exit "$st"' EXIT
+sudo systemctl start mealquest
+docker compose -f deploy/compose.yaml ps
+for s in mealquest litestream searxng; do
+  id=$(docker compose -f deploy/compose.yaml ps --status running --quiet "$s") || fail "docker compose ps failed"
+  [ -n "$id" ] || fail "$s is not running"
+done
+curl -fsS http://10.60.1.14:8090/health
+sha=$(git rev-parse HEAD)
+)
+```
+
+   Only `stack running and healthy at` with `echo $?` printing `0` ends
+   the restore; then the aside directory may go.
 
 ### Count check
 
@@ -894,12 +979,32 @@ print `0` before either script is used.
 With the stack stopped, copy the database and run it:
 
 ```sh
-rm -rf /tmp/mqcheck && mkdir /tmp/mqcheck
-sudo sh -c "cp -a $D/mealquest.db* /tmp/mqcheck/" && sudo chown -R "$USER" /tmp/mqcheck
-python3 /tmp/mqcount.py /tmp/mqcheck/mealquest.db
+cd /home/overseer/mealquest && (
+set -eu   # any failed step ends the check with a nonzero status
+D=/var/lib/docker/volumes/mealquest-data/_data
+fail() { echo "$*" >&2; exit 1; }
+# On the way out, remove /tmp/mqcheck whatever happens, keep any failure,
+# and give the verdict only if every step and the clean-up succeeded.
+trap 'st=$?
+rm -rf /tmp/mqcheck || st=1
+if [ "$st" -eq 0 ]; then echo "count check: integrity ok"
+else echo "count check FAILED (status $st): do not start the stack" >&2; fi
+exit "$st"' EXIT
+rm -rf /tmp/mqcheck
+mkdir /tmp/mqcheck
+sudo sh -c "cp -a $D/mealquest.db* /tmp/mqcheck/"
+sudo chown -R "$USER" /tmp/mqcheck
+python3 /tmp/mqcount.py /tmp/mqcheck/mealquest.db > /tmp/mqcheck/counts.txt
+cat /tmp/mqcheck/counts.txt
+grep -qx 'integrity ok' /tmp/mqcheck/counts.txt || fail "the copy failed integrity_check"
+)
 ```
 
-Before and after must match exactly.
+The check stops at the first failed step — the clean-up of an earlier
+`/tmp/mqcheck`, the copy, the count or the integrity check — so it never
+reads a file left by an earlier run. Only `count check: integrity ok`
+with `echo $?` printing `0` passes; then the counts printed above it,
+before and after, must match exactly.
 
 ## Restore photos (media)
 
@@ -916,20 +1021,43 @@ not start the service until the restore is verified.
 Run from `/home/overseer/mealquest`:
 
 ```sh
+cd /home/overseer/mealquest && (
+set -eu   # any failed step ends the restore with a nonzero status
 M=/var/lib/docker/volumes/mealquest-data/_data/media
 NAS=/volume1/homes/Joshua/mealquest-backups/media
 SSH="ssh -i deploy/secrets/litestream_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/etc/mealquest/known_hosts -o StrictHostKeyChecking=yes"
+fail() { echo "$*" >&2; exit 1; }
+nas= here=
+# On the way out, give the counts only if every step passed; on any
+# failure the timer stays stopped.
+trap 'st=$?
+if [ "$st" -eq 0 ] && [ -n "$here" ]; then echo "media restored: $here files here, $nas on the NAS"
+else [ "$st" -ne 0 ] || st=1; echo "media restore FAILED (status $st): leave the timer stopped and find out why" >&2; fi
+exit "$st"' EXIT
 
 # 1. Stop the nightly mirror: the timer AND any run in flight.
 sudo systemctl stop mealquest-media-backup.timer mealquest-media-backup.service
 
-# 2. Pre-check — all three must hold before media/ is touched. If any
-#    fails, stop here and find out why.
-systemctl is-active mealquest-media-backup.timer     # inactive
-systemctl is-active mealquest-media-backup.service   # inactive (or failed)
-pgrep -a -u mealquest rsync || echo "no rsync"       # no rsync
-sudo $SSH joshua@10.60.1.50 "find $NAS -type f | wc -l"
-#    ^ note this NAS file count; it must be non-zero and is the target below.
+# 2. Pre-check — all must hold before media/ is touched. is-active exits
+#    nonzero for every state but active, so its printed state is checked;
+#    pgrep exits 0 on a match, 1 on none, 2+ on an error.
+ts=$(systemctl is-active mealquest-media-backup.timer) || :
+[ "$ts" = inactive ] || fail "the timer is ${ts:-unknown}, not inactive"
+ss=$(systemctl is-active mealquest-media-backup.service) || :
+case "$ss" in
+  inactive|failed) ;;
+  *) fail "the service is ${ss:-unknown}, not inactive or failed";;
+esac
+ps=0
+pgrep -a -u mealquest rsync || ps=$?
+case "$ps" in
+  0) fail "an rsync is still running as mealquest";;
+  1) ;;   # no match: no rsync
+  *) fail "pgrep failed (status $ps)";;
+esac
+l=$(sudo $SSH joshua@10.60.1.50 "find $NAS -type f") || fail "listing the NAS copy failed"
+[ -n "$l" ] || fail "the NAS copy holds no files"
+nas=$(printf '%s\n' "$l" | wc -l)   # the target below
 
 # 3. Stop the app (no writes into media/ meanwhile).
 docker compose -f deploy/compose.yaml stop mealquest
@@ -941,21 +1069,30 @@ sudo install -d -o 10001 -g 10001 -m 0755 "$M"
 #    direction: the NAS copy is the source and is only read.
 sudo rsync -a --stats --chown=10001:10001 -e "$SSH" "joshua@10.60.1.50:$NAS/" "$M/"
 
-# 6. Post-condition — before anything can mirror again:
-sudo find "$M" -type f | wc -l                            # >= the NAS count from step 2
-sudo $SSH joshua@10.60.1.50 "find $NAS -type f | wc -l"   # unchanged from step 2
+# 6. Post-condition — before anything can mirror again: at least the NAS
+#    count here, and the NAS count unchanged.
+l=$(sudo find "$M" -type f) || fail "listing $M failed"
+[ -n "$l" ] || fail "$M holds no files after the copy"
+n=$(printf '%s\n' "$l" | wc -l)
+[ "$n" -ge "$nas" ] || fail "only $n of the NAS's $nas files are here: the copy did not complete"
+l=$(sudo $SSH joshua@10.60.1.50 "find $NAS -type f") || fail "listing the NAS copy failed"
+[ -n "$l" ] && [ "$(printf '%s\n' "$l" | wc -l)" -eq "$nas" ] || fail "the NAS file count changed from $nas"
+here=$n
 
 # 7. Start the app, then the timer again. Only now may the service run.
 docker compose -f deploy/compose.yaml up -d
 curl -fsS http://10.60.1.14:8090/health
 sudo systemctl start mealquest-media-backup.timer
-systemctl is-active mealquest-media-backup.timer          # active
+systemctl is-active mealquest-media-backup.timer   # active; exits nonzero otherwise
+)
 ```
 
-The local count may exceed the NAS count only if `media/` still held
-files the NAS never received (photos added since the last nightly run);
-the next nightly run then copies them up. If the local count is lower,
-the copy did not complete: leave the timer stopped and re-run step 5.
+The block stops at the first failed step and gives the counts last, only
+when every step passed. On `media restore FAILED` or a nonzero `echo $?`
+leave the timer stopped. The local count may exceed the NAS count only if
+`media/` still held files the NAS never received (photos added since the
+last nightly run); the next nightly run then copies them up. If the local count is lower,
+the copy did not complete: fix the cause and run the block again.
 
 When the database is restored too, restore it first ("Restore the
 database"), then the media, so every photo the database refers to is

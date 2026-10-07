@@ -23,6 +23,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secretbox"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/server"
@@ -112,6 +113,11 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
+	planSvc, err := plan.NewService(db, weekDrafter(ai, guard), runner, logger)
+	if err != nil {
+		return err
+	}
+
 	sessions, err := auth.NewSessionManager(db, cfg.SessionIdle, cfg.SessionMax)
 	if err != nil {
 		return err
@@ -128,7 +134,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, search, ai, dinnerSvc, suggestSvc, runner, photos, frontend.Assets())
+	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, search, ai, dinnerSvc, suggestSvc, planSvc, runner, photos, frontend.Assets())
 	if err != nil {
 		return err
 	}
@@ -253,7 +259,8 @@ func newJobRunner(db *store.Store, logger *slog.Logger) (*jobs.Runner, *jobKinds
 // registerJobKinds registers the framework's job kinds on runner. A feature
 // service registers its own kinds when it is built, before the runner
 // starts (dinners.NewService registers dinners.KindGroundDinner and
-// suggest.NewService suggest.KindSuggestionBatch).
+// suggest.NewService suggest.KindSuggestionBatch, plan.NewService
+// plan.KindDraftWeek).
 func registerJobKinds(runner *jobs.Runner) (*jobKinds, error) {
 	builtins, err := jobs.RegisterBuiltins(runner)
 	if err != nil {
@@ -283,6 +290,18 @@ func sideQuests(ai *aisettings.Service, guard *harness.Guard) suggest.Suggester 
 			return skills.SideQuests{}, err
 		}
 		return skills.SuggestSideQuests(ctx, cfg, scope, in)
+	}
+}
+
+// weekDrafter runs draft_week with the AI settings current at each run,
+// sharing guard.
+func weekDrafter(ai *aisettings.Service, guard *harness.Guard) plan.Drafter {
+	return func(ctx context.Context, scope string, in skills.WeekRequest) (skills.Week, error) {
+		cfg, err := ai.HarnessConfig(ctx, guard)
+		if err != nil {
+			return skills.Week{}, err
+		}
+		return skills.DraftWeek(ctx, cfg, scope, in)
 	}
 }
 

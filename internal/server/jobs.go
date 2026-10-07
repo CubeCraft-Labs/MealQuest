@@ -30,7 +30,8 @@ type jobCreated struct {
 }
 
 // postJob serves POST /api/v1/jobs: it enqueues a job of a registered kind
-// and returns 202 with its id, which GET /api/v1/jobs/{id} reports on.
+// that is not service-only and returns 202 with its id, which
+// GET /api/v1/jobs/{id} reports on.
 func postJob(logger *slog.Logger, runner *jobs.Runner) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		req, err := decodeJobRequest(http.MaxBytesReader(w, r.Body, maxJobBody))
@@ -42,6 +43,9 @@ func postJob(logger *slog.Logger, runner *jobs.Runner) http.HandlerFunc {
 		switch {
 		case errors.Is(err, jobs.ErrUnknownKind):
 			writeError(w, r, logger, http.StatusBadRequest, "unknown_kind", "unknown job kind")
+			return
+		case errors.Is(err, jobs.ErrServiceOnly):
+			writeError(w, r, logger, http.StatusBadRequest, "service_only_kind", "job kind is started only by its own endpoint")
 			return
 		case errors.Is(err, jobs.ErrInvalidPayload):
 			writeError(w, r, logger, http.StatusBadRequest, "invalid_payload", "payload does not match the job kind")

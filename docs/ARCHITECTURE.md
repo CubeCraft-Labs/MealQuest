@@ -99,7 +99,7 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 | `dinners` | The meal record and its lifecycle: name, normalized_name, status (`suggested` / `quest_log` / `tried` / `regular` / `archived`), origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, recipe_url (a pasted recipe link awaiting grounding), photo_id, grounding_status (`pending` / `grounded` / `failed` / `manual`), grounding_error (why grounding failed), grounding_revision (raised whenever a dinner is renamed, so only the latest `ground_dinner` job may write it and no candidate offered before the rename grounds it), updated_by. |
 | `suggestion_batches` | trigger, status, ai_run_id. |
 | `suggestions` | dinner_id, batch_id, name (the name the dish was suggested under, kept whatever its dinner is later renamed, so a Pass stays an immutable record every later batch dedupes against), reason, cited_regular_ids (JSON), status, decided_at. |
-| `week_plans` | week_start (unique), status (`draft` / `synced` / `changed`), ai_note, ai_run_id, calendar_synced_at. |
+| `week_plans` | week_start (unique), status (`draft` / `synced` / `changed`), ai_note, ai_run_id, calendar_synced_at, revision (raised by every swap and stored draft). |
 | `plan_days` | plan_id, date (unique per plan), dinner_id, is_new, calendar_event_id. |
 | `rotation_reviews` | dinner_id + plan_date (unique), status, decision (`keep` / `drop` / `not_made`), decided_at, updated_by. |
 | `shopping_lists` | week_start (unique), plan_id, title, status (`current` / `archived`), sent_to_chat_at, frozen_at. |
@@ -334,6 +334,36 @@ automatic** (D-021).
   the decision's own transaction, so a decision is never recorded without
   the replenish it calls for; when they cannot be written, neither is the
   decision, and a retry decides again.
+- Weekly plans (`plan.Service`). `{weekStart}` is a household-local Monday
+  (`YYYY-MM-DD`); any other value is 400 `invalid_week`. `GET
+  /api/v1/plans/{weekStart}` returns `{id, week_start, week_label, status,
+  ai_note, calendar_synced_at, updated_at, days}`, or 404 when the week has
+  no plan; `days` are the seven days Monday first, each `{date, dinner: {id,
+  name, photo, minutes, method, origin}, is_new, start_by}`. `is_new` means
+  the dinner was planned from the Quest log; `start_by` is the household's
+  dinner time on that date minus `minutes_total`, computed on read, for a
+  crock-pot dinner with known minutes, else null. `POST
+  /api/v1/plans/{weekStart}/draft` takes `{confirm?}` and answers 202
+  `{jobId}` for a `draft_week` job, or for the one already queued or
+  running for the week, so a week has at most one draft in flight. A
+  confirmed draft while the week's job was asked for without confirm is
+  409 `draft_running` and enqueues nothing. The job runs the `draft_week` skill on every Regular
+  and every Quest log dinner no other plan for the current or a later week
+  has, with the household context and last week's dinners, and stores the
+  week: a new plan is `draft`; a redraft keeps each day's
+  `calendar_event_id`, and a `synced` or `changed` plan becomes `changed`.
+  Drafting over a `synced` or `changed` plan needs `{"confirm": true}`, else
+  409 `confirm_required`; a plan synced while an unconfirmed draft runs is
+  left as it is and the job fails `confirm_required`. The job reads the
+  plan's revision before draft_week runs; if the plan was edited (a swap,
+  or another draft stored) by the time the draft is stored, the plan is
+  left as it is and the job fails `plan_changed`. A pool under seven
+  dinners fails the job `not_enough_dinners`, draft_week failing
+  `ai_failed`. `PUT /api/v1/plans/{weekStart}/days/{date}` takes
+  `{dinner_id}`, a Regular or Quest log dinner, swaps the day, recomputes
+  `is_new`, moves a `synced` plan to `changed`, and answers 200 with the
+  plan. A date outside the week is 400 `invalid_date`, an unknown dinner or
+  a week with no plan 404, and any other dinner 409 `dinner_not_plannable`.
 - `/health` — liveness.
 - Everything else serves the embedded PWA with SPA fallback.
 

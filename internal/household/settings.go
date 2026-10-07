@@ -68,7 +68,17 @@ type SettingsPatch struct {
 	SuggestionsTime  *string
 	ChatAutosendDow  *int
 	ChatAutosendTime *string
+	// OnboardingCompleted, when true, records that the household finished
+	// onboarding: onboarding_completed_at becomes the time of the update,
+	// unless it is already set, when the first time is kept. Onboarding is
+	// never undone, so false is invalid, and it cannot first be completed
+	// with fewer than MinRegulars Regulars.
+	OnboardingCompleted *bool
 }
+
+// MinRegulars is how many Regulars the household must have to complete
+// onboarding.
+const MinRegulars = 3
 
 // Problem is one invalid field of a SettingsPatch, named by its JSON key.
 type Problem struct {
@@ -162,7 +172,8 @@ func (s *SettingsService) Get(ctx context.Context) (Settings, error) {
 // Update validates patch, applies it, records updatedBy (the signed-in
 // member's subject, which must not be empty) and publishes the new settings
 // to every subscriber. An invalid patch is a *ValidationError and changes
-// nothing.
+// nothing, as does completing onboarding with fewer than MinRegulars
+// Regulars.
 func (s *SettingsService) Update(ctx context.Context, patch SettingsPatch, updatedBy string) (Settings, error) {
 	if updatedBy == "" {
 		return Settings{}, errors.New("household: update settings: no member to record as updated_by")
@@ -208,6 +219,19 @@ func (s *SettingsService) Update(ctx context.Context, patch SettingsPatch, updat
 		setString(&p.SuggestionsTime, patch.SuggestionsTime)
 		setDow(&p.ChatAutosendDow, patch.ChatAutosendDow)
 		setString(&p.ChatAutosendTime, patch.ChatAutosendTime)
+		if patch.OnboardingCompleted != nil && !p.OnboardingCompletedAt.Valid {
+			n, err := q.CountRegularDinners(ctx)
+			if err != nil {
+				return fmt.Errorf("household: count Regulars: %w", err)
+			}
+			if n < MinRegulars {
+				return &ValidationError{Problems: []Problem{{
+					Field:  "onboarding_completed",
+					Reason: fmt.Sprintf("add at least %d Regulars first (have %d)", MinRegulars, n),
+				}}}
+			}
+			p.OnboardingCompletedAt = sql.NullString{String: p.UpdatedAt, Valid: true}
+		}
 		row, err = q.UpsertHouseholdSettings(ctx, p)
 		if err != nil {
 			return fmt.Errorf("household: update settings: %w", err)
@@ -290,6 +314,9 @@ func (p SettingsPatch) validate() error {
 		if d.value != nil && (*d.value < 0 || *d.value > 6) {
 			fail(d.field, fmt.Sprintf("invalid day of the week %d (want 0-6, Sunday = 0)", *d.value))
 		}
+	}
+	if p.OnboardingCompleted != nil && !*p.OnboardingCompleted {
+		fail("onboarding_completed", "onboarding cannot be undone (want true)")
 	}
 	if len(problems) > 0 {
 		return &ValidationError{Problems: problems}

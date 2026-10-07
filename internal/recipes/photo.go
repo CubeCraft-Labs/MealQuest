@@ -65,22 +65,28 @@ var photoDecoders = map[string]func([]byte) (image.Image, error){
 	"webp": func(b []byte) (image.Image, error) { return webp.Decode(bytes.NewReader(b)) },
 }
 
-// PhotoCache downloads photos through a Fetcher and stores each at every
+// ImageFetcher fetches an image; *Fetcher satisfies it.
+type ImageFetcher interface {
+	FetchImage(ctx context.Context, rawURL string) (Page, error)
+}
+
+// PhotoCache downloads photos through an ImageFetcher and stores each at every
 // PhotoSizes length as {id}-{size}.jpg under PhotoDir, with a photos row.
 // Photos are deduplicated by the SHA-256 of the downloaded bytes. A
 // PhotoCache is safe for concurrent use.
 type PhotoCache struct {
-	fetcher *Fetcher
-	store   *store.Store
+	images ImageFetcher
+	store  *store.Store
 	// dir is the absolute photo directory.
 	dir string
 }
 
-// NewPhotoCache returns a PhotoCache storing photos under dataDir, creating
-// the photo directory if it is absent.
-func NewPhotoCache(fetcher *Fetcher, st *store.Store, dataDir string) (*PhotoCache, error) {
-	if fetcher == nil {
-		return nil, errors.New("recipes: nil fetcher")
+// NewPhotoCache returns a PhotoCache downloading images with images and
+// storing photos under dataDir, creating the photo directory if it is
+// absent.
+func NewPhotoCache(images ImageFetcher, st *store.Store, dataDir string) (*PhotoCache, error) {
+	if images == nil {
+		return nil, errors.New("recipes: nil image fetcher")
 	}
 	if st == nil {
 		return nil, errors.New("recipes: nil store")
@@ -92,7 +98,7 @@ func NewPhotoCache(fetcher *Fetcher, st *store.Store, dataDir string) (*PhotoCac
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("recipes: create photo directory: %w", err)
 	}
-	return &PhotoCache{fetcher: fetcher, store: st, dir: dir}, nil
+	return &PhotoCache{images: images, store: st, dir: dir}, nil
 }
 
 // DownloadedPhoto is an image DownloadPhoto has downloaded and decoded,
@@ -108,7 +114,7 @@ type DownloadedPhoto struct {
 // whose shorter side is under PhotoMinShortSide. It records nothing, so a
 // caller can try another image before opening a transaction.
 func (c *PhotoCache) DownloadPhoto(ctx context.Context, rawURL string) (DownloadedPhoto, error) {
-	page, err := c.fetcher.FetchImage(ctx, rawURL)
+	page, err := c.images.FetchImage(ctx, rawURL)
 	if err != nil {
 		return DownloadedPhoto{}, err
 	}

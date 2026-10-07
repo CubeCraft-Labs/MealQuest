@@ -25,6 +25,13 @@ var (
 	// ErrTotalTimeNotPositive rejects a recipe whose page gives a total
 	// time of zero minutes, which normalize_recipe refuses.
 	ErrTotalTimeNotPositive = errors.New("recipes: recipe total time is not positive")
+	// ErrSearchFailed wraps every failure to search: the search provider
+	// could not be built (ErrSearchNotConfigured among them) or its search
+	// failed.
+	ErrSearchFailed = errors.New("recipes: recipe search failed")
+	// ErrNormalizeFailed wraps a normalize_recipe failure that is not the
+	// recipe's: the model provider could not be built or called.
+	ErrNormalizeFailed = errors.New("recipes: normalize_recipe failed")
 )
 
 // ErrUngroundable is returned when no recipe page could ground a dish or a
@@ -118,43 +125,16 @@ func (g *Grounder) Ground(ctx context.Context, dishName, query string) (Grounded
 	if strings.TrimSpace(dishName) == "" {
 		return Grounded{}, errors.New("recipes: ground: dish name is empty")
 	}
-	provider, err := g.search.Provider(ctx)
+	found, err := g.searchRanked(ctx, dishName, query)
 	if err != nil {
 		return Grounded{}, fmt.Errorf("recipes: ground %q: %w", dishName, err)
 	}
-	cands, err := provider.Search(ctx, query, RankDepth)
-	if err != nil {
-		return Grounded{}, fmt.Errorf("recipes: ground %q: search: %w", dishName, err)
-	}
-	if len(cands) == 0 {
-		return Grounded{}, &ErrUngroundable{Target: dishName, Reasons: []error{ErrNoCandidates}}
-	}
-	cands = cands[:min(len(cands), RankDepth)]
-	stored := make(map[string]storedRecipe)
-	for _, c := range cands {
-		sr, ok, err := g.storedRecipe(ctx, c.URL)
-		if err != nil {
-			return Grounded{}, fmt.Errorf("recipes: ground %q: %w", dishName, err)
-		}
-		if ok {
-			stored[c.URL] = sr
-		}
-	}
-	ranked, rankErr := rank(ctx, dishName, cands, func(ctx context.Context, c Candidate) (Recipe, error) {
-		if sr, ok := stored[c.URL]; ok {
-			return sr.recipe, nil
-		}
-		return fetchRecipe(ctx, g.pages, c.URL)
-	})
-	if err := ctx.Err(); err != nil {
-		return Grounded{}, err
-	}
 	var reasons []error
-	if rankErr != nil {
-		reasons = append(reasons, rankErr)
+	if found.rankErr != nil {
+		reasons = append(reasons, found.rankErr)
 	}
-	for _, r := range ranked {
-		if sr, ok := stored[r.Candidate.URL]; ok {
+	for _, r := range found.ranked {
+		if sr, ok := found.stored[r.Candidate.URL]; ok {
 			return sr.grounded, nil
 		}
 		gr, reason, err := g.ground(ctx, r.Candidate.URL, r.Recipe)
@@ -167,6 +147,96 @@ func (g *Grounder) Ground(ctx context.Context, dishName, query string) (Grounded
 		reasons = append(reasons, fmt.Errorf("%s: %w", r.Candidate.URL, reason))
 	}
 	return Grounded{}, &ErrUngroundable{Target: dishName, Reasons: reasons}
+}
+
+// rankedSearch is a search's candidates ranked: the ranked ones best first,
+// those already stored by URL, and why any were not ranked.
+type rankedSearch struct {
+	ranked []Ranked
+	stored map[string]storedRecipe
+	// rankErr is Rank's error, or ErrNoCandidates when the search found
+	// nothing.
+	rankErr error
+}
+
+// searchRanked searches for query and ranks the top RankDepth candidates
+// for dishName as Ground describes. A search, database or context failure
+// is its error; candidates that do not rank are only rankErr's.
+func (g *Grounder) searchRanked(ctx context.Context, dishName, query string) (rankedSearch, error) {
+	provider, err := g.search.Provider(ctx)
+	if err != nil {
+		return rankedSearch{}, fmt.Errorf("%w: %w", ErrSearchFailed, err)
+	}
+	cands, err := provider.Search(ctx, query, RankDepth)
+	if err != nil {
+		return rankedSearch{}, fmt.Errorf("%w: %w", ErrSearchFailed, err)
+	}
+	if len(cands) == 0 {
+		return rankedSearch{rankErr: ErrNoCandidates}, nil
+	}
+	cands = cands[:min(len(cands), RankDepth)]
+	stored := make(map[string]storedRecipe)
+	for _, c := range cands {
+		sr, ok, err := g.storedRecipe(ctx, c.URL)
+		if err != nil {
+			return rankedSearch{}, err
+		}
+		if ok {
+			stored[c.URL] = sr
+		}
+	}
+	ranked, rankErr := rank(ctx, dishName, cands, func(ctx context.Context, c Candidate) (Recipe, error) {
+		if sr, ok := stored[c.URL]; ok {
+			return sr.recipe, nil
+		}
+		return fetchRecipe(ctx, g.pages, c.URL)
+	})
+	if err := ctx.Err(); err != nil {
+		return rankedSearch{}, err
+	}
+	return rankedSearch{ranked: ranked, stored: stored, rankErr: rankErr}, nil
+}
+
+// Offer is a ranked candidate offered for the household to ground a dish
+// in, with GroundURL on its URL.
+type Offer struct {
+	URL      string
+	Title    string
+	SiteName string
+	// PhotoID is the cached photo of a candidate already stored, "" for
+	// one that is not: a candidate's photo is cached only when it grounds.
+	PhotoID string
+	// Minutes is a stored candidate's normalized minutes_total, else its
+	// page's total time; nil when unknown.
+	Minutes *int
+}
+
+// Candidates searches for query and returns up to n of the candidates
+// Ground would try for dishName, best first. It fetches and extracts pages
+// but downloads no photo and runs no model. Candidates that hold no usable
+// recipe are not offered, so the list may be empty; a search that fails is
+// an error wrapping ErrSearchFailed.
+func (g *Grounder) Candidates(ctx context.Context, dishName, query string, n int) ([]Offer, error) {
+	if strings.TrimSpace(dishName) == "" {
+		return nil, errors.New("recipes: candidates: dish name is empty")
+	}
+	if n < 1 {
+		return nil, fmt.Errorf("recipes: candidates: n is %d, want at least 1", n)
+	}
+	found, err := g.searchRanked(ctx, dishName, query)
+	if err != nil {
+		return nil, fmt.Errorf("recipes: candidates for %q: %w", dishName, err)
+	}
+	offers := make([]Offer, 0, min(n, len(found.ranked)))
+	for _, r := range found.ranked[:min(n, len(found.ranked))] {
+		o := Offer{URL: r.Candidate.URL, Title: r.Recipe.Title, SiteName: r.Recipe.SiteName, Minutes: r.Recipe.TotalMinutes}
+		if sr, ok := found.stored[r.Candidate.URL]; ok {
+			o.PhotoID = sr.grounded.PhotoID
+			o.Minutes = sr.grounded.MinutesTotal
+		}
+		offers = append(offers, o)
+	}
+	return offers, nil
 }
 
 // GroundURL grounds the recipe on the page at rawURL, a pasted URL, as
@@ -196,7 +266,7 @@ func (g *Grounder) GroundURL(ctx context.Context, rawURL string) (Grounded, erro
 	}
 	gr, reason, err := g.ground(ctx, rawURL, r)
 	if err != nil {
-		return Grounded{}, fmt.Errorf("recipes: ground %s: %w", rawURL, err)
+		return Grounded{}, fmt.Errorf("recipes: ground pasted link: %w", err)
 	}
 	if reason != nil {
 		return ungroundable(reason)
@@ -344,7 +414,7 @@ func (g *Grounder) ground(ctx context.Context, sourceURL string, r Recipe) (gr G
 		return Grounded{}, fmt.Errorf("normalize: %w", err), nil
 	}
 	if err != nil {
-		return Grounded{}, nil, fmt.Errorf("normalize: %w", err)
+		return Grounded{}, nil, fmt.Errorf("%w: %w", ErrNormalizeFailed, err)
 	}
 	if len(norm.Ingredients) != len(r.Ingredients) {
 		return Grounded{}, nil, fmt.Errorf("normalize: %d ingredients for %d lines", len(norm.Ingredients), len(r.Ingredients))

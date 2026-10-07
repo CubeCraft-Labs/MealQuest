@@ -21,7 +21,7 @@ export const AI_SETTINGS = {
 export const AI_MODELS = { models: [{ id: 'claude-sonnet-4-5', display_name: 'Claude Sonnet' }] }
 
 // HOUSEHOLD_SETTINGS is a GET /api/v1/settings/household body: the seed
-// times in New York.
+// times in New York, onboarding finished.
 export const HOUSEHOLD_SETTINGS = {
   timezone: 'America/New_York',
   dinner_time: '17:30',
@@ -33,7 +33,7 @@ export const HOUSEHOLD_SETTINGS = {
   suggestions_time: '08:00',
   chat_autosend_dow: 6,
   chat_autosend_time: '08:00',
-  onboarding_completed_at: null,
+  onboarding_completed_at: '2026-10-01T15:30:00.000Z',
   updates_seen_at: null,
   updated_by: null,
   created_at: '2026-10-01T15:00:00.000Z',

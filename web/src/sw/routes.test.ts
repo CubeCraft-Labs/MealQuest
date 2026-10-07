@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cacheFallbackHeader, cacheNames, markCacheFallback, routeFor, staleCaches, type Route } from './routes'
+import { cacheFallbackHeader, cacheNames, cacheVersions, markCacheFallback, routeFor, staleCaches, type Route } from './routes'
 
 const origin = 'https://mealquest.test'
 
@@ -145,6 +145,19 @@ describe('routeFor', () => {
 describe('cache names', () => {
   it('all start with mealquest-', () => {
     for (const name of Object.values(cacheNames)) expect(name).toMatch(/^mealquest-/)
+  })
+
+  it('retire only the v1 and v2 API caches', () => {
+    // v1 API responses held dinners with the pasted recipe_url and v2 ones
+    // recipe candidates whose candidate_id was the full URL; either can carry
+    // a personal token, and offline the worker would still serve them.
+    // The precache, photos and fonts keep their v1 caches.
+    expect(cacheNames).toEqual({
+      api: 'mealquest-api-v3',
+      media: 'mealquest-media-v1',
+      fonts: 'mealquest-fonts-v1',
+    })
+    expect(cacheVersions.precache).toBe('v1')
   })
 })
 

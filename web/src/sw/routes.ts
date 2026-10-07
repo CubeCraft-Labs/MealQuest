@@ -24,14 +24,24 @@ export interface RouteRequest {
   mode: RequestMode
 }
 
-// Bumping the version renames every cache; activate then deletes the old ones.
-export const cacheVersion = 'v1'
+// Each cache carries its own version. Bumping one renames only that cache;
+// activate then deletes its old name and keeps every other cache, so saved
+// photos and fonts stay available offline.
+export const cacheVersions = {
+  precache: 'v1',
+  // v2 retired the v1 API cache, whose dinner responses still carried the
+  // pasted recipe_url; v3 retires the v2 API cache, whose recipe-candidate
+  // responses used the full URL as candidate_id.
+  api: 'v3',
+  media: 'v1',
+  fonts: 'v1',
+} as const
 export const cachePrefix = 'mealquest-'
 
 export const cacheNames = {
-  api: `${cachePrefix}api-${cacheVersion}`,
-  media: `${cachePrefix}media-${cacheVersion}`,
-  fonts: `${cachePrefix}fonts-${cacheVersion}`,
+  api: `${cachePrefix}api-${cacheVersions.api}`,
+  media: `${cachePrefix}media-${cacheVersions.media}`,
+  fonts: `${cachePrefix}fonts-${cacheVersions.fonts}`,
 } as const
 
 export const networkTimeoutSeconds = 3

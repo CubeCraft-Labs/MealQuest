@@ -98,7 +98,7 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 | `photos` | source_url, local_path, width, height, sha256, fetched_at. |
 | `dinners` | The meal record and its lifecycle: name, normalized_name, status (`suggested` / `quest_log` / `tried` / `regular` / `archived`), origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, recipe_url (a pasted recipe link awaiting grounding), photo_id, grounding_status (`pending` / `grounded` / `failed` / `manual`), grounding_error (why grounding failed), grounding_revision (raised when a pending dinner is renamed, so only the latest `ground_dinner` job may write it), updated_by. |
 | `suggestion_batches` | trigger, status, ai_run_id. |
-| `suggestions` | dinner_id, batch_id, reason, cited_regular_ids (JSON), status, decided_at. |
+| `suggestions` | dinner_id, batch_id, name (the name the dish was suggested under, kept whatever its dinner is later renamed, so a Pass stays an immutable record every later batch dedupes against), reason, cited_regular_ids (JSON), status, decided_at. |
 | `week_plans` | week_start (unique), status (`draft` / `synced` / `changed`), ai_note, ai_run_id, calendar_synced_at. |
 | `plan_days` | plan_id, date (unique per plan), dinner_id, is_new, calendar_event_id. |
 | `rotation_reviews` | dinner_id + plan_date (unique), status, decision (`keep` / `drop` / `not_made`), decided_at, updated_by. |
@@ -127,7 +127,7 @@ suggested (deck) ──Try it──▶ quest_log ──planned date passes──
     │                            └──────── explicit decision ─────┤
     │                                                             ├──▶ regular
     │                                                             └──▶ archived
-    └──Pass──▶ archived (name kept for dedupe)
+    └──Pass──▶ archived (suggested name kept for dedupe)
 ```
 
 From `tried`, an explicit decision moves the dinner to `regular`, to
@@ -260,6 +260,62 @@ automatic** (D-021).
   dinner, is 500, logged with a fixed reason and the dinner id only —
   never the link, which can carry a personal token, or dependency error
   text.
+- Side quest suggestions (`suggest.Service`). `POST
+  /api/v1/suggestions/batches` creates a `manual` batch and enqueues its
+  `suggestion_batch` job, answering 202 `{batch_id, job_id, trigger,
+  status}` without waiting; while a batch is `pending` or `running` it
+  answers 202 with that batch instead, so at most one runs at a time (the
+  check, the batch and its job share one write transaction). The job reads the
+  household context, the deck's names and every declined name, runs
+  `suggest_side_quests` for 5 Side quests (scope: the batch id), then
+  grounds the survivors in the model's order with `Grounder.GroundMany`,
+  as many as are still wanted at a time, until 5 are kept or none are
+  left. A Side quest no recipe grounds is dropped; each round's grounded
+  ones are stored before the next — a dinner with status `suggested`,
+  origin `side_quest`, grounding_status `grounded` with the recipe's
+  recipe_id, photo_id, method, minutes_total and difficulty and the
+  model's cuisine, and a `pending` suggestion with the name it is
+  suggested under, the reason and `cited_regular_ids` — unless, since the
+  job read its input, a dinner it repeats was added, a suggestion it
+  repeats passed, or a Regular it cites renamed or archived (checked in
+  the storing transaction). The job publishes
+  `{batch_id, stage, suggestion_ids, dropped}` as it goes (`suggesting`,
+  `grounding`, `done`). It fails with `no_regulars`, `ai_failed` (the
+  skill or `normalize_recipe` failed; no Side quest is made up instead,
+  D-017), `search_not_configured` or `search_failed`, and the batch is set
+  `failed`; Side quests stored before the failure stay in the deck. If
+  recording the batch's end fails, its job fails; the job runner retries
+  a job's final status write with backoff until it lands, each attempt
+  bounded at 5 seconds; at shutdown an attempt that fails or times out is
+  not retried, and the next start fails the job as interrupted. Recording
+  the batch's end is bounded the same way (one attempt, 5 seconds, made
+  even during shutdown), so a busy writer cannot hold a stopping worker;
+  a batch whose end timed out is left `running` with its job. Each time a
+  batch is started, before the active batch is selected, every batch
+  still `pending` or `running` with no job queued or running (the process
+  stopped, or recording its end failed) is set `failed`, so it does not
+  block the next.
+  `GET /api/v1/suggestions/deck` returns `{suggestions: [{id, dinner_id,
+  name, photo_url, difficulty, method, minutes_total, cuisine, reason,
+  cited_regular_ids, status, dinner_status, decided_at, created_at}]}`:
+  the `pending` suggestions whose dinner is still `suggested`, oldest
+  first. `POST /api/v1/suggestions/{id}/accept` (Try it) sets the
+  suggestion `accepted` and moves its dinner to `quest_log`; `POST
+  /api/v1/suggestions/{id}/decline` (Pass) sets it `declined` and archives
+  the dinner; every later batch, and the household context's passed list,
+  reads the suggestion's own name as declined, so renaming the archived
+  dinner changes nothing. Both record
+  the session's subject as the dinner's `updated_by` and answer 200
+  `{suggestion, replenish_job_id}`. Repeating a decision changes nothing
+  and answers 200; the opposite decision is 409 `suggestion_decided`, a
+  suggestion whose dinner left the deck some other way 409
+  `dinner_not_suggested`, and an unknown id 404. A decision that leaves
+  fewer than 5 in the deck starts a `replenish` batch, whose job id it
+  returns, unless a batch is already pending or running
+  (`replenish_job_id` is then null). The batch and its job are written in
+  the decision's own transaction, so a decision is never recorded without
+  the replenish it calls for; when they cannot be written, neither is the
+  decision, and a retry decides again.
 - `/health` — liveness.
 - Everything else serves the embedded PWA with SPA fallback.
 

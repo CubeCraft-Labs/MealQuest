@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"io/fs"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -175,8 +176,8 @@ func TestMigrateEmbeddedMigrations(t *testing.T) {
 	if err := Migrate(context.Background(), s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name", got)
 	}
 }
 
@@ -196,8 +197,8 @@ func TestMigrateBootstrapThenEmbeddedInitApplies(t *testing.T) {
 	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name", got)
 	}
 	if !tableExists(t, s, "dinners") {
 		t.Error("table from 0001_init was not created")
@@ -555,5 +556,80 @@ func TestMigrateAIRunsStatus(t *testing.T) {
 				t.Errorf("after the failed migration status = %q, %v; want %q kept", status, err, legacy)
 			}
 		})
+	}
+}
+
+// TestMigrateSuggestionName upgrades a database at 0011 holding a pending
+// and a declined suggestion and checks 0012 keeps both, gives each its
+// dinner's name, and refuses a suggestion with no name.
+func TestMigrateSuggestionName(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	before := fstest.MapFS{}
+	for _, name := range []string{
+		"0000_bootstrap.sql", "0001_init.sql", "0002_household_settings_updated_by.sql", "0003_jobs_status.sql",
+		"0004_ai_provider_presets.sql", "0005_ai_provider_xai.sql", "0006_ai_runs_status.sql", "0007_recipe_grounding.sql",
+		"0008_dinner_recipe_url.sql", "0009_dinner_grounding_error.sql", "0010_dinner_grounding_revision.sql",
+		"0011_ground_dinner_job_revision.sql",
+	} {
+		body, err := fs.ReadFile(migrations.FS, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[name] = &fstest.MapFile{Data: body}
+	}
+	if err := Migrate(ctx, s.Writer, before); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`INSERT INTO dinners (id, name, normalized_name, status, origin, is_favorite, grounding_status, created_at, updated_at)
+			VALUES ('dinner-1', 'Pho', 'pho', 'suggested', 'side_quest', 0, 'grounded', 'c', 'u'),
+			       ('dinner-2', 'Ramen', 'ramen', 'archived', 'side_quest', 0, 'grounded', 'c', 'u')`,
+		`INSERT INTO suggestion_batches (id, trigger, status, created_at, updated_at)
+			VALUES ('batch-1', 'manual', 'done', 'c', 'u')`,
+		`INSERT INTO suggestions (id, dinner_id, batch_id, reason, cited_regular_ids, status, decided_at, created_at, updated_at)
+			VALUES ('sugg-1', 'dinner-1', 'batch-1', 'why 1', '[]', 'pending', NULL, 'c1', 'u1'),
+			       ('sugg-2', 'dinner-2', 'batch-1', 'why 2', '["dinner-1"]', 'declined', 'd2', 'c2', 'u2')`,
+	} {
+		if _, err := s.Writer.Exec(stmt); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := s.Reader.Query(`SELECT id, dinner_id, batch_id, name, reason, cited_regular_ids, status, COALESCE(decided_at, ''), created_at, updated_at
+		FROM suggestions ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got [][]string
+	for rows.Next() {
+		r := make([]string, 10)
+		if err := rows.Scan(&r[0], &r[1], &r[2], &r[3], &r[4], &r[5], &r[6], &r[7], &r[8], &r[9]); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, r)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	want := [][]string{
+		{"sugg-1", "dinner-1", "batch-1", "Pho", "why 1", "[]", "pending", "", "c1", "u1"},
+		{"sugg-2", "dinner-2", "batch-1", "Ramen", "why 2", `["dinner-1"]`, "declined", "d2", "c2", "u2"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("suggestions after 0012 =\n %v\nwant\n %v", got, want)
+	}
+	if _, err := s.Writer.Exec(`UPDATE suggestions SET name = '' WHERE id = 'sugg-1'`); err == nil || !strings.Contains(err.Error(), "CHECK constraint failed") {
+		t.Errorf("empty suggestion name: error %v, want CHECK constraint failure", err)
+	}
+	if _, err := s.Writer.Exec(`UPDATE suggestions SET dinner_id = 'nope' WHERE id = 'sugg-1'`); err == nil || !strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
+		t.Errorf("unknown dinner: error %v, want FOREIGN KEY constraint failure", err)
+	}
+	if tableExists(t, s, "suggestions_copy") {
+		t.Error("suggestions_copy left behind")
 	}
 }

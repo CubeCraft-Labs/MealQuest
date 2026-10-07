@@ -289,6 +289,7 @@ type Suggestion struct {
 	ID              string
 	DinnerID        string
 	BatchID         string
+	Name            string
 	Reason          string
 	CitedRegularIds string
 	Status          string

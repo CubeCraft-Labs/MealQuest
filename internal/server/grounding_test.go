@@ -252,6 +252,33 @@ func TestPostGroundViaRecipeURLStorageFailure(t *testing.T) {
 	}
 }
 
+// TestPostGroundViaRecipeURLDinnerWriteFailure: a pasted link whose recipe
+// is stored but whose dinner cannot be written is a 500 logged by reason
+// and dinner id, never with the dependency error.
+func TestPostGroundViaRecipeURLDinnerWriteFailure(t *testing.T) {
+	t.Parallel()
+	e := newDinnersEnv(t).withRecipes(t)
+	id := createDinner(t, e.h, `{"name":"Sunday stew"}`)
+	e.model.QueueGenerate(recipestest.NormalizedReply("oven", 150))
+	if _, err := e.st.Writer.ExecContext(t.Context(),
+		`CREATE TRIGGER refuse_grounding BEFORE UPDATE OF recipe_id ON dinners WHEN NEW.recipe_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'disk full'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, body := callDinners(t, e.h, http.MethodPost, dinnersPath+"/"+id+"/ground", `{"recipe_url":"`+stewPage+`"}`)
+	if rec.Code != http.StatusInternalServerError || errorCode(body) != "internal" {
+		t.Errorf("POST = %d %s, want 500 internal", rec.Code, rec.Body)
+	}
+	var stored int
+	if err := e.st.Reader.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM recipes WHERE source_url = ?`, stewPage).Scan(&stored); err != nil || stored != 1 {
+		t.Fatalf("recipes stored for the link = %d (%v), want 1: the failure must be the dinner write", stored, err)
+	}
+	logs := e.logs.String()
+	if strings.Contains(logs, "disk full") || !strings.Contains(logs, "reason=ground_failed") || !strings.Contains(logs, "dinner_id="+id) {
+		t.Errorf("logs = %q, want reason=ground_failed and the dinner id, without the dependency error", logs)
+	}
+}
+
 // TestPostGroundArchived: grounding an archived dinner by hand is a 409.
 func TestPostGroundArchived(t *testing.T) {
 	t.Parallel()

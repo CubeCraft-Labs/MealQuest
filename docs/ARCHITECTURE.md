@@ -254,10 +254,12 @@ automatic** (D-021).
   `dinner_archived`. A candidate or link is written only if the dinner is
   still as it was before grounding began: one renamed or grounded some
   other way meanwhile is 409 `ground_conflict`, and one archived meanwhile
-  409 `dinner_archived`, either leaving the dinner unchanged. Any other
-  failure grounding a candidate or link is 500, logged with a fixed reason
-  and the dinner id only — never the link, which can carry a personal
-  token, or dependency error text.
+  409 `dinner_archived`, either leaving the dinner unchanged. A method,
+  minutes or difficulty a member edits meanwhile is kept over the recipe's.
+  Any other failure grounding a candidate or link, or recording it on the
+  dinner, is 500, logged with a fixed reason and the dinner id only —
+  never the link, which can carry a personal token, or dependency error
+  text.
 - `/health` — liveness.
 - Everything else serves the embedded PWA with SPA fallback.
 

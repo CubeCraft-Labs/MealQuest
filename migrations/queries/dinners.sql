@@ -85,23 +85,28 @@ RETURNING *;
 -- Records a dinner's grounding by hand (grounded or manual) and clears any
 -- grounding_error and pasted recipe_url: the recipe chosen replaces the
 -- link. It writes only an unarchived dinner still as it was observed
--- before grounding (same normalized_name, grounding_status,
+-- before grounding (same name, normalized_name, grounding_status,
 -- grounding_revision and recipe_id), so a dinner renamed, archived or
 -- grounded some other way meanwhile is left as it is. That dinner, or an
--- unknown id, returns sql.ErrNoRows.
+-- unknown id, returns sql.ErrNoRows. A method, minutes_total or difficulty
+-- no longer as observed is kept: a member edited it while it was grounding.
 UPDATE dinners
 SET recipe_id = sqlc.arg(recipe_id),
 	recipe_url = NULL,
 	photo_id = sqlc.arg(photo_id),
-	method = sqlc.arg(method),
-	minutes_total = sqlc.arg(minutes_total),
-	difficulty = sqlc.arg(difficulty),
+	method = CASE WHEN method IS sqlc.narg(observed_method)
+		THEN sqlc.arg(method) ELSE method END,
+	minutes_total = CASE WHEN minutes_total IS sqlc.narg(observed_minutes_total)
+		THEN sqlc.arg(minutes_total) ELSE minutes_total END,
+	difficulty = CASE WHEN difficulty IS sqlc.narg(observed_difficulty)
+		THEN sqlc.arg(difficulty) ELSE difficulty END,
 	grounding_status = sqlc.arg(grounding_status),
 	grounding_error = NULL,
 	updated_by = sqlc.arg(updated_by),
 	updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id)
 	AND status <> 'archived'
+	AND name = sqlc.arg(observed_name)
 	AND normalized_name = sqlc.arg(observed_normalized_name)
 	AND grounding_status = sqlc.arg(observed_grounding_status)
 	AND grounding_revision = sqlc.arg(observed_grounding_revision)

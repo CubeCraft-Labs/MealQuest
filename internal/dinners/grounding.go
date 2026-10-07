@@ -335,14 +335,16 @@ type ManualRecipe struct {
 // Ground grounds dinner id as f says, recording updatedBy. A candidate or
 // link is grounded with recipes.Grounder.GroundURL and sets
 // grounding_status grounded, with the recipe's photo, method, minutes and
-// difficulty. A manual recipe is stored as typed — no model runs — and
-// sets grounding_status manual with its method and minutes; it has no
-// photo, and the dinner keeps its difficulty. An invalid f is a
-// *ValidationError and an archived dinner ErrArchived. A failure grounding
-// a candidate or link wraps ErrGroundFailed; a page that cannot ground the
-// dinner is also a *recipes.ErrUngroundable. A dinner renamed, archived or
-// grounded some other way while a candidate or link was grounding is
-// ErrGroundConflict or ErrArchived. None of these changes the dinner.
+// difficulty; one a member changed while it was grounding is kept. A
+// manual recipe is stored as typed — no model runs — and sets
+// grounding_status manual with its method and minutes; it has no photo,
+// and the dinner keeps its difficulty. An invalid f is a *ValidationError
+// and an archived dinner ErrArchived. A failure grounding a candidate or
+// link, or recording it on the dinner, wraps ErrGroundFailed; a page that
+// cannot ground the dinner is also a *recipes.ErrUngroundable. A dinner
+// renamed, archived or grounded some other way while a candidate or link
+// was grounding is ErrGroundConflict or ErrArchived. None of these changes
+// the dinner.
 func (s *Service) Ground(ctx context.Context, id string, f Fix, updatedBy string) (Dinner, error) {
 	if updatedBy == "" {
 		return Dinner{}, errors.New("dinners: ground: no member to record as updated_by")
@@ -380,26 +382,34 @@ func (s *Service) Ground(ctx context.Context, id string, f Fix, updatedBy string
 		UpdatedBy:                 sql.NullString{String: updatedBy, Valid: true},
 		UpdatedAt:                 store.Now().String(),
 		ID:                        cur.ID,
+		ObservedName:              cur.Name,
 		ObservedNormalizedName:    cur.NormalizedName,
 		ObservedGroundingStatus:   cur.GroundingStatus,
 		ObservedGroundingRevision: cur.GroundingRevision,
 		ObservedRecipeID:          cur.RecipeID,
+		ObservedMethod:            cur.Method,
+		ObservedMinutesTotal:      cur.MinutesTotal,
+		ObservedDifficulty:        cur.Difficulty,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return Dinner{}, s.groundRejected(ctx, id)
 	}
 	if err != nil {
-		return Dinner{}, fmt.Errorf("dinners: ground %s: %w", id, err)
+		return Dinner{}, fmt.Errorf("%w: dinner %s: record: %w", ErrGroundFailed, id, err)
 	}
 	return fromRow(row), nil
 }
 
 // groundRejected is the error for dinner id when it was not as observed
-// before grounding: ErrNotFound, ErrArchived or ErrGroundConflict.
+// before grounding: ErrNotFound, ErrArchived or ErrGroundConflict. Failing
+// to read it wraps ErrGroundFailed.
 func (s *Service) groundRejected(ctx context.Context, id string) error {
 	cur, err := s.get(ctx, id)
-	if err != nil {
+	if errors.Is(err, ErrNotFound) {
 		return err
+	}
+	if err != nil {
+		return fmt.Errorf("%w: dinner %s: %w", ErrGroundFailed, id, err)
 	}
 	if cur.Status == StatusArchived {
 		return ErrArchived
@@ -486,10 +496,14 @@ func (s *Service) groundManual(ctx context.Context, id string, m ManualRecipe, u
 			UpdatedBy:                 sql.NullString{String: updatedBy, Valid: true},
 			UpdatedAt:                 now,
 			ID:                        cur.ID,
+			ObservedName:              cur.Name,
 			ObservedNormalizedName:    cur.NormalizedName,
 			ObservedGroundingStatus:   cur.GroundingStatus,
 			ObservedGroundingRevision: cur.GroundingRevision,
 			ObservedRecipeID:          cur.RecipeID,
+			ObservedMethod:            cur.Method,
+			ObservedMinutesTotal:      cur.MinutesTotal,
+			ObservedDifficulty:        cur.Difficulty,
 		})
 		if err != nil {
 			return fmt.Errorf("dinners: ground %s: %w", id, err)

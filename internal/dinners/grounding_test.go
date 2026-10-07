@@ -1126,6 +1126,13 @@ func TestFixInFlightWhenDinnerChanges(t *testing.T) {
 		}, dinners.ErrGroundConflict, func(row db.Dinner) bool {
 			return row.Name == "Chicken curry" && row.GroundingStatus == dinners.GroundingFailed && !row.RecipeID.Valid
 		}},
+		{"renamed to the same normalized name", func(t *testing.T, e *env, id string) {
+			if _, err := e.svc.Update(t.Context(), id, dinners.Patch{Name: ptr("Easy Grandma's stew")}, member); err != nil {
+				t.Fatal(err)
+			}
+		}, dinners.ErrGroundConflict, func(row db.Dinner) bool {
+			return row.Name == "Easy Grandma's stew" && row.GroundingStatus == dinners.GroundingFailed && !row.RecipeID.Valid
+		}},
 		{"archived", func(t *testing.T, e *env, id string) {
 			if _, err := e.svc.Archive(t.Context(), id, member); err != nil {
 				t.Fatal(err)
@@ -1167,6 +1174,40 @@ func TestFixInFlightWhenDinnerChanges(t *testing.T) {
 				t.Errorf("dinner = %+v, want the %s change kept and the link's recipe not written", row, tt.name)
 			}
 		})
+	}
+}
+
+// TestFixInFlightKeepsMemberEdits: a method or difficulty a member sets
+// while a link is grounding is kept; what they left alone takes the link's
+// recipe.
+func TestFixInFlightKeepsMemberEdits(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	id := failedDinner(t, e, "Grandma's stew")
+	e.model.QueueGenerate(recipestest.NormalizedReply("oven", 150))
+	e.pages.Gate = make(chan struct{})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.svc.Ground(context.Background(), id, dinners.Fix{RecipeURL: ptr(stew)}, member)
+		done <- err
+	}()
+	e.waitFetched(t, stew)
+	if _, err := e.svc.Update(t.Context(), id, dinners.Patch{Method: ptr("grill"), Difficulty: ptr("easy")}, member); err != nil {
+		t.Fatal(err)
+	}
+	close(e.pages.Gate)
+
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	row := e.dinner(t, id)
+	if row.GroundingStatus != dinners.GroundingGrounded || !row.RecipeID.Valid {
+		t.Errorf("dinner = %+v, want grounded in the link's recipe", row)
+	}
+	if row.Method.String != "grill" || row.Difficulty.String != "easy" || row.MinutesTotal.Int64 != 150 {
+		t.Errorf("method, difficulty, minutes = %q, %q, %d; want grill and easy kept, 150 from the recipe",
+			row.Method.String, row.Difficulty.String, row.MinutesTotal.Int64)
 	}
 }
 

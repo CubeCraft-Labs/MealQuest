@@ -15,8 +15,8 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 )
 
-// PassedLimit is how many of the most recently passed Side quests the
-// household context holds.
+// PassedLimit is how many of the most recently passed names (Side quests
+// passed and dinners a Rotation check dropped) the household context holds.
 const PassedLimit = 60
 
 // PlanWeeks is how many ISO weeks of plans, ending with the current week,
@@ -34,8 +34,8 @@ type HouseholdContext struct {
 	Regulars []RegularDinner
 	// QuestLog holds the Quest log dinner names, in name order.
 	QuestLog []string
-	// Passed holds the names of the most recently passed Side quests,
-	// oldest first.
+	// Passed holds the most recently passed names, oldest first: Side
+	// quests passed and dinners a Rotation check dropped ("Not for us").
 	Passed []string
 	// Plans are the planned dinners of the last PlanWeeks weeks, oldest
 	// first.
@@ -137,7 +137,7 @@ func readContext(ctx context.Context, st *store.Store, now time.Time) (h Househo
 		h.QuestLog = append(h.QuestLog, d.Name)
 	}
 
-	passed, err := q.ListRecentDeclinedNames(ctx, PassedLimit)
+	passed, err := q.ListRecentPassedNames(ctx, PassedLimit)
 	if err != nil {
 		return h, fmt.Errorf("read passed Side quests: %w", err)
 	}

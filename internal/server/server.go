@@ -43,8 +43,9 @@ type RouteMounter interface {
 // suggestSvc serves POST /api/v1/suggestions/batches, GET
 // /api/v1/suggestions/deck and POST /api/v1/suggestions/{id}/accept and
 // /decline; planSvc serves GET /api/v1/plans/{weekStart}, POST
-// /api/v1/plans/{weekStart}/draft and PUT
-// /api/v1/plans/{weekStart}/days/{date}; runner serves
+// /api/v1/plans/{weekStart}/draft, PUT
+// /api/v1/plans/{weekStart}/days/{date}, GET /api/v1/rotation-reviews and
+// POST /api/v1/dinners/{id}/rotation-review; runner serves
 // POST /api/v1/jobs and GET /api/v1/jobs/{id}; photos serves
 // GET /media/photos/{id}-{size}.jpg; assets is the web build
 // served for every other GET. /health, /auth and the web build are public.
@@ -125,6 +126,8 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Get("/plans/{weekStart}", getPlan(logger, planSvc))
 	apiV1.Post("/plans/{weekStart}/draft", postPlanDraft(logger, planSvc))
 	apiV1.Put("/plans/{weekStart}/days/{date}", putPlanDay(logger, planSvc))
+	apiV1.Get("/rotation-reviews", getRotationReviews(logger, planSvc))
+	apiV1.Post("/dinners/{id}/rotation-review", postRotationReview(logger, planSvc))
 	apiV1.Post("/jobs", postJob(logger, runner))
 	apiV1.Get("/jobs/{id}", getJob(logger, runner))
 	media.Get("/photos/{name}", getPhoto(logger, photos))

@@ -101,7 +101,7 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 | `suggestions` | dinner_id, batch_id, name (the name the dish was suggested under, kept whatever its dinner is later renamed, so a Pass stays an immutable record every later batch dedupes against), reason, cited_regular_ids (JSON), status, decided_at. |
 | `week_plans` | week_start (unique), status (`draft` / `synced` / `changed`), ai_note, ai_run_id, calendar_synced_at, revision (raised by every swap and stored draft). |
 | `plan_days` | plan_id, date (unique per plan), dinner_id, is_new, calendar_event_id. |
-| `rotation_reviews` | dinner_id + plan_date (unique), status, decision (`keep` / `drop` / `not_made`), decided_at, updated_by. |
+| `rotation_reviews` | dinner_id + plan_date (unique), status, decision (`keep` / `drop` / `not_made`), name (set only by a drop: the dinner's name when dropped, kept whatever it is later renamed, so a drop stays among the passed names), decided_at, updated_by. |
 | `shopping_lists` | week_start (unique), plan_id, title, status (`current` / `archived`), sent_to_chat_at, frozen_at. |
 | `shopping_groups` / `shopping_items` | One group per dinner/day; item name, qty, needed (bool), position. |
 | `ai_settings` | One row: provider, base_url, model, temperature, system_prompt, api_key_ct, api_key_last4, key_verified_at. |
@@ -364,6 +364,28 @@ automatic** (D-021).
   `is_new`, moves a `synced` plan to `changed`, and answers 200 with the
   plan. A date outside the week is 400 `invalid_date`, an unknown dinner or
   a week with no plan 404, and any other dinner 409 `dinner_not_plannable`.
+- Rotation check (`plan.Service`, D-021). `MarkTried(date)`, which the
+  `rotation_check` schedule calls for the household-local day just past,
+  moves every `quest_log` dinner planned on that date, on a plan of any
+  status, to `tried` and opens a `pending` `rotation_reviews` row for it;
+  a dinner already checked for that date is left as it is, so it is
+  idempotent. `GET /api/v1/rotation-reviews` returns `{reviews}`, the
+  pending checks whose dinner is still tried, oldest `plan_date` first,
+  each `{dinner: {id, name, photo}, plan_date}`. `POST
+  /api/v1/dinners/{id}/rotation-review` takes `{decision}`: `keep` makes
+  the dinner a Regular, `drop` ("Not for us") archives it and `not_made`
+  ("We didn't make it") returns it to the Quest log; its origin is kept.
+  The check is closed with `decided_at` and the session's `updated_by`,
+  and the answer is `{dinner, plan_date, decision, dinner_status,
+  decided_at, updated_by}`. Any other decision is 400 `invalid_decision`,
+  an unknown dinner or a dinner never checked 404 `not_found`, a dinner
+  whose checks are all decided (including a second decision) 409
+  `no_pending_review`, and one no longer tried 409 `dinner_not_tried`.
+  Keep is the only path from tried to Regular. A drop records the
+  dinner's name on the check (`rotation_reviews.name`), and that name
+  joins the passed names (`ListPassedNames`) the Side quest dedupe and
+  household context use, so it is never suggested again, even after the
+  dinner is renamed.
 - `/health` — liveness.
 - Everything else serves the embedded PWA with SPA fallback.
 

@@ -32,6 +32,7 @@ const plansPath = "/api/v1/plans/"
 type plansEnv struct {
 	h        http.Handler
 	st       *store.Store
+	svc      *plan.Service
 	questLog string
 }
 
@@ -89,7 +90,7 @@ func newPlansRouter(t *testing.T) plansEnv {
 			t.Fatal(err)
 		}
 	}
-	return plansEnv{h: h, st: st, questLog: dinner("Pad Thai", "quest_log", "stovetop", 35)}
+	return plansEnv{h: h, st: st, svc: svc, questLog: dinner("Pad Thai", "quest_log", "stovetop", 35)}
 }
 
 func (e plansEnv) setStatus(t *testing.T, status string) {

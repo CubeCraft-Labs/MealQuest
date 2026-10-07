@@ -43,7 +43,7 @@ type batchResult struct {
 func (r batchResult) PublicJSON() ([]byte, error) { return json.Marshal(r) }
 
 // runBatch runs batch p.BatchID: it asks suggest_side_quests for BatchSize
-// Side quests given the household context, the deck and every declined
+// Side quests given the household context, the deck and every passed
 // name, then grounds them in the model's order, at most the number still
 // wanted at a time, until BatchSize are kept or none are left. A Side quest
 // no recipe grounds is dropped; any other grounding failure fails the
@@ -132,7 +132,7 @@ func (s *Service) fill(ctx context.Context, batchID string, publish func(batchRe
 }
 
 // request reads what suggest_side_quests is given: the household context,
-// the deck's names and every declined name. A household with no Regulars
+// the deck's names and every passed name (ListPassedNames). A household with no Regulars
 // fails with ReasonNoRegulars.
 func (s *Service) request(ctx context.Context) (skills.SideQuestsRequest, error) {
 	hctx, err := harness.BuildContext(ctx, s.st, time.Now(), ContextBudget)
@@ -151,9 +151,9 @@ func (s *Service) request(ctx context.Context) (skills.SideQuestsRequest, error)
 	for _, row := range deck {
 		pending = append(pending, row.Dinner.Name)
 	}
-	declined, err := q.ListDeclinedSuggestionNames(ctx)
+	declined, err := q.ListPassedNames(ctx)
 	if err != nil {
-		return skills.SideQuestsRequest{}, fmt.Errorf("suggest: list declined names: %w", err)
+		return skills.SideQuestsRequest{}, fmt.Errorf("suggest: list passed names: %w", err)
 	}
 	return skills.SideQuestsRequest{Context: hctx, Needed: BatchSize, Pending: pending, Declined: declined}, nil
 }
@@ -201,9 +201,9 @@ func (s *Service) ground(ctx context.Context, quests []skills.SideQuest) ([]grou
 // suggestion citing its Regulars by id, all in one transaction, and
 // returns the suggestion ids. A Side quest is left out when, since
 // suggest_side_quests ran, a dinner it repeats was added, a suggestion it
-// repeats passed, or a Regular it cites renamed or archived. Declined
-// names are read in the same transaction as the store, so a Pass committed
-// before it is never missed.
+// repeats passed or a Rotation check dropped, or a Regular it cites renamed
+// or archived. Passed names are read in the same transaction as the store,
+// so a Pass or drop committed before it is never missed.
 func (s *Service) store(ctx context.Context, batchID string, quests []groundedQuest) ([]string, error) {
 	ids := []string{}
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
@@ -212,9 +212,9 @@ func (s *Service) store(ctx context.Context, batchID string, quests []groundedQu
 		if err != nil {
 			return fmt.Errorf("suggest: list dinners for dedupe: %w", err)
 		}
-		names, err := q.ListDeclinedSuggestionNames(ctx)
+		names, err := q.ListPassedNames(ctx)
 		if err != nil {
-			return fmt.Errorf("suggest: list declined names for dedupe: %w", err)
+			return fmt.Errorf("suggest: list passed names for dedupe: %w", err)
 		}
 		regulars := map[string][]string{}
 		for _, row := range existing {

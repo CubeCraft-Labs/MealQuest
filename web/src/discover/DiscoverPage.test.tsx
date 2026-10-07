@@ -864,6 +864,90 @@ describe('DiscoverPage', () => {
       await waitFor(() => expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept', 'POST /api/v1/suggestions/s1/accept']))
     })
 
+    it('settles a failed decision on its own read of the deck when a batch poll reads the deck again during it', async () => {
+      const job = (suggestionIds: string[]) =>
+        jsonResponse(200, {
+          id: 'j1',
+          kind: 'suggestion_batch',
+          status: 'running',
+          result: { batch_id: 'b1', stage: 'suggesting', suggestion_ids: suggestionIds, dropped: 0 },
+          error: null,
+        })
+      let poll: ReturnType<typeof deferred> | null = null
+      let read: ReturnType<typeof deferred> | null = null
+      let refuse = true
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], {
+        'POST /api/v1/suggestions/s1/decline': () => {
+          server.deck = [TIKKA, ORZO, PAELLA]
+          return jsonResponse(200, { suggestion: { ...BOWLS, status: 'declined' }, replenish_job_id: 'j1' })
+        },
+        'POST /api/v1/suggestions/s2/accept': () => {
+          if (!refuse) return accepted(TIKKA)
+          read = deferred()
+          return errorResponse(500, 'internal')
+        },
+        'GET /api/v1/jobs/j1': () => poll?.promise ?? job([]),
+        [`GET ${DECK}`]: () => read?.promise ?? jsonResponse(200, { suggestions: server.deck }),
+      })
+      const queryClient = createQueryClient()
+      await renderPage(queryClient)
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      // A Pass starts a replenish batch, whose job is polled.
+      fireEvent.click(screen.getByRole('button', { name: 'Pass' }))
+      await waitFor(() => expect(jobPolls(server.fetchMock)).toBe(1))
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Try it' })).toBeEnabled())
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+      poll = deferred()
+      const polled = poll
+      await waitFor(() => expect(jobPolls(server.fetchMock)).toBe(2), { timeout: 2000 })
+
+      // Try it fails without being saved; the deck read it makes is slow.
+      const reads = deckReads(server.fetchMock)
+      fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+      await waitFor(() => expect(deckReads(server.fetchMock)).toBe(reads + 1))
+      const reconciling = read!
+      read = deferred()
+      const after = read
+      expect(screen.getByRole('button', { name: 'Try it' })).toBeDisabled()
+
+      // The batch stores a Side quest while that read is out: its read of
+      // the deck waits for the decision's rather than replacing it.
+      const SOUP = suggestionBody('s5', 'Tortellini soup')
+      server.deck = [TIKKA, ORZO, PAELLA, SOUP]
+      await act(async () => polled.resolve(job(['s5'])))
+      await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)))
+      expect(deckReads(server.fetchMock)).toBe(reads + 1)
+      expect(screen.getByRole('button', { name: 'Try it' })).toBeDisabled()
+
+      // The decision's read has the Side quest still pending: the card goes
+      // back on top with a Retry, and the decision settles on that read.
+      await act(async () => reconciling.resolve(jsonResponse(200, { suggestions: server.deck })))
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Try it' })).toBeEnabled())
+      const alert = screen.getByRole('alert')
+      expect(alert).toHaveTextContent("Couldn't save that choice.")
+      expect(within(alert).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+
+      // The batch's read goes out after it, and brings its Side quest.
+      await waitFor(() => expect(deckReads(server.fetchMock)).toBe(reads + 2))
+      read = null
+      await act(async () => after.resolve(jsonResponse(200, { suggestions: server.deck })))
+      await waitFor(() => expect(queryClient.getQueryData<{ id: string }[]>(DECK_KEY)?.map((q) => q.id)).toEqual(['s2', 's3', 's4', 's5']))
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+
+      // Retry sends it again.
+      refuse = false
+      fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+      await waitFor(() =>
+        expect(sent(server.fetchMock)).toEqual([
+          'POST /api/v1/suggestions/s1/decline',
+          'POST /api/v1/suggestions/s2/accept',
+          'POST /api/v1/suggestions/s2/accept',
+        ]),
+      )
+    })
+
     it('reads the deck again after a 500 to a decision, rather than putting the card back', async () => {
       const decline = deferred()
       const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], {

@@ -130,6 +130,20 @@ export function useStartBatch() {
   })
 }
 
+// DecisionError is a failed decision, with what the deck read after it
+// found: pending is its Side quest while the server still has it pending,
+// null once it is decided, and undefined when that read failed too (the
+// deck query holds the read's error).
+export class DecisionError extends Error {
+  readonly pending: SideQuest | null | undefined
+
+  constructor(cause: unknown, pending: SideQuest | null | undefined) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause })
+    this.name = 'DecisionError'
+    this.pending = pending
+  }
+}
+
 // useDecide records Try it (POST /api/v1/suggestions/{id}/accept) or Pass
 // (POST /api/v1/suggestions/{id}/decline) on the Side quest the household
 // decided on, whether or not a read of the deck has since taken it away.
@@ -141,30 +155,51 @@ export function useStartBatch() {
 // Nothing else is worked out here: the server is the record of both. However
 // the decision ends, saved or failed, the deck and the Quest log are read
 // again, and the decision is pending until those reads land, so the next one
-// (which DiscoverPage locks out until then) cannot start under them. No
-// decision cancels a read; one under way when the decision ends is replaced
-// by the read made after it. A failed decision whose Side quest that read
-// still has is still pending, and goes back on top of the deck.
+// (which DiscoverPage locks out until then) cannot start under them. A read
+// under way when the decision ends is replaced by the read made after it,
+// and DiscoverPage's batch reads wait for that one rather than replace it.
+// A failed decision is a DecisionError, settled on the read it made and
+// waited for itself: a Side quest that read still has is still pending, and
+// goes back on top of the deck.
 export function useDecide() {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: async ({ quest: { id }, choice }: { quest: SideQuest; choice: Choice }): Promise<string | null> => {
-      const action = choice === 'try' ? 'accept' : 'decline'
-      const path = `${SUGGESTIONS_PATH}/${encodeURIComponent(id)}/${action}`
-      const body = await apiFetch<unknown>(path, { method: 'POST' })
-      if (
-        !isRecord(body) ||
-        !isRecord(body.suggestion) ||
-        body.suggestion.id !== id ||
-        body.suggestion.status !== DECISION_STATUS[choice]
-      ) {
-        throw new Error(`POST ${path}: response is not the ${DECISION_STATUS[choice]} suggestion`)
+
+  // send POSTs the decision and checks the answer.
+  async function send(id: string, choice: Choice): Promise<string | null> {
+    const action = choice === 'try' ? 'accept' : 'decline'
+    const path = `${SUGGESTIONS_PATH}/${encodeURIComponent(id)}/${action}`
+    const body = await apiFetch<unknown>(path, { method: 'POST' })
+    if (
+      !isRecord(body) ||
+      !isRecord(body.suggestion) ||
+      body.suggestion.id !== id ||
+      body.suggestion.status !== DECISION_STATUS[choice]
+    ) {
+      throw new Error(`POST ${path}: response is not the ${DECISION_STATUS[choice]} suggestion`)
+    }
+    if (body.replenish_job_id !== null && typeof body.replenish_job_id !== 'string') {
+      throw new Error(`POST ${path}: response has no replenish_job_id`)
+    }
+    return body.replenish_job_id
+  }
+
+  return useMutation<string | null, DecisionError, { quest: SideQuest; choice: Choice }>({
+    mutationFn: async ({ quest, choice }) => {
+      try {
+        return await send(quest.id, choice)
+      } catch (error) {
+        // The deck is read again as the decision's own fetch, replacing any
+        // read already out; its answer, not the cache's, settles it.
+        let read: SideQuest[]
+        try {
+          read = await queryClient.getQueryCache().build<SideQuest[]>(queryClient, { queryKey: DECK_KEY }).fetch(undefined, { cancelRefetch: true })
+        } catch {
+          // The deck query holds the read's error, shown with the deck.
+          throw new DecisionError(error, undefined)
+        }
+        throw new DecisionError(error, read.find((q) => q.id === quest.id) ?? null)
       }
-      if (body.replenish_job_id !== null && typeof body.replenish_job_id !== 'string') {
-        throw new Error(`POST ${path}: response has no replenish_job_id`)
-      }
-      return body.replenish_job_id
     },
     onMutate: ({ quest, choice }) => {
       queryClient.setQueryData<SideQuest[]>(DECK_KEY, (deck) => deck?.filter((q) => q.id !== quest.id))
@@ -174,13 +209,16 @@ export function useDecide() {
         dinners === undefined || dinners.some((d) => d.id === quest.dinner_id) ? dinners : dinners.concat({ id: quest.dinner_id, name: quest.name }),
       )
     },
-    onSettled: async (_replenishJobId, error, { quest: { id } }) => {
-      await Promise.all([queryClient.invalidateQueries({ queryKey: DECK_KEY }), queryClient.invalidateQueries({ queryKey: QUEST_LOG_KEY })])
-      if (error === null) return
-      queryClient.setQueryData<SideQuest[]>(DECK_KEY, (deck) => {
-        const pending = deck?.find((q) => q.id === id)
-        return pending === undefined ? deck : [pending, ...deck!.filter((q) => q !== pending)]
-      })
+    onSettled: async (_replenishJobId, error) => {
+      if (error === null) {
+        await Promise.all([queryClient.invalidateQueries({ queryKey: DECK_KEY }), queryClient.invalidateQueries({ queryKey: QUEST_LOG_KEY })])
+        return
+      }
+      // A failed decision has read the deck already.
+      await queryClient.invalidateQueries({ queryKey: QUEST_LOG_KEY })
+      const { pending } = error
+      if (pending === null || pending === undefined) return
+      queryClient.setQueryData<SideQuest[]>(DECK_KEY, (deck) => [pending, ...(deck ?? []).filter((q) => q.id !== pending.id)])
     },
   })
 }

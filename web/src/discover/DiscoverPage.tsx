@@ -90,10 +90,10 @@ function QuestLogPill({ dinners, ref }: { dinners: { id: string; name: string }[
 // at a time from the top card. A decision from the buttons, the ← / → keys
 // or a swipe of the top card throws it out (motion.ts) and sends the
 // decision once it is gone, taking the card off the deck at once (see
-// useDecide); Retry sends a failed one again while the deck read since still
-// has its Side quest pending. Input is locked from the press until the
-// decision settles, which is once the deck and the Quest log have been read
-// again after it, so no decision starts under those reads. The lock is a
+// useDecide); Retry sends a failed one again while the deck it read after
+// failing still had its Side quest pending. Input is locked from the press
+// until the decision settles, which is once the deck and the Quest log have
+// been read again after it, so no decision starts under those reads. The lock is a
 // ref, set before anything starts, so a second press before the next render
 // does nothing, and busy mirrors it to disable the buttons.
 export function DiscoverPage() {
@@ -310,17 +310,23 @@ export function DiscoverPage() {
   }, [decide])
 
   // The batch stores its Side quests as it goes, so the deck is read again
-  // whenever it reports more, and once it ends.
+  // whenever it reports more, and once it ends. A read already out may be a
+  // decision's, which must not be cut short: the batch's read waits for it,
+  // then goes out after it, as it may predate what the batch reported.
   const { stored } = batch
   useEffect(() => {
     if (job.status === undefined) return
-    void queryClient.invalidateQueries({ queryKey: DECK_KEY })
+    const after = queryClient.isFetching({ queryKey: DECK_KEY }) > 0
+    void queryClient
+      .invalidateQueries({ queryKey: DECK_KEY }, { cancelRefetch: false })
+      .then(() => (after ? queryClient.invalidateQueries({ queryKey: DECK_KEY }, { cancelRefetch: false }) : undefined))
   }, [queryClient, job.status, stored])
 
-  // A failed decision can be retried only while the deck, read again after
-  // it, still has its Side quest pending: anything else decided it already.
-  const failed = decision.isError ? decision.variables.quest.id : null
-  const retryable = failed !== null && !deck.isError && deck.data !== undefined && deck.data.some((q) => q.id === failed)
+  // A failed decision can be retried only while the deck it read after
+  // failing still has its Side quest pending: anything else decided it
+  // already.
+  const pending = decision.isError ? decision.error.pending : undefined
+  const retryable = pending !== undefined && pending !== null
 
   let body
   if (deck.isError) {
@@ -392,7 +398,7 @@ export function DiscoverPage() {
       {decision.isError &&
         (retryable ? (
           <ErrorBanner onRetry={() => submit(decision.variables)}>Couldn't save that choice. {decision.error.message}</ErrorBanner>
-        ) : deck.isError ? (
+        ) : pending === undefined ? (
           <ErrorBanner>Couldn't save that choice. {decision.error.message}</ErrorBanner>
         ) : (
           <ErrorBanner>That side quest has been decided already. {decision.error.message}</ErrorBanner>

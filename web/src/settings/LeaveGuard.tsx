@@ -36,6 +36,9 @@ type ConfirmProps = {
   confirmLabel: string
   cancelLabel?: string
   busy?: boolean
+  // When false, the cancel button, Escape and the scrim do nothing, so the
+  // sheet stays until the action settles.
+  dismissible?: boolean
   error?: string | null
   onCancel: () => void
   onConfirm: () => void
@@ -49,13 +52,17 @@ export function Confirm({
   confirmLabel,
   cancelLabel = 'Cancel',
   busy = false,
+  dismissible = true,
   error = null,
   onCancel,
   onConfirm,
 }: ConfirmProps) {
   const titleId = useId()
+  function dismiss() {
+    if (dismissible) onCancel()
+  }
   return (
-    <Sheet open={open} onClose={onCancel} aria-labelledby={titleId}>
+    <Sheet open={open} onClose={dismiss} aria-labelledby={titleId}>
       <div className={styles.sheet}>
         <h2 id={titleId} className={styles.title}>
           {title}
@@ -67,7 +74,7 @@ export function Confirm({
           </p>
         )}
         <div className={styles.actions}>
-          <Button variant="outline" onClick={onCancel}>
+          <Button variant="outline" disabled={!dismissible} onClick={onCancel}>
             {cancelLabel}
           </Button>
           <Button disabled={busy} onClick={onConfirm}>

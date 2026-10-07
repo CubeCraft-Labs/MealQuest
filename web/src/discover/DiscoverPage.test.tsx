@@ -618,6 +618,66 @@ describe('DiscoverPage', () => {
       expect(screen.getByRole('button', { name: 'Quest log · 1' })).toBeInTheDocument()
     })
 
+    it('keeps focus in the open Quest log after a removal: on the next row, the one before the last, then the sheet', async () => {
+      const archive = (id: string) => () => {
+        server.questLogDinners.dinners = server.questLogDinners.dinners.filter((dinner) => dinner !== byId[id])
+        return jsonResponse(200, { ...byId[id]!, status: 'archived' })
+      }
+      const byId: Record<string, DinnerBody> = { q1: PAD_THAI, q2: GUMBO, q3: RISOTTO }
+      const server = stubQuestLog([PAD_THAI, GUMBO, RISOTTO], {
+        'DELETE /api/v1/dinners/q1': archive('q1'),
+        'DELETE /api/v1/dinners/q2': archive('q2'),
+        'DELETE /api/v1/dinners/q3': archive('q3'),
+      })
+      await renderPage()
+      const sheet = await openSheet(3)
+
+      async function removeAndExpectFocus(name: string, expected: () => HTMLElement) {
+        within(sheet).getByRole('button', { name: `Remove ${name}` }).focus()
+        fireEvent.click(within(sheet).getByRole('button', { name: `Remove ${name}` }))
+        fireEvent.click(within(screen.getByRole('dialog', { name: `Remove ${name}?` })).getByRole('button', { name: 'Remove' }))
+        await waitFor(() => expect(screen.queryByRole('dialog', { name: `Remove ${name}?` })).not.toBeInTheDocument())
+        expect(expected()).toHaveFocus()
+        expect(sheet).toContainElement(document.activeElement as HTMLElement)
+      }
+
+      // A middle row: focus goes to the row now in its place.
+      await removeAndExpectFocus('Shrimp gumbo', () => within(sheet).getByRole('button', { name: 'Remove Mushroom risotto' }))
+      // The last row: focus goes to the row before it.
+      await removeAndExpectFocus('Mushroom risotto', () => within(sheet).getByRole('button', { name: 'Remove Pad thai' }))
+      // The only row: focus goes to the sheet itself.
+      await removeAndExpectFocus('Pad thai', () => sheet)
+      expect(within(sheet).getByText('Your Quest log is empty — swipe right on a side quest to add one.')).toBeInTheDocument()
+
+      // From there Escape still reaches the Quest log, and closes it.
+      fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+
+    it('keeps the confirmation open while a removal is under way: Keep it, Escape and the scrim do nothing', async () => {
+      const archive = deferred()
+      const server = stubQuestLog([PAD_THAI, GUMBO], { 'DELETE /api/v1/dinners/q1': () => archive.promise })
+      await renderPage()
+      const sheet = await openSheet(2)
+
+      fireEvent.click(within(sheet).getByRole('button', { name: 'Remove Pad thai' }))
+      const confirm = screen.getByRole('dialog', { name: 'Remove Pad thai?' })
+      fireEvent.click(within(confirm).getByRole('button', { name: 'Remove' }))
+      expect(await within(confirm).findByRole('button', { name: 'Removing…' })).toBeDisabled()
+      const keepIt = within(confirm).getByRole('button', { name: 'Keep it' })
+      expect(keepIt).toBeDisabled()
+
+      fireEvent.click(keepIt)
+      fireEvent.keyDown(confirm, { key: 'Escape' })
+      fireEvent.click(confirm.previousElementSibling!)
+      expect(screen.getByRole('dialog', { name: 'Remove Pad thai?' })).toBe(confirm)
+
+      server.questLogDinners.dinners = [GUMBO]
+      await act(async () => archive.resolve(jsonResponse(200, { ...PAD_THAI, status: 'archived' })))
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Remove Pad thai?' })).not.toBeInTheDocument())
+      expect(names(sheet)).toEqual(['Shrimp gumbo'])
+    })
+
     it('keeps a dinner whose removal the server refuses, saying why', async () => {
       const server = stubQuestLog([PAD_THAI, GUMBO], { 'DELETE /api/v1/dinners/q1': () => errorResponse(500, 'internal') })
       await renderPage()

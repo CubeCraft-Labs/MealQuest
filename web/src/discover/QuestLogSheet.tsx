@@ -1,5 +1,5 @@
 import { Trash2 } from 'lucide-react'
-import { useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { Confirm } from '../settings/LeaveGuard.tsx'
 import { Icon } from '../ui/Icon.tsx'
@@ -37,6 +37,25 @@ export function QuestLogSheet({ open, dinners, onClose }: QuestLogSheetProps) {
   const remove = useRemoveFromQuestLog()
   // The dinner whose removal is being confirmed.
   const [removing, setRemoving] = useState<QuestLogDinner | null>(null)
+  // The dinner just removed and its place in the list, until focus has
+  // moved on from it.
+  const removed = useRef<{ id: string; index: number } | null>(null)
+  const removeButtons = useRef(new Map<string, HTMLButtonElement>())
+  const sheetRef = useRef<HTMLDivElement>(null)
+
+  // Once a removal's confirmation has closed and the dinner has left the list,
+  // focus goes to the remove button of the dinner now in its place, or of the
+  // one before it when it was the last, or to the Quest log sheet itself when
+  // none is left. Otherwise it would be left on the removed dinner's button,
+  // which the confirmation hands it back to, and which is then gone.
+  useEffect(() => {
+    const done = removed.current
+    if (removing !== null || done === null || dinners.some((d) => d.id === done.id)) return
+    removed.current = null
+    const next = dinners[Math.min(done.index, dinners.length - 1)]
+    if (next) removeButtons.current.get(next.id)!.focus()
+    else sheetRef.current!.closest<HTMLElement>('[role="dialog"]')!.focus()
+  }, [removing, dinners])
 
   function cancelRemove() {
     remove.reset()
@@ -46,7 +65,7 @@ export function QuestLogSheet({ open, dinners, onClose }: QuestLogSheetProps) {
   return (
     <>
       <Sheet open={open} onClose={onClose} aria-labelledby={titleId}>
-        <div className={styles.sheet}>
+        <div ref={sheetRef} className={styles.sheet}>
           <h2 id={titleId} className={styles.title}>
             Quest log
           </h2>
@@ -67,7 +86,15 @@ export function QuestLogSheet({ open, dinners, onClose }: QuestLogSheetProps) {
                     meta={details(dinner)}
                     onClick={() => navigate(`/dinner/${encodeURIComponent(dinner.id)}`)}
                     trailing={
-                      <IconButton label={`Remove ${dinner.name}`} tone="neutral" onClick={() => setRemoving(dinner)}>
+                      <IconButton
+                        ref={(button) => {
+                          if (button) removeButtons.current.set(dinner.id, button)
+                          else removeButtons.current.delete(dinner.id)
+                        }}
+                        label={`Remove ${dinner.name}`}
+                        tone="neutral"
+                        onClick={() => setRemoving(dinner)}
+                      >
                         <Icon icon={Trash2} />
                       </IconButton>
                     }
@@ -84,9 +111,18 @@ export function QuestLogSheet({ open, dinners, onClose }: QuestLogSheetProps) {
         confirmLabel={remove.isPending ? 'Removing…' : 'Remove'}
         cancelLabel="Keep it"
         busy={remove.isPending}
+        // Once the removal is sent, it stands: the confirmation stays until it settles.
+        dismissible={!remove.isPending}
         error={remove.isError ? `Couldn't remove it. ${remove.error.message}` : null}
         onCancel={cancelRemove}
-        onConfirm={() => remove.mutate(removing!, { onSuccess: () => setRemoving(null) })}
+        onConfirm={() =>
+          remove.mutate(removing!, {
+            onSuccess: (_data, dinner) => {
+              removed.current = { id: dinner.id, index: dinners.findIndex((d) => d.id === dinner.id) }
+              setRemoving(null)
+            },
+          })
+        }
       >
         It leaves your Quest log for good.
       </Confirm>

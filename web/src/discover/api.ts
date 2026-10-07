@@ -146,6 +146,14 @@ type Decided = { taken: boolean; adding: symbol | null; reads: DeckReads }
 // flight: gone is whether the latest left the Side quest out.
 type DeckReads = { gone: boolean; stop: () => void }
 
+// stillPending is whether a failed decision's error shows its Side quest
+// still pending: an API error answer refusing the request itself. A 404 or
+// 409 says it is gone or decided already, a 5xx answer may have come after
+// the decision was saved, and a failure without an answer may have too.
+function stillPending(error: Error): boolean {
+  return error instanceof ApiError && error.status >= 400 && error.status < 500 && error.status !== 404 && error.status !== 409
+}
+
 // useDecide records Try it (POST /api/v1/suggestions/{id}/accept) or Pass
 // (POST /api/v1/suggestions/{id}/decline) on the Side quest the household
 // decided on, whether or not a read of the deck has since taken it away.
@@ -154,14 +162,15 @@ type DeckReads = { gone: boolean; stop: () => void }
 //
 // The decision is applied at once: the Side quest leaves the deck and, on
 // Try it, its dinner joins the Quest log unless it is there already. A
-// refused decision puts the Side quest back on top of the deck if it took
-// it off and no read of the deck since has left it out, takes out of the
-// Quest log only the entry it added, and reads the Quest log again, since
-// the decision may have been saved all the same. A failure without an
-// answer from the server, which may have saved it, reads the deck again
-// too. A saved one reads the Quest log again, and the deck too once fewer
-// than REFILL_BELOW Side quests are left in it or a read of the deck
-// started before the decision was saved.
+// failed decision takes out of the Quest log only the entry it added and
+// reads the Quest log again, since the decision may have been saved all the
+// same. One the server refused with the Side quest still pending (see
+// stillPending) puts it back on top of the deck if it took it off and no
+// read of the deck since has left it out; any other failure reads the deck
+// again instead, leaving the Side quest off it until that read answers. A
+// saved one reads the Quest log again, and the deck too once fewer than
+// REFILL_BELOW Side quests are left in it or a read of the deck started
+// before the decision was saved.
 export function useDecide() {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
@@ -206,10 +215,8 @@ export function useDecide() {
     },
     onError: (error, { quest }, context) => {
       const { taken, adding, reads } = context!
-      if (taken && !reads.gone) queryClient.setQueryData<SideQuest[]>(DECK_KEY, (deck) => deck && [quest, ...deck.filter((q) => q.id !== quest.id)])
-      // An API error answer is the server refusing the decision; anything
-      // else may have come after it saved it.
-      if (!(error instanceof ApiError)) void queryClient.invalidateQueries({ queryKey: DECK_KEY })
+      if (!stillPending(error)) void queryClient.invalidateQueries({ queryKey: DECK_KEY })
+      else if (taken && !reads.gone) queryClient.setQueryData<SideQuest[]>(DECK_KEY, (deck) => deck && [quest, ...deck.filter((q) => q.id !== quest.id)])
       if (adding === null) return
       // A read of the Quest log that landed meanwhile has replaced the entry.
       queryClient.setQueryData<QuestLogDinner[]>(QUEST_LOG_KEY, (dinners) => dinners?.filter((d) => d.adding !== adding))

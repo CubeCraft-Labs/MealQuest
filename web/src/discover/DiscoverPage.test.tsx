@@ -588,10 +588,12 @@ describe('DiscoverPage', () => {
       await screen.findByText('Quest log · 7')
       expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
 
-      accept.resolve(errorResponse(500, 'internal'))
+      // The server refuses the request itself: the Side quest is still pending.
+      accept.resolve(errorResponse(400, 'invalid_request'))
       const alert = await screen.findByRole('alert')
       expect(alert).toHaveTextContent("Couldn't save that choice.")
       expect(topCard()).toHaveAccessibleName('Korean beef bowls')
+      expect(deckReads(server.fetchMock)).toBe(1)
       expect(screen.getAllByRole('article', { hidden: true }).map((card) => card.querySelector('h2')!.textContent)).toEqual([
         'Korean beef bowls',
         'Crock pot chicken tikka masala',
@@ -767,6 +769,56 @@ describe('DiscoverPage', () => {
       expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument()
       // The decision may have been saved: the deck is read again.
       await waitFor(() => expect(deckReads(server.fetchMock)).toBe(reads + 1))
+      expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument()
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+    })
+
+    it('keeps a card off the deck when another session already decided it (409), and reads the deck again', async () => {
+      const accept = deferred()
+      let read: ReturnType<typeof deferred> | null = null
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], {
+        'POST /api/v1/suggestions/s1/accept': () => accept.promise,
+        [`GET ${DECK}`]: () => read?.promise ?? jsonResponse(200, { suggestions: server.deck }),
+      })
+      await renderPage()
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Try it' }))
+      await waitFor(() => expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/accept']))
+
+      // Another session passed on it first; no read of the deck lands
+      // during the decision.
+      read = deferred()
+      const pending = read
+      server.deck = [TIKKA, ORZO, PAELLA]
+      await act(async () => accept.resolve(errorResponse(409, 'suggestion_decided')))
+      await screen.findByRole('alert')
+      expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument()
+      await waitFor(() => expect(deckReads(server.fetchMock)).toBe(2))
+      expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument()
+
+      await act(async () => pending.resolve(jsonResponse(200, { suggestions: server.deck })))
+      expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument()
+      expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
+    })
+
+    it('reads the deck again after a 500 to a decision, rather than putting the card back', async () => {
+      const decline = deferred()
+      const server = stubServer([BOWLS, TIKKA, ORZO, PAELLA], {
+        'POST /api/v1/suggestions/s1/decline': () => decline.promise,
+      })
+      await renderPage()
+      await screen.findByRole('article', { name: 'Korean beef bowls' })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Pass' }))
+      await waitFor(() => expect(sent(server.fetchMock)).toEqual(['POST /api/v1/suggestions/s1/decline']))
+
+      // The decision was saved, and the answer to it is a 500 all the same.
+      server.deck = [TIKKA, ORZO, PAELLA]
+      await act(async () => decline.resolve(errorResponse(500, 'internal')))
+      await screen.findByRole('alert')
+      expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument()
+      await waitFor(() => expect(deckReads(server.fetchMock)).toBe(2))
       expect(screen.queryByRole('article', { name: 'Korean beef bowls' })).not.toBeInTheDocument()
       expect(topCard()).toHaveAccessibleName('Crock pot chicken tikka masala')
     })

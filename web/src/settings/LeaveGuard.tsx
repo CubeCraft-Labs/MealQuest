@@ -59,12 +59,14 @@ export function Confirm({
 }: ConfirmProps) {
   const titleId = useId()
   const sheetRef = useRef<HTMLDivElement>(null)
-  // A focused button that becomes disabled loses focus to the page, outside
-  // the dialog; the dialog takes it instead.
+  // A focused button that becomes disabled either keeps focus while disabled or
+  // loses it to the page, depending on the browser; the dialog takes it instead.
   useLayoutEffect(() => {
     const dialog = sheetRef.current?.closest<HTMLElement>('[role="dialog"]')
+    if (!dialog) return
     const active = document.activeElement
-    if (dialog && active instanceof HTMLElement && active.matches(':disabled') && dialog.contains(active)) dialog.focus()
+    const lost = active === null || active === document.body || (dialog.contains(active) && active.matches(':disabled'))
+    if (lost) dialog.focus()
   }, [busy, dismissible])
   function dismiss() {
     if (dismissible) onCancel()

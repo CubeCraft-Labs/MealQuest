@@ -1,7 +1,7 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider, useParams } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi, type Mock } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
 import { stubAnimate, type FakeAnimation } from '../test/animate.ts'
@@ -685,7 +685,22 @@ describe('DiscoverPage', () => {
       expect(sent(server.fetchMock)).toEqual(['DELETE /api/v1/dinners/q1'])
     })
 
-    it('keeps focus in the confirmation, off its disabled buttons, while a removal is under way', async () => {
+    it.each([
+      ['keeps a disabled button focused', false],
+      ['moves focus off a disabled button to the page', true],
+    ])('keeps focus in the confirmation, off its disabled buttons, while a removal is under way when the browser %s', async (_, fixup) => {
+      // Some browsers move focus from a control to the page as it is disabled.
+      const setAttribute = Element.prototype.setAttribute
+      if (fixup) {
+        vi.spyOn(Element.prototype, 'setAttribute').mockImplementation(function (this: Element, name, value) {
+          // jsdom ignores blur() on a disabled control, so focus leaves just before.
+          if (name === 'disabled' && this === document.activeElement && this instanceof HTMLElement) this.blur()
+          setAttribute.call(this, name, value)
+        })
+      }
+      onTestFinished(() => {
+        vi.restoreAllMocks()
+      })
       const archive = deferred()
       const server = stubQuestLog([PAD_THAI, GUMBO], { 'DELETE /api/v1/dinners/q1': () => archive.promise })
       await renderPage()

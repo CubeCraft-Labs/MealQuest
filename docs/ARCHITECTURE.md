@@ -179,12 +179,12 @@ automatic** (D-021).
   response holds the key. `Service.HarnessConfig` reads the settings for
   each skill run, so a saved change applies to the next run.
 - Dinners (`dinners.Service`). `POST /api/v1/dinners` adds a Regular from
-  exactly one of `{name}` or `{recipe_url}` (an https:// link, kept in
-  `recipe_url` for grounding) with status and origin `regular` and
-  grounding_status `pending`, answering 201 with the dinner. A link's
-  dinner is named from its last path segment (separators become spaces,
-  an extension and all-digit words are dropped: `…/12345/beef-stew/` is
-  "Beef stew"); a link that names nothing is 400 — add it by name. A name
+  `{name}` or `{name, recipe_url}` (an https:// link, kept in
+  `recipe_url` for grounding and never returned in a dinner response, as
+  it may carry a personal token) with status and origin `regular` and
+  grounding_status `pending`, answering 201 with the dinner. The name is
+  always the household's: no part of a link is ever used as a dinner's
+  name, and a link without a name is 400. A name
   is trimmed, at most 120 characters and must keep a word after
   `harness.Normalize`, which sets `normalized_name`. A name
   `harness.Similar` to an unarchived dinner's, or a link one already has

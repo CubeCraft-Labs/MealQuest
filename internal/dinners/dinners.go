@@ -16,7 +16,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"unicode"
 	"unicode/utf8"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
@@ -55,7 +54,9 @@ var listable = []string{StatusRegular, StatusQuestLog}
 // ErrNotFound is returned for an unknown dinner id.
 var ErrNotFound = errors.New("dinner not found")
 
-// Dinner is a dinner as the API shows it.
+// Dinner is a dinner as the API shows it. It has no recipe_url: a pasted
+// link may carry a personal token, so it stays in the database for
+// grounding and never leaves the server.
 type Dinner struct {
 	ID              string  `json:"id"`
 	Name            string  `json:"name"`
@@ -67,7 +68,6 @@ type Dinner struct {
 	Cuisine         *string `json:"cuisine"`
 	IsFavorite      bool    `json:"is_favorite"`
 	RecipeID        *string `json:"recipe_id"`
-	RecipeURL       *string `json:"recipe_url"`
 	PhotoURL        *string `json:"photo_url"`
 	GroundingStatus string  `json:"grounding_status"`
 	// GroundingError is why grounding failed, one of the Reason codes;
@@ -78,7 +78,10 @@ type Dinner struct {
 	UpdatedAt      string  `json:"updated_at"`
 }
 
-// NewRegular is a Regular to add: exactly one of Name and RecipeURL.
+// NewRegular is a Regular to add: its Name, which the household always
+// gives, and optionally the RecipeURL to ground it in. The name is never
+// taken from the link: a pasted link may carry a personal token anywhere in
+// it, and the name is shown in every dinner response.
 type NewRegular struct {
 	Name      *string
 	RecipeURL *string
@@ -170,10 +173,9 @@ type Created struct {
 	GroundingJobID *string `json:"grounding_job_id"`
 }
 
-// CreateRegular adds a Regular named by r.Name, or by the last path segment
-// of r.RecipeURL (whose recipe grounding later replaces), with status and
-// origin regular and grounding_status pending, recording updatedBy, and
-// enqueues the KindGroundDinner job that grounds it. It returns without
+// CreateRegular adds a Regular named r.Name, keeping r.RecipeURL for
+// grounding when given, with status and origin regular and grounding_status
+// pending, recording updatedBy, and enqueues the KindGroundDinner job that grounds it. It returns without
 // waiting for the job. A name repeating an unarchived dinner is a
 // *DuplicateError. When the job cannot be enqueued, the stored dinner is
 // returned with grounding_status failed (ReasonGroundingError) and no job
@@ -223,34 +225,24 @@ func (s *Service) createRegular(ctx context.Context, r NewRegular, updatedBy str
 	if updatedBy == "" {
 		return db.Dinner{}, errors.New("dinners: create: no member to record as updated_by")
 	}
-	var name string
+	if r.Name == nil {
+		return db.Dinner{}, invalid("name", "give the dinner's name, with or without a recipe_url")
+	}
+	name, err := checkName(*r.Name)
+	if err != nil {
+		return db.Dinner{}, err
+	}
 	var recipeURL sql.NullString
-	switch {
-	case r.Name != nil && r.RecipeURL != nil:
-		return db.Dinner{}, invalid("name", "give a name or a recipe_url, not both")
-	case r.Name != nil:
-		n, err := checkName(*r.Name)
-		if err != nil {
-			return db.Dinner{}, err
-		}
-		name = n
-	case r.RecipeURL != nil:
+	if r.RecipeURL != nil {
 		u, err := checkRecipeURL(*r.RecipeURL)
 		if err != nil {
 			return db.Dinner{}, err
 		}
-		n, ok := nameFromURL(u)
-		if !ok {
-			return db.Dinner{}, invalid("recipe_url", "the link does not name a dinner; add it by name instead")
-		}
-		name = n
 		recipeURL = sql.NullString{String: u.String(), Valid: true}
-	default:
-		return db.Dinner{}, invalid("name", "give a name or a recipe_url")
 	}
 
 	var row db.Dinner
-	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+	err = s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		q := db.New(tx)
 		if err := checkUnique(ctx, q, "", name, recipeURL); err != nil {
 			return err
@@ -495,36 +487,6 @@ func checkRecipeURL(raw string) (*url.URL, error) {
 	return u, nil
 }
 
-// nameFromURL names a dinner from the last path segment of u: separators
-// become spaces, a file extension and words of only digits are dropped and
-// the first letter is capitalized, so
-// https://example.com/recipes/12345/chicken-tikka-masala/ is
-// "Chicken tikka masala". ok is false when no usable name is left.
-func nameFromURL(u *url.URL) (name string, ok bool) {
-	segments := strings.FieldsFunc(u.Path, func(r rune) bool { return r == '/' })
-	if len(segments) == 0 {
-		return "", false
-	}
-	slug := segments[len(segments)-1]
-	if i := strings.LastIndexByte(slug, '.'); i > 0 {
-		slug = slug[:i]
-	}
-	var words []string
-	for _, w := range strings.FieldsFunc(slug, func(r rune) bool { return r == '-' || r == '_' || r == '+' || unicode.IsSpace(r) }) {
-		if strings.IndexFunc(w, func(r rune) bool { return !unicode.IsDigit(r) }) >= 0 {
-			words = append(words, strings.ToLower(w))
-		}
-	}
-	name = strings.Join(words, " ")
-	if r, size := utf8.DecodeRuneInString(name); r != utf8.RuneError {
-		name = string(unicode.ToUpper(r)) + name[size:]
-	}
-	if _, err := checkName(name); err != nil {
-		return "", false
-	}
-	return name, true
-}
-
 // checkUnique returns a *DuplicateError when name is harness.Similar to an
 // unarchived dinner other than self, or recipeURL is one's recipe link: the
 // source_url of the recipe it is grounded in, else the recipe_url still
@@ -565,7 +527,6 @@ func fromRow(r db.Dinner) Dinner {
 		Cuisine:         nullString(r.Cuisine),
 		IsFavorite:      r.IsFavorite == 1,
 		RecipeID:        nullString(r.RecipeID),
-		RecipeURL:       nullString(r.RecipeUrl),
 		GroundingStatus: r.GroundingStatus,
 		GroundingError:  nullString(r.GroundingError),
 		UpdatedBy:       nullString(r.UpdatedBy),

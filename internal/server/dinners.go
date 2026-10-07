@@ -19,7 +19,8 @@ const maxDinnerBody = 16 << 10
 // manual recipe of dinners.MaxManualLines lines of each kind.
 const maxGroundBody = 512 << 10
 
-// dinnerCreate is the POST /dinners body: a name or a recipe_url.
+// dinnerCreate is the POST /dinners body: a name, with or without a
+// recipe_url.
 type dinnerCreate struct {
 	Name      *string `json:"name"`
 	RecipeURL *string `json:"recipe_url"`

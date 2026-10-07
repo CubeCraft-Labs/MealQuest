@@ -49,12 +49,14 @@ export const methodLabels: Record<Method, string> = {
 
 const difficultyLabels: Record<Difficulty, string> = { easy: 'Easy', medium: 'Medium', hard: 'Hard' }
 
-// A pasted link is added as a recipe link; anything else is a dinner name.
+// A pasted link is added as a recipe link under a name the household gives;
+// anything else is a dinner name.
 const LINK = /^https?:\/\//i
 
 // Settings · Regular dinners: the household's Regulars, each with its photo,
 // method and minutes, favorite heart and whether its recipe was found. The
-// field at the top adds one by name or pasted recipe link; tapping one
+// field at the top adds one by name, or by pasted recipe link with a name
+// the household gives it; tapping one
 // edits or removes it, or fixes its recipe when none was found.
 export function RegularsSettingsPage() {
   const navigate = useNavigate()
@@ -85,19 +87,24 @@ function RegularsManager() {
   const favorite = useToggleFavorite()
   const { refusals, track } = useRefusals()
   const [draft, setDraft] = useState('')
+  const [linkName, setLinkName] = useState('')
   const [open, setOpen] = useState<Open>(null)
   const headingId = useId()
+  const linkHintId = useId()
+  const isLink = LINK.test(draft.trim())
+  const ready = draft.trim() !== '' && (!isLink || linkName.trim() !== '')
   const list = regulars.data ?? []
   // A Regular removed meanwhile closes its sheet.
   const opened = open && list.find((regular) => regular.id === open.id && !regular.pending)
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (!ready) return
     const text = draft.trim()
-    if (text === '') return
-    const body: NewRegular = LINK.test(text) ? { recipe_url: text } : { name: text }
-    track(`add:${text.toLowerCase()}`, `add ${text}`, add.mutateAsync(body))
+    const body: NewRegular = isLink ? { name: linkName.trim(), recipe_url: text } : { name: text }
+    track(`add:${body.name.toLowerCase()}`, `add ${body.name}`, add.mutateAsync(body))
     setDraft('')
+    setLinkName('')
   }
 
   function onRemove(regular: Regular) {
@@ -111,20 +118,38 @@ function RegularsManager() {
 
   return (
     <>
-      <form className={styles.add} onSubmit={onSubmit}>
-        <TextInput
-          label="Add a Regular"
-          labelHidden
-          className={styles.addInput}
-          placeholder="Dinner name or recipe link"
-          autoComplete="off"
-          enterKeyHint="done"
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-        />
-        <IconButton type="submit" label="Add Regular" tone="accent" disabled={draft.trim() === ''}>
-          <Icon icon={Plus} size="nav" />
-        </IconButton>
+      <form className={styles.addForm} onSubmit={onSubmit}>
+        <div className={styles.add}>
+          <TextInput
+            label="Add a Regular"
+            labelHidden
+            className={styles.addInput}
+            placeholder="Dinner name or recipe link"
+            autoComplete="off"
+            enterKeyHint="done"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+          />
+          <IconButton type="submit" label="Add Regular" tone="accent" disabled={!ready}>
+            <Icon icon={Plus} size="nav" />
+          </IconButton>
+        </div>
+        {isLink && (
+          <>
+            <TextInput
+              label="Dinner name"
+              placeholder="What do you call this dinner?"
+              autoComplete="off"
+              enterKeyHint="done"
+              aria-describedby={linkHintId}
+              value={linkName}
+              onChange={(event) => setLinkName(event.target.value)}
+            />
+            <p id={linkHintId} className={styles.hint}>
+              Name it yourself: a link can carry private details, so it never names a dinner.
+            </p>
+          </>
+        )}
       </form>
       {refusals.map((refusal) => (
         <p key={refusal.key} role="alert" className={styles.problem}>

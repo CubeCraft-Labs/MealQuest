@@ -508,7 +508,8 @@ docker compose -f deploy/compose.yaml build
    point before the restart (see "Rollback to a previous SHA"). Check that
    Litestream is replicating and that its replica restores to the current
    data, with the commands from "Database — Litestream", "Restore the
-   database" and "Count check" (`/tmp/mqcount.py`):
+   database" and "Count check". First write `/tmp/mqcount.py` with the
+   `cat > /tmp/mqcount.py` command in "Count check", then:
 
 ```sh
 D=/var/lib/docker/volumes/mealquest-data/_data
@@ -567,8 +568,17 @@ the restart; the service fails fast at boot naming any missing required variable
 
 ### Rollback to a previous SHA
 
+First check whether the rollback crosses a migration: compare
+`migrations/` between the two SHAs.
+
 ```sh
 cd /home/overseer/mealquest
+git diff --stat <previous SHA> HEAD -- migrations/   # empty: no migration crossed
+```
+
+**No migration crossed** — rebuild and restart the older SHA:
+
+```sh
 git checkout --detach <previous SHA>
 docker compose -f deploy/compose.yaml build
 sudo systemctl restart mealquest
@@ -576,12 +586,21 @@ docker compose -f deploy/compose.yaml ps
 curl -fsS http://10.60.1.14:8090/health
 ```
 
-A rollback across a release that added a migration fails at start-up
-(the older binary refuses the newer schema). In that case restore the
-database to the pre-deploy restore point recorded in step 2 of "Deploy" —
-"Restore the database" with `-timestamp <pre-deploy restore point>` — then
-start the older SHA. Changes made since that point are lost; say so to the
-household.
+**A migration crossed** — the older binary refuses the newer schema, so the
+database is restored first and the older SHA started after. Changes made
+since the pre-deploy restore point are lost; say so to the household.
+
+1. Check out and build the older SHA. Nothing restarts yet.
+
+```sh
+git checkout --detach <previous SHA>
+docker compose -f deploy/compose.yaml build
+```
+
+2. Run "Restore the database" steps 1–4, adding
+   `-timestamp <pre-deploy restore point>` (recorded in step 2 of
+   "Deploy") to the `restore` command. Its step 5 then starts the older
+   SHA and checks health.
 
 ## Backups
 
@@ -712,7 +731,10 @@ digits; Litestream's own `_litestream*` tables are excluded) and
 `PRAGMA integrity_check`. Run it on a **copy** of the database, never on the
 live file; copy `-wal`/`-shm` along with it when the app is running.
 
-```python
+`/tmp` is temporary, so write the script before every check:
+
+```sh
+cat > /tmp/mqcount.py <<'EOF'
 import sqlite3, sys, hashlib
 c = sqlite3.connect(sys.argv[1])
 tabs = [r[0] for r in c.execute("select name from sqlite_master where type=\"table\" and name not like \"sqlite_%\" and name not like \"_litestream%\" order by name")]
@@ -724,7 +746,10 @@ for t in tabs:
         h.update(repr(row).encode())
 print("tables", len(tabs), "content-sha256", h.hexdigest()[:16])
 print("integrity", c.execute("pragma integrity_check").fetchone()[0])
+EOF
 ```
+
+Then copy the database and run it:
 
 ```sh
 rm -rf /tmp/mqcheck && mkdir /tmp/mqcheck

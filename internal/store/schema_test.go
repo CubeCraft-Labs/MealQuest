@@ -110,6 +110,7 @@ func testRow(table string, i int) map[string]any {
 	case "suggestions":
 		r["dinner_id"] = rowID("dinners", 0)
 		r["batch_id"] = rowID("suggestion_batches", 0)
+		r["name"] = fmt.Sprintf("Side quest %d", i)
 		r["reason"] = "Like your chili."
 		r["cited_regular_ids"] = "[]"
 		r["status"] = "pending"

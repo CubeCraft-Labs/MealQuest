@@ -17,6 +17,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/suggest"
 )
 
 // reservedPrefixes are owned by the API router and are never answered with the
@@ -38,12 +39,14 @@ type RouteMounter interface {
 // dinnerSvc serves GET and POST /api/v1/dinners, PATCH and DELETE
 // /api/v1/dinners/{id}, POST /api/v1/dinners/{id}/favorite, GET
 // /api/v1/dinners/{id}/recipe-candidates and POST /api/v1/dinners/{id}/ground;
-// runner serves
+// suggestSvc serves POST /api/v1/suggestions/batches, GET
+// /api/v1/suggestions/deck and POST /api/v1/suggestions/{id}/accept and
+// /decline; runner serves
 // POST /api/v1/jobs and GET /api/v1/jobs/{id}; photos serves
 // GET /media/photos/{id}-{size}.jpg; assets is the web build
 // served for every other GET. /health, /auth and the web build are public.
 // Requests to /api/v1 other than GET also need the session's CSRF token in CSRFHeader.
-func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, settings *household.SettingsService, search *recipes.SearchSettingsService, ai *aisettings.Service, dinnerSvc *dinners.Service, runner *jobs.Runner, photos PhotoFiles, assets fs.FS) (http.Handler, error) {
+func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, settings *household.SettingsService, search *recipes.SearchSettingsService, ai *aisettings.Service, dinnerSvc *dinners.Service, suggestSvc *suggest.Service, runner *jobs.Runner, photos PhotoFiles, assets fs.FS) (http.Handler, error) {
 	if settings == nil {
 		return nil, errors.New("server: nil household settings service")
 	}
@@ -55,6 +58,9 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	}
 	if dinnerSvc == nil {
 		return nil, errors.New("server: nil dinners service")
+	}
+	if suggestSvc == nil {
+		return nil, errors.New("server: nil suggestions service")
 	}
 	if runner == nil {
 		return nil, errors.New("server: nil job runner")
@@ -106,6 +112,10 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Post("/dinners/{id}/favorite", postDinnerFavorite(logger, dinnerSvc))
 	apiV1.Get("/dinners/{id}/recipe-candidates", getDinnerCandidates(logger, dinnerSvc))
 	apiV1.Post("/dinners/{id}/ground", postDinnerGround(logger, dinnerSvc))
+	apiV1.Post("/suggestions/batches", postSuggestionBatch(logger, suggestSvc))
+	apiV1.Get("/suggestions/deck", getSuggestionDeck(logger, suggestSvc))
+	apiV1.Post("/suggestions/{id}/accept", postSuggestionDecision(logger, suggestSvc, true))
+	apiV1.Post("/suggestions/{id}/decline", postSuggestionDecision(logger, suggestSvc, false))
 	apiV1.Post("/jobs", postJob(logger, runner))
 	apiV1.Get("/jobs/{id}", getJob(logger, runner))
 	media.Get("/photos/{name}", getPhoto(logger, photos))

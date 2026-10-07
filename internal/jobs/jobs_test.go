@@ -187,6 +187,46 @@ func TestJobSucceeds(t *testing.T) {
 	}
 }
 
+func TestEnqueueTxStoresJobOnlyWithItsTransaction(t *testing.T) {
+	t.Parallel()
+	st := migratedStore(t)
+	r := newRunner(t, st, 1)
+	count := register(t, r, "count", func(_ context.Context, p countPayload, _ func(countResult) error) (countResult, error) {
+		return countResult{Done: p.Steps}, nil
+	})
+	start(t, r)
+	ctx := context.Background()
+
+	var rolledBack string
+	refused := errors.New("refused")
+	if err := st.WithTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		rolledBack, err = count.EnqueueTx(ctx, tx, countPayload{Steps: 1})
+		if err != nil {
+			return err
+		}
+		return refused
+	}); !errors.Is(err, refused) {
+		t.Fatalf("WithTx = %v, want the refusal", err)
+	}
+	if _, err := r.Get(ctx, rolledBack); !errors.Is(err, ErrNotFound) {
+		t.Errorf("job of a rolled-back transaction: Get = %v, want ErrNotFound", err)
+	}
+
+	var id string
+	if err := st.WithTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		id, err = count.EnqueueTx(ctx, tx, countPayload{Steps: 2})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	count.Wake()
+	if job := waitFor(t, r, id, finished); job.Status != StatusSucceeded || string(job.Result) != `{"done":2}` {
+		t.Errorf("job = %+v (result %s), want succeeded with {\"done\":2}", job, job.Result)
+	}
+}
+
 func TestJobFailsWithFailureCode(t *testing.T) {
 	t.Parallel()
 	st := migratedStore(t)
@@ -566,6 +606,98 @@ func TestClaimErrorIsRetried(t *testing.T) {
 	}
 	if strings.Contains(out, sentinelSecret) {
 		t.Fatalf("claim error text logged: %s", out)
+	}
+}
+
+func TestFinalWriteErrorIsRetried(t *testing.T) {
+	st := migratedStore(t)
+	logs := &logBuffer{}
+	r := newRunnerLogging(t, st, 1, logs)
+	k := register(t, r, "count", func(ctx context.Context, p countPayload, publish func(countResult) error) (countResult, error) {
+		return countResult{Done: p.Steps}, nil
+	})
+	if _, err := st.Writer.ExecContext(t.Context(), `CREATE TRIGGER refuse_end BEFORE UPDATE OF status ON jobs WHEN NEW.status IN ('succeeded', 'failed') BEGIN SELECT RAISE(ABORT, 'end refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+	start(t, r)
+	id := enqueue(t, k, countPayload{Steps: 3})
+
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(logs.String(), "record job success") {
+		if time.Now().After(deadline) {
+			t.Fatal("job success never recorded")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, err := st.Writer.ExecContext(t.Context(), `DROP TRIGGER refuse_end`); err != nil {
+		t.Fatal(err)
+	}
+
+	job := waitFor(t, r, id, finished)
+	if job.Status != StatusSucceeded || string(job.Result) != `{"done":3}` {
+		t.Fatalf("job = %+v (result %s), want succeeded with {\"done\":3}", job, job.Result)
+	}
+	if out := logs.String(); !strings.Contains(out, "record job success failed; retrying") {
+		t.Fatalf("final write error not logged as retried: %s", out)
+	}
+}
+
+func TestBlockedFinalWriteDoesNotHoldShutdown(t *testing.T) {
+	st := migratedStore(t)
+	r := newRunner(t, st, 1)
+	started, finish := make(chan struct{}), make(chan struct{})
+	k := register(t, r, "count", func(ctx context.Context, p countPayload, publish func(countResult) error) (countResult, error) {
+		close(started)
+		<-finish
+		return countResult{Done: p.Steps}, nil
+	})
+	stop := start(t, r)
+	id := enqueue(t, k, countPayload{Steps: 3})
+	<-started
+
+	// Hold the only writer connection, so the job's final write waits for it.
+	conn, err := st.Writer.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waits := st.Writer.Stats().WaitCount
+	close(finish)
+	deadline := time.Now().Add(5 * time.Second)
+	for st.Writer.Stats().WaitCount == waits {
+		if time.Now().After(deadline) {
+			t.Fatal("final write never waited for the writer")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		stop()
+		close(stopped)
+	}()
+	// The final write's attempt ends after 5 seconds; well past that, the
+	// worker is waiting for the writer with no bound.
+	select {
+	case <-stopped:
+	case <-time.After(15 * time.Second):
+		conn.Close()
+		<-stopped
+		t.Fatal("worker waited for a held writer through shutdown")
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if job := waitFor(t, r, id, func(Job) bool { return true }); job.Status != StatusRunning {
+		t.Fatalf("after shutdown job = %+v, want left running", job)
+	}
+	second := newRunner(t, st, 1)
+	register(t, second, "count", func(context.Context, countPayload, func(countResult) error) (countResult, error) {
+		return countResult{}, nil
+	})
+	start(t, second)
+	if job := waitFor(t, second, id, finished); job.Status != StatusFailed || job.Error == nil || *job.Error != CodeInterrupted {
+		t.Errorf("interrupted job = %+v, want failed with %q", job, CodeInterrupted)
 	}
 }
 

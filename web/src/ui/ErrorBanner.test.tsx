@@ -24,6 +24,12 @@ describe('ErrorBanner', () => {
     expect(screen.getByRole('button', { name: 'Rebuild week' })).toBeInTheDocument()
   })
 
+  it('has no button without onRetry', () => {
+    render(<ErrorBanner>That was done already.</ErrorBanner>)
+    expect(screen.getByRole('alert')).toHaveTextContent('That was done already.')
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+  })
+
   it('is a neutral-100 card with grape-700 text', () => {
     render(<ErrorBanner onRetry={() => {}}>Offline</ErrorBanner>)
     expect(declaredStyle(screen.getByRole('alert')).background).toBe('var(--color-neutral-100)')

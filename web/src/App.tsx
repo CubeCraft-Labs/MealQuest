@@ -3,6 +3,7 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { Route, Routes } from 'react-router'
 import { ApiProvider, createQueryClient, type ApiClient } from './api/index.ts'
 import { AuthBootstrap } from './AuthBootstrap.tsx'
+import { DiscoverPage } from './discover/DiscoverPage.tsx'
 import { ONBOARDING_PATH, OnboardingGate } from './onboarding/OnboardingGate.tsx'
 import { OnboardingPage } from './onboarding/OnboardingPage.tsx'
 import { PlaceholderPage } from './pages/PlaceholderPage.tsx'
@@ -35,6 +36,7 @@ export const routes = [
 
 // The screens built so far; every other route shows its placeholder page.
 const screens: Partial<Record<(typeof routes)[number]['path'], ReactNode>> = {
+  '/discover': <DiscoverPage />,
   '/settings': <SettingsPage />,
   '/settings/ai': <AISettingsPage />,
   '/settings/household': <HouseholdSettingsPage />,

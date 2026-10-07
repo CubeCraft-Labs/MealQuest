@@ -1,4 +1,4 @@
-import { useEffect, useId, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, type ReactNode } from 'react'
 import { useBlocker } from 'react-router'
 import { Button } from '../ui/Button.tsx'
 import { Sheet } from '../ui/Sheet.tsx'
@@ -36,6 +36,9 @@ type ConfirmProps = {
   confirmLabel: string
   cancelLabel?: string
   busy?: boolean
+  // When false, the cancel button, Escape and the scrim do nothing, so the
+  // sheet stays until the action settles.
+  dismissible?: boolean
   error?: string | null
   onCancel: () => void
   onConfirm: () => void
@@ -49,14 +52,28 @@ export function Confirm({
   confirmLabel,
   cancelLabel = 'Cancel',
   busy = false,
+  dismissible = true,
   error = null,
   onCancel,
   onConfirm,
 }: ConfirmProps) {
   const titleId = useId()
+  const sheetRef = useRef<HTMLDivElement>(null)
+  // A focused button that becomes disabled either keeps focus while disabled or
+  // loses it to the page, depending on the browser; the dialog takes it instead.
+  useLayoutEffect(() => {
+    const dialog = sheetRef.current?.closest<HTMLElement>('[role="dialog"]')
+    if (!dialog) return
+    const active = document.activeElement
+    const lost = active === null || active === document.body || (dialog.contains(active) && active.matches(':disabled'))
+    if (lost) dialog.focus()
+  }, [busy, dismissible])
+  function dismiss() {
+    if (dismissible) onCancel()
+  }
   return (
-    <Sheet open={open} onClose={onCancel} aria-labelledby={titleId}>
-      <div className={styles.sheet}>
+    <Sheet open={open} onClose={dismiss} aria-labelledby={titleId}>
+      <div ref={sheetRef} className={styles.sheet}>
         <h2 id={titleId} className={styles.title}>
           {title}
         </h2>
@@ -67,7 +84,7 @@ export function Confirm({
           </p>
         )}
         <div className={styles.actions}>
-          <Button variant="outline" onClick={onCancel}>
+          <Button variant="outline" disabled={!dismissible} onClick={onCancel}>
             {cancelLabel}
           </Button>
           <Button disabled={busy} onClick={onConfirm}>

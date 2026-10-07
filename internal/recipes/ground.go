@@ -266,7 +266,7 @@ func (g *Grounder) GroundURL(ctx context.Context, rawURL string) (Grounded, erro
 	}
 	gr, reason, err := g.ground(ctx, rawURL, r)
 	if err != nil {
-		return Grounded{}, fmt.Errorf("recipes: ground %s: %w", rawURL, err)
+		return Grounded{}, fmt.Errorf("recipes: ground pasted link: %w", err)
 	}
 	if reason != nil {
 		return ungroundable(reason)

@@ -200,7 +200,11 @@ func actorOrFail(w http.ResponseWriter, r *http.Request, logger *slog.Logger) (a
 // writeDinnerError maps a dinners.Service error to its API error. A page
 // that cannot ground the dinner is 422 ungroundable; recipe search not set
 // up is 409 not_configured; a search or model failure is 502; grounding by
-// hand that runs past dinners.GroundTimeout is 504 ground_timeout.
+// hand that runs past dinners.GroundTimeout is 504 ground_timeout; grounding
+// an archived dinner is 409 dinner_archived and one changed while grounding
+// 409 ground_conflict. Any other grounding failure, by candidate, link or
+// manual recipe, wraps dinners.ErrGroundFailed and is 500, logged by reason
+// and dinner id only.
 func writeDinnerError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, action string, err error) {
 	var invalid *dinners.ValidationError
 	var dup *dinners.DuplicateError
@@ -220,6 +224,16 @@ func writeDinnerError(w http.ResponseWriter, r *http.Request, logger *slog.Logge
 	case errors.Is(err, recipes.ErrNormalizeFailed):
 		logger.WarnContext(r.Context(), action, "reason", "normalize_recipe failed")
 		writeError(w, r, logger, http.StatusBadGateway, "ai_failed", "the AI provider failed to read the recipe")
+	case errors.Is(err, dinners.ErrGroundFailed):
+		// The error may quote the pasted link, which can carry a personal
+		// token, and dependency errors, so only the reason and dinner are
+		// logged.
+		logger.ErrorContext(r.Context(), action, "reason", "ground_failed", "dinner_id", chi.URLParam(r, "id"))
+		writeError(w, r, logger, http.StatusInternalServerError, "internal", "internal error")
+	case errors.Is(err, dinners.ErrArchived):
+		writeError(w, r, logger, http.StatusConflict, "dinner_archived", "the dinner is archived")
+	case errors.Is(err, dinners.ErrGroundConflict):
+		writeError(w, r, logger, http.StatusConflict, "ground_conflict", "the dinner changed while its recipe was grounding; reload and try again")
 	case errors.Is(err, dinners.ErrGroundTimeout):
 		logger.WarnContext(r.Context(), action, "reason", "ground_timeout")
 		writeError(w, r, logger, http.StatusGatewayTimeout, "ground_timeout", "grounding the recipe took too long; try again")

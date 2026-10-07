@@ -1106,3 +1106,204 @@ func TestGroundTimesOut(t *testing.T) {
 		t.Errorf("grounding_status = %s, want failed as before", row.GroundingStatus)
 	}
 }
+
+// TestFixInFlightWhenDinnerChanges: a link still grounding when its dinner
+// is renamed, archived or grounded some other way writes nothing; the
+// change made meanwhile is kept.
+func TestFixInFlightWhenDinnerChanges(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		change func(t *testing.T, e *env, id string)
+		want   error
+		// kept checks the dinner shows the change, not the link's recipe.
+		kept func(row db.Dinner) bool
+	}{
+		{"renamed", func(t *testing.T, e *env, id string) {
+			if _, err := e.svc.Update(t.Context(), id, dinners.Patch{Name: ptr("Chicken curry")}, member); err != nil {
+				t.Fatal(err)
+			}
+		}, dinners.ErrGroundConflict, func(row db.Dinner) bool {
+			return row.Name == "Chicken curry" && row.GroundingStatus == dinners.GroundingFailed && !row.RecipeID.Valid
+		}},
+		{"renamed to the same normalized name", func(t *testing.T, e *env, id string) {
+			if _, err := e.svc.Update(t.Context(), id, dinners.Patch{Name: ptr("Easy Grandma's stew")}, member); err != nil {
+				t.Fatal(err)
+			}
+		}, dinners.ErrGroundConflict, func(row db.Dinner) bool {
+			return row.Name == "Easy Grandma's stew" && row.GroundingStatus == dinners.GroundingFailed && !row.RecipeID.Valid
+		}},
+		{"archived", func(t *testing.T, e *env, id string) {
+			if _, err := e.svc.Archive(t.Context(), id, member); err != nil {
+				t.Fatal(err)
+			}
+		}, dinners.ErrArchived, func(row db.Dinner) bool {
+			return row.Status == dinners.StatusArchived && row.GroundingStatus == dinners.GroundingFailed && !row.RecipeID.Valid
+		}},
+		{"grounded by hand", func(t *testing.T, e *env, id string) {
+			if _, err := e.svc.Ground(t.Context(), id, dinners.Fix{Manual: &dinners.ManualRecipe{
+				Ingredients: []string{"1 lb beef"}, Minutes: ptr(240), Method: ptr("crockpot"),
+			}}, member); err != nil {
+				t.Fatal(err)
+			}
+		}, dinners.ErrGroundConflict, func(row db.Dinner) bool {
+			return row.GroundingStatus == dinners.GroundingManual && row.Method.String == "crockpot"
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			e := newEnv(t)
+			id := failedDinner(t, e, "Grandma's stew")
+			e.model.QueueGenerate(recipestest.NormalizedReply("oven", 150))
+			e.pages.Gate = make(chan struct{})
+
+			done := make(chan error, 1)
+			go func() {
+				_, err := e.svc.Ground(context.Background(), id, dinners.Fix{RecipeURL: ptr(stew)}, member)
+				done <- err
+			}()
+			e.waitFetched(t, stew)
+			tt.change(t, e, id)
+			close(e.pages.Gate)
+
+			if err := <-done; !errors.Is(err, tt.want) {
+				t.Fatalf("err = %v, want %v", err, tt.want)
+			}
+			if row := e.dinner(t, id); !tt.kept(row) {
+				t.Errorf("dinner = %+v, want the %s change kept and the link's recipe not written", row, tt.name)
+			}
+		})
+	}
+}
+
+// TestFixInFlightKeepsMemberEdits: a method, minutes or difficulty a
+// member sets while a link is grounding is kept; a field they left alone
+// takes the link's recipe, even one already set before grounding began.
+func TestFixInFlightKeepsMemberEdits(t *testing.T) {
+	t.Parallel()
+	// Every field is set before grounding, then one is changed in flight.
+	before := dinners.Patch{Method: ptr("stovetop"), MinutesTotal: ptr(45), Difficulty: ptr("easy")}
+	tests := []struct {
+		name  string
+		edit  dinners.Patch
+		field string
+	}{
+		{"method", dinners.Patch{Method: ptr("grill")}, "method"},
+		{"minutes", dinners.Patch{MinutesTotal: ptr(20)}, "minutes_total"},
+		{"difficulty", dinners.Patch{Difficulty: ptr("medium")}, "difficulty"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			e := newEnv(t)
+			id := failedDinner(t, e, "Grandma's stew")
+			if _, err := e.svc.Update(t.Context(), id, before, member); err != nil {
+				t.Fatal(err)
+			}
+			e.model.QueueGenerate(recipestest.NormalizedReply("oven", 150))
+			e.pages.Gate = make(chan struct{})
+
+			done := make(chan error, 1)
+			go func() {
+				_, err := e.svc.Ground(context.Background(), id, dinners.Fix{RecipeURL: ptr(stew)}, member)
+				done <- err
+			}()
+			e.waitFetched(t, stew)
+			if _, err := e.svc.Update(t.Context(), id, tt.edit, member); err != nil {
+				t.Fatal(err)
+			}
+			close(e.pages.Gate)
+
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			row := e.dinner(t, id)
+			if row.GroundingStatus != dinners.GroundingGrounded || !row.RecipeID.Valid {
+				t.Fatalf("dinner = %+v, want grounded in the link's recipe", row)
+			}
+			var recipe fields
+			if err := e.st.Reader.QueryRowContext(t.Context(),
+				`SELECT method, minutes_total, difficulty FROM recipes WHERE id = ?`, row.RecipeID.String,
+			).Scan(&recipe.method, &recipe.minutes, &recipe.difficulty); err != nil {
+				t.Fatal(err)
+			}
+			old, edited := patchFields(before), patchFields(tt.edit)
+			want := recipe
+			switch tt.field {
+			case "method":
+				want.method = edited.method
+			case "minutes_total":
+				want.minutes = edited.minutes
+			case "difficulty":
+				want.difficulty = edited.difficulty
+			}
+			if recipe.method == old.method || recipe.minutes == old.minutes || recipe.difficulty == old.difficulty {
+				t.Fatalf("recipe %+v shares a value with the dinner before grounding %+v", recipe, old)
+			}
+			got := fields{row.Method.String, row.MinutesTotal.Int64, row.Difficulty.String}
+			if got != want {
+				t.Errorf("method, minutes, difficulty = %+v, want %+v: the %s edit kept, the rest from the recipe", got, want, tt.field)
+			}
+		})
+	}
+}
+
+// fields are a dinner's or recipe's method, minutes_total and difficulty.
+type fields struct {
+	method     string
+	minutes    int64
+	difficulty string
+}
+
+// patchFields returns the fields p sets, zero where it sets none.
+func patchFields(p dinners.Patch) fields {
+	var f fields
+	if p.Method != nil {
+		f.method = *p.Method
+	}
+	if p.MinutesTotal != nil {
+		f.minutes = int64(*p.MinutesTotal)
+	}
+	if p.Difficulty != nil {
+		f.difficulty = *p.Difficulty
+	}
+	return f
+}
+
+// TestFixArchivedDinner: an archived dinner cannot be grounded by hand.
+func TestFixArchivedDinner(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	id := failedDinner(t, e, "Grandma's stew")
+	if _, err := e.svc.Archive(t.Context(), id, member); err != nil {
+		t.Fatal(err)
+	}
+	before := e.dinner(t, id)
+	for _, f := range []dinners.Fix{
+		{RecipeURL: ptr(stew)},
+		{Manual: &dinners.ManualRecipe{Ingredients: []string{"1 lb beef"}, Minutes: ptr(240), Method: ptr("crockpot")}},
+	} {
+		if _, err := e.svc.Ground(t.Context(), id, f, member); !errors.Is(err, dinners.ErrArchived) {
+			t.Errorf("fix %+v: err = %v, want ErrArchived", f, err)
+		}
+	}
+	if got := e.pages.Fetched(); len(got) != 0 {
+		t.Errorf("fetched %q for an archived dinner", got)
+	}
+	if after := e.dinner(t, id); after != before {
+		t.Errorf("archived dinner changed: %+v, was %+v", after, before)
+	}
+}
+
+// waitFetched waits until rawURL has been fetched.
+func (e *env) waitFetched(t *testing.T, rawURL string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !slices.Contains(e.pages.Fetched(), rawURL) {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s never fetched", rawURL)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}

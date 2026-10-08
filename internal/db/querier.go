@@ -50,6 +50,7 @@ type Querier interface {
 	// decided is left as it is (0 rows).
 	DecideSuggestion(ctx context.Context, arg DecideSuggestionParams) (int64, error)
 	DeleteAIRunsBefore(ctx context.Context, cutoff string) (int64, error)
+	DeleteIntegrationsGoogle(ctx context.Context) error
 	DeleteRecipeIngredients(ctx context.Context, recipeID string) error
 	DeleteRecipeSteps(ctx context.Context, recipeID string) error
 	FailJob(ctx context.Context, arg FailJobParams) (int64, error)

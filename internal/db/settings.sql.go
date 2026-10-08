@@ -10,6 +10,16 @@ import (
 	"database/sql"
 )
 
+const deleteIntegrationsGoogle = `-- name: DeleteIntegrationsGoogle :exec
+DELETE FROM integrations_google
+WHERE id = 1
+`
+
+func (q *Queries) DeleteIntegrationsGoogle(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteIntegrationsGoogle)
+	return err
+}
+
 const getAISettings = `-- name: GetAISettings :one
 SELECT id, provider, base_url, model, temperature, system_prompt, api_key_ct, api_key_last4, key_verified_at, created_at, updated_at FROM ai_settings
 WHERE id = 1

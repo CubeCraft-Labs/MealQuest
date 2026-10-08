@@ -29,6 +29,9 @@ const (
 	EnvOIDCClientSecretFile = "MEALQUEST_OIDC_CLIENT_SECRET_FILE"
 	EnvOIDCAllowedGroups    = "MEALQUEST_OIDC_ALLOWED_GROUPS"
 
+	EnvGoogleClientID         = "MEALQUEST_GOOGLE_CLIENT_ID"
+	EnvGoogleClientSecretFile = "MEALQUEST_GOOGLE_CLIENT_SECRET_FILE"
+
 	EnvSessionIdle = "MEALQUEST_SESSION_IDLE"
 	EnvSessionMax  = "MEALQUEST_SESSION_MAX"
 
@@ -60,6 +63,12 @@ type Config struct {
 	OIDCClientSecret Secret
 	// OIDCAllowedGroups lists the groups whose members may sign in.
 	OIDCAllowedGroups []string
+
+	// GoogleClientID and GoogleClientSecret are the Google OAuth web client
+	// Push to Calendar connects with. Its redirect URI is PublicURL's origin
+	// followed by /api/v1/integrations/google/callback.
+	GoogleClientID     string
+	GoogleClientSecret Secret
 
 	// SessionIdle ends a session left unused this long.
 	SessionIdle time.Duration
@@ -109,6 +118,9 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 		OIDCClientID:      r.str(EnvOIDCClientID),
 		OIDCClientSecret:  r.secretFile(EnvOIDCClientSecretFile),
 		OIDCAllowedGroups: r.list(EnvOIDCAllowedGroups),
+
+		GoogleClientID:     r.str(EnvGoogleClientID),
+		GoogleClientSecret: r.secretFile(EnvGoogleClientSecretFile),
 
 		SessionIdle: r.sessionDuration(EnvSessionIdle, DefaultSessionIdle),
 		SessionMax:  r.sessionDuration(EnvSessionMax, DefaultSessionMax),

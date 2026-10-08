@@ -40,8 +40,8 @@ export function sentAt(at: Date, timezone: string): string {
 
 // ItemRow is one ingredient: on a current Supply run a checkbox, checked
 // (grape) while it is to buy; unchecked, the name is struck through and
-// "have it" stands in for the quantity. An archived Supply run shows the
-// same marks, read-only. An item toggled while the server cannot be reached
+// "have it" stands in for the quantity. A read-only Supply run shows the
+// same marks. An item toggled while the server cannot be reached
 // says it will sync.
 function ItemRow({ item, toggles }: { item: SupplyRunItem; toggles: Toggles | null }) {
   const name = (
@@ -121,12 +121,13 @@ function ArchiveLink({ layout }: { layout: Breakpoint }) {
 // one card per dinner, stacked on mobile and in three masonry columns from
 // tablet up, where Archive and Send to Google Chat are actions in the
 // header. On a current Supply run each item toggles at once (useToggles); a
-// toggle refused puts the item back and says why. An archived one is
-// read-only, and a toggle it refused is not offered again.
-function SupplyRunList({ weekStart, timezone, layout }: { weekStart: string; timezone: string; layout: Breakpoint }) {
+// toggle refused puts the item back and says why. An archived one, or any
+// opened from the Supply archive (readOnly), is read-only and tagged
+// Archived, and a toggle it refused is not offered again.
+function SupplyRunList({ weekStart, timezone, layout, readOnly }: WeekProps) {
   const toggles = useToggles(weekStart)
   const run = toggles.shown
-  const archived = run.status === 'archived'
+  const viewOnly = readOnly || run.status === 'archived'
   const wide = layout !== 'mobile'
   const failed = toggles.failed
   const failedItem = failed && run.groups.flatMap((group) => group.items).find((item) => item.id === failed.toggle.id)
@@ -138,21 +139,23 @@ function SupplyRunList({ weekStart, timezone, layout }: { weekStart: string; tim
           <p className={styles.kicker}>Supply run · {weekLabel(weekStart).dates}</p>
           <div className={styles.titleRow}>
             <h1 className={styles.title}>Shopping list</h1>
-            {archived && <Tag tone="grape">Archived</Tag>}
+            {viewOnly && <Tag tone="grape">Archived</Tag>}
             <p className={styles.count}>
               {run.needed_count} / {run.total_count}
             </p>
           </div>
           <p className={styles.helper}>
-            {archived
+            {run.status === 'archived'
               ? 'This list is in the Supply archive, as it was when the week ended.'
-              : "Uncheck anything you already have — it won't be counted."}
+              : viewOnly
+                ? "This week's list as it stands, read-only in the Supply archive."
+                : "Uncheck anything you already have — it won't be counted."}
           </p>
         </div>
         {wide && (
           <div className={styles.actions}>
             <ArchiveLink layout={layout} />
-            {!archived && (
+            {!viewOnly && (
               <Unavailable hint={CHAT_HINT} below className={styles.action}>
                 <Icon icon={MessageSquare} size="inline" />
                 Send to Google Chat
@@ -162,7 +165,7 @@ function SupplyRunList({ weekStart, timezone, layout }: { weekStart: string; tim
         )}
       </header>
       {failed !== null && (
-        <ErrorBanner onRetry={archived ? undefined : () => toggles.toggle(failed.toggle)}>
+        <ErrorBanner onRetry={viewOnly ? undefined : () => toggles.toggle(failed.toggle)}>
           Couldn't mark {failedItem ? failedItem.name : 'an item'} {failed.toggle.needed ? 'to buy' : '“have it”'}.{' '}
           {failed.error.message}
         </ErrorBanner>
@@ -173,7 +176,7 @@ function SupplyRunList({ weekStart, timezone, layout }: { weekStart: string; tim
       ) : (
         <div className={styles.groups} data-testid="supply-run-groups">
           {run.groups.map((group) => (
-            <GroupCard key={`${group.date} ${group.dinner.id}`} group={group} toggles={archived ? null : toggles} />
+            <GroupCard key={`${group.date} ${group.dinner.id}`} group={group} toggles={viewOnly ? null : toggles} />
           ))}
         </div>
       )}
@@ -201,9 +204,12 @@ function SkeletonGroups({ layout }: { layout: Breakpoint }) {
   )
 }
 
+type WeekProps = { weekStart: string; timezone: string; layout: Breakpoint; readOnly: boolean }
+
 // WeekSupplyRun is the Supply run of the week starting on weekStart, or,
-// when the week has none yet, the offer to make it from the week's plan.
-function WeekSupplyRun({ weekStart, timezone, layout }: { weekStart: string; timezone: string; layout: Breakpoint }) {
+// when the week has none yet, the offer to make it from the week's plan —
+// not offered read-only.
+function WeekSupplyRun({ weekStart, timezone, layout, readOnly }: WeekProps) {
   const run = useSupplyRun(weekStart)
   const generate = useGenerateSupplyRun(weekStart)
 
@@ -216,36 +222,42 @@ function WeekSupplyRun({ weekStart, timezone, layout }: { weekStart: string; tim
   if (run.data === null) {
     return (
       <div className={`${styles.page} ${styles[layout]}`}>
-        <EmptyState title="No shopping list yet" action={{ label: 'Make the shopping list', onClick: () => generate.mutate() }}>
-          I'll gather the ingredients of this week's planned dinners into a Supply run.
-        </EmptyState>
+        {readOnly ? (
+          <EmptyState title="No shopping list">This week has no Supply run in the Supply archive.</EmptyState>
+        ) : (
+          <EmptyState title="No shopping list yet" action={{ label: 'Make the shopping list', onClick: () => generate.mutate() }}>
+            I'll gather the ingredients of this week's planned dinners into a Supply run.
+          </EmptyState>
+        )}
         {generate.isError && (
           <ErrorBanner onRetry={() => generate.mutate()}>Couldn't make the shopping list. {generate.error.message}</ErrorBanner>
         )}
       </div>
     )
   }
-  return <SupplyRunList weekStart={weekStart} timezone={timezone} layout={layout} />
+  return <SupplyRunList weekStart={weekStart} timezone={timezone} layout={layout} readOnly={readOnly} />
 }
 
 // SupplyRunPage is the Supply run (mock 1l on mobile, 2b on tablet, 2f on
 // desktop) of the week the Plan opens on — next week once this week's
 // plan_draft time has come, otherwise this week — or of the week chosen by
-// ?week=, such as a week in the Supply archive. Offline, where the settings
-// cannot be read, it chooses the week by the schedule saved on this device.
-export function SupplyRunPage() {
+// ?week=. Opened from the Supply archive it is readOnly: tagged Archived,
+// with no checkbox and nothing to make or send, whatever the week. Offline,
+// where the settings cannot be read, it chooses the week by the schedule
+// saved on this device.
+export function SupplyRunPage({ readOnly = false }: { readOnly?: boolean }) {
   const problem = useSavedProblem()
   return (
     <>
       {problem !== null && (
         <ErrorBanner>Changes to the shopping list can't be kept on this device while offline. {problem.message}</ErrorBanner>
       )}
-      <ChosenSupplyRun />
+      <ChosenSupplyRun readOnly={readOnly} />
     </>
   )
 }
 
-function ChosenSupplyRun() {
+function ChosenSupplyRun({ readOnly }: { readOnly: boolean }) {
   const layout = useBreakpoint()
   const settings = useHouseholdSettings()
   const [params] = useSearchParams()
@@ -264,7 +276,7 @@ function ChosenSupplyRun() {
   }
   if (!schedule) return <SkeletonGroups layout={layout} />
   const week = chosen ?? defaultWeek(schedule, new Date())
-  return <WeekSupplyRun key={week} weekStart={week} timezone={schedule.timezone} layout={layout} />
+  return <WeekSupplyRun key={week} weekStart={week} timezone={schedule.timezone} layout={layout} readOnly={readOnly} />
 }
 
 // isMonday says whether date is a real YYYY-MM-DD Monday.

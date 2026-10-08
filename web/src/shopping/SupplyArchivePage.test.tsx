@@ -35,10 +35,18 @@ const WEEK_40 = post('2026-09-28', 'Week 40 · Sep 28 – Oct 4', { title: 'Pizz
 const WEEK_39 = post('2026-09-21', 'Week 39 · Sep 21 – 27', { title: 'Chili season opens', dinnerCount: 1, itemCount: 1, onHandCount: 0, dinners: ['Chili'] })
 const WEEK_1 = post('2025-12-29', 'Week 1 · Dec 29 – Jan 4')
 
-// The archive as the server groups it: by month and year a week belongs to
-// the period of its Monday, so week 40 is September's and week 1 is 2025's.
+// The archive as the server groups it: by week each period is one ISO week
+// headed by its label; by month and year a week belongs to the period of its
+// Monday, so week 40 is September's and week 1 is 2025's.
 const BY = {
-  week: [WEEK_41, WEEK_40, WEEK_39, WEEK_1].map((p) => ({ key: p.weekStart, heading: p.label, posts: [p] })),
+  week: (
+    [
+      ['2026-W41', WEEK_41],
+      ['2026-W40', WEEK_40],
+      ['2026-W39', WEEK_39],
+      ['2026-W01', WEEK_1],
+    ] as const
+  ).map(([key, p]) => ({ key, heading: p.label, posts: [p] })),
   month: [
     { key: '2026-10', heading: 'October 2026', posts: [WEEK_41] },
     { key: '2026-09', heading: 'September 2026', posts: [WEEK_40, WEEK_39] },
@@ -111,7 +119,7 @@ afterEach(() => {
 })
 
 describe('SupplyArchivePage', () => {
-  it('renders mock 1m by week: one post per week with its kicker, title, counts and dinner chips, under no heading', async () => {
+  it('renders mock 1m by week: one post per week with its kicker, title, counts and dinner chips', async () => {
     stubServer({ [`GET ${ARCHIVE('week')}`]: archive('week') })
     await renderPage()
 
@@ -134,13 +142,28 @@ describe('SupplyArchivePage', () => {
       '/plan/shopping/archive?week=2026-09-21',
       '/plan/shopping/archive?week=2025-12-29',
     ])
-    expect(screen.queryAllByRole('heading', { level: 2 })).toEqual([])
+  })
+
+  it('renders by week the periods and headings the server sends, as sent', async () => {
+    stubServer({ [`GET ${ARCHIVE('week')}`]: archive('week') })
+    await renderPage()
+    await screen.findByText('Chili season opens')
+
+    expect(screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)).toEqual(BY.week.map((period) => period.heading))
+    expect(screen.getByRole('heading', { level: 2, name: WEEK_40.label })).toHaveClass(styles.heading!)
+    for (const period of BY.week) {
+      const section = screen.getByRole('region', { name: period.heading })
+      expect(within(section).getAllByRole('link').map((link) => link.getAttribute('href'))).toEqual(
+        period.posts.map((p) => `/plan/shopping/archive?week=${p.weekStart}`),
+      )
+    }
   })
 
   it('capitalises the week label kicker in CSS from the label as the API writes it', async () => {
     stubServer({ [`GET ${ARCHIVE('week')}`]: archive('week') })
     await renderPage()
-    expect(await screen.findByText('Week 39 · Sep 21 – 27')).toHaveClass(styles.kicker!)
+    await screen.findByText('Chili season opens')
+    expect(within(postCard('Chili season opens')).getByText('Week 39 · Sep 21 – 27')).toHaveClass(styles.kicker!)
   })
 
   it.each([
@@ -299,6 +322,26 @@ const FROZEN = {
   ],
 }
 
+// The current week's Supply run, week 41, still current: the API's archive
+// includes it, highlighted.
+const CURRENT = {
+  ...FROZEN,
+  weekStart: '2026-10-05',
+  label: 'Week 41 · Oct 5 – 11',
+  title: 'Tacos, tikka & a salmon finale',
+  status: 'current',
+  groups: [
+    {
+      dinner: { id: 'd2', name: 'Beef tacos' },
+      date: '2026-10-05',
+      items: [
+        { id: 'i3', name: 'Corn tortillas', qty: '12', needed: true },
+        { id: 'i4', name: 'Limes', qty: '3', needed: false },
+      ],
+    },
+  ],
+}
+
 describe('SupplyArchivePage frozen post', () => {
   it('opens a tapped post’s frozen list read-only, tagged Archived, sending no PATCH', async () => {
     const fetchMock = stubServer({
@@ -320,6 +363,45 @@ describe('SupplyArchivePage frozen post', () => {
     // The list links back to the archive.
     fireEvent.click(screen.getByRole('link', { name: 'Supply archive' }))
     expect(await screen.findByRole('heading', { level: 1, name: 'Supply archive' })).toBeInTheDocument()
+  })
+
+  it('opens the current week’s post read-only too, tagged Archived, with no checkbox, nothing to send and no PATCH', async () => {
+    const fetchMock = stubServer({
+      [`GET ${ARCHIVE('week')}`]: archive('week'),
+      'GET /api/v1/shopping/2026-10-05': () => jsonResponse(200, CURRENT),
+    })
+    await renderPage()
+
+    fireEvent.click(await screen.findByText('Tacos, tikka & a salmon finale'))
+
+    expect(await screen.findByText('Archived')).toBeInTheDocument()
+    expect(screen.getByText("This week's list as it stands, read-only in the Supply archive.")).toBeInTheDocument()
+    expect(screen.getByText('Corn tortillas')).toBeInTheDocument()
+    expect(screen.queryAllByRole('checkbox')).toEqual([])
+    fireEvent.click(screen.getByText('Corn tortillas'))
+    fireEvent.click(screen.getByText('Limes'))
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method !== undefined && init.method !== 'GET')).toEqual([])
+  })
+
+  it('on desktop opens the current week’s post read-only, and with no post open shows this week’s Supply run to change', async () => {
+    mockViewport(1440)
+    const fetchMock = stubServer({
+      [`GET ${ARCHIVE('week')}`]: archive('week'),
+      'GET /api/v1/shopping/2026-10-05': () => jsonResponse(200, CURRENT),
+    })
+    const view = await renderPage('/plan/shopping/archive?week=2026-10-05')
+
+    expect(await screen.findByText('Archived')).toBeInTheDocument()
+    expect(screen.getByText('Corn tortillas')).toBeInTheDocument()
+    expect(screen.queryAllByRole('checkbox')).toEqual([])
+    expect(screen.queryByText('Send to Google Chat')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('Corn tortillas'))
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method !== undefined && init.method !== 'GET')).toEqual([])
+    view.unmount()
+
+    await renderPage()
+    expect(await screen.findByRole('checkbox', { name: 'Corn tortillas' })).toBeInTheDocument()
+    expect(screen.queryByText('Archived')).not.toBeInTheDocument()
   })
 
   it('on desktop (mock 2f) shows the archive as a panel beside the open post’s list', async () => {

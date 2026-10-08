@@ -39,7 +39,7 @@ function plural(n: number, one: string, many: string): string {
 // PostCard is one week's Supply run (mock 1m): the week label as its kicker,
 // the AI's title — the week label while it has none — the counts and its
 // first dinners as chips. The current week's post is ringed in grape. It
-// opens the week's list, read-only once frozen into the Supply archive.
+// opens the week's list, read-only.
 function PostCard({ post }: { post: ArchivePost }) {
   const rest = post.dinners.length - CHIPS
   return (
@@ -94,8 +94,9 @@ function shownGroups(groups: ArchiveGroup[], shown: number): ArchiveGroup[] {
 }
 
 // ArchivePosts is the Supply archive as the server groups it by by: one post
-// per week, under Bagel headings of their month or year. It shows PAGE posts
-// and "Load older" shows PAGE more.
+// per week, under the Bagel heading of each period the server sends — by
+// week, the week's label. It shows PAGE posts and "Load older" shows PAGE
+// more.
 function ArchivePosts({ by }: { by: ArchivePeriod }) {
   const archive = useSupplyArchive(by)
   const [shown, setShown] = useState(PAGE)
@@ -119,16 +120,12 @@ function ArchivePosts({ by }: { by: ArchivePeriod }) {
   const groups = shownGroups(archive.data, shown)
   return (
     <>
-      {by === 'week' ? (
-        <Posts posts={groups.flatMap((group) => group.posts)} />
-      ) : (
-        groups.map((group) => (
-          <section key={group.key} aria-label={group.heading} className={styles.period}>
-            <h2 className={styles.heading}>{group.heading}</h2>
-            <Posts posts={group.posts} />
-          </section>
-        ))
-      )}
+      {groups.map((group) => (
+        <section key={group.key} aria-label={group.heading} className={styles.period}>
+          <h2 className={styles.heading}>{group.heading}</h2>
+          <Posts posts={group.posts} />
+        </section>
+      ))}
       {shown < total && (
         <Button variant="outline" className={styles.older} onClick={() => setShown(shown + PAGE)}>
           Load older
@@ -161,10 +158,12 @@ function SupplyArchive({ panel }: { panel: boolean }) {
 }
 
 // SupplyArchivePage is /plan/shopping/archive. A post opens it on its week
-// (?week=), whose list the Supply run screen shows — read-only once frozen
-// into the Supply archive. On desktop (mock 2f) the archive is a panel at the
-// right of that list, this week's when no post is open; on mobile and tablet
-// it is the archive or, with a post open, the post's list.
+// (?week=), whose list the Supply run screen shows read-only and tagged
+// Archived, whatever its status: even the current week's post is only
+// viewed here, never changed. On desktop (mock 2f) the archive is a panel at
+// the right of that list, this week's editable Supply run when no post is
+// open; on mobile and tablet it is the archive or, with a post open, the
+// post's list.
 export function SupplyArchivePage() {
   const layout = useBreakpoint()
   const [params] = useSearchParams()
@@ -172,7 +171,7 @@ export function SupplyArchivePage() {
     return (
       <div className={styles.split}>
         <div className={styles.list}>
-          <SupplyRunPage />
+          <SupplyRunPage readOnly={params.has(WEEK_PARAM)} />
         </div>
         <aside className={styles.panel} aria-label="Supply archive">
           <SupplyArchive panel />
@@ -180,5 +179,5 @@ export function SupplyArchivePage() {
       </div>
     )
   }
-  return params.has(WEEK_PARAM) ? <SupplyRunPage /> : <SupplyArchive panel={false} />
+  return params.has(WEEK_PARAM) ? <SupplyRunPage readOnly /> : <SupplyArchive panel={false} />
 }

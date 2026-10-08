@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, useApi, type ApiRead } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
@@ -177,6 +178,30 @@ function sameDay(a: PlanDay, b: PlanDay): boolean {
   )
 }
 
+// WeekMutation is a kind of mutation of a week the mutation cache keeps for
+// it: its swaps and its pushes.
+type WeekMutation = 'swap' | 'push'
+
+// useWeekMutationsKept bounds the mutations of kind the cache keeps. When a
+// week is shown, the settled ones of every other week are removed, unless
+// that week still has one pending: a pending one, and those an earlier
+// pending one must see, stay across leaving its week and coming back. The
+// cache holds at most the week shown's and those of weeks left pending.
+function useWeekMutationsKept(weekStart: string, kind: WeekMutation) {
+  const queryClient = useQueryClient()
+  useEffect(() => {
+    const mutations = queryClient.getMutationCache()
+    const left = mutations.findAll({
+      predicate: ({ options: { mutationKey: key } }) =>
+        key !== undefined && key.length === 3 && key[0] === 'plans' && key[1] !== weekStart && key[2] === kind,
+    })
+    const pending = new Set(left.filter((m) => m.state.status === 'pending').map((m) => m.options.mutationKey![1]))
+    for (const mutation of left) {
+      if (!pending.has(mutation.options.mutationKey![1])) mutations.remove(mutation)
+    }
+  }, [queryClient, weekStart, kind])
+}
+
 // swapKey keys the swaps of the week starting on weekStart in the mutation
 // cache, where they outlive the Draft board that sent them.
 function swapKey(weekStart: string) {
@@ -206,10 +231,12 @@ export type SwapDay = {
 // earlier one is answered with is not written over a later one, and its
 // failure is not the week's. dismiss leaves settled swaps behind; it is
 // refused while one is pending, so a later swap is always in the cache for
-// an earlier, pending one to see.
+// an earlier, pending one to see. Settled swaps of a week no longer shown
+// are left behind too (useWeekMutationsKept).
 export function useSwapDay(weekStart: string): SwapDay {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
+  useWeekMutationsKept(weekStart, 'swap')
   const key = planKey(weekStart)
   const mutationKey = swapKey(weekStart)
   const mutations = queryClient.getMutationCache()
@@ -225,7 +252,8 @@ export function useSwapDay(weekStart: string): SwapDay {
     const isLatest = () => mutations.findAll({ mutationKey }).every((other) => other.mutationId <= mutation.mutationId)
     const mutation = mutations.build<Plan, Error, Swap, { previous: PlanDay; swapped: PlanDay }>(queryClient, {
       mutationKey,
-      // Kept until dismissed: a later swap must stay in the cache while an
+      // Kept until dismissed or its week is left settled
+      // (useWeekMutationsKept): a later swap must stay in the cache while an
       // earlier one is pending.
       gcTime: Infinity,
       mutationFn: async ({ date, dinner }) => {
@@ -302,10 +330,13 @@ export type PushToCalendar = {
 //
 // The week's pushes live in the mutation cache, not in the component, as its
 // swaps do, so leaving the week and coming back keeps one pending. reset
-// leaves settled pushes behind; it is refused while one is pending.
+// leaves settled pushes behind; it is refused while one is pending. Settled
+// pushes of a week no longer shown are left behind too
+// (useWeekMutationsKept).
 export function usePushToCalendar(weekStart: string): PushToCalendar {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
+  useWeekMutationsKept(weekStart, 'push')
   const key = planKey(weekStart)
   const mutationKey = pushKey(weekStart)
   const mutations = queryClient.getMutationCache()
@@ -319,8 +350,9 @@ export function usePushToCalendar(weekStart: string): PushToCalendar {
   function mutate() {
     const mutation = mutations.build<Plan, Error, void, unknown>(queryClient, {
       mutationKey,
-      // Kept until reset: a push pending in a week left must still be found
-      // when it is shown again.
+      // Kept until reset or its week is left settled (useWeekMutationsKept):
+      // a push pending in a week left must still be found when it is shown
+      // again.
       gcTime: Infinity,
       mutationFn: async () => {
         const path = `${planPath(weekStart)}/push-calendar`

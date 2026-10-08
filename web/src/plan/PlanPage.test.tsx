@@ -467,6 +467,57 @@ describe('PlanPage', () => {
     expect(posts(fetchMock)).toEqual([`${PUSH} undefined`, `${PUSH} undefined`])
   })
 
+  it("pushes nothing again while the changed plan's read is answered from the cache", async () => {
+    let read = () => jsonResponse(200, planBody('draft'))
+    let push = () => errorResponse(409, 'plan_changed')
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => read(),
+      [`POST ${PUSH}`]: () => push(),
+    })
+    await renderPage()
+
+    await screen.findByText('Beef tacos')
+    // The server can't be reached: the service worker answers the read of
+    // the changed plan with the plan it cached before.
+    read = () => {
+      const response = jsonResponse(200, planBody('draft'))
+      response.headers.set(cacheFallbackHeader, '1')
+      return response
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Looks good — push to Calendar' }))
+    const cachedCopy = "The plan changed while it was being pushed. The plan shown came from this device's cache, not the server; read it again before pushing."
+    const failed = await screen.findByRole('alert')
+    expect(planReads(fetchMock)).toBe(2)
+    expect(screen.getByText('Beef tacos')).toBeInTheDocument()
+    const pushButton = screen.getByRole('button', { name: 'Looks good — push to Calendar' })
+    expect(pushButton).toBeDisabled()
+    fireEvent.click(pushButton)
+    expect(failed).toHaveTextContent(cachedCopy)
+
+    // Retry reads the plan again rather than pushing: still the cache, so
+    // nothing is pushed.
+    fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(planReads(fetchMock)).toBe(3))
+    expect(await screen.findByRole('alert')).toHaveTextContent(cachedCopy)
+    expect(screen.getByRole('button', { name: 'Looks good — push to Calendar' })).toBeDisabled()
+    expect(posts(fetchMock)).toEqual([`${PUSH} undefined`])
+
+    // The server is back: Retry shows the changed plan, and only then may it
+    // be pushed.
+    read = () => jsonResponse(200, planBody('draft', ['Lasagna', ...NAMES.slice(1)]))
+    fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('Lasagna')).toBeInTheDocument()
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't push to Calendar. The plan changed while it was being pushed; push it again.")
+    expect(screen.getByRole('button', { name: 'Looks good — push to Calendar' })).toBeEnabled()
+    expect(posts(fetchMock)).toEqual([`${PUSH} undefined`])
+
+    push = () => jsonResponse(200, syncedNow())
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('Synced to Google Calendar just now')).toBeInTheDocument()
+    expect(posts(fetchMock)).toEqual([`${PUSH} undefined`, `${PUSH} undefined`])
+  })
+
   it('shows the changed plan read while the week was left, and pushes it', async () => {
     let read: () => Response | Promise<Response> = () => jsonResponse(200, planBody('draft'))
     let push = () => errorResponse(409, 'plan_changed')

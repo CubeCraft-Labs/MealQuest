@@ -303,8 +303,11 @@ function WeekBoard({
 
   // A push sends the plan shown: it waits for a draft or a swap of the week
   // to settle, and neither starts while it runs, even across leaving the
-  // week and coming back.
-  const canPush = plan.isSuccess && plan.data !== null && !drafting && !swap.pending && !pushing
+  // week and coming back. Nor does it send a plan from this device's cache,
+  // which may not be the server's: after a push refused because the plan
+  // changed, the read of the changed plan may be answered from the cache.
+  const cached = plan.isSuccess && plan.data !== null && plan.data.cached
+  const canPush = plan.isSuccess && plan.data !== null && !cached && !drafting && !swap.pending && !pushing
   function pushToCalendar() {
     if (!canPush) return
     swap.dismiss()
@@ -339,7 +342,7 @@ function WeekBoard({
   }
 
   const failure = push.error !== null ? (
-    <PushFailure error={push.error} onRetry={pushToCalendar} />
+    <PushFailure error={push.error} cached={cached} onRetry={cached ? () => void plan.refetch() : pushToCalendar} />
   ) : swap.failed !== null ? (
     <ErrorBanner onRetry={() => swapIn(swap.failed!.swap)}>
       Couldn't swap {weekdayName(swap.failed.swap.date)}'s dinner. {swap.failed.error.message}
@@ -569,8 +572,10 @@ function SyncStatus({ plan, className }: { plan: Plan; className?: string }) {
 }
 
 // PushFailure says why Push to Calendar failed. A failure only the Google
-// Calendar settings can fix links there; any other offers to push again.
-function PushFailure({ error, onRetry }: { error: Error; onRetry: () => void }) {
+// Calendar settings can fix links there; any other offers to push again,
+// or, while the plan shown is this device's cached copy, to read it again
+// from the server first.
+function PushFailure({ error, cached, onRetry }: { error: Error; cached: boolean; onRetry: () => void }) {
   const code = error instanceof ApiError ? error.code : null
   const settings = code !== null && Object.hasOwn(settingsFailures, code) ? settingsFailures[code] : undefined
   if (settings !== undefined) {
@@ -586,7 +591,11 @@ function PushFailure({ error, onRetry }: { error: Error; onRetry: () => void }) 
   return (
     <ErrorBanner onRetry={onRetry}>
       Couldn't push to Calendar.{' '}
-      {code === 'plan_changed' ? 'The plan changed while it was being pushed; push it again.' : error.message}
+      {cached
+        ? `${code === 'plan_changed' ? 'The plan changed while it was being pushed.' : error.message} The plan shown came from this device's cache, not the server; read it again before pushing.`
+        : code === 'plan_changed'
+          ? 'The plan changed while it was being pushed; push it again.'
+          : error.message}
     </ErrorBanner>
   )
 }

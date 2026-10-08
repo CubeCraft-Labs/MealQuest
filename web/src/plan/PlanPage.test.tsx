@@ -1,9 +1,10 @@
-import { QueryClientProvider } from '@tanstack/react-query'
+import { QueryClientProvider, type QueryClient } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { Link, MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
+import { SupplyRunPage } from '../shopping/SupplyRunPage.tsx'
 import { cacheFallbackHeader } from '../sw/routes.ts'
 import { HOUSEHOLD_SETTINGS } from '../test/ApiProviders.tsx'
 import { declaredStyle } from '../test/cssRules.ts'
@@ -159,17 +160,17 @@ function planReads(fetchMock: Mock<typeof fetch>) {
 }
 
 // renderPage loads /me (for the CSRF token every write needs) and renders
-// the Plan page.
-async function renderPage() {
+// the Plan page, over queryClient, with shopping as the Supply run screen.
+async function renderPage(queryClient: QueryClient = createQueryClient(), shopping = <Opened />) {
   const api = createApiClient(fakeLocation('/plan'), createNetworkStatus(window), createVerifiedSession(localStorage))
   await api.loadMe()
   return render(
     <ApiProvider client={api}>
-      <QueryClientProvider client={createQueryClient()}>
+      <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/plan']}>
           <Routes>
             <Route path="/plan" element={<PlanPage />} />
-            <Route path="/plan/shopping" element={<Opened />} />
+            <Route path="/plan/shopping" element={shopping} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>
@@ -184,6 +185,22 @@ function Opened() {
   return (
     <>
       <p>Opened {pathname + search}</p>
+      <Link to="/plan">Back to the Plan</Link>
+    </>
+  )
+}
+
+// pushesKept counts the pushes of the week of Oct 5 the mutation cache of
+// queryClient keeps.
+function pushesKept(queryClient: QueryClient) {
+  return queryClient.getMutationCache().findAll({ mutationKey: ['plans', '2026-10-05', 'push'] }).length
+}
+
+// SupplyRunScreen is the Supply run screen, with a link back to the Plan.
+function SupplyRunScreen() {
+  return (
+    <>
+      <SupplyRunPage />
       <Link to="/plan">Back to the Plan</Link>
     </>
   )
@@ -612,20 +629,72 @@ describe('PlanPage', () => {
       [`POST ${PUSH}`]: () => jsonResponse(200, syncedNow(SUPPLY_RUN_FAILED)),
       'POST /api/v1/shopping/2026-10-05/generate': () => made.response,
     })
-    await renderPage()
+    const queryClient = createQueryClient()
+    await renderPage(queryClient)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Looks good — push to Calendar' }))
     fireEvent.click(within(await screen.findByRole('alert')).getByRole('button', { name: 'Make the shopping list' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Making the shopping list…')
 
+    // The push is kept while the week is left, until the list is made: it
+    // is then settled, not merely swept with the week.
     fireEvent.click(screen.getByRole('button', { name: 'Next week' }))
     expect(await screen.findByRole('button', { name: 'Draft this week' })).toBeInTheDocument()
+    expect(pushesKept(queryClient)).toBe(1)
     await act(async () => made.send(jsonResponse(200, { ...supplyRun(28), skipped: [] })))
+    expect(pushesKept(queryClient)).toBe(0)
 
     fireEvent.click(screen.getByRole('button', { name: 'Previous week' }))
     expect(await screen.findByText('Beef tacos')).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Make the shopping list' })).not.toBeInTheDocument()
+  })
+
+  it('no longer says the Supply run could not be made once the shopping list is made on the Supply run screen', async () => {
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      [`POST ${PUSH}`]: () => jsonResponse(200, syncedNow(SUPPLY_RUN_FAILED)),
+      'POST /api/v1/shopping/2026-10-05/generate': () => jsonResponse(200, { ...supplyRun(28), skipped: [] }),
+    })
+    const queryClient = createQueryClient()
+    await renderPage(queryClient, <SupplyRunScreen />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Looks good — push to Calendar' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent("Pushed to Calendar, but this week's Supply run couldn't be made.")
+
+    // The list is made on the Supply run screen, not from the Plan's alert.
+    fireEvent.click(screen.getByRole('link', { name: 'Shopping list' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Make the shopping list' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Make the shopping list' })).not.toBeInTheDocument())
+    expect(pushesKept(queryClient)).toBe(0)
+
+    fireEvent.click(screen.getByRole('link', { name: 'Back to the Plan' }))
+    expect(await screen.findByRole('link', { name: 'Shopping list · 28' })).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Make the shopping list' })).not.toBeInTheDocument()
+  })
+
+  it('still says the Supply run could not be made when making it on the Supply run screen fails', async () => {
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      [`POST ${PUSH}`]: () => jsonResponse(200, syncedNow(SUPPLY_RUN_FAILED)),
+      'POST /api/v1/shopping/2026-10-05/generate': () => errorResponse(500, 'internal'),
+    })
+    const queryClient = createQueryClient()
+    await renderPage(queryClient, <SupplyRunScreen />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Looks good — push to Calendar' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent("Pushed to Calendar, but this week's Supply run couldn't be made.")
+
+    fireEvent.click(screen.getByRole('link', { name: 'Shopping list' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Make the shopping list' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't make the shopping list.")
+    expect(pushesKept(queryClient)).toBe(1)
+
+    fireEvent.click(screen.getByRole('link', { name: 'Back to the Plan' }))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Pushed to Calendar, but this week's Supply run couldn't be made.")
+    expect(within(alert).getByRole('button', { name: 'Make the shopping list' })).toBeEnabled()
   })
 
   it('pushes nothing again until the changed plan is read and shown', async () => {

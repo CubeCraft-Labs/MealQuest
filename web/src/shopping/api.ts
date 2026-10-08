@@ -12,6 +12,7 @@ import { ApiError, useApi, type ApiClient } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { meQueryKey } from '../AuthBootstrap.tsx'
 import { oneOf } from '../dinners/api.ts'
+import { settleUnmadePushes } from '../plan/api.ts'
 import type { NetworkStatus } from '../pwa/networkStatus.ts'
 import { HOUSEHOLD_SETTINGS_KEY, type HouseholdSettings } from '../settings/api.ts'
 import {
@@ -187,16 +188,21 @@ export function useSupplyRun(weekStart: string) {
 
 // useGenerateSupplyRun makes the week's Supply run from its plan (POST
 // /api/v1/shopping/{weekStart}/generate); the Supply run it answers with is
-// the one shown.
+// the one shown. Once made, from whichever screen, a push of the week whose
+// Supply run was not made is settled (settleUnmadePushes).
 export function useGenerateSupplyRun(weekStart: string) {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
   return useMutation({
+    onMutate: () => settleUnmadePushes(queryClient, weekStart),
     mutationFn: async (): Promise<SupplyRun> => {
       const path = `${supplyRunPath(weekStart)}/generate`
       return parseSupplyRun(`POST ${path}`, weekStart, await apiFetch<unknown>(path, { method: 'POST' }))
     },
-    onSuccess: (run) => queryClient.setQueryData<SupplyRun | null>(supplyRunKey(weekStart), run),
+    onSuccess: (run, _, settle) => {
+      queryClient.setQueryData<SupplyRun | null>(supplyRunKey(weekStart), run)
+      settle()
+    },
   })
 }
 

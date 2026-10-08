@@ -439,7 +439,6 @@ export type PushToCalendar = {
   supplyRun: PushedSupplyRun | null
   mutate: () => void
   reset: () => void
-  settle: () => void
 }
 
 // usePushToCalendar pushes the plan of the week starting on weekStart to the
@@ -460,11 +459,11 @@ export type PushToCalendar = {
 //
 // The week's pushes live in the mutation cache, not in the component, as its
 // swaps do, so leaving the week and coming back keeps one pending. reset
-// leaves settled pushes behind; it is refused while one is pending. settle
-// leaves behind the push shown, once its failed Supply run has been made
-// another way, so it is not said again to be unmade; a push sent since is
-// kept. Settled pushes of a week no longer shown are left behind too, but
-// for the latest when its Supply run was not made (keepWeekMutations).
+// leaves settled pushes behind; it is refused while one is pending. A push
+// whose Supply run was not made is left behind once the list is made
+// (settleUnmadePushes). Settled pushes of a week no longer shown are left
+// behind too, but for the latest when its Supply run was not made
+// (keepWeekMutations).
 export function usePushToCalendar(weekStart: string): PushToCalendar {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
@@ -521,17 +520,29 @@ export function usePushToCalendar(weekStart: string): PushToCalendar {
     for (const mutation of week) mutations.remove(mutation)
   }
 
-  function settle() {
-    const shown = mutations.findAll({ mutationKey }).find((mutation) => mutation.mutationId === latest?.mutationId)
-    if (shown !== undefined) mutations.remove(shown)
-  }
-
   return {
     pending: pushes.some((push) => push.status === 'pending'),
     error: latest?.status === 'error' ? latest.error! : null,
     supplyRun: latest?.status === 'success' ? latest.data!.supply_run : null,
     mutate,
     reset,
-    settle,
+  }
+}
+
+// settleUnmadePushes is called as the Supply run of the week starting on
+// weekStart starts being made, from the Plan or the Supply run screen
+// (useGenerateSupplyRun). The function it answers with is called once the
+// list is made: it leaves behind the week's pushes sent before whose Supply
+// run was not made, so the Plan does not say again that it is unmade, even
+// if the Plan was left meanwhile. A push sent since is kept, and a list not
+// made leaves them as they are.
+export function settleUnmadePushes(queryClient: QueryClient, weekStart: string): () => void {
+  const mutations = queryClient.getMutationCache()
+  const mutationKey = pushKey(weekStart)
+  const sent = new Set(mutations.findAll({ mutationKey }))
+  return () => {
+    for (const mutation of mutations.findAll({ mutationKey })) {
+      if (sent.has(mutation) && unmade(mutation)) mutations.remove(mutation)
+    }
   }
 }

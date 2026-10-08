@@ -373,12 +373,11 @@ function WeekBoard({
 
   const retryPush = cached ? () => void plan.refetch() : pushToCalendar
   // makeShoppingList makes the week's Supply run again after a push could
-  // not make it. Once made, the push is settled, even if the Plan was left
-  // meanwhile: coming back does not say again that it couldn't be made. A
-  // failure is the mutation's state, which generate.error reports.
+  // not make it. Once made, here or on the Supply run screen, the push is
+  // settled (useGenerateSupplyRun). A failure is the mutation's state, which
+  // generate.error reports.
   function makeShoppingList() {
-    const { settle } = push
-    generate.mutateAsync().then(settle, () => undefined)
+    generate.mutate()
   }
   // A push's Supply run made again on the Plan stands for the push's, which
   // is settled.

@@ -66,6 +66,35 @@ func TestCalendarsListsWritableCalendars(t *testing.T) {
 	}
 }
 
+func TestCalendarsOverlappingPages(t *testing.T) {
+	t.Parallel()
+	h := connected(t)
+	// Two to a page, family ends the first page and starts the second
+	// again, renamed in between.
+	renamed := family
+	renamed.Summary = "Family (renamed)"
+	h.google.SetCalendars(2, ownPrimary, family, renamed, dinners)
+	cals, err := h.svc.Calendars(context.Background())
+	if err != nil {
+		t.Fatalf("Calendars: %v", err)
+	}
+	got, err := json.Marshal(cals)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// family once, as first listed, in Google's order.
+	want := `[` +
+		`{"id":"household@gmail.com","summary":"household@gmail.com","primary":true,"accessRole":"owner"},` +
+		`{"id":"family@group.calendar.google.com","summary":"Family","primary":false,"accessRole":"writer"},` +
+		`{"id":"dinners@group.calendar.google.com","summary":"Dinners","primary":false,"accessRole":"owner"}]`
+	if string(got) != want {
+		t.Errorf("Calendars =\n%s\nwant\n%s", got, want)
+	}
+	if n := h.google.CalendarCalls(); n != 2 {
+		t.Errorf("calendarList called %d times, want 2 (every page)", n)
+	}
+}
+
 func TestCalendarsEmpty(t *testing.T) {
 	t.Parallel()
 	h := connected(t)

@@ -102,14 +102,17 @@ func (s *Service) SelectCalendar(ctx context.Context, id string) (Selection, err
 	return Selection{}, ErrUnknownCalendar
 }
 
-// calendars lists the writable calendars with the stored refresh token. The
-// caller holds s.account.
+// calendars lists the writable calendars, each once, with the stored refresh
+// token. The caller holds s.account.
 func (s *Service) calendars(ctx context.Context) ([]Calendar, error) {
 	access, err := s.accessToken(ctx)
 	if err != nil {
 		return nil, err
 	}
 	cals := []Calendar{}
+	// listed holds the ids in cals: pages can overlap, and a calendar is
+	// listed once, as Google first lists it.
+	listed := map[string]bool{}
 	pageToken := ""
 	for range maxCalendarPages {
 		page, err := s.calendarPage(ctx, access, pageToken)
@@ -120,7 +123,8 @@ func (s *Service) calendars(ctx context.Context) ([]Calendar, error) {
 			if item.ID == "" {
 				return nil, &CalendarError{msg: "gcal: Google listed a calendar without an id"}
 			}
-			if item.AccessRole == "writer" || item.AccessRole == "owner" {
+			if (item.AccessRole == "writer" || item.AccessRole == "owner") && !listed[item.ID] {
+				listed[item.ID] = true
 				cals = append(cals, Calendar{ID: item.ID, Summary: item.Summary, Primary: item.Primary, AccessRole: item.AccessRole})
 			}
 		}

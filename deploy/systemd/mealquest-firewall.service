@@ -5,8 +5,9 @@
 # are one-way: a failure here fails this unit visibly and never fails
 # docker.service.
 #
-# Start MealQuest only after this unit has succeeded:
-#   systemctl start mealquest-firewall && docker compose up -d
+# mealquest.service requires this unit and starts the stack only after it
+# has succeeded. Installing and operating both: CTXD project mealquest,
+# RUNBOOKS.MD "Host firewall" and "Stack unit".
 [Unit]
 Description=Restrict MealQuest port 8090 to Traefik (DOCKER-USER)
 After=docker.service

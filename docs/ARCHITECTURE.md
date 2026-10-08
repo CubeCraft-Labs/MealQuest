@@ -102,8 +102,8 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 | `week_plans` | week_start (unique), status (`draft` / `synced` / `changed`), ai_note, ai_run_id, calendar_synced_at, revision (raised by every swap and stored draft). |
 | `plan_days` | plan_id, date (unique per plan), dinner_id, is_new, calendar_event_id (set while the chosen calendar shows the day as planned; cleared when its dinner changes, another calendar is chosen or Google Calendar is disconnected). |
 | `rotation_reviews` | dinner_id + plan_date (unique), status, decision (`keep` / `drop` / `not_made`), name (set only by a drop: the dinner's name when dropped, kept whatever it is later renamed, so a drop stays among the passed names), decided_at, updated_by. |
-| `shopping_lists` | week_start (unique), plan_id, title, status (`current` / `archived`), sent_to_chat_at, frozen_at. |
-| `shopping_groups` / `shopping_items` | One group per dinner/day; item name, qty, needed (bool), position. |
+| `shopping_lists` | week_start (unique), plan_id, title (the AI-written post title; NULL until written or when the AI fails, when the week label is shown instead; never empty), status (`current` / `archived`), sent_to_chat_at, frozen_at. |
+| `shopping_groups` / `shopping_items` | One group per plan day with ingredients: dinner_id, date, position (by date). Item name, qty (the display quantity, NULL when the recipe gives none), needed (bool), position. Made by `shopping.Generate` from the plan, with no model call: an item is a grounded recipe ingredient's normalized name with qty and unit joined ("2 cups"), or a manual recipe's line as typed with no qty. Regenerating keeps the id and needed flag of an item whose (dinner_id, name) is unchanged. |
 | `ai_settings` | One row: provider, base_url, model, temperature, system_prompt, api_key_ct, api_key_last4, key_verified_at. |
 | `recipe_search_settings` | One row: provider (`searxng` / `brave`), base_url (the SearXNG instance), api_key_ct and api_key_last4 (Brave). |
 | `integrations_google` | One row: refresh_token_ct, calendar_id, calendar_name, connected_at, last_sync_error. |
@@ -470,6 +470,51 @@ automatic** (D-021).
   not a Regular; and one whose reason is over 180 characters or names none
   of its cited Regulars. Cited names are rewritten as the household writes
   them. Grounding each survivor in a recipe is the caller's next step.
+- **Supply run titles** (`skills.TitleArchive`, skill `archive_title`
+  v1): from the names of the week's planned dinners in day order, writes
+  `{title}`, the Supply run's post title in the Supply archive, at the
+  household temperature with no household context. A title must be 1–48
+  characters on one line, with no emoji and no surrounding quotation
+  marks; a reply breaking a rule gets the one repair turn, never a
+  truncation. `shopping.Generate` (and `GeneratePushed`), on storing a
+  list that is still untitled — a new list, or one a failed title left
+  untitled — enqueues a `title_supply_run` job in the generation's
+  transaction and returns without waiting for it, so neither Push to
+  Calendar nor `POST /shopping/{weekStart}/generate` waits for a model
+  call; the list reads untitled until the job stores its title. The job's
+  scope is `<weekStart>@<plan revision>/<sha256 of the dinner names in
+  order>`, so runs share a title only for the same names (a renamed dinner
+  changes the names, not the revision). It writes `shopping_lists.title`
+  only while the list is untitled and not frozen. A title is written once;
+  a remake keeps it and enqueues no job. A failed title never fails the
+  generation: the list stays untitled (the UI shows the week label), the
+  failure is logged as a warning and recorded in `ai_runs`, the job fails
+  `title_failed`, and the week's next generation tries again.
+  `shopping.Freeze` titles a list still untitled once more before
+  freezing it (see Supply archive), through the same skill, scope and
+  conditional write.
+
+## Supply archive (Feature 17)
+
+`shopping.Freeze(weekStart)` moves a week's Supply run into the Supply
+archive: `status` becomes `archived` and `frozen_at` is set, after which
+generating the list or changing an item is 409 `archived`. It freezes only
+a week that has ended in the household's time zone (its Monday is before
+the Monday of the household's current week), so a week not yet ended is
+`ErrWeekNotEnded` and a week with no list `ErrListNotFound`; freezing a
+frozen list does nothing. A list still untitled is titled first with
+`archive_title` from the week's plan, as `Generate` titles it; a title
+that cannot be written is logged and the list is frozen untitled, when its
+week label stands in for good. Titling and freezing are ordered by a
+per-service `RWMutex`: a `title_supply_run` job holds it shared across
+reading the list, the `archive_title` run and the title write, and `Freeze`
+holds it exclusively from reading the list to freezing it. So a freeze
+waits for a job in flight to store its title or fail for good; when the
+job failed, the freeze finds the list still untitled and makes its own
+`archive_title` attempt before freezing. A job that starts during a freeze
+waits for it, then finds the list titled (that title stands) or frozen
+untitled (the job fails `title_failed`), and stores nothing. The
+`week_rollover` schedule is to call `Freeze` for last week.
 
 ## Recipe grounding
 
@@ -738,9 +783,52 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
     failures), 404 when the week
     has no plan, 400 `invalid_week`. The push holds the account lock
     across its Google requests and its record, like listing and choosing.
-  - The week's Supply run (Feature 17) is made from a pushed plan: a
-    successful `Push` returns that plan, which is where Feature 17 hooks
-    in. Nothing here generates a shopping list.
+  - The week's Supply run (Feature 17) is made from a pushed plan: after
+    a successful `Push`, the handler runs `shopping.GeneratePushed` for
+    the week at the plan revision `Push` pushed, and the 200 answer
+    carries `supply_run: {status, error}`. `status` is `generated`;
+    `archived` when the week's Supply run is in the Supply archive and was
+    left as it was; or `failed` — error `plan_changed` (retryable, logged
+    as a warning) when the plan was edited between the push and
+    generation, so no Supply run is made from a plan Calendar does not
+    show and pushing again makes it; or error `supply_run_failed`
+    (retryable, logged as an error) when it could not be made, and
+    `POST /api/v1/shopping/{weekStart}/generate` makes it again.
+    Generation checks the revision inside its own transaction, and never
+    fails or undoes the push — Calendar already shows the plan.
+
+## Supply run API (Feature 17)
+
+- `GET /api/v1/shopping/{weekStart}` returns `{weekStart, label, title,
+  status, sent_to_chat_at, needed_count, total_count, groups: [{dinner:
+  {id, name}, date, day, items: [{id, name, qty, needed}]}]}`: `label` is
+  the week label (shown while `title` is null), `day` the plan day's
+  weekday ("Monday"), `qty` null when the recipe gives none,
+  `needed_count` the items still needed and `total_count` all items. 404
+  when the week has no Supply run, 400 `invalid_week`.
+- `POST /api/v1/shopping/{weekStart}/generate` makes or remakes the list
+  through `shopping.Generate` and answers with the same shape plus
+  `skipped: [{date, dinner_id, dinner_name, reason}]`. 404 when the week
+  has no plan, 409 `archived` when its list is in the Supply archive.
+- `PATCH /api/v1/shopping/items/{id}` takes `{needed}` (a required
+  boolean; it sets the flag, it does not flip it) and answers `{id,
+  needed, needed_count, total_count}` with the list's counts after the
+  change. 404 for an unknown item, 409 `archived` when the list is in the
+  Supply archive, 400 `invalid_request` for a bad body.
+- `GET /api/v1/shopping/archive?by=week|month|year` returns the Supply
+  archive `{by, periods: [{key, heading, posts: [{weekStart, label,
+  title, dinnerCount, itemCount, onHandCount, dinners, current}]}]}`: the
+  Supply run of every week up to the household's current week, newest
+  first, grouped by the Monday's ISO week (`key` "2026-W41", `heading` the
+  week label), month ("2026-10", "October 2026") or year ("2026"). The
+  Monday is a household-local date, so the week of Monday 28 December
+  is in December. `label` is the week label ("Week 41 · Oct 5 – 11"; the
+  UI sets it in capitals), `title` null while untitled, `dinners` the
+  list's dinners in day order and `dinnerCount` their number,
+  `itemCount` all items, `onHandCount` the items marked "have it", and
+  `current` true for the household's current week. 400 `invalid_request`
+  for any other `by`. A frozen list is read through `GET
+  /api/v1/shopping/{weekStart}` with `status` `archived`.
 
 ## Frontend
 

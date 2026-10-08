@@ -1,9 +1,10 @@
-import { QueryClientProvider } from '@tanstack/react-query'
+import { QueryClientProvider, type QueryClient } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
+import { Link, MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
+import { SupplyRunPage } from '../shopping/SupplyRunPage.tsx'
 import { cacheFallbackHeader } from '../sw/routes.ts'
 import { HOUSEHOLD_SETTINGS } from '../test/ApiProviders.tsx'
 import { declaredStyle } from '../test/cssRules.ts'
@@ -52,9 +53,33 @@ function planBody(status: string, names = NAMES) {
 }
 
 // syncedNow is the plan of the week of Oct 5 as a push answers it: synced
-// at the tests' noon.
-function syncedNow() {
-  return { ...planBody('synced'), calendar_synced_at: '2026-10-07T16:00:00Z' }
+// at the tests' noon, with what became of the week's Supply run, made
+// unless told otherwise.
+function syncedNow(supplyRun: { status: string; error: { code: string; message: string; retryable: boolean } | null } = GENERATED) {
+  return { ...planBody('synced'), calendar_synced_at: '2026-10-07T16:00:00Z', supply_run: supplyRun }
+}
+
+// The Supply run outcomes a push answers with, as the server sends them.
+const GENERATED = { status: 'generated', error: null }
+const ARCHIVED = {
+  status: 'archived',
+  error: { code: 'archived', message: 'the Supply run is in the Supply archive', retryable: false },
+}
+const PLAN_CHANGED = {
+  status: 'failed',
+  error: {
+    code: 'plan_changed',
+    message: 'the plan is on Calendar as pushed, but it was edited before its Supply run was made, so no Supply run was made from it; push again',
+    retryable: true,
+  },
+}
+const SUPPLY_RUN_FAILED = {
+  status: 'failed',
+  error: {
+    code: 'supply_run_failed',
+    message: 'the plan is on Calendar, but its Supply run could not be made; make it again from the Supply run',
+    retryable: true,
+  },
 }
 
 // deferred is a response the test sends when it chooses.
@@ -100,8 +125,12 @@ const lists = {
     jsonResponse(200, { dinners: [dinner('d0', 'Beef tacos', 'easy', 30), dinner('r1', 'Fish tacos', 'medium', 35)] }),
 }
 
+// SUPPLY_RUN is the Supply run of a week, as GET /api/v1/shopping/{weekStart}.
+const SUPPLY_RUN = /^GET \/api\/v1\/shopping\/\d{4}-\d{2}-\d{2}$/
+
 // stubServer answers "METHOD path" requests from responders, with /me and
-// the household settings; any other request fails the test.
+// the household settings, and no Supply run (404) for a week given none;
+// any other request fails the test.
 function stubServer(responders: Record<string, Responder>) {
   const all: Record<string, Responder> = {
     'GET /api/v1/me': () => jsonResponse(200, ME),
@@ -110,7 +139,7 @@ function stubServer(responders: Record<string, Responder>) {
   }
   const fetchMock = vi.fn<typeof fetch>((input, init) => {
     const key = `${init?.method ?? 'GET'} ${String(input)}`
-    const respond = Object.hasOwn(all, key) ? all[key] : undefined
+    const respond = Object.hasOwn(all, key) ? all[key] : SUPPLY_RUN.test(key) ? () => errorResponse(404, 'not_found') : undefined
     if (respond === undefined) throw new Error(`unexpected fetch: ${key}`)
     return Promise.resolve(respond(init))
   })
@@ -131,19 +160,65 @@ function planReads(fetchMock: Mock<typeof fetch>) {
 }
 
 // renderPage loads /me (for the CSRF token every write needs) and renders
-// the Plan page.
-async function renderPage() {
+// the Plan page, over queryClient, with shopping as the Supply run screen.
+async function renderPage(queryClient: QueryClient = createQueryClient(), shopping = <Opened />) {
   const api = createApiClient(fakeLocation('/plan'), createNetworkStatus(window), createVerifiedSession(localStorage))
   await api.loadMe()
   return render(
     <ApiProvider client={api}>
-      <QueryClientProvider client={createQueryClient()}>
+      <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/plan']}>
-          <PlanPage />
+          <Routes>
+            <Route path="/plan" element={<PlanPage />} />
+            <Route path="/plan/shopping" element={shopping} />
+          </Routes>
         </MemoryRouter>
       </QueryClientProvider>
     </ApiProvider>,
   )
+}
+
+// Opened stands in for the screen a link opened, saying where it is, with
+// a link back to the Plan.
+function Opened() {
+  const { pathname, search } = useLocation()
+  return (
+    <>
+      <p>Opened {pathname + search}</p>
+      <Link to="/plan">Back to the Plan</Link>
+    </>
+  )
+}
+
+// pushesKept counts the pushes of the week of Oct 5 the mutation cache of
+// queryClient keeps.
+function pushesKept(queryClient: QueryClient) {
+  return queryClient.getMutationCache().findAll({ mutationKey: ['plans', '2026-10-05', 'push'] }).length
+}
+
+// SupplyRunScreen is the Supply run screen, with a link back to the Plan.
+function SupplyRunScreen() {
+  return (
+    <>
+      <SupplyRunPage />
+      <Link to="/plan">Back to the Plan</Link>
+    </>
+  )
+}
+
+// supplyRun is the Supply run of the week of Oct 5 with needed of its 32
+// items still to buy.
+function supplyRun(needed: number) {
+  return {
+    weekStart: '2026-10-05',
+    label: 'Week 41 · Oct 5 – 11',
+    title: null,
+    status: 'current',
+    sent_to_chat_at: null,
+    needed_count: needed,
+    total_count: 32,
+    groups: [],
+  }
 }
 
 // Wednesday Oct 7, noon in New York: before Friday's 09:00 plan_draft, so
@@ -390,6 +465,236 @@ describe('PlanPage', () => {
     )
     expect(await screen.findByText('Lasagna')).toBeInTheDocument()
     expect(planReads(fetchMock)).toBe(2)
+  })
+
+  it("reads the week's Supply run again once a push has made it, and says it was made", async () => {
+    let run = () => errorResponse(404, 'not_found')
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      [`POST ${PUSH}`]: () => {
+        run = () => jsonResponse(200, supplyRun(28))
+        return jsonResponse(200, syncedNow(GENERATED))
+      },
+      'GET /api/v1/shopping/2026-10-05': () => run(),
+    })
+    await renderPage()
+
+    expect(await screen.findByRole('link', { name: 'Shopping list' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Looks good — push to Calendar' }))
+    expect(await screen.findByText('Synced to Google Calendar just now')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent("Made this week's Supply run from the plan.")
+    // The list made is read at once, not after the cached 404 goes stale.
+    expect(await screen.findByRole('link', { name: 'Shopping list · 28' })).toBeInTheDocument()
+    expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/v1/shopping/2026-10-05')).toHaveLength(2)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('says a Supply run in the Supply archive was left as it was', async () => {
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      [`POST ${PUSH}`]: () => jsonResponse(200, syncedNow(ARCHIVED)),
+    })
+    await renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Looks good — push to Calendar' }))
+    expect(await screen.findByText('Synced to Google Calendar just now')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent("This week's Supply run is in the Supply archive, so it was left as it was.")
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('says no Supply run was made when the plan changed after it was pushed, reads the plan again, and pushes again on Retry', async () => {
+    let plan = planBody('draft')
+    let push = () => {
+      plan = planBody('changed', ['Lasagna', ...NAMES.slice(1)])
+      return jsonResponse(200, syncedNow(PLAN_CHANGED))
+    }
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, plan),
+      [`POST ${PUSH}`]: () => push(),
+    })
+    await renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Looks good — push to Calendar' }))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(
+      'Pushed to Calendar, but the plan changed before its Supply run was made, so no shopping list was made from it; push it again.',
+    )
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    // The plan edited meanwhile is the one shown, not the one pushed.
+    expect(await screen.findByText('Lasagna')).toBeInTheDocument()
+    expect(screen.getByText('Changes not pushed to Google Calendar')).toBeInTheDocument()
+    expect(planReads(fetchMock)).toBe(2)
+
+    push = () => jsonResponse(200, syncedNow(GENERATED))
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByRole('status')).toHaveTextContent("Made this week's Supply run from the plan.")
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(posts(fetchMock)).toEqual([`${PUSH} undefined`, `${PUSH} undefined`])
+  })
+
+  it('says the Supply run could not be made after the push, and makes the shopping list again', async () => {
+    let generate = () => errorResponse(500, 'internal')
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      [`POST ${PUSH}`]: () => jsonResponse(200, syncedNow(SUPPLY_RUN_FAILED)),
+      'POST /api/v1/shopping/2026-10-05/generate': () => generate(),
+    })
+    await renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Looks good — push to Calendar' }))
+    // Calendar has the plan, but the push is not reported a quiet success.
+    expect(await screen.findByText('Synced to Google Calendar just now')).toBeInTheDocument()
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Pushed to Calendar, but this week's Supply run couldn't be made.")
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+
+    fireEvent.click(within(alert).getByRole('button', { name: 'Make the shopping list' }))
+    expect(
+      await screen.findByText("Pushed to Calendar, but this week's Supply run couldn't be made. Couldn't make the shopping list. internal message"),
+    ).toBeInTheDocument()
+
+    generate = () => jsonResponse(200, { ...supplyRun(28), skipped: [] })
+    fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: 'Make the shopping list' }))
+    expect(await screen.findByRole('status')).toHaveTextContent("Made this week's Supply run from the plan.")
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Shopping list · 28' })).toBeInTheDocument()
+    expect(posts(fetchMock)).toEqual([
+      `${PUSH} undefined`,
+      '/api/v1/shopping/2026-10-05/generate undefined',
+      '/api/v1/shopping/2026-10-05/generate undefined',
+    ])
+  })
+
+  it('no longer says the Supply run could not be made once the shopping list is made, after leaving the Plan and coming back', async () => {
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      [`POST ${PUSH}`]: () => jsonResponse(200, syncedNow(SUPPLY_RUN_FAILED)),
+      'POST /api/v1/shopping/2026-10-05/generate': () => jsonResponse(200, { ...supplyRun(28), skipped: [] }),
+    })
+    await renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Looks good — push to Calendar' }))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Pushed to Calendar, but this week's Supply run couldn't be made.")
+
+    // A Supply run never made is still said after leaving the Plan and
+    // coming back.
+    fireEvent.click(screen.getByRole('link', { name: 'Shopping list' }))
+    fireEvent.click(await screen.findByRole('link', { name: 'Back to the Plan' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent("Pushed to Calendar, but this week's Supply run couldn't be made.")
+
+    fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: 'Make the shopping list' }))
+    expect(await screen.findByRole('status')).toHaveTextContent("Made this week's Supply run from the plan.")
+
+    // Once made, it is not said again to be unmade.
+    fireEvent.click(screen.getByRole('link', { name: 'Shopping list · 28' }))
+    fireEvent.click(await screen.findByRole('link', { name: 'Back to the Plan' }))
+    expect(await screen.findByRole('link', { name: 'Shopping list · 28' })).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Make the shopping list' })).not.toBeInTheDocument()
+  })
+
+  it('still says the Supply run could not be made when making the shopping list fails after leaving the week', async () => {
+    const made = deferred()
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      [`GET ${NEXT_WEEK}`]: () => errorResponse(404, 'not_found'),
+      [`POST ${PUSH}`]: () => jsonResponse(200, syncedNow(SUPPLY_RUN_FAILED)),
+      'POST /api/v1/shopping/2026-10-05/generate': () => made.response,
+    })
+    await renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Looks good — push to Calendar' }))
+    fireEvent.click(within(await screen.findByRole('alert')).getByRole('button', { name: 'Make the shopping list' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Making the shopping list…')
+
+    // The week is left while the shopping list is being made, which fails.
+    fireEvent.click(screen.getByRole('button', { name: 'Next week' }))
+    expect(await screen.findByRole('button', { name: 'Draft this week' })).toBeInTheDocument()
+    await act(async () => made.send(errorResponse(500, 'internal')))
+
+    // Coming back, the Supply run is still said to be unmade, and can be
+    // made again.
+    fireEvent.click(screen.getByRole('button', { name: 'Previous week' }))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Pushed to Calendar, but this week's Supply run couldn't be made.")
+    expect(within(alert).getByRole('button', { name: 'Make the shopping list' })).toBeEnabled()
+  })
+
+  it('no longer says the Supply run could not be made once the shopping list is made after leaving the week', async () => {
+    const made = deferred()
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      [`GET ${NEXT_WEEK}`]: () => errorResponse(404, 'not_found'),
+      [`POST ${PUSH}`]: () => jsonResponse(200, syncedNow(SUPPLY_RUN_FAILED)),
+      'POST /api/v1/shopping/2026-10-05/generate': () => made.response,
+    })
+    const queryClient = createQueryClient()
+    await renderPage(queryClient)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Looks good — push to Calendar' }))
+    fireEvent.click(within(await screen.findByRole('alert')).getByRole('button', { name: 'Make the shopping list' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Making the shopping list…')
+
+    // The push is kept while the week is left, until the list is made: it
+    // is then settled, not merely swept with the week.
+    fireEvent.click(screen.getByRole('button', { name: 'Next week' }))
+    expect(await screen.findByRole('button', { name: 'Draft this week' })).toBeInTheDocument()
+    expect(pushesKept(queryClient)).toBe(1)
+    await act(async () => made.send(jsonResponse(200, { ...supplyRun(28), skipped: [] })))
+    expect(pushesKept(queryClient)).toBe(0)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Previous week' }))
+    expect(await screen.findByText('Beef tacos')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Make the shopping list' })).not.toBeInTheDocument()
+  })
+
+  it('no longer says the Supply run could not be made once the shopping list is made on the Supply run screen', async () => {
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      [`POST ${PUSH}`]: () => jsonResponse(200, syncedNow(SUPPLY_RUN_FAILED)),
+      'POST /api/v1/shopping/2026-10-05/generate': () => jsonResponse(200, { ...supplyRun(28), skipped: [] }),
+    })
+    const queryClient = createQueryClient()
+    await renderPage(queryClient, <SupplyRunScreen />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Looks good — push to Calendar' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent("Pushed to Calendar, but this week's Supply run couldn't be made.")
+
+    // The list is made on the Supply run screen, not from the Plan's alert.
+    fireEvent.click(screen.getByRole('link', { name: 'Shopping list' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Make the shopping list' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Make the shopping list' })).not.toBeInTheDocument())
+    expect(pushesKept(queryClient)).toBe(0)
+
+    fireEvent.click(screen.getByRole('link', { name: 'Back to the Plan' }))
+    expect(await screen.findByRole('link', { name: 'Shopping list · 28' })).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Make the shopping list' })).not.toBeInTheDocument()
+  })
+
+  it('still says the Supply run could not be made when making it on the Supply run screen fails', async () => {
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      [`POST ${PUSH}`]: () => jsonResponse(200, syncedNow(SUPPLY_RUN_FAILED)),
+      'POST /api/v1/shopping/2026-10-05/generate': () => errorResponse(500, 'internal'),
+    })
+    const queryClient = createQueryClient()
+    await renderPage(queryClient, <SupplyRunScreen />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Looks good — push to Calendar' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent("Pushed to Calendar, but this week's Supply run couldn't be made.")
+
+    fireEvent.click(screen.getByRole('link', { name: 'Shopping list' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Make the shopping list' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't make the shopping list.")
+    expect(pushesKept(queryClient)).toBe(1)
+
+    fireEvent.click(screen.getByRole('link', { name: 'Back to the Plan' }))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Pushed to Calendar, but this week's Supply run couldn't be made.")
+    expect(within(alert).getByRole('button', { name: 'Make the shopping list' })).toBeEnabled()
   })
 
   it('pushes nothing again until the changed plan is read and shown', async () => {
@@ -729,6 +1034,85 @@ describe('PlanPage', () => {
     expect(screen.queryByTestId('skeleton-tile')).not.toBeInTheDocument()
   })
 
+  it("links to the week's Supply run under the Draft board, saying how many items are still to buy", async () => {
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      'GET /api/v1/shopping/2026-10-05': () => jsonResponse(200, supplyRun(19)),
+    })
+    await renderPage()
+
+    const shopping = await screen.findByRole('link', { name: 'Shopping list · 19' })
+    expect(shopping).toHaveAttribute('href', '/plan/shopping?week=2026-10-05')
+    expect(declaredStyle(shopping).color).toBe('var(--color-accent-700)')
+    // It follows the push button and the sync status.
+    const push = screen.getByRole('button', { name: 'Looks good — push to Calendar' })
+    expect(push.compareDocumentPosition(shopping) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    fireEvent.click(shopping)
+    expect(await screen.findByText('Opened /plan/shopping?week=2026-10-05')).toBeInTheDocument()
+  })
+
+  it("shows a failed read of the week's shopping list with Retry, the link still opening the Supply run", async () => {
+    let failing = true
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      'GET /api/v1/shopping/2026-10-05': () => (failing ? errorResponse(500, 'internal') : jsonResponse(200, supplyRun(19))),
+    })
+    await renderPage()
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't load this week's shopping list. internal message")
+    expect(screen.getByRole('link', { name: 'Shopping list' })).toHaveAttribute('href', '/plan/shopping?week=2026-10-05')
+    // Retry reads it again.
+    failing = false
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+    const shopping = await screen.findByRole('link', { name: 'Shopping list · 19' })
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/v1/shopping/2026-10-05')).toHaveLength(2)
+    fireEvent.click(shopping)
+    expect(await screen.findByText('Opened /plan/shopping?week=2026-10-05')).toBeInTheDocument()
+  })
+
+  it("drops the count when reading the week's shopping list again fails, showing the failure with Retry", async () => {
+    let failing = false
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      'GET /api/v1/shopping/2026-10-05': () => (failing ? errorResponse(500, 'internal') : jsonResponse(200, supplyRun(19))),
+    })
+    await renderPage()
+    expect(await screen.findByRole('link', { name: 'Shopping list · 19' })).toBeInTheDocument()
+
+    // Coming back to the page once the Supply run is stale reads it again,
+    // and that read fails.
+    failing = true
+    vi.setSystemTime(new Date('2026-10-07T16:01:00Z'))
+    act(() => {
+      window.dispatchEvent(new Event('visibilitychange'))
+    })
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't load this week's shopping list. internal message")
+    expect(screen.getByRole('link', { name: 'Shopping list' })).toHaveAttribute('href', '/plan/shopping?week=2026-10-05')
+    expect(screen.queryByRole('link', { name: 'Shopping list · 19' })).not.toBeInTheDocument()
+    // Retry reads it again, and the count is back.
+    failing = false
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByRole('link', { name: 'Shopping list · 19' })).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('links to the Supply run with no count while the week has no shopping list', async () => {
+    const fetchMock = stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')) })
+    await renderPage()
+
+    expect(await screen.findByText('Beef tacos')).toBeInTheDocument()
+    await waitFor(() => expect(fetchMock.mock.calls.map(([input]) => String(input))).toContain('/api/v1/shopping/2026-10-05'))
+    const shopping = screen.getByRole('link', { name: 'Shopping list' })
+    expect(shopping).toHaveAttribute('href', '/plan/shopping?week=2026-10-05')
+    // No list is not a failure.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    fireEvent.click(shopping)
+    expect(await screen.findByText('Opened /plan/shopping?week=2026-10-05')).toBeInTheDocument()
+  })
+
   it('moves between weeks with the previous and next week buttons', async () => {
     stubServer({
       [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
@@ -1026,11 +1410,11 @@ describe.each([
     expect(screen.getByRole('button', { name: 'Next week' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'This week' }) !== null).toBe(layout === 'desktop')
 
-    // Actions: the shopping list unavailable, saying why; Rebuild week
-    // outlined and Push to Calendar primary, both working.
-    const shopping = screen.getByRole('button', { name: 'Shopping list' })
-    expect(shopping).toHaveAttribute('aria-disabled', 'true')
-    expect(shopping).toHaveAccessibleDescription('The shopping list arrives once the Supply run is built.')
+    // Actions: the shopping list, with no count while the week has no
+    // Supply run, and Rebuild week outlined; Push to Calendar primary.
+    const shopping = await screen.findByRole('link', { name: 'Shopping list' })
+    expect(shopping).not.toHaveAttribute('aria-disabled')
+    expect(shopping).not.toHaveAccessibleDescription()
     const push = screen.getByRole('button', { name: 'Push to Calendar' })
     expect(push).toBeEnabled()
     expect(push).not.toHaveAttribute('aria-disabled')
@@ -1038,7 +1422,6 @@ describe.each([
     const rebuild = screen.getByRole('button', { name: 'Rebuild week' })
     expect(rebuild).toBeEnabled()
     expect(declaredStyle(rebuild).borderColor).toBe('var(--color-neutral-300)')
-    fireEvent.click(shopping)
     expect(posts(fetchMock)).toEqual([])
     // Mobile's own pieces are not shown.
     expect(screen.queryByRole('button', { name: 'Looks good — push to Calendar' })).not.toBeInTheDocument()
@@ -1096,6 +1479,48 @@ describe.each([
     // The time is kept current.
     act(() => vi.advanceTimersByTime(58 * 60_000))
     expect(status).toHaveTextContent('Synced to Google Calendar 1 hr ago')
+  })
+
+  it("shows a failed read of the week's shopping list with Retry, the action still opening the Supply run", async () => {
+    let failing = true
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      'GET /api/v1/shopping/2026-10-05': () => (failing ? errorResponse(500, 'internal') : jsonResponse(200, supplyRun(28))),
+      ...lists,
+    })
+    await renderPage()
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't load this week's shopping list. internal message")
+    expect(screen.getByText('Spaghetti bolognese')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Shopping list' })).toHaveAttribute('href', '/plan/shopping?week=2026-10-05')
+    failing = false
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+    const shopping = await screen.findByRole('link', { name: 'Shopping list · 28' })
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    fireEvent.click(shopping)
+    expect(await screen.findByText('Opened /plan/shopping?week=2026-10-05')).toBeInTheDocument()
+  })
+
+  it("opens the week's Supply run from the Shopping list action, saying how many items are still to buy", async () => {
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      [`GET ${NEXT_WEEK}`]: () => errorResponse(404, 'not_found'),
+      'GET /api/v1/shopping/2026-10-05': () => jsonResponse(200, supplyRun(28)),
+      ...lists,
+    })
+    await renderPage()
+
+    const shopping = await screen.findByRole('link', { name: 'Shopping list · 28' })
+    expect(shopping).toHaveAttribute('href', '/plan/shopping?week=2026-10-05')
+    expect(declaredStyle(shopping).borderColor).toBe('var(--color-neutral-300)')
+    // Another week's action opens that week's, which has no list yet.
+    fireEvent.click(screen.getByRole('button', { name: 'Next week' }))
+    expect(await screen.findByRole('heading', { level: 1, name: 'Oct 12 – 18' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Shopping list' })).toHaveAttribute('href', '/plan/shopping?week=2026-10-12')
+    fireEvent.click(screen.getByRole('button', { name: 'Previous week' }))
+    fireEvent.click(await screen.findByRole('link', { name: 'Shopping list · 28' }))
+    expect(await screen.findByText('Opened /plan/shopping?week=2026-10-05')).toBeInTheDocument()
   })
 
   it('says changes to a pushed plan are not on Google Calendar', async () => {

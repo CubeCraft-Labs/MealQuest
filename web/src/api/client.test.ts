@@ -125,6 +125,66 @@ describe('apiFetch', () => {
     expect(api.forbidden()).toBe(false)
   })
 
+  it('shares a csrf refresh between requests, but one whose signal aborts stops waiting and the next refreshes afresh', async () => {
+    // The first refresh answers only when answerFirst is called; every other
+    // request answers at once.
+    let answerFirst!: (response: Response) => void
+    const mes: (AbortSignal | null | undefined)[] = []
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
+      if (String(input) === '/api/v1/me') {
+        mes.push(init?.signal)
+        if (mes.length === 2) return new Promise((resolve) => (answerFirst = resolve))
+        return Promise.resolve(jsonResponse(200, { ...ME, csrfToken: `token-${mes.length}` }))
+      }
+      const token = new Headers(init?.headers).get(CSRF_HEADER)
+      return Promise.resolve(token === 'token-1' ? errorResponse(403, 'csrf') : jsonResponse(201, { token }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const api = createApiClient(fakeLocation(), createNetworkStatus(window), createVerifiedSession(localStorage))
+    await api.loadMe()
+
+    const unbounded = api.apiFetch('/api/v1/jobs', { method: 'POST', body: {} })
+    const timedOut = new AbortController()
+    const bounded = api.apiFetch('/api/v1/jobs', { method: 'POST', body: {}, signal: timedOut.signal })
+    await vi.waitFor(() => expect(mes).toHaveLength(2))
+    timedOut.abort(new DOMException('no answer in time', 'TimeoutError'))
+    await expect(bounded).rejects.toMatchObject({ name: 'TimeoutError' })
+    // A request without a signal still waits for it, so it is not aborted.
+    expect(mes[1]!.aborted).toBe(false)
+
+    // A later csrf 403 does not wait on the refresh still in flight.
+    await expect(
+      api.apiFetch('/api/v1/jobs', { method: 'POST', body: {}, signal: new AbortController().signal }),
+    ).resolves.toEqual({ token: 'token-3' })
+    expect(mes).toHaveLength(3)
+
+    answerFirst(jsonResponse(200, { ...ME, csrfToken: 'token-2' }))
+    await expect(unbounded).resolves.toEqual({ token: 'token-2' })
+    expect(mes).toHaveLength(3)
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(5)
+  })
+
+  it('aborts a csrf refresh once the only request waiting for it aborts, without counting it as offline', async () => {
+    const mes: AbortSignal[] = []
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
+      if (String(input) !== '/api/v1/me') return Promise.resolve(errorResponse(403, 'csrf'))
+      if (mes.push(init!.signal!) === 1) return Promise.resolve(jsonResponse(200, ME))
+      return new Promise((_, reject) => init!.signal!.addEventListener('abort', () => reject(init!.signal!.reason as Error)))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const network = createNetworkStatus(window)
+    const api = createApiClient(fakeLocation(), network, createVerifiedSession(localStorage))
+    await api.loadMe()
+
+    const timedOut = new AbortController()
+    const bounded = api.apiFetch('/api/v1/jobs', { method: 'POST', body: {}, signal: timedOut.signal })
+    await vi.waitFor(() => expect(mes).toHaveLength(2))
+    timedOut.abort(new DOMException('no answer in time', 'TimeoutError'))
+    await expect(bounded).rejects.toMatchObject({ name: 'TimeoutError' })
+    expect(mes[1]!.aborted).toBe(true)
+    expect(network.offline()).toBe(false)
+  })
+
   it('marks any other 403 as not in this household and notifies subscribers', async () => {
     const fetchMock = stubFetch(errorResponse(403, 'forbidden'))
     const api = createApiClient(fakeLocation(), createNetworkStatus(window), createVerifiedSession(localStorage))
@@ -153,6 +213,18 @@ describe('apiFetch', () => {
 })
 
 describe('loadMe', () => {
+  it('aborts /me with its signal', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>((_, init) => new Promise((_, reject) => init!.signal!.addEventListener('abort', () => reject(init!.signal!.reason as Error)))),
+    )
+    const api = createApiClient(fakeLocation(), createNetworkStatus(window), createVerifiedSession(localStorage))
+    const timedOut = new AbortController()
+    const me = api.loadMe(timedOut.signal)
+    timedOut.abort(new DOMException('no answer in time', 'TimeoutError'))
+    await expect(me).rejects.toMatchObject({ name: 'TimeoutError' })
+  })
+
   it('rejects a /me response without a CSRF token', async () => {
     stubFetch(jsonResponse(200, { ...ME, csrfToken: '' }))
     const api = createApiClient(fakeLocation(), createNetworkStatus(window), createVerifiedSession(localStorage))

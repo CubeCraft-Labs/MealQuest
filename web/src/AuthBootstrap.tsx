@@ -20,7 +20,7 @@ export const meQueryKey = [ME_PATH] as const
 export function AuthBootstrap({ children }: { children: ReactNode }) {
   const api = useApi()
   const forbidden = useSyncExternalStore(api.subscribe, api.forbidden)
-  const me = useQuery({ queryKey: meQueryKey, queryFn: api.loadMe, staleTime: Infinity, networkMode: 'always' })
+  const me = useQuery({ queryKey: meQueryKey, queryFn: () => api.loadMe(), staleTime: Infinity, networkMode: 'always' })
   // fetch rejects with a TypeError only when the network fails.
   const savedPages = me.isError && me.error instanceof TypeError && api.session.verified()
   const { refetch } = me

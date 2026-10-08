@@ -1,0 +1,274 @@
+/* Supply run · shopping list (mocks 1l, 2b, 2f). */
+.page {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.mobile {
+  max-width: 440px;
+  padding-top: 8px;
+}
+
+.header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.heading {
+  flex: 1;
+  min-width: 0;
+}
+
+.kicker {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-accent-700);
+}
+
+.titleRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 30px;
+  font-weight: 400;
+  line-height: 1.1;
+}
+
+/* Still to buy / all items: at the right of the title on mobile, beside it
+   from tablet up, where the actions take the right. */
+.count {
+  margin: 0 0 0 auto;
+  font-family: var(--font-body);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--color-neutral-700);
+  white-space: nowrap;
+}
+
+.tablet .count,
+.desktop .count {
+  margin-left: 0;
+}
+
+.helper {
+  margin: 6px 0 0;
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--color-text);
+}
+
+.actions {
+  flex: none;
+  display: flex;
+  gap: 12px;
+}
+
+.action {
+  min-height: 44px;
+  text-decoration: none;
+}
+
+/* One card per dinner: stacked on mobile, three masonry columns from
+   tablet up. */
+.groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tablet .groups,
+.desktop .groups {
+  display: block;
+  column-count: 3;
+  column-gap: 16px;
+}
+
+.group {
+  box-sizing: border-box;
+  padding: 16px 18px 10px;
+  border-radius: 24px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  break-inside: avoid;
+}
+
+.tablet .group,
+.desktop .group {
+  margin-bottom: 16px;
+}
+
+.groupHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dinner {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1.2;
+}
+
+.day {
+  flex: none;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--color-neutral-700);
+}
+
+.items {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+/* The checkbox's label fills the row, so the whole row up to the quantity
+   is the hit area. */
+.check {
+  flex: 1;
+  min-width: 0;
+}
+
+.readOnly {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 44px;
+}
+
+/* An archived item's mark: the checkbox's look, not interactive. */
+.box {
+  box-sizing: border-box;
+  display: grid;
+  place-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--color-neutral-400);
+  border-radius: var(--radius-sm);
+}
+
+.item:not(.have) .box {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--on-accent);
+}
+
+.mark {
+  width: 14px;
+  height: 14px;
+}
+
+.name {
+  font-family: var(--font-body);
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.have .name {
+  text-decoration: line-through;
+  color: var(--color-neutral-700);
+}
+
+/* Toggled while the server cannot be reached: the change is saved here and
+   sent once it can be. */
+.willSync {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-neutral-700);
+  text-decoration: none;
+  vertical-align: middle;
+}
+
+.qty {
+  flex: none;
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--color-neutral-700);
+  text-align: right;
+}
+
+.have .qty {
+  font-weight: 700;
+}
+
+.sent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-accent-2-800);
+}
+
+.footer {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.archiveLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-accent-700);
+  text-decoration: none;
+}
+
+.skeletonTitle {
+  width: 220px;
+  height: 34px;
+}
+
+.skeletonGroup {
+  height: 160px;
+  border-radius: 24px;
+}
+
+.tablet .skeletonGroup,
+.desktop .skeletonGroup {
+  margin-bottom: 16px;
+  break-inside: avoid;
+}

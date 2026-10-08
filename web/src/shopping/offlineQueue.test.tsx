@@ -1,7 +1,7 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock, type MockInstance } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus, type NetworkWindow } from '../pwa/networkStatus.ts'
 import { HOUSEHOLD_SETTINGS } from '../test/ApiProviders.tsx'
@@ -211,6 +211,17 @@ async function advance(ms: number) {
   await act(() => vi.advanceTimersByTimeAsync(ms))
 }
 
+// The page's setTimeout, watched: retrySecondTry waits for a timer to be set.
+let timers: MockInstance<typeof setTimeout>
+
+// retrySecondTry jumps past the wait before a toggle's second try — RETRY_FIRST
+// doubled by its failed first try — once that wait's timer is set, so the jump
+// never lands before the timer it is meant to fire.
+async function retrySecondTry() {
+  await waitFor(() => expect(timers).toHaveBeenCalledWith(expect.any(Function), 2 * RETRY_FIRST))
+  await advance(2 * RETRY_FIRST)
+}
+
 function checkbox(name: string) {
   return screen.getByRole('checkbox', { name: new RegExp(`^${name}`) })
 }
@@ -227,6 +238,7 @@ beforeEach(() => {
   // a wait (advance).
   vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'], shouldAdvanceTime: true })
   vi.setSystemTime(new Date('2026-10-07T16:00:00Z'))
+  timers = vi.spyOn(globalThis, 'setTimeout')
 })
 
 afterEach(() => {
@@ -459,7 +471,7 @@ describe('offline toggle queue, replay', () => {
     expect(patches(server.fetchMock)).toHaveLength(1)
     expect(queue()).toEqual(['i3 true', 'i1 false'])
 
-    await advance(RETRY_FIRST)
+    await retrySecondTry()
     await waitFor(() => expect(queue()).toEqual([]))
     expect(patches(server.fetchMock)).toEqual([
       `${ITEM('i3')} {"needed":true}`,
@@ -492,7 +504,7 @@ describe('offline toggle queue, replay', () => {
     expect(patches(server.fetchMock)).toEqual([])
 
     // The next try sends a fresh /me, which the server answers.
-    await advance(RETRY_FIRST)
+    await retrySecondTry()
     await waitFor(() => expect(queue()).toEqual([]))
     expect(mes(server.fetchMock)).toBe(3)
     expect(patches(server.fetchMock)).toEqual([`${ITEM('i3')} {"needed":true}`, `${ITEM('i1')} {"needed":false}`])
@@ -532,7 +544,7 @@ describe('offline toggle queue, replay', () => {
     expect(queue()).toEqual(['i3 true', 'i1 false'])
 
     // The next try is refused again and sends a fresh refresh, which answers.
-    await advance(RETRY_FIRST)
+    await retrySecondTry()
     await waitFor(() => expect(queue()).toEqual([]))
     expect(patches(server.fetchMock)).toEqual([
       `${ITEM('i3')} {"needed":true}`,
@@ -555,8 +567,10 @@ describe('offline toggle queue, replay', () => {
     fireEvent.click(checkbox('Corn tortillas'))
     expect(await within(row('Corn tortillas')).findByText('will sync')).toBeInTheDocument()
     reachable = true
+    expect(patches(fetchMock)).toEqual([])
 
-    await advance(RETRY_FIRST)
+    // Nothing says the server is back: only the wait's timer tries it again.
+    await retrySecondTry()
     await waitFor(() => expect(queue()).toEqual([]))
     // The first try failed at GET /api/v1/me, before its PATCH.
     expect(patches(fetchMock)).toEqual([`${ITEM('i2')} {"needed":false}`])

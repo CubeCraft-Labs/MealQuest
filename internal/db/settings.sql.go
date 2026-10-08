@@ -10,6 +10,22 @@ import (
 	"database/sql"
 )
 
+const deleteIntegrationsGoogle = `-- name: DeleteIntegrationsGoogle :execrows
+DELETE FROM integrations_google
+WHERE id = 1 AND refresh_token_ct = ?
+`
+
+// Deletes the row only while it still holds refresh_token_ct, so a
+// connection made after the caller read the row is kept. Returns the number
+// of rows deleted.
+func (q *Queries) DeleteIntegrationsGoogle(ctx context.Context, refreshTokenCt []byte) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteIntegrationsGoogle, refreshTokenCt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const getAISettings = `-- name: GetAISettings :one
 SELECT id, provider, base_url, model, temperature, system_prompt, api_key_ct, api_key_last4, key_verified_at, created_at, updated_at FROM ai_settings
 WHERE id = 1

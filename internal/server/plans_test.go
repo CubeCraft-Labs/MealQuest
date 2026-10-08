@@ -56,7 +56,7 @@ func newPlansRouter(t *testing.T) plansEnv {
 		t.Fatal(err)
 	}
 	h, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t),
-		newTestDinners(t), newTestSuggest(t), svc, runner, newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
+		newTestDinners(t), newTestSuggest(t), svc, newTestGoogle(t), runner, newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
 	if err != nil {
 		t.Fatal(err)
 	}

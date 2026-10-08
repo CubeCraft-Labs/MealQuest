@@ -14,6 +14,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
@@ -45,12 +46,14 @@ type RouteMounter interface {
 // /decline; planSvc serves GET /api/v1/plans/{weekStart}, POST
 // /api/v1/plans/{weekStart}/draft, PUT
 // /api/v1/plans/{weekStart}/days/{date}, GET /api/v1/rotation-reviews and
-// POST /api/v1/dinners/{id}/rotation-review; runner serves
+// POST /api/v1/dinners/{id}/rotation-review; googleSvc serves GET
+// /api/v1/integrations/google/connect and /callback and DELETE
+// /api/v1/integrations/google; runner serves
 // POST /api/v1/jobs and GET /api/v1/jobs/{id}; photos serves
 // GET /media/photos/{id}-{size}.jpg; assets is the web build
 // served for every other GET. /health, /auth and the web build are public.
 // Requests to /api/v1 other than GET also need the session's CSRF token in CSRFHeader.
-func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, settings *household.SettingsService, search *recipes.SearchSettingsService, ai *aisettings.Service, dinnerSvc *dinners.Service, suggestSvc *suggest.Service, planSvc *plan.Service, runner *jobs.Runner, photos PhotoFiles, assets fs.FS) (http.Handler, error) {
+func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, settings *household.SettingsService, search *recipes.SearchSettingsService, ai *aisettings.Service, dinnerSvc *dinners.Service, suggestSvc *suggest.Service, planSvc *plan.Service, googleSvc *gcal.Service, runner *jobs.Runner, photos PhotoFiles, assets fs.FS) (http.Handler, error) {
 	if settings == nil {
 		return nil, errors.New("server: nil household settings service")
 	}
@@ -68,6 +71,9 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	}
 	if planSvc == nil {
 		return nil, errors.New("server: nil plan service")
+	}
+	if googleSvc == nil {
+		return nil, errors.New("server: nil Google Calendar service")
 	}
 	if runner == nil {
 		return nil, errors.New("server: nil job runner")
@@ -128,6 +134,12 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Put("/plans/{weekStart}/days/{date}", putPlanDay(logger, planSvc))
 	apiV1.Get("/rotation-reviews", getRotationReviews(logger, planSvc))
 	apiV1.Post("/dinners/{id}/rotation-review", postRotationReview(logger, planSvc))
+	// connect and callback are top-level browser navigations, so they are
+	// GETs: the Lax session cookie rides both and CSRF applies to neither.
+	// The callback's state is bound to the session that started connect.
+	apiV1.Get("/integrations/google/connect", getGoogleConnect(logger, googleSvc))
+	apiV1.Get("/integrations/google/callback", getGoogleCallback(logger, googleSvc))
+	apiV1.Delete("/integrations/google", deleteGoogle(logger, googleSvc))
 	apiV1.Post("/jobs", postJob(logger, runner))
 	apiV1.Get("/jobs/{id}", getJob(logger, runner))
 	media.Get("/photos/{name}", getPhoto(logger, photos))

@@ -618,6 +618,28 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
   not come back.
 - Connected once with Google OAuth in Settings; one event per planned
   dinner.
+- `internal/gcal` owns the connection, as a confidential OAuth web client
+  (`MEALQUEST_GOOGLE_CLIENT_ID`, `MEALQUEST_GOOGLE_CLIENT_SECRET_FILE`, both
+  required at boot) over plain REST — no Google SDK. All three routes are
+  under the signed-in `/api/v1`:
+  - `GET /api/v1/integrations/google/connect` redirects to Google's consent
+    screen with scopes `calendar.events` and `calendar.calendarlist.readonly`,
+    `access_type=offline`, `prompt=consent` and PKCE. Its `state` travels in
+    the signed `__Host-mealquest_google` flow cookie (the same
+    `auth.FlowCookie` mechanism as the login cookie), bound to the session by
+    a hash of the session's CSRF token.
+  - `GET /api/v1/integrations/google/callback` (the redirect URI:
+    `MEALQUEST_PUBLIC_URL`'s origin plus this path) checks the state and
+    session, exchanges the code, refuses a response with no refresh token
+    (`reconnect_required`) or without both scopes, seals the refresh token
+    with `secretbox` into `integrations_google.refresh_token_ct`, sets
+    `connected_at` and redirects to `/settings/calendar`. A reconnect keeps
+    the chosen calendar and clears `last_sync_error`.
+  - `DELETE /api/v1/integrations/google` (CSRF-checked) revokes the token at
+    Google, then deletes the row; a token Google reports as `invalid_token`
+    counts as revoked, and any other revoke failure keeps the connection.
+  - No response, log line or error ever holds a token or Google's response
+    text.
 - **Deterministic event ids**; each plan day records its
   `calendar_event_id`.
 

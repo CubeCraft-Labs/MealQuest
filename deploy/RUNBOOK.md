@@ -33,6 +33,8 @@ On office-srvr (10.60.1.14), as recorded on 2026-10-05:
 Elsewhere:
 
 - Admin access to Authentik at <https://auth.cubecraftlabs.com>.
+- Owner access to the Google Cloud project that holds MealQuest's OAuth
+  client (see "Google Calendar OAuth client").
 - SSH access to the Traefik host 10.60.1.33.
 - Cloudflare access for the `cubecraftlabs.com` zone, and admin access to
   both Pi-holes (10.60.1.101 `dns.ccl`, 10.60.1.85 `dns2.ccl`).
@@ -129,6 +131,7 @@ Values in use:
 | `MEALQUEST_OIDC_ISSUER` | `https://auth.cubecraftlabs.com/application/o/mealquest/` |
 | `MEALQUEST_OIDC_CLIENT_ID` | `i6zraqmWsF552b8nmte070LXz0SI5pRdArBxFxeq` (not a secret) |
 | `MEALQUEST_OIDC_ALLOWED_GROUPS` | `mealquest-admin` |
+| `MEALQUEST_GOOGLE_CLIENT_ID` | Client ID of the Google OAuth web client (not a secret; see "Google Calendar OAuth client") |
 | `MEALQUEST_SESSION_IDLE` / `MEALQUEST_SESSION_MAX` | `720h` / `4320h` |
 
 `MEALQUEST_HTTP_ADDR`, `MEALQUEST_DATA_DIR` and the `*_FILE` variables are
@@ -146,6 +149,7 @@ service refuses to start.
 | --- | --- | --- |
 | `secret_key` | base64 of 32 random bytes; encrypts stored secrets (AES-256-GCM) | `/run/secrets/secret_key` |
 | `oidc_client_secret` | Client Secret of the Authentik provider `mealquest` | `/run/secrets/oidc_client_secret` |
+| `google_client_secret` | Client secret of the Google OAuth web client | `/run/secrets/google_client_secret` |
 | `litestream_key` | dedicated SSH private key for the NAS (see "Backups") | `/etc/litestream/sftp_key` |
 | `searxng.env` | `SEARXNG_SECRET=<64 hex characters>`; SearXNG's secret key | not mounted; compose passes it as an environment variable |
 
@@ -156,11 +160,12 @@ it (as `env_file`), so it is owned by `overseer`, mode 0600.
 mkdir -p deploy/secrets && chmod 700 deploy/secrets
 head -c 32 /dev/urandom | base64 > deploy/secrets/secret_key
 printf '%s\n' '<Authentik client secret>' > deploy/secrets/oidc_client_secret
+printf '%s\n' '<Google OAuth client secret>' > deploy/secrets/google_client_secret
 # litestream_key: see "Backups" > "Database — Litestream"
-sudo chown 10001:10001 deploy/secrets/secret_key deploy/secrets/oidc_client_secret deploy/secrets/litestream_key
+sudo chown 10001:10001 deploy/secrets/secret_key deploy/secrets/oidc_client_secret deploy/secrets/google_client_secret deploy/secrets/litestream_key
 sudo chmod 600 deploy/secrets/*
 (umask 077; printf 'SEARXNG_SECRET=%s\n' "$(openssl rand -hex 32)" > deploy/secrets/searxng.env)
-sudo ls -la deploy/secrets   # three files mealquest mealquest, searxng.env overseer overseer; all -rw-------
+sudo ls -la deploy/secrets   # four files mealquest mealquest, searxng.env overseer overseer; all -rw-------
 ```
 
 The `mealquest` host user (uid/gid 10001) is created in "Media — nightly
@@ -237,6 +242,38 @@ curl -s -o /dev/null -w "%{http_code}\n" \
 On 2026-10-05 discovery returned 200 with issuer
 `https://auth.cubecraftlabs.com/application/o/mealquest/` and
 `id_token_signing_alg_values_supported: ["RS256"]`.
+
+## Google Calendar OAuth client
+
+Push to Calendar connects the household's Google account with a Google
+OAuth web client. MealQuest calls Google's OAuth and Calendar REST
+endpoints directly. **The service will not start without
+`MEALQUEST_GOOGLE_CLIENT_ID` and `deploy/secrets/google_client_secret`**,
+so create the client before deploying a release that contains Feature 16.
+
+In the Google Cloud console, in the project that holds MealQuest:
+
+| Object | Setting |
+| --- | --- |
+| API | Google Calendar API enabled |
+| OAuth consent screen | User type External; app name MealQuest; publishing status **In production** (a client left in Testing gets refresh tokens that expire after 7 days, so Push to Calendar would stop working a week after connecting) |
+| Scopes | `https://www.googleapis.com/auth/calendar.events` and `https://www.googleapis.com/auth/calendar.calendarlist.readonly` |
+| Credentials | OAuth client ID, application type **Web application**, name `mealquest` |
+| Authorized redirect URI | `https://mealquest.cubecraftlabs.com/api/v1/integrations/google/callback` (exactly; it is `MEALQUEST_PUBLIC_URL`'s origin plus that path) |
+| Client ID | in `deploy/.env` as `MEALQUEST_GOOGLE_CLIENT_ID` (not a secret) |
+| Client secret | in `deploy/secrets/google_client_secret` only |
+
+The app is unverified, so Google shows an "unverified app" warning on the
+consent screen; choose to continue. That is expected for a single-household
+deployment.
+
+To connect, a signed-in household member opens
+`https://mealquest.cubecraftlabs.com/api/v1/integrations/google/connect`
+(the Settings screen links there once it ships). MealQuest asks for offline
+access with consent always prompted, and lands back on
+`/settings/calendar` once the refresh token is stored. Disconnecting
+(`DELETE /api/v1/integrations/google`) revokes the token at Google and
+forgets it.
 
 ## Reverse proxy (Traefik)
 
@@ -1312,6 +1349,23 @@ docker compose -f deploy/compose.yaml up -d --force-recreate mealquest
 Sign in at <https://mealquest.cubecraftlabs.com> to confirm; sign-ins
 fail between regenerating the secret in Authentik and recreating the
 service.
+
+### Google OAuth client secret (`deploy/secrets/google_client_secret`)
+
+In the Google Cloud console, open the OAuth client `mealquest`, add a new
+client secret, write it to the file (same owner and mode as above) and
+recreate the service:
+
+```sh
+printf '%s\n' '<new Google OAuth client secret>' | sudo tee deploy/secrets/google_client_secret >/dev/null
+sudo chown 10001:10001 deploy/secrets/google_client_secret
+sudo chmod 600 deploy/secrets/google_client_secret
+docker compose -f deploy/compose.yaml up -d --force-recreate mealquest
+```
+
+Then disable and delete the old secret in the console. A new client secret
+leaves the household's stored refresh token valid, so nothing needs
+reconnecting.
 
 ### LLM API key
 

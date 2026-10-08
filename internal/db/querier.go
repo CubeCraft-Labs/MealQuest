@@ -243,6 +243,9 @@ type Querier interface {
 	SetPlanDayCalendarEvent(ctx context.Context, arg SetPlanDayCalendarEventParams) (int64, error)
 	// Marks item id needed (1) or "have it" (0).
 	SetShoppingItemNeeded(ctx context.Context, arg SetShoppingItemNeededParams) error
+	// Titles list id, unless it has a title already or is frozen into the
+	// Supply archive.
+	SetShoppingListTitle(ctx context.Context, arg SetShoppingListTitleParams) (int64, error)
 	// Marks a pending batch running; a batch in any other status is left as
 	// it is (0 rows).
 	StartSuggestionBatch(ctx context.Context, arg StartSuggestionBatchParams) (int64, error)

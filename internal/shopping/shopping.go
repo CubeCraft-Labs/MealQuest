@@ -5,19 +5,26 @@
 // Generate makes a week's Supply run from its plan, and remakes it after
 // the plan changes. It is deterministic and runs no model: an item is one
 // ingredient of the dinner's recipe exactly as recipe grounding stored it
-// (see Generate).
+// (see Generate). The one model call is the Supply run's title, written by
+// archive_title in a KindTitleSupplyRun job when the list is generated
+// untitled (see Generate).
 package shopping
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 )
 
@@ -35,6 +42,15 @@ const (
 	// SkipNoIngredients: the day's dinner's recipe lists no ingredients.
 	SkipNoIngredients = "no_ingredients"
 )
+
+// KindTitleSupplyRun is the job kind that titles a Supply run with
+// archive_title. Only Generate and GeneratePushed enqueue it.
+const KindTitleSupplyRun = "title_supply_run"
+
+// ReasonTitleFailed is the failure code of a KindTitleSupplyRun job that
+// stored no title: archive_title failed, or the Supply run was frozen or
+// replaced first. The Supply run stays untitled.
+const ReasonTitleFailed = "title_failed"
 
 // ErrPlanNotFound is a generation for a week with no plan.
 var ErrPlanNotFound = errors.New("the week has no plan")
@@ -54,17 +70,44 @@ var ErrListNotFound = errors.New("the week has no Supply run")
 // ErrItemNotFound is a change to an item on no Supply run.
 var ErrItemNotFound = errors.New("no Supply run has that item")
 
+// Titler runs archive_title on in; scope names the week, its plan revision
+// and its dinners.
+// In production it is skills.TitleArchive with the household's
+// harness.Config.
+type Titler func(ctx context.Context, scope string, in skills.ArchiveTitleRequest) (skills.ArchiveTitle, error)
+
 // Service generates Supply runs.
 type Service struct {
-	st *store.Store
+	st       *store.Store
+	title    Titler
+	titleJob *jobs.Kind[TitleJob]
+	logger   *slog.Logger
 }
 
-// NewService returns a service over st.
-func NewService(st *store.Store) (*Service, error) {
-	if st == nil {
+// NewService returns a service over st that titles Supply runs with title
+// in KindTitleSupplyRun jobs, which it registers on runner, and logs to
+// logger. runner must not have started yet.
+func NewService(st *store.Store, title Titler, runner *jobs.Runner, logger *slog.Logger) (*Service, error) {
+	switch {
+	case st == nil:
 		return nil, errors.New("shopping: nil store")
+	case title == nil:
+		return nil, errors.New("shopping: nil titler")
+	case runner == nil:
+		return nil, errors.New("shopping: nil job runner")
+	case logger == nil:
+		return nil, errors.New("shopping: nil logger")
 	}
-	return &Service{st: st}, nil
+	s := &Service{st: st, title: title, logger: logger}
+	kind, err := jobs.Register(runner, KindTitleSupplyRun, s.runTitleJob, ReasonTitleFailed)
+	if err != nil {
+		return nil, err
+	}
+	if err := kind.ServiceOnly(); err != nil {
+		return nil, err
+	}
+	s.titleJob = kind
+	return s, nil
 }
 
 // List is a Supply run.
@@ -142,6 +185,9 @@ type Generated struct {
 	// Skipped are the plan days whose dinner has no ingredients to shop
 	// for, by date.
 	Skipped []SkippedDay `json:"skipped"`
+	// TitleJobID is the KindTitleSupplyRun job titling the list; nil when
+	// the list already has its title.
+	TitleJobID *string `json:"title_job_id"`
 }
 
 // Generate makes the Supply run of the week starting weekStart from the
@@ -165,6 +211,16 @@ type Generated struct {
 // first one before, the second the second, and so on. Any other item is
 // new and needed; an item no longer on the plan is removed, and with it a
 // group no longer on the plan.
+//
+// A list still untitled once it is stored, as a new list always is, gets a
+// KindTitleSupplyRun job, enqueued in the same transaction, that titles it
+// with archive_title from the names of the plan's dinners in day order.
+// Generate returns without waiting for the job: the list is returned
+// untitled, with the job's id. A title is written once: a remake keeps it
+// and enqueues no job. Titling never fails the generation: a title that
+// cannot be written leaves the list untitled, the failure is logged and
+// the job failed with ReasonTitleFailed, and the next generation of the
+// week, Generate or GeneratePushed, tries again.
 //
 // A week with no plan is ErrPlanNotFound; a list frozen into the Supply
 // archive is ErrFrozen. A fetched recipe's ingredient without a name is an
@@ -206,7 +262,7 @@ func (s *Service) generate(ctx context.Context, weekStart store.LocalDate, check
 		if err := check(plan); err != nil {
 			return err
 		}
-		want, skipped, err := wanted(ctx, q, plan.ID)
+		want, skipped, dinnerNames, err := wanted(ctx, q, plan.ID)
 		if err != nil {
 			return err
 		}
@@ -235,12 +291,115 @@ func (s *Service) generate(ctx context.Context, weekStart store.LocalDate, check
 			return err
 		}
 		out = Generated{List: listOf(list, groups), Skipped: skipped}
+		if list.Title.Valid {
+			return nil
+		}
+		id, err := s.titleJob.EnqueueTx(ctx, tx, TitleJob{
+			ListID: list.ID, WeekStart: list.WeekStart, Revision: plan.Revision, Dinners: dinnerNames,
+		})
+		if err != nil {
+			return fmt.Errorf("shopping: enqueue title: %w", err)
+		}
+		out.TitleJobID = &id
 		return nil
 	})
 	if err != nil {
 		return Generated{}, err
 	}
+	if out.TitleJobID != nil {
+		s.titleJob.Wake()
+	}
 	return out, nil
+}
+
+// TitleJob is a KindTitleSupplyRun job's payload: the untitled Supply run
+// ListID of the week WeekStart, made from the plan at Revision, whose
+// dinners in day order are Dinners.
+type TitleJob struct {
+	ListID    string   `json:"list_id"`
+	WeekStart string   `json:"week_start"`
+	Revision  int64    `json:"revision"`
+	Dinners   []string `json:"dinners"`
+}
+
+// titleResult is a KindTitleSupplyRun job's result: the Supply run and the
+// title it has.
+type titleResult struct {
+	ListID string `json:"list_id"`
+	Title  string `json:"title"`
+}
+
+// PublicJSON returns the Supply run's id and title.
+func (r titleResult) PublicJSON() ([]byte, error) { return json.Marshal(r) }
+
+// runTitleJob titles the Supply run of p with archive_title and stores the
+// title. A title that cannot be stored leaves the list untitled: the
+// failure is logged and the job fails with ReasonTitleFailed.
+func (s *Service) runTitleJob(ctx context.Context, p TitleJob, _ func(titleResult) error) (titleResult, error) {
+	title, err := s.writeTitle(ctx, p)
+	if err != nil {
+		s.logger.WarnContext(ctx, "Supply run left untitled; its next generation titles it again",
+			"week", p.WeekStart, "list", p.ListID, "error", err)
+		return titleResult{}, &jobs.Failure{Code: ReasonTitleFailed}
+	}
+	return titleResult{ListID: p.ListID, Title: title}, nil
+}
+
+// writeTitle runs archive_title for p's Supply run and stores its title.
+// When the list was titled by another job, before this one ran or
+// meanwhile, that title stands and is returned.
+func (s *Service) writeTitle(ctx context.Context, p TitleJob) (string, error) {
+	q := db.New(s.st.Writer)
+	title, err := s.currentTitle(ctx, q, p)
+	if err != nil || title != "" {
+		return title, err
+	}
+	out, err := s.title(ctx, titleScope(p), skills.ArchiveTitleRequest{Dinners: p.Dinners})
+	if err != nil {
+		return "", fmt.Errorf("shopping: title: %w", err)
+	}
+	write, cancel := jobs.FinalWriteContext(ctx)
+	defer cancel()
+	n, err := q.SetShoppingListTitle(write, db.SetShoppingListTitleParams{
+		Title: sql.NullString{String: out.Title, Valid: true}, UpdatedAt: store.Now().String(), ID: p.ListID,
+	})
+	if err != nil {
+		return "", fmt.Errorf("shopping: store title: %w", err)
+	}
+	if n == 1 {
+		return out.Title, nil
+	}
+	title, err = s.currentTitle(write, q, p)
+	if err == nil && title == "" {
+		err = errors.New("shopping: store title: the Supply run is still untitled")
+	}
+	return title, err
+}
+
+// currentTitle returns the title of p's Supply run, or "" while it is
+// untitled. A list frozen or replaced untitled is an error: it can no
+// longer be titled.
+func (s *Service) currentTitle(ctx context.Context, q *db.Queries, p TitleJob) (string, error) {
+	list, err := q.GetShoppingList(ctx, p.WeekStart)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("shopping: title: read list: %w", err)
+	}
+	switch {
+	case err == nil && list.ID == p.ListID && list.Title.Valid:
+		return list.Title.String, nil
+	case err != nil || list.ID != p.ListID || frozen(list):
+		return "", errors.New("shopping: store title: the Supply run was frozen or replaced before its title was stored")
+	}
+	return "", nil
+}
+
+// titleScope is the archive_title scope of p: its week and plan revision,
+// and a fingerprint of its dinners in day order, so runs share a title only
+// when they title the same dinner names. A renamed dinner changes the
+// names but not the plan revision.
+func titleScope(p TitleJob) string {
+	names, _ := json.Marshal(p.Dinners) // a []string always encodes
+	return fmt.Sprintf("%s@%d/%x", p.WeekStart, p.Revision, sha256.Sum256(names))
 }
 
 // Get returns the Supply run of the week starting weekStart, as stored: a
@@ -365,18 +524,21 @@ type wantItem struct {
 }
 
 // wanted reads plan planID's days and their dinners' ingredients: the
-// groups the list must have, by date, and the days that get none.
-func wanted(ctx context.Context, q *db.Queries, planID string) ([]wantGroup, []SkippedDay, error) {
+// groups the list must have, by date, the days that get none, and the
+// names of the plan's dinners in day order.
+func wanted(ctx context.Context, q *db.Queries, planID string) ([]wantGroup, []SkippedDay, []string, error) {
 	days, err := q.ListPlanDays(ctx, planID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("shopping: read plan days: %w", err)
+		return nil, nil, nil, fmt.Errorf("shopping: read plan days: %w", err)
 	}
 	var (
 		groups  []wantGroup
 		skipped []SkippedDay
+		names   []string
 	)
 	for _, day := range days {
 		d := day.Dinner
+		names = append(names, d.Name)
 		skip := SkippedDay{Date: day.Date, DinnerID: d.ID, DinnerName: d.Name}
 		if !d.RecipeID.Valid {
 			skip.Reason = SkipNoRecipe
@@ -385,11 +547,11 @@ func wanted(ctx context.Context, q *db.Queries, planID string) ([]wantGroup, []S
 		}
 		recipe, err := q.GetRecipe(ctx, d.RecipeID.String)
 		if err != nil {
-			return nil, nil, fmt.Errorf("shopping: read recipe %s of dinner %s: %w", d.RecipeID.String, d.ID, err)
+			return nil, nil, nil, fmt.Errorf("shopping: read recipe %s of dinner %s: %w", d.RecipeID.String, d.ID, err)
 		}
 		ings, err := q.ListRecipeIngredients(ctx, recipe.ID)
 		if err != nil {
-			return nil, nil, fmt.Errorf("shopping: read ingredients of recipe %s: %w", recipe.ID, err)
+			return nil, nil, nil, fmt.Errorf("shopping: read ingredients of recipe %s: %w", recipe.ID, err)
 		}
 		if len(ings) == 0 {
 			skip.Reason = SkipNoIngredients
@@ -401,13 +563,13 @@ func wanted(ctx context.Context, q *db.Queries, planID string) ([]wantGroup, []S
 		for _, ing := range ings {
 			it, err := item(ing, manual)
 			if err != nil {
-				return nil, nil, fmt.Errorf("shopping: recipe %s: %w", recipe.ID, err)
+				return nil, nil, nil, fmt.Errorf("shopping: recipe %s: %w", recipe.ID, err)
 			}
 			g.items = append(g.items, it)
 		}
 		groups = append(groups, g)
 	}
-	return groups, skipped, nil
+	return groups, skipped, names, nil
 }
 
 // item is the item for ingredient ing of a recipe entered by hand

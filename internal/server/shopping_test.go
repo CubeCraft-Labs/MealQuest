@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -8,7 +9,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
@@ -375,6 +378,128 @@ func TestPushPlanMakesSupplyRun(t *testing.T) {
 	}
 	if !reflect.DeepEqual(l.render(), weekLines) {
 		t.Errorf("Supply run after push = %v", l.render())
+	}
+}
+
+// heldTitler is a shopping.Titler that reports each call on entered and
+// answers title only once release is closed.
+type heldTitler struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func newHeldTitler() heldTitler {
+	return heldTitler{entered: make(chan struct{}, 4), release: make(chan struct{})}
+}
+
+func (h heldTitler) title(ctx context.Context, _ string, _ skills.ArchiveTitleRequest) (skills.ArchiveTitle, error) {
+	h.entered <- struct{}{}
+	select {
+	case <-h.release:
+		return skills.ArchiveTitle{Title: "Chili and Friends"}, nil
+	case <-ctx.Done():
+		return skills.ArchiveTitle{}, ctx.Err()
+	}
+}
+
+// startRunner starts e's job runner, stopping it when the test ends. e's
+// logs must not be read while it runs.
+func (e plansEnv) startRunner(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := e.runner.Start(ctx); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		e.runner.Wait()
+	})
+}
+
+// waitEntered waits for the title call to begin.
+func (h heldTitler) waitEntered(t *testing.T) {
+	t.Helper()
+	select {
+	case <-h.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("archive_title was never called")
+	}
+}
+
+// waitTitled waits for the week's Supply run to have a title through GET
+// and returns it.
+func (e plansEnv) waitTitled(t *testing.T) string {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var l supplyRunJSON
+		callShopping(t, e, http.MethodGet, shoppingPath+"2026-10-12", "", &l)
+		if l.Title != nil {
+			return *l.Title
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the Supply run was never titled")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestPushPlanDoesNotWaitForTitle: Push to Calendar answers while the
+// Supply run's title is still being written; the list reads untitled until
+// the title job stores it.
+func TestPushPlanDoesNotWaitForTitle(t *testing.T) {
+	t.Parallel()
+	held := newHeldTitler()
+	e := newPlansRouterTitled(t, held.title)
+	e.groundWeek(t)
+	e.connectCalendar(t, true)
+	e.startRunner(t)
+
+	rec, body := callDinners(t, e.h, http.MethodPost, plansPath+"2026-10-12/push-calendar", "")
+	if rec.Code != http.StatusOK || body["status"] != "synced" {
+		t.Fatalf("push = %d %s", rec.Code, rec.Body)
+	}
+	if want := map[string]any{"status": "generated", "error": nil}; !reflect.DeepEqual(body["supply_run"], want) {
+		t.Errorf("supply_run = %v, want %v", body["supply_run"], want)
+	}
+	held.waitEntered(t)
+	var l supplyRunJSON
+	callShopping(t, e, http.MethodGet, shoppingPath+"2026-10-12", "", &l)
+	if l.Title != nil {
+		t.Errorf("title = %q while archive_title is still running, want null", *l.Title)
+	}
+
+	close(held.release)
+	if got := e.waitTitled(t); got != "Chili and Friends" {
+		t.Errorf("title = %q, want the title job's", got)
+	}
+}
+
+// TestSupplyRunGenerateDoesNotWaitForTitle: POST generate answers with the
+// list untitled while its title is still being written.
+func TestSupplyRunGenerateDoesNotWaitForTitle(t *testing.T) {
+	t.Parallel()
+	held := newHeldTitler()
+	e := newPlansRouterTitled(t, held.title)
+	e.groundWeek(t)
+	e.startRunner(t)
+
+	var l supplyRunJSON
+	if status, body := callShopping(t, e, http.MethodPost, shoppingPath+"2026-10-12/generate", "", &l); status != http.StatusOK {
+		t.Fatalf("generate = %d %v", status, body)
+	}
+	if l.Title != nil {
+		t.Errorf("title = %q while archive_title is still running, want null", *l.Title)
+	}
+	if !reflect.DeepEqual(l.render(), weekLines) {
+		t.Errorf("generated = %v, want %v", l.render(), weekLines)
+	}
+	held.waitEntered(t)
+
+	close(held.release)
+	if got := e.waitTitled(t); got != "Chili and Friends" {
+		t.Errorf("title = %q, want the title job's", got)
 	}
 }
 

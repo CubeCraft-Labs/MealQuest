@@ -133,7 +133,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	shopSvc, err := shopping.NewService(db)
+	shopSvc, err := shopping.NewService(db, archiveTitler(ai, guard), runner, logger)
 	if err != nil {
 		return err
 	}
@@ -280,7 +280,7 @@ func newJobRunner(db *store.Store, logger *slog.Logger) (*jobs.Runner, *jobKinds
 // service registers its own kinds when it is built, before the runner
 // starts (dinners.NewService registers dinners.KindGroundDinner and
 // suggest.NewService suggest.KindSuggestionBatch, plan.NewService
-// plan.KindDraftWeek).
+// plan.KindDraftWeek, shopping.NewService shopping.KindTitleSupplyRun).
 func registerJobKinds(runner *jobs.Runner) (*jobKinds, error) {
 	builtins, err := jobs.RegisterBuiltins(runner)
 	if err != nil {
@@ -322,6 +322,18 @@ func weekDrafter(ai *aisettings.Service, guard *harness.Guard) plan.Drafter {
 			return skills.Week{}, err
 		}
 		return skills.DraftWeek(ctx, cfg, scope, in)
+	}
+}
+
+// archiveTitler runs archive_title with the AI settings current at each
+// run, sharing guard.
+func archiveTitler(ai *aisettings.Service, guard *harness.Guard) shopping.Titler {
+	return func(ctx context.Context, scope string, in skills.ArchiveTitleRequest) (skills.ArchiveTitle, error) {
+		cfg, err := ai.HarnessConfig(ctx, guard)
+		if err != nil {
+			return skills.ArchiveTitle{}, err
+		}
+		return skills.TitleArchive(ctx, cfg, scope, in)
 	}
 }
 

@@ -1,6 +1,8 @@
 package shopping_test
 
 import (
+	"bytes"
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -8,10 +10,13 @@ import (
 	"log/slog"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/llm"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
@@ -42,6 +47,35 @@ type env struct {
 	planID  string
 	// ids are the dinners' ids by name.
 	ids map[string]string
+	// runner runs the title jobs, two at a time, once start starts it.
+	runner *jobs.Runner
+	// model answers archive_title, which titles the Supply runs; with
+	// nothing queued it fails, and the lists stay untitled.
+	model *llm.Fake
+	// beforeTitle, when set, runs as archive_title is asked for a title.
+	beforeTitle func()
+	// beforeModel, when set, runs as the model is sent a request.
+	beforeModel func(llm.Request)
+	// log holds what the service logged.
+	log *syncBuffer
+}
+
+// syncBuffer is a bytes.Buffer safe for concurrent use.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func newEnv(t *testing.T) *env {
@@ -59,11 +93,85 @@ func newEnv(t *testing.T) *env {
 	if err := store.Migrate(t.Context(), st.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	svc, err := shopping.NewService(st)
+	e := &env{st: st, dataDir: dataDir, ids: map[string]string{}, model: &llm.Fake{}, log: &syncBuffer{}}
+	guard, err := harness.NewGuard(harness.DefaultMaxCalls)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &env{svc: svc, st: st, dataDir: dataDir, ids: map[string]string{}}
+	cfg := harness.Config{
+		Settings:    llm.Settings{Provider: "anthropic", Model: "claude-test", Temperature: 0.7},
+		NewProvider: func(llm.Settings, string) (llm.Provider, error) { return hookedModel{e}, nil },
+		Store:       st,
+		Guard:       guard,
+	}
+	title := func(ctx context.Context, scope string, in skills.ArchiveTitleRequest) (skills.ArchiveTitle, error) {
+		if e.beforeTitle != nil {
+			e.beforeTitle()
+		}
+		return skills.TitleArchive(ctx, cfg, scope, in)
+	}
+	logger := slog.New(slog.NewTextHandler(e.log, nil))
+	e.runner, err = jobs.NewRunner(st, logger, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.svc, err = shopping.NewService(st, title, e.runner, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
+// hookedModel is the env's model, running beforeModel first.
+type hookedModel struct{ e *env }
+
+func (m hookedModel) Generate(ctx context.Context, req llm.Request) (llm.Response, error) {
+	if m.e.beforeModel != nil {
+		m.e.beforeModel(req)
+	}
+	return m.e.model.Generate(ctx, req)
+}
+
+func (m hookedModel) ListModels(ctx context.Context) ([]llm.Model, error) {
+	return m.e.model.ListModels(ctx)
+}
+
+func (m hookedModel) Verify(ctx context.Context) error { return m.e.model.Verify(ctx) }
+
+// start starts the env's job runner, stopping it when the test ends.
+func (e *env) start(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := e.runner.Start(ctx); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		e.runner.Wait()
+	})
+}
+
+// waitTitle waits for g's title job to finish and returns it.
+func (e *env) waitTitle(t *testing.T, g shopping.Generated) jobs.Job {
+	t.Helper()
+	if g.TitleJobID == nil {
+		t.Fatal("generation enqueued no title job")
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		job, err := e.runner.Get(t.Context(), *g.TitleJobID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if job.Status == jobs.StatusSucceeded || job.Status == jobs.StatusFailed {
+			return job
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("title job %s still %s", job.ID, job.Status)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // ing is a recipe ingredient as recipe grounding stores it: an empty
@@ -349,8 +457,13 @@ func TestGenerateSevenDayPlan(t *testing.T) {
 	}
 
 	// Generating again from the same plan changes nothing: same rows, same
-	// ids, no extra rows.
+	// ids, no extra rows. The list is still untitled, so it gets another
+	// title job.
 	again := e.generate(t)
+	if again.TitleJobID == nil || g.TitleJobID == nil || *again.TitleJobID == *g.TitleJobID {
+		t.Errorf("title jobs = %v then %v, want one per generation of the untitled list", deref(g.TitleJobID), deref(again.TitleJobID))
+	}
+	again.TitleJobID = g.TitleJobID
 	if !reflect.DeepEqual(again, g) {
 		t.Errorf("second generation =\n %+v\nwant the first\n %+v", again, g)
 	}

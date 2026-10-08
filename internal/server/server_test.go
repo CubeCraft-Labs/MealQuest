@@ -211,14 +211,26 @@ func newTestPlan(t *testing.T) *plan.Service {
 }
 
 // newTestShopping returns a shopping service over a migrated temp
-// database.
+// database, whose Supply runs stay untitled.
 func newTestShopping(t *testing.T) *shopping.Service {
 	t.Helper()
-	svc, err := shopping.NewService(newTestStore(t))
+	st := newTestStore(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	runner, err := jobs.NewRunner(st, logger, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := shopping.NewService(st, untitled, runner, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return svc
+}
+
+// untitled is a shopping.Titler with no model: every Supply run it is
+// asked to title stays untitled.
+func untitled(context.Context, string, skills.ArchiveTitleRequest) (skills.ArchiveTitle, error) {
+	return skills.ArchiveTitle{}, errors.New("no model in this test")
 }
 
 // newTestBox returns a secret box under a random key.

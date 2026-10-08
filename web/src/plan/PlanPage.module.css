@@ -414,6 +414,16 @@
   text-align: center;
 }
 
+/* What became of the week's Supply run after a push. */
+.pushed {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+  text-align: center;
+  color: var(--color-neutral-700);
+}
+
 /* The way to the week's Supply run under the Draft board on mobile. */
 .shoppingLink {
   display: inline-flex;

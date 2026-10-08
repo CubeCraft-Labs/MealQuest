@@ -7,7 +7,7 @@ import { QUEST_LOG_KEY } from '../discover/api.ts'
 import { Confirm } from '../settings/LeaveGuard.tsx'
 import { methodLabels } from '../settings/RegularsSettingsPage.tsx'
 import { formatClockTime, useHouseholdSettings } from '../settings/api.ts'
-import { supplyRunScreen, useSupplyRun } from '../shopping/api.ts'
+import { supplyRunScreen, useGenerateSupplyRun, useSupplyRun } from '../shopping/api.ts'
 import { useBreakpoint, type Breakpoint } from '../shell/useBreakpoint.ts'
 import { Button, type ButtonVariant } from '../ui/Button.tsx'
 import buttonStyles from '../ui/Button.module.css'
@@ -31,6 +31,7 @@ import {
   type PlanDay,
   type PlanDinner,
   type PlanStatus,
+  type PushedSupplyRun,
   type Swap,
 } from './api.ts'
 import { DragAnnouncer, DROP_DATE, DropBoard, PlanDragProvider, useDropTarget } from './drag.tsx'
@@ -86,6 +87,13 @@ const syncStatuses: Record<PlanStatus, string> = {
   draft: 'Not pushed to Google Calendar yet',
   synced: 'Synced to Google Calendar',
   changed: 'Changes not pushed to Google Calendar',
+}
+
+// supplyRunOutcomes says what became of the week's Supply run after a push
+// that made it or left it as it was.
+const supplyRunOutcomes: Record<Exclude<PushedSupplyRun['status'], 'failed'>, string> = {
+  generated: "Made this week's Supply run from the plan.",
+  archived: "This week's Supply run is in the Supply archive, so it was left as it was.",
 }
 
 // duration is minutes as the plan manager's cards say it: "45 min", "6 hr",
@@ -238,7 +246,9 @@ function SkeletonTiles({ label, layout, children }: { label: string; layout: Bre
 //
 // Push to Calendar, on either layout, sends the plan shown and shows it as
 // synced once the server answers; a failure says why, linking to the Google
-// Calendar settings when only they can fix it.
+// Calendar settings when only they can fix it. What became of the week's
+// Supply run is said too: made, left as it was in the Supply archive, or
+// not made, with the way to make it.
 function WeekBoard({
   weekStart,
   timezone,
@@ -259,6 +269,8 @@ function WeekBoard({
   const swap = useSwapDay(weekStart)
   const push = usePushToCalendar(weekStart)
   const run = useSupplyRun(weekStart)
+  // Makes the week's Supply run again after a push could not make it.
+  const generate = useGenerateSupplyRun(weekStart)
   const pushing = push.pending
   // The date of the day being swapped, while the swap sheet is open.
   const [swappingDate, setSwappingDate] = useState<string | null>(null)
@@ -328,6 +340,7 @@ function WeekBoard({
     if (!canPush) return
     swap.dismiss()
     push.reset()
+    generate.reset()
     push.mutate()
   }
 
@@ -339,6 +352,7 @@ function WeekBoard({
     setJobId(null)
     swap.dismiss()
     push.reset()
+    generate.reset()
     mutate(
       { weekStart, confirm },
       {
@@ -357,8 +371,33 @@ function WeekBoard({
     else start(false)
   }
 
+  const retryPush = cached ? () => void plan.refetch() : pushToCalendar
+  // makeShoppingList makes the week's Supply run again after a push could
+  // not make it. Once made, here or on the Supply run screen, the push is
+  // settled (useGenerateSupplyRun). A failure is the mutation's state, which
+  // generate.error reports.
+  function makeShoppingList() {
+    generate.mutate()
+  }
+  // A push's Supply run made again on the Plan stands for the push's, which
+  // is settled.
+  const supplyRun: PushedSupplyRun | null = generate.isSuccess ? { status: 'generated', error: null } : push.supplyRun
   const failure = push.error !== null ? (
-    <PushFailure error={push.error} cached={cached} onRetry={cached ? () => void plan.refetch() : pushToCalendar} />
+    <PushFailure error={push.error} cached={cached} onRetry={retryPush} />
+  ) : supplyRun?.status === 'failed' ? (
+    supplyRun.error.code === 'plan_changed' ? (
+      <ErrorBanner onRetry={retryPush}>
+        Pushed to Calendar, but the plan changed before its Supply run was made, so no shopping list was made from it; push
+        it again.
+      </ErrorBanner>
+    ) : (
+      <ErrorBanner onRetry={generate.isPending ? undefined : makeShoppingList} retryLabel="Make the shopping list">
+        Pushed to Calendar, but this week's Supply run couldn't be made.
+        {generate.isPending
+          ? ' Making the shopping list…'
+          : generate.isError && ` Couldn't make the shopping list. ${generate.error.message}`}
+      </ErrorBanner>
+    )
   ) : swap.failed !== null ? (
     <ErrorBanner onRetry={() => swapIn(swap.failed!.swap)}>
       Couldn't swap {weekdayName(swap.failed.swap.date)}'s dinner. {swap.failed.error.message}
@@ -376,6 +415,11 @@ function WeekBoard({
   ) : (
     <ErrorBanner onRetry={job.poll}>Couldn't check on the draft. {job.error.message}</ErrorBanner>
   )
+  const pushed = supplyRun !== null && supplyRun.status !== 'failed' && (
+    <p role="status" className={styles.pushed}>
+      {supplyRunOutcomes[supplyRun.status]}
+    </p>
+  )
   // A failed read of the week's Supply run is shown, with Retry, after the
   // Draft board's Shopping list link or under the plan manager's board; the
   // Shopping list action still opens the Supply run. The count is that of a
@@ -391,6 +435,7 @@ function WeekBoard({
   function swapIn(chosen: Swap) {
     setSwappingDate(null)
     push.reset()
+    generate.reset()
     swap.mutate(chosen)
   }
   // dropIn swaps in a dinner dragged onto a day. A drag is not picked up,
@@ -562,6 +607,7 @@ function WeekBoard({
       {header}
       {body}
       {failure}
+      {pushed}
       {layout !== 'mobile' && supplyRunFailure}
       <Confirm
         open={confirming}

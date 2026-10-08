@@ -5,6 +5,7 @@ import { isRecord } from '../api/errors.ts'
 import { METHODS, oneOf, photoId, type Method } from '../dinners/api.ts'
 import { QUEST_LOG_KEY } from '../discover/api.ts'
 import { noteGoogleFailure } from '../settings/calendarApi.ts'
+import { supplyRunKey } from '../shopping/api.ts'
 
 export const PLANS_PATH = '/api/v1/plans'
 
@@ -114,6 +115,56 @@ function parsePlan(where: string, weekStart: string, body: unknown, cached: bool
   }
 }
 
+// SupplyRunError is the API error a Push to Calendar's Supply run carries
+// when it was not generated.
+export type SupplyRunError<C extends string> = { code: C; message: string; retryable: boolean }
+
+// PushedSupplyRun says whether a Push to Calendar made the week's Supply
+// run: generated when it did; archived when the week's Supply run is in the
+// Supply archive and was left as it was; or failed when it was not made.
+// A failed one's error is plan_changed when the plan was edited after it
+// was pushed, and pushing again makes it, or supply_run_failed when it
+// could not be made, and making the shopping list again does.
+export type PushedSupplyRun =
+  | { status: 'generated'; error: null }
+  | { status: 'archived'; error: SupplyRunError<'archived'> }
+  | { status: 'failed'; error: SupplyRunError<'plan_changed' | 'supply_run_failed'> }
+
+// PushedPlan is the POST /api/v1/plans/{weekStart}/push-calendar answer:
+// the plan as synced, and what became of the week's Supply run.
+export type PushedPlan = { plan: Plan; supply_run: PushedSupplyRun }
+
+const PUSHED_SUPPLY_RUN_STATUSES = ['generated', 'archived', 'failed'] as const
+const FAILED_SUPPLY_RUN_CODES = ['plan_changed', 'supply_run_failed'] as const
+
+function parseSupplyRunError<C extends string>(where: string, codes: readonly C[], body: unknown): SupplyRunError<C> {
+  if (!isRecord(body) || typeof body.message !== 'string' || typeof body.retryable !== 'boolean') {
+    throw new Error(`${where}: supply_run has an error that is not an API error`)
+  }
+  return { code: oneOf(where, 'supply_run.error.code', codes, body.code), message: body.message, retryable: body.retryable }
+}
+
+function parsePushedSupplyRun(where: string, body: unknown): PushedSupplyRun {
+  if (!isRecord(body)) throw new Error(`${where}: response has no supply_run`)
+  const status = oneOf(where, 'supply_run.status', PUSHED_SUPPLY_RUN_STATUSES, body.status)
+  switch (status) {
+    case 'generated':
+      if (body.error !== null) throw new Error(`${where}: a generated supply_run has an error`)
+      return { status, error: null }
+    case 'archived':
+      return { status, error: parseSupplyRunError(where, ['archived'] as const, body.error) }
+    case 'failed':
+      return { status, error: parseSupplyRunError(where, FAILED_SUPPLY_RUN_CODES, body.error) }
+  }
+}
+
+function parsePushedPlan(where: string, weekStart: string, body: unknown): PushedPlan {
+  return {
+    plan: parsePlan(where, weekStart, body, false),
+    supply_run: parsePushedSupplyRun(where, isRecord(body) ? body.supply_run : undefined),
+  }
+}
+
 // parseDraftResult checks a draft_week job's result, which useJob passes on
 // unread, is the draft of the week starting on weekStart.
 export function parseDraftResult(where: string, weekStart: string, body: unknown): DraftResult {
@@ -178,6 +229,19 @@ function sameDay(a: PlanDay, b: PlanDay): boolean {
   )
 }
 
+// failed says whether a swap or push failed: a push whose Supply run was
+// not made failed too, though Calendar has the plan.
+function failed(mutation: Mutation): boolean {
+  return mutation.state.status === 'error' || unmade(mutation)
+}
+
+// unmade says whether a push succeeded but its Supply run was not made: the
+// week is on Calendar with no shopping list until one is made.
+function unmade(mutation: Mutation): boolean {
+  const data = mutation.state.data as PushedPlan | undefined
+  return mutation.state.status === 'success' && weekMutation(mutation)?.kind === 'push' && data?.supply_run.status === 'failed'
+}
+
 // weekMutation is the kind and week of a swap or push of a week the mutation
 // cache keeps for it, or null for any other mutation.
 function weekMutation(mutation: Mutation): { kind: 'swap' | 'push'; week: string } | null {
@@ -203,9 +267,13 @@ const weeksShown = new WeakMap<QueryClient, WeeksShown>()
 // earlier pending one must see, stay across leaving its week and coming
 // back. When one settles, the same is done, except that a week's latest,
 // when it failed, stays until a week is next shown, so that coming straight
-// back to it shows the failure. The cache holds at most the weeks shown's,
-// those of weeks left pending, and one failure of each week whose last
-// pending one settled since a week was last shown.
+// back to it shows the failure. A week's latest push whose Supply run was
+// not made stays whatever is shown: the week has no shopping list until one
+// is made, which settles the push, or a push sent since replaces it, and
+// making it may still be under way when the week is left. The cache holds
+// at most the weeks shown's, those of weeks left pending, one push of each
+// week whose Supply run was not made, and one failure of each week whose
+// last pending one settled since a week was last shown.
 function keepWeekMutations(queryClient: QueryClient): WeeksShown {
   const kept = weeksShown.get(queryClient)
   if (kept !== undefined) return kept
@@ -225,7 +293,7 @@ function keepWeekMutations(queryClient: QueryClient): WeeksShown {
       if (week.some((mutation) => mutation.state.status === 'pending')) continue
       const latest = week.at(-1)
       for (const mutation of week) {
-        if (settled && mutation === latest && mutation.state.status === 'error') continue
+        if (mutation === latest && (unmade(mutation) || (settled && failed(mutation)))) continue
         mutations.remove(mutation)
       }
     }
@@ -363,10 +431,12 @@ function pushKey(weekStart: string) {
 }
 
 // PushToCalendar is the push of one week, as the mutation cache holds it:
-// whether it is pending, and why the latest failed, if it failed.
+// whether it is pending, why the latest failed, if it failed, and what
+// became of the week's Supply run, if it succeeded.
 export type PushToCalendar = {
   pending: boolean
   error: Error | null
+  supplyRun: PushedSupplyRun | null
   mutate: () => void
   reset: () => void
 }
@@ -380,10 +450,19 @@ export type PushToCalendar = {
 // the one shown. One Google refused the grant for reads the Google Calendar
 // connection again, which is now reconnect required.
 //
+// Once pushed, the server makes the week's Supply run from the plan pushed
+// and answers with its outcome, which supplyRun reports: a failed one is
+// never a quiet success. The week's Supply run is read again, whatever the
+// outcome, so the list shown is the server's. A Supply run not made because
+// the plan was edited after it was pushed reads the plan again too, as a
+// push refused for that does.
+//
 // The week's pushes live in the mutation cache, not in the component, as its
 // swaps do, so leaving the week and coming back keeps one pending. reset
-// leaves settled pushes behind; it is refused while one is pending. Settled
-// pushes of a week no longer shown are left behind too
+// leaves settled pushes behind; it is refused while one is pending. A push
+// whose Supply run was not made is left behind once the list is made
+// (settleUnmadePushes). Settled pushes of a week no longer shown are left
+// behind too, but for the latest when its Supply run was not made
 // (keepWeekMutations).
 export function usePushToCalendar(weekStart: string): PushToCalendar {
   const { apiFetch } = useApi()
@@ -395,12 +474,17 @@ export function usePushToCalendar(weekStart: string): PushToCalendar {
   // The week's pushes, in the order sent.
   const pushes = useMutationState({
     filters: { mutationKey },
-    select: (mutation) => ({ status: mutation.state.status, error: mutation.state.error }),
+    select: (mutation) => ({
+      mutationId: mutation.mutationId,
+      status: mutation.state.status,
+      error: mutation.state.error,
+      data: mutation.state.data as PushedPlan | undefined,
+    }),
   })
   const latest = pushes.at(-1)
 
   function mutate() {
-    const mutation = mutations.build<Plan, Error, void, unknown>(queryClient, {
+    const mutation = mutations.build<PushedPlan, Error, void, unknown>(queryClient, {
       mutationKey,
       // Kept until reset or settled in a week not shown (keepWeekMutations):
       // a push pending in a week left must still be found when it is shown
@@ -408,9 +492,15 @@ export function usePushToCalendar(weekStart: string): PushToCalendar {
       gcTime: Infinity,
       mutationFn: async () => {
         const path = `${planPath(weekStart)}/push-calendar`
-        return parsePlan(`POST ${path}`, weekStart, await apiFetch<unknown>(path, { method: 'POST' }), false)
+        return parsePushedPlan(`POST ${path}`, weekStart, await apiFetch<unknown>(path, { method: 'POST' }))
       },
-      onSuccess: (plan) => queryClient.setQueryData<Plan>(key, plan),
+      onSuccess: async ({ plan, supply_run }) => {
+        queryClient.setQueryData<Plan>(key, plan)
+        void queryClient.invalidateQueries({ queryKey: supplyRunKey(weekStart) })
+        if (supply_run.error?.code === 'plan_changed') {
+          await queryClient.invalidateQueries({ queryKey: key, refetchType: 'all' })
+        }
+      },
       onError: async (error) => {
         noteGoogleFailure(queryClient, error)
         if (error instanceof ApiError && error.code === 'plan_changed') {
@@ -433,7 +523,26 @@ export function usePushToCalendar(weekStart: string): PushToCalendar {
   return {
     pending: pushes.some((push) => push.status === 'pending'),
     error: latest?.status === 'error' ? latest.error! : null,
+    supplyRun: latest?.status === 'success' ? latest.data!.supply_run : null,
     mutate,
     reset,
+  }
+}
+
+// settleUnmadePushes is called as the Supply run of the week starting on
+// weekStart starts being made, from the Plan or the Supply run screen
+// (useGenerateSupplyRun). The function it answers with is called once the
+// list is made: it leaves behind the week's pushes sent before whose Supply
+// run was not made, so the Plan does not say again that it is unmade, even
+// if the Plan was left meanwhile. A push sent since is kept, and a list not
+// made leaves them as they are.
+export function settleUnmadePushes(queryClient: QueryClient, weekStart: string): () => void {
+  const mutations = queryClient.getMutationCache()
+  const mutationKey = pushKey(weekStart)
+  const sent = new Set(mutations.findAll({ mutationKey }))
+  return () => {
+    for (const mutation of mutations.findAll({ mutationKey })) {
+      if (sent.has(mutation) && unmade(mutation)) mutations.remove(mutation)
+    }
   }
 }

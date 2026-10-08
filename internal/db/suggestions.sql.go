@@ -187,20 +187,39 @@ func (q *Queries) GetActiveSuggestionBatch(ctx context.Context) (SuggestionBatch
 	return i, err
 }
 
-const getDinnerSuggestionReason = `-- name: GetDinnerSuggestionReason :one
+const getDinnerSuggestionReasons = `-- name: GetDinnerSuggestionReasons :many
 SELECT reason FROM suggestions
-WHERE dinner_id = ?
-ORDER BY created_at, id
-LIMIT 1
+WHERE dinner_id = ? AND status IN ('pending', 'accepted')
+ORDER BY id
 `
 
-// The reason of the suggestion that created dinner_id, its earliest.
-// Returns sql.ErrNoRows for a dinner no suggestion created.
-func (q *Queries) GetDinnerSuggestionReason(ctx context.Context, dinnerID string) (string, error) {
-	row := q.db.QueryRowContext(ctx, getDinnerSuggestionReason, dinnerID)
-	var reason string
-	err := row.Scan(&reason)
-	return reason, err
+// The reason of each suggestion of dinner_id that can have created it,
+// none for a dinner no suggestion created. A suggestion is only ever
+// created with a new dinner, and declining one archives its dinner, so a
+// live dinner's creating suggestion is pending (the dinner still
+// suggested) or accepted; a declined one did not create it. More than one
+// row means nothing records which did.
+func (q *Queries) GetDinnerSuggestionReasons(ctx context.Context, dinnerID string) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, getDinnerSuggestionReasons, dinnerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var reason string
+		if err := rows.Scan(&reason); err != nil {
+			return nil, err
+		}
+		items = append(items, reason)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getLatestSuggestionBatch = `-- name: GetLatestSuggestionBatch :one

@@ -30,15 +30,16 @@ type Detail struct {
 	// the dinner has no recipe.
 	Ingredients []Ingredient `json:"ingredients"`
 	Steps       []string     `json:"steps"`
-	// Source is the recipe page the dinner is grounded in; null for a
-	// recipe entered by hand or a dinner with no recipe.
+	// Source is the site of the recipe page the dinner is grounded in;
+	// null for a recipe entered by hand or a dinner with no recipe.
 	Source          *Source `json:"source"`
 	GroundingStatus string  `json:"grounding_status"`
 	// GroundingError is why grounding failed, one of the Reason codes;
 	// null unless GroundingStatus is failed.
 	GroundingError *string `json:"grounding_error"`
-	// WhyPicked is the reason of the suggestion that created the dinner;
-	// null for a dinner no suggestion created.
+	// WhyPicked is the reason of the suggestion that created the dinner
+	// (see GetDinnerSuggestionReasons); null for a dinner no suggestion
+	// created.
 	WhyPicked *string `json:"why_picked"`
 }
 
@@ -54,9 +55,12 @@ type Ingredient struct {
 	RawText string  `json:"raw_text"`
 }
 
-// Source is the page a recipe was fetched from.
+// Source is the site a recipe was fetched from. It has no url: the page's
+// link, pasted or offered as a candidate, may carry a personal token, and
+// no stored link can be shown to be free of one, so like a dinner's
+// recipe_url and a candidate's page it never leaves the server. SiteName
+// is null when the page names no site.
 type Source struct {
-	URL      string  `json:"url"`
 	SiteName *string `json:"site_name"`
 }
 
@@ -113,12 +117,18 @@ func (s *Service) Get(ctx context.Context, id string) (d Detail, err error) {
 			return Detail{}, fmt.Errorf("dinners: read recipe of %s: %w", id, err)
 		}
 	}
-	reason, err := q.GetDinnerSuggestionReason(ctx, id)
-	switch {
-	case err == nil:
-		d.WhyPicked = &reason
-	case !errors.Is(err, sql.ErrNoRows):
+	reasons, err := q.GetDinnerSuggestionReasons(ctx, id)
+	if err != nil {
 		return Detail{}, fmt.Errorf("dinners: read suggestion reason of %s: %w", id, err)
+	}
+	switch len(reasons) {
+	case 0:
+	case 1:
+		d.WhyPicked = &reasons[0]
+	default:
+		// Nothing records which of them created the dinner, and any
+		// one picked would be a guess.
+		return Detail{}, fmt.Errorf("dinners: %s has %d suggestions that could have created it", id, len(reasons))
 	}
 	return d, nil
 }
@@ -130,13 +140,16 @@ func readRecipe(ctx context.Context, q *db.Queries, recipeID string, d *Detail) 
 		return fmt.Errorf("recipe %s: %w", recipeID, err)
 	}
 	if !IsManualRecipe(rec.SourceUrl) {
-		d.Source = &Source{URL: rec.SourceUrl, SiteName: nullString(rec.SiteName)}
+		d.Source = &Source{SiteName: nullString(rec.SiteName)}
 	}
 	ings, err := q.ListRecipeIngredients(ctx, recipeID)
 	if err != nil {
 		return fmt.Errorf("ingredients: %w", err)
 	}
-	for _, ing := range ings {
+	for i, ing := range ings {
+		if i > 0 && ing.Position == ings[i-1].Position {
+			return duplicatePosition("ingredient", ing.Position)
+		}
 		d.Ingredients = append(d.Ingredients, Ingredient{
 			Name:    nullString(ing.Name),
 			Qty:     nullString(ing.Qty),
@@ -149,8 +162,19 @@ func readRecipe(ctx context.Context, q *db.Queries, recipeID string, d *Detail) 
 	if err != nil {
 		return fmt.Errorf("steps: %w", err)
 	}
-	for _, step := range steps {
+	for i, step := range steps {
+		if i > 0 && step.Position == steps[i-1].Position {
+			return duplicatePosition("step", step.Position)
+		}
 		d.Steps = append(d.Steps, step.Text)
 	}
 	return nil
+}
+
+// duplicatePosition is the error for two recipe items of kind at position.
+// Position is the only record of recipe order, and the id that breaks the
+// tie says nothing about it, so a recipe with a duplicate is refused rather
+// than shown in an order nobody can trust.
+func duplicatePosition(kind string, position int64) error {
+	return fmt.Errorf("two %ss at position %d: recipe order is unknown", kind, position)
 }

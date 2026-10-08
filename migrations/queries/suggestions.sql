@@ -117,10 +117,13 @@ UPDATE dinners
 SET status = sqlc.arg(status), updated_by = sqlc.arg(updated_by), updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id) AND status = 'suggested';
 
--- name: GetDinnerSuggestionReason :one
--- The reason of the suggestion that created dinner_id, its earliest.
--- Returns sql.ErrNoRows for a dinner no suggestion created.
+-- name: GetDinnerSuggestionReasons :many
+-- The reason of each suggestion of dinner_id that can have created it,
+-- none for a dinner no suggestion created. A suggestion is only ever
+-- created with a new dinner, and declining one archives its dinner, so a
+-- live dinner's creating suggestion is pending (the dinner still
+-- suggested) or accepted; a declined one did not create it. More than one
+-- row means nothing records which did.
 SELECT reason FROM suggestions
-WHERE dinner_id = ?
-ORDER BY created_at, id
-LIMIT 1;
+WHERE dinner_id = ? AND status IN ('pending', 'accepted')
+ORDER BY id;

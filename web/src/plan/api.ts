@@ -430,6 +430,7 @@ export type PushToCalendar = {
   supplyRun: PushedSupplyRun | null
   mutate: () => void
   reset: () => void
+  settle: () => void
 }
 
 // usePushToCalendar pushes the plan of the week starting on weekStart to the
@@ -450,8 +451,10 @@ export type PushToCalendar = {
 //
 // The week's pushes live in the mutation cache, not in the component, as its
 // swaps do, so leaving the week and coming back keeps one pending. reset
-// leaves settled pushes behind; it is refused while one is pending. Settled
-// pushes of a week no longer shown are left behind too
+// leaves settled pushes behind; it is refused while one is pending. settle
+// leaves behind the push shown, once its failed Supply run has been made
+// another way, so it is not said again to be unmade; a push sent since is
+// kept. Settled pushes of a week no longer shown are left behind too
 // (keepWeekMutations).
 export function usePushToCalendar(weekStart: string): PushToCalendar {
   const { apiFetch } = useApi()
@@ -463,7 +466,12 @@ export function usePushToCalendar(weekStart: string): PushToCalendar {
   // The week's pushes, in the order sent.
   const pushes = useMutationState({
     filters: { mutationKey },
-    select: (mutation) => ({ status: mutation.state.status, error: mutation.state.error, data: mutation.state.data as PushedPlan | undefined }),
+    select: (mutation) => ({
+      mutationId: mutation.mutationId,
+      status: mutation.state.status,
+      error: mutation.state.error,
+      data: mutation.state.data as PushedPlan | undefined,
+    }),
   })
   const latest = pushes.at(-1)
 
@@ -504,11 +512,17 @@ export function usePushToCalendar(weekStart: string): PushToCalendar {
     for (const mutation of week) mutations.remove(mutation)
   }
 
+  function settle() {
+    const shown = mutations.findAll({ mutationKey }).find((mutation) => mutation.mutationId === latest?.mutationId)
+    if (shown !== undefined) mutations.remove(shown)
+  }
+
   return {
     pending: pushes.some((push) => push.status === 'pending'),
     error: latest?.status === 'error' ? latest.error! : null,
     supplyRun: latest?.status === 'success' ? latest.data!.supply_run : null,
     mutate,
     reset,
+    settle,
   }
 }

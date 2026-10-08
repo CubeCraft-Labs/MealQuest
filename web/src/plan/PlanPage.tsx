@@ -352,6 +352,7 @@ function WeekBoard({
     setJobId(null)
     swap.dismiss()
     push.reset()
+    generate.reset()
     mutate(
       { weekStart, confirm },
       {
@@ -371,8 +372,17 @@ function WeekBoard({
   }
 
   const retryPush = cached ? () => void plan.refetch() : pushToCalendar
-  // A push's Supply run made again on the Plan stands for the push's.
-  const supplyRun: PushedSupplyRun | null = push.supplyRun && (generate.isSuccess ? { status: 'generated', error: null } : push.supplyRun)
+  // makeShoppingList makes the week's Supply run again after a push could
+  // not make it. Once made, the push is settled, even if the Plan was left
+  // meanwhile: coming back does not say again that it couldn't be made. A
+  // failure is the mutation's state, which generate.error reports.
+  function makeShoppingList() {
+    const { settle } = push
+    generate.mutateAsync().then(settle, () => undefined)
+  }
+  // A push's Supply run made again on the Plan stands for the push's, which
+  // is settled.
+  const supplyRun: PushedSupplyRun | null = generate.isSuccess ? { status: 'generated', error: null } : push.supplyRun
   const failure = push.error !== null ? (
     <PushFailure error={push.error} cached={cached} onRetry={retryPush} />
   ) : supplyRun?.status === 'failed' ? (
@@ -382,7 +392,7 @@ function WeekBoard({
         it again.
       </ErrorBanner>
     ) : (
-      <ErrorBanner onRetry={generate.isPending ? undefined : () => generate.mutate()} retryLabel="Make the shopping list">
+      <ErrorBanner onRetry={generate.isPending ? undefined : makeShoppingList} retryLabel="Make the shopping list">
         Pushed to Calendar, but this week's Supply run couldn't be made.
         {generate.isPending
           ? ' Making the shopping list…'
@@ -426,6 +436,7 @@ function WeekBoard({
   function swapIn(chosen: Swap) {
     setSwappingDate(null)
     push.reset()
+    generate.reset()
     swap.mutate(chosen)
   }
   // dropIn swaps in a dinner dragged onto a day. A drag is not picked up,

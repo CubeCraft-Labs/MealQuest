@@ -1,6 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
+import { Link, MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
@@ -177,10 +177,16 @@ async function renderPage() {
   )
 }
 
-// Opened stands in for the screen a link opened, saying where it is.
+// Opened stands in for the screen a link opened, saying where it is, with
+// a link back to the Plan.
 function Opened() {
   const { pathname, search } = useLocation()
-  return <p>Opened {pathname + search}</p>
+  return (
+    <>
+      <p>Opened {pathname + search}</p>
+      <Link to="/plan">Back to the Plan</Link>
+    </>
+  )
 }
 
 // supplyRun is the Supply run of the week of Oct 5 with needed of its 32
@@ -540,6 +546,35 @@ describe('PlanPage', () => {
       '/api/v1/shopping/2026-10-05/generate undefined',
       '/api/v1/shopping/2026-10-05/generate undefined',
     ])
+  })
+
+  it('no longer says the Supply run could not be made once the shopping list is made, after leaving the Plan and coming back', async () => {
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      [`POST ${PUSH}`]: () => jsonResponse(200, syncedNow(SUPPLY_RUN_FAILED)),
+      'POST /api/v1/shopping/2026-10-05/generate': () => jsonResponse(200, { ...supplyRun(28), skipped: [] }),
+    })
+    await renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Looks good — push to Calendar' }))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Pushed to Calendar, but this week's Supply run couldn't be made.")
+
+    // A Supply run never made is still said after leaving the Plan and
+    // coming back.
+    fireEvent.click(screen.getByRole('link', { name: 'Shopping list' }))
+    fireEvent.click(await screen.findByRole('link', { name: 'Back to the Plan' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent("Pushed to Calendar, but this week's Supply run couldn't be made.")
+
+    fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: 'Make the shopping list' }))
+    expect(await screen.findByRole('status')).toHaveTextContent("Made this week's Supply run from the plan.")
+
+    // Once made, it is not said again to be unmade.
+    fireEvent.click(screen.getByRole('link', { name: 'Shopping list · 28' }))
+    fireEvent.click(await screen.findByRole('link', { name: 'Back to the Plan' }))
+    expect(await screen.findByRole('link', { name: 'Shopping list · 28' })).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Make the shopping list' })).not.toBeInTheDocument()
   })
 
   it('pushes nothing again until the changed plan is read and shown', async () => {

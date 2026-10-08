@@ -70,6 +70,20 @@ func getDinners(logger *slog.Logger, svc *dinners.Service) http.HandlerFunc {
 	}
 }
 
+// getDinner answers GET /dinners/{id} with the dinner, its recipe and the
+// reason it was suggested. An archived dinner is 404, like an unknown one,
+// not a 200 with its status: it has no detail to show.
+func getDinner(logger *slog.Logger, svc *dinners.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		d, err := svc.Get(r.Context(), chi.URLParam(r, "id"))
+		if err != nil {
+			writeDinnerError(w, r, logger, "get dinner", err)
+			return
+		}
+		writeJSON(w, r, logger, http.StatusOK, d)
+	}
+}
+
 // postDinner adds a Regular, recording the session's actor as updated_by,
 // and answers 201 with it and its grounding_job_id without waiting for the
 // job. When the job cannot be enqueued it still answers 201, with the dinner

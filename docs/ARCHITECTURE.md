@@ -204,6 +204,19 @@ automatic** (D-021).
   sets status `archived` and keeps the row; `POST
   /api/v1/dinners/{id}/favorite` toggles `is_favorite`. Every write records
   the session's subject as `updated_by`; an unknown id is 404.
+  `GET /api/v1/dinners/{id}` returns the dinner with its recipe, read in
+  one transaction: `{id, name, status, origin, method, minutes_total,
+  difficulty, cuisine, is_favorite, photo_urls, ingredients, steps,
+  source, grounding_status, grounding_error, why_picked}`. `photo_urls` is
+  `{"400": url, "1200": url}` (`/media/photos/{photo_id}-{size}.jpg`) or
+  null with no photo; `ingredients` is `[{name, qty, unit, note,
+  raw_text}]` and `steps` the step texts, both in recipe position order and
+  empty (`[]`) with no recipe, as for a dinner whose grounding is
+  `pending` or `failed`; a recipe entered by hand has only `raw_text`.
+  `source` is `{url, site_name}` of the page the recipe was fetched from,
+  null for a manual recipe or none; `why_picked` is the reason of the
+  suggestion that created the dinner (its earliest), null for one no
+  suggestion created. An unknown or archived dinner is 404.
 - Dinner grounding. `POST /api/v1/dinners` also enqueues a `ground_dinner`
   job and answers with its `grounding_job_id` without waiting for it
   (`GET /api/v1/jobs/{id}` reports it); if the job cannot be enqueued it

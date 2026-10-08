@@ -187,6 +187,22 @@ func (q *Queries) GetActiveSuggestionBatch(ctx context.Context) (SuggestionBatch
 	return i, err
 }
 
+const getDinnerSuggestionReason = `-- name: GetDinnerSuggestionReason :one
+SELECT reason FROM suggestions
+WHERE dinner_id = ?
+ORDER BY created_at, id
+LIMIT 1
+`
+
+// The reason of the suggestion that created dinner_id, its earliest.
+// Returns sql.ErrNoRows for a dinner no suggestion created.
+func (q *Queries) GetDinnerSuggestionReason(ctx context.Context, dinnerID string) (string, error) {
+	row := q.db.QueryRowContext(ctx, getDinnerSuggestionReason, dinnerID)
+	var reason string
+	err := row.Scan(&reason)
+	return reason, err
+}
+
 const getLatestSuggestionBatch = `-- name: GetLatestSuggestionBatch :one
 SELECT id, "trigger", status, ai_run_id, created_at, updated_at FROM suggestion_batches
 ORDER BY id DESC

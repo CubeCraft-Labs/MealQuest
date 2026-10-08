@@ -86,13 +86,19 @@ func newDinnersEnv(t *testing.T) *dinnersEnv {
 		t.Fatal(err)
 	}
 	e.runner = runner
-	g := recipestest.NewGrounder(t, st, t.TempDir(), e.search, e.pages, e.images, e.model)
+	// The router serves the photos the grounder caches.
+	dataDir := t.TempDir()
+	g := recipestest.NewGrounder(t, st, dataDir, e.search, e.pages, e.images, e.model)
+	photos, err := recipes.NewPhotoCache(e.images, st, dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	svc, err := dinners.NewService(st, g, runner, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
 	e.h, err = NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t),
-		svc, newTestSuggest(t), newTestPlan(t), newTestShopping(t), newTestGoogle(t), runner, newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
+		svc, newTestSuggest(t), newTestPlan(t), newTestShopping(t), newTestGoogle(t), runner, photos, fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
 	if err != nil {
 		t.Fatal(err)
 	}

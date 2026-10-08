@@ -116,3 +116,11 @@ WHERE id = sqlc.arg(id) AND status = 'pending';
 UPDATE dinners
 SET status = sqlc.arg(status), updated_by = sqlc.arg(updated_by), updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id) AND status = 'suggested';
+
+-- name: GetDinnerSuggestionReason :one
+-- The reason of the suggestion that created dinner_id, its earliest.
+-- Returns sql.ErrNoRows for a dinner no suggestion created.
+SELECT reason FROM suggestions
+WHERE dinner_id = ?
+ORDER BY created_at, id
+LIMIT 1;

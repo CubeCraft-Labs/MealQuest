@@ -103,6 +103,9 @@ type Querier interface {
 	// Returns sql.ErrNoRows until the row exists.
 	GetChatSettings(ctx context.Context) (ChatSetting, error)
 	GetDinner(ctx context.Context, id string) (Dinner, error)
+	// The reason of the suggestion that created dinner_id, its earliest.
+	// Returns sql.ErrNoRows for a dinner no suggestion created.
+	GetDinnerSuggestionReason(ctx context.Context, dinnerID string) (string, error)
 	// Returns sql.ErrNoRows until the row exists.
 	GetHouseholdSettings(ctx context.Context) (HouseholdSetting, error)
 	// Returns sql.ErrNoRows until the row exists.

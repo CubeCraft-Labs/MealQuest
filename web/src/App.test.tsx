@@ -33,6 +33,7 @@ const SCREENS = {
   '/onboarding': true,
   '/plan': true,
   '/plan/shopping': true,
+  '/plan/shopping/archive': true,
   '/discover': true,
   '/settings': true,
   '/settings/ai': true,
@@ -128,6 +129,18 @@ describe('App routes', () => {
     const heading = await screen.findByRole('heading', { level: 1, name: 'Shopping list' })
     expect(screen.getByRole('main')).toContainElement(heading)
     expect(await screen.findByRole('checkbox', { name: 'Ground beef' })).toBeChecked()
+  })
+
+  it('/plan/shopping/archive renders the Supply archive inside the shell', async () => {
+    mockViewport(390)
+    stubFetchByPath({
+      ...SIGNED_IN,
+      '/api/v1/shopping/archive?by=week': () => jsonResponse(200, { by: 'week', periods: [] }),
+    })
+    renderAt('/plan/shopping/archive')
+    const heading = await screen.findByRole('heading', { level: 1, name: 'Supply archive' })
+    expect(screen.getByRole('main')).toContainElement(heading)
+    expect(await screen.findByText('Nothing archived yet')).toBeInTheDocument()
   })
 
   it('/discover renders the Side quests deck inside the shell', async () => {

@@ -497,3 +497,77 @@ function shown(run: SupplyRun, pending: Toggle[]): SupplyRun {
   }))
   return { ...run, needed_count: needed, groups }
 }
+
+export const ARCHIVE_PERIODS = ['week', 'month', 'year'] as const
+
+// ArchivePeriod is what the Supply archive is grouped by.
+export type ArchivePeriod = (typeof ARCHIVE_PERIODS)[number]
+
+// ArchivePost is one week's Supply run in the Supply archive: label is the
+// week label, "Week 41 · Oct 5 – 11", which stands in for title while it is
+// null; onHandCount counts the items marked "have it", and dinners names the
+// dinners in day order. current is true for the household's current week.
+export type ArchivePost = {
+  weekStart: string
+  label: string
+  title: string | null
+  dinnerCount: number
+  itemCount: number
+  onHandCount: number
+  dinners: string[]
+  current: boolean
+}
+
+// ArchiveGroup is one period of the Supply archive — a week, a month
+// ("October 2026") or a year ("2026") — and its posts, newest first.
+export type ArchiveGroup = { key: string; heading: string; posts: ArchivePost[] }
+
+function parsePost(where: string, body: unknown): ArchivePost {
+  if (
+    !isRecord(body) ||
+    typeof body.weekStart !== 'string' ||
+    typeof body.label !== 'string' ||
+    (body.title !== null && typeof body.title !== 'string') ||
+    !Array.isArray(body.dinners) ||
+    !body.dinners.every((name) => typeof name === 'string') ||
+    typeof body.current !== 'boolean'
+  ) {
+    throw new Error(`${where}: response has a post that is not a Supply archive post`)
+  }
+  return {
+    weekStart: body.weekStart,
+    label: body.label,
+    title: body.title,
+    dinnerCount: count(where, 'dinnerCount', body.dinnerCount),
+    itemCount: count(where, 'itemCount', body.itemCount),
+    onHandCount: count(where, 'onHandCount', body.onHandCount),
+    dinners: body.dinners as string[],
+    current: body.current,
+  }
+}
+
+function parseArchiveGroup(where: string, body: unknown): ArchiveGroup {
+  if (!isRecord(body) || typeof body.key !== 'string' || typeof body.heading !== 'string' || !Array.isArray(body.posts)) {
+    throw new Error(`${where}: response has a period that is not a Supply archive period`)
+  }
+  return { key: body.key, heading: body.heading, posts: body.posts.map((post) => parsePost(where, post)) }
+}
+
+// useSupplyArchive is the Supply archive grouped by by, newest first (GET
+// /api/v1/shopping/archive?by=week|month|year): the server groups it in the
+// household's zone, so it is shown as answered, never grouped again here.
+export function useSupplyArchive(by: ArchivePeriod) {
+  const { apiRead } = useApi()
+  return useQuery({
+    queryKey: ['supply archive', by] as const,
+    queryFn: async (): Promise<ArchiveGroup[]> => {
+      const path = `${SHOPPING_PATH}/archive?${new URLSearchParams({ by })}`
+      const where = `GET ${path}`
+      const { body } = await apiRead<unknown>(path)
+      if (!isRecord(body) || body.by !== by || !Array.isArray(body.periods)) {
+        throw new Error(`${where}: response is not the Supply archive by ${by}`)
+      }
+      return body.periods.map((period) => parseArchiveGroup(where, period))
+    },
+  })
+}

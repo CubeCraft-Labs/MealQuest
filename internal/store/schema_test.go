@@ -136,6 +136,7 @@ func testRow(table string, i int) map[string]any {
 	case "shopping_groups":
 		r["list_id"] = rowID("shopping_lists", 0)
 		r["dinner_id"] = rowID("dinners", 0)
+		r["date"] = fmt.Sprintf("2026-01-%02d", i+5)
 		r["position"] = i
 	case "shopping_items":
 		r["group_id"] = rowID("shopping_groups", 0)

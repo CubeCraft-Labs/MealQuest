@@ -102,8 +102,8 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 | `week_plans` | week_start (unique), status (`draft` / `synced` / `changed`), ai_note, ai_run_id, calendar_synced_at, revision (raised by every swap and stored draft). |
 | `plan_days` | plan_id, date (unique per plan), dinner_id, is_new, calendar_event_id (set while the chosen calendar shows the day as planned; cleared when its dinner changes, another calendar is chosen or Google Calendar is disconnected). |
 | `rotation_reviews` | dinner_id + plan_date (unique), status, decision (`keep` / `drop` / `not_made`), name (set only by a drop: the dinner's name when dropped, kept whatever it is later renamed, so a drop stays among the passed names), decided_at, updated_by. |
-| `shopping_lists` | week_start (unique), plan_id, title, status (`current` / `archived`), sent_to_chat_at, frozen_at. |
-| `shopping_groups` / `shopping_items` | One group per dinner/day; item name, qty, needed (bool), position. |
+| `shopping_lists` | week_start (unique), plan_id, title (the AI-written post title; NULL until written or when the AI fails, when the week label is shown instead; never empty), status (`current` / `archived`), sent_to_chat_at, frozen_at. |
+| `shopping_groups` / `shopping_items` | One group per plan day with ingredients: dinner_id, date, position (by date). Item name, qty (the display quantity, NULL when the recipe gives none), needed (bool), position. Made by `shopping.Generate` from the plan, with no model call: an item is a grounded recipe ingredient's normalized name with qty and unit joined ("2 cups"), or a manual recipe's line as typed with no qty. Regenerating keeps the id and needed flag of an item whose (dinner_id, name) is unchanged. |
 | `ai_settings` | One row: provider, base_url, model, temperature, system_prompt, api_key_ct, api_key_last4, key_verified_at. |
 | `recipe_search_settings` | One row: provider (`searxng` / `brave`), base_url (the SearXNG instance), api_key_ct and api_key_last4 (Brave). |
 | `integrations_google` | One row: refresh_token_ct, calendar_id, calendar_name, connected_at, last_sync_error. |

@@ -258,6 +258,7 @@ type ShoppingGroup struct {
 	ID        string
 	ListID    string
 	DinnerID  string
+	Date      string
 	Position  int64
 	CreatedAt string
 	UpdatedAt string
@@ -278,7 +279,7 @@ type ShoppingList struct {
 	ID           string
 	WeekStart    string
 	PlanID       string
-	Title        string
+	Title        sql.NullString
 	Status       string
 	SentToChatAt sql.NullString
 	FrozenAt     sql.NullString

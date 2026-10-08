@@ -93,6 +93,51 @@ func TestRefusedGrantRequiresReconnect(t *testing.T) {
 	}
 }
 
+// TestRefusedGrantBeforeACalendarIsChosen refuses the grant while no
+// calendar is chosen, on each call that can record it then (listing and
+// choosing): every Calendar call, push included, is ErrReconnect rather than
+// ErrNoCalendar, since only connecting again restores the grant. After
+// connecting again and choosing a calendar, a push succeeds.
+func TestRefusedGrantBeforeACalendarIsChosen(t *testing.T) {
+	t.Parallel()
+	for refusal, refuse := range refusals {
+		for _, call := range []string{"list calendars", "choose a calendar"} {
+			t.Run(refusal+"/"+call, func(t *testing.T) {
+				t.Parallel()
+				h := connected(t)
+				refuse(h.google)
+				if err := calls[call](h); !errors.Is(err, gcal.ErrReconnect) {
+					t.Fatalf("%s = %v, want ErrReconnect", call, err)
+				}
+				if row, _ := h.row(t); row.RefreshTokenCt != nil || row.CalendarID.Valid {
+					t.Fatalf("row = %+v, want the grant cleared and no calendar chosen", row)
+				}
+				tokens, cals, events := h.google.TokenCalls(), h.google.CalendarCalls(), h.google.EventRequests()
+				for again, do := range calls {
+					if err := do(h); !errors.Is(err, gcal.ErrReconnect) {
+						t.Errorf("%s after the refusal = %v, want ErrReconnect", again, err)
+					}
+				}
+				if h.google.TokenCalls() != tokens || h.google.CalendarCalls() != cals || h.google.EventRequests() != events {
+					t.Error("a call reached Google after the grant was refused")
+				}
+
+				h.google.AcceptAccessToken()
+				c := h.connect(t, session)
+				if _, err := h.callback(c, session, h.consented(c)); err != nil {
+					t.Fatalf("Complete: %v", err)
+				}
+				if _, err := h.svc.SelectCalendar(context.Background(), dinners.ID); err != nil {
+					t.Fatalf("SelectCalendar after connecting again: %v", err)
+				}
+				if err := h.svc.PushEvents(context.Background(), []gcal.Event{event("abcde")}, noRecord); err != nil {
+					t.Errorf("PushEvents after connecting again: %v", err)
+				}
+			})
+		}
+	}
+}
+
 // TestReconnectAfterRefusal connects again after Google refused the grant:
 // the new token is stored, the reason cleared and the calendar kept.
 func TestReconnectAfterRefusal(t *testing.T) {

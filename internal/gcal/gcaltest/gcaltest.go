@@ -282,6 +282,14 @@ func (g *Google) RejectAccessToken() {
 	g.rejectAccess = true
 }
 
+// AcceptAccessToken undoes RejectAccessToken, as Google does for the grant
+// of a later connection.
+func (g *Google) AcceptAccessToken() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.rejectAccess = false
+}
+
 // CalendarCalls is how many requests reached the calendarList endpoint.
 func (g *Google) CalendarCalls() int {
 	g.mu.Lock()

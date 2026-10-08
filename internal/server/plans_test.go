@@ -473,6 +473,30 @@ func TestPushPlanToCalendarErrors(t *testing.T) {
 	}
 }
 
+// TestPushPlanAfterRefusalWithNoCalendar pushes after Google refused the
+// grant while listing calendars, before any was chosen: the push is 409
+// google_reconnect_required, not no_calendar, since only connecting again
+// restores it. After connecting again and choosing a calendar it succeeds.
+func TestPushPlanAfterRefusalWithNoCalendar(t *testing.T) {
+	t.Parallel()
+	e := newPlansRouter(t)
+	e.connectCalendar(t, false)
+	e.google.RevokeGrant()
+	if _, err := e.gcal.Calendars(t.Context()); !errors.Is(err, gcal.ErrReconnect) {
+		t.Fatalf("Calendars = %v, want ErrReconnect", err)
+	}
+
+	rec, body := e.push(t, "2026-10-12")
+	if rec.Code != http.StatusConflict || errorCode(body) != "google_reconnect_required" {
+		t.Errorf("push = %d %s, want 409 google_reconnect_required", rec.Code, rec.Body)
+	}
+
+	e.connectCalendar(t, true)
+	if rec, _ := e.push(t, "2026-10-12"); rec.Code != http.StatusOK {
+		t.Errorf("push after connecting again = %d: %s", rec.Code, rec.Body)
+	}
+}
+
 func TestPushPlanChangedWhilePushing(t *testing.T) {
 	t.Parallel()
 	e := newPlansRouter(t)

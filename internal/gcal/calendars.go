@@ -160,7 +160,7 @@ func forgetEvents(ctx context.Context, q *db.Queries, now string) error {
 // calendars lists the writable calendars, each once, with the stored refresh
 // token. The caller holds s.account.
 func (s *Service) calendars(ctx context.Context) ([]Calendar, error) {
-	row, err := s.connection(ctx)
+	row, err := s.grantedConnection(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -207,14 +207,29 @@ func (s *Service) connection(ctx context.Context) (db.IntegrationsGoogle, error)
 	return row, nil
 }
 
-// accessToken trades row's refresh token for an access token, retrying a
-// transient failure as send does. A grant Google reports as invalid_grant,
-// or one already recorded as refused (no refresh token stored), is
-// ErrReconnect.
-func (s *Service) accessToken(ctx context.Context, row db.IntegrationsGoogle) (string, error) {
-	if row.RefreshTokenCt == nil {
-		return "", ErrReconnect
+// grantedConnection reads the connected account for a Calendar call that
+// uses the stored grant: listing, choosing and pushing. It decides the
+// precedence of their preconditions: nothing connected is ErrNotConnected,
+// then a grant already recorded as refused (no refresh token stored) is
+// ErrReconnect, before anything else a call checks, such as whether a
+// calendar is chosen. Only connecting again restores a refused grant, so
+// it is reported whatever the calendar choice, and the refused token is
+// never offered to Google.
+func (s *Service) grantedConnection(ctx context.Context) (db.IntegrationsGoogle, error) {
+	row, err := s.connection(ctx)
+	if err != nil {
+		return db.IntegrationsGoogle{}, err
 	}
+	if row.RefreshTokenCt == nil {
+		return db.IntegrationsGoogle{}, ErrReconnect
+	}
+	return row, nil
+}
+
+// accessToken trades row's refresh token, from grantedConnection, for an
+// access token, retrying a transient failure as send does. A grant Google
+// reports as invalid_grant is ErrReconnect.
+func (s *Service) accessToken(ctx context.Context, row db.IntegrationsGoogle) (string, error) {
 	refresh, err := s.box.Decrypt(row.RefreshTokenCt)
 	if err != nil {
 		return "", fmt.Errorf("gcal: open refresh token: %w", err)

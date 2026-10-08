@@ -80,8 +80,9 @@ type eventTime struct {
 // includes an event deleted in Calendar) is updated in place instead, so
 // writing an event again never adds a second one. It stops at the first
 // failure; the events before it stay written, and writing them all again
-// is safe. Nothing connected is ErrNotConnected, no calendar chosen is
-// ErrNoCalendar, a chosen calendar that was deleted or is no longer
+// is safe. Nothing connected is ErrNotConnected, a grant already recorded
+// as refused is ErrReconnect whatever calendar is chosen, no calendar
+// chosen is ErrNoCalendar, a chosen calendar that was deleted or is no longer
 // writable is ErrCalendarUnavailable, a grant Google no longer accepts is
 // ErrReconnect (recorded as reconnect required, see recordRefusal), and any
 // other Google failure is a *CalendarError, retryable when Google answered
@@ -106,9 +107,11 @@ func (s *Service) PushEvents(ctx context.Context, events []Event, record func() 
 }
 
 // pushEvents is PushEvents once the events are valid. The caller holds
-// s.account.
+// s.account. A refused grant is reported before no calendar chosen
+// (grantedConnection): choosing a calendar cannot fix it, connecting again
+// can.
 func (s *Service) pushEvents(ctx context.Context, events []Event, record func() error) error {
-	row, err := s.connection(ctx)
+	row, err := s.grantedConnection(ctx)
 	if err != nil {
 		return err
 	}

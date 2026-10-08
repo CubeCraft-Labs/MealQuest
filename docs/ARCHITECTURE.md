@@ -620,8 +620,8 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
   dinner.
 - `internal/gcal` owns the connection, as a confidential OAuth web client
   (`MEALQUEST_GOOGLE_CLIENT_ID`, `MEALQUEST_GOOGLE_CLIENT_SECRET_FILE`, both
-  required at boot) over plain REST — no Google SDK. All three routes are
-  under the signed-in `/api/v1`:
+  required at boot) over plain REST — no Google SDK. Every route is under
+  the signed-in `/api/v1`:
   - `GET /api/v1/integrations/google/connect` redirects to Google's consent
     screen with scopes `calendar.events` and `calendar.calendarlist.readonly`,
     `access_type=offline`, `prompt=consent` and PKCE. Its `state` travels in
@@ -641,10 +641,30 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
   - `DELETE /api/v1/integrations/google` (CSRF-checked) revokes the token at
     Google, then deletes the row; a token Google reports as `invalid_token`
     counts as revoked, and any other revoke failure keeps the connection.
-  - Connect's exchange-and-store and disconnect's read-revoke-delete hold
-    one lock across the Google request and the database write: Google
-    revokes the whole grant, so a revoke overlapping a reconnect would
-    otherwise leave a stored token Google has already revoked.
+  - `GET /api/v1/integrations/google/calendars` trades the stored refresh
+    token for an access token and reads every page of the Calendar API's
+    `users/me/calendarList`, answering `[{id, summary, primary,
+    accessRole}]` for the calendars whose `accessRole` is `writer` or
+    `owner`, in Google's order. Nothing else from Google's response is
+    passed on.
+  - `PUT /api/v1/integrations/google/calendar` `{calendar_id}`
+    (CSRF-checked) lists the calendars the same way and stores
+    `calendar_id` and `calendar_name` (the calendar's `summary`) only when
+    the id is among them, answering `{calendar_id, calendar_name}`; any
+    other id is 422 `unknown_calendar` and leaves the stored choice as it
+    was. A calendar chosen earlier that has since been deleted or become
+    read-only drops out of the listing and cannot be chosen again; the
+    stored choice stays until the household chooses another.
+  - Listing and choosing answer 409 `not_connected` when nothing is
+    connected, and 502 `reconnect_required` when Google no longer accepts
+    the grant (`invalid_grant` on refresh, or HTTP 401 from the Calendar
+    API); the connection is left as it is. Any other Google failure is 502
+    `google_failed`.
+  - Connect's exchange-and-store, disconnect's read-revoke-delete and
+    every use of the stored token (listing and choosing calendars) hold one
+    lock across the Google requests and the database write: Google revokes
+    the whole grant, so a revoke overlapping a reconnect would otherwise
+    leave a stored token Google has already revoked.
   - No response, log line or error ever holds a token or Google's response
     text.
 - **Deterministic event ids**; each plan day records its

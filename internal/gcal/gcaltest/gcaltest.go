@@ -1,18 +1,22 @@
-// Package gcaltest provides a fake Google OAuth server for tests of the
-// Google Calendar connection: a token endpoint that checks the client, the
-// redirect URI and PKCE and issues a distinct refresh token per exchange, and
-// a revoke endpoint that, like Google's, revokes the whole grant: every token
-// issued so far. It never touches the network beyond its own httptest
-// server.
+// Package gcaltest provides a fake Google OAuth server and Calendar API for
+// tests of the Google Calendar connection: a token endpoint that checks the
+// client, the redirect URI and PKCE, issues a distinct refresh token per
+// exchange and trades a live refresh token for an access token; a revoke
+// endpoint that, like Google's, revokes the whole grant: every token issued
+// so far; and a calendarList endpoint that requires a live grant's access
+// token. It never touches the network beyond its own httptest server.
 package gcaltest
 
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -24,7 +28,8 @@ import (
 
 // Fixed credentials and tokens the fake issues and expects. The first
 // exchange issues RefreshToken; exchange n after it issues RefreshToken
-// followed by "-n", so every issued refresh token contains RefreshToken.
+// followed by "-n", so every issued refresh token contains RefreshToken. Every
+// exchange and refresh issues AccessToken.
 const (
 	ClientID     = "mealquest-test.apps.googleusercontent.com"
 	ClientSecret = "google-client-s3cret-4f1c"
@@ -58,9 +63,29 @@ type Google struct {
 	// revoke has invalidated.
 	issued []string
 	dead   map[string]bool
-	// tokenHold and revokeHold, when set, stop the next request to that
-	// endpoint.
-	tokenHold, revokeHold *hold
+	// tokenHold, revokeHold and calendarHold, when set, stop the next
+	// request to that endpoint.
+	tokenHold, revokeHold, calendarHold *hold
+	// calendars is what the calendarList endpoint lists, pageSize entries
+	// to a page (all of them when 0).
+	calendars []Calendar
+	pageSize  int
+	// calendarStatus, when not 200, fails the calendarList endpoint with a
+	// body that quotes the access token.
+	calendarStatus int
+	calendarCalls  int
+}
+
+// Calendar is one calendarList entry. The fake answers each with Google's
+// other fields too, so tests can check that nothing beyond id, summary,
+// primary and accessRole reaches the household.
+type Calendar struct {
+	ID              string
+	Summary         string
+	Primary         bool
+	AccessRole      string
+	Description     string
+	SummaryOverride string
 }
 
 // hold stops one request: arrived is closed when it arrives, and it goes on
@@ -74,16 +99,18 @@ type hold struct {
 func New(t *testing.T, redirectURL string) *Google {
 	t.Helper()
 	g := &Google{
-		RedirectURL:  redirectURL,
-		scope:        strings.Join(gcal.Scopes, " "),
-		tokenStatus:  http.StatusOK,
-		revokeStatus: http.StatusOK,
-		codes:        map[string]string{},
-		dead:         map[string]bool{},
+		RedirectURL:    redirectURL,
+		scope:          strings.Join(gcal.Scopes, " "),
+		tokenStatus:    http.StatusOK,
+		revokeStatus:   http.StatusOK,
+		calendarStatus: http.StatusOK,
+		codes:          map[string]string{},
+		dead:           map[string]bool{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /token", g.token)
 	mux.HandleFunc("POST /revoke", g.revoke)
+	mux.HandleFunc("GET /calendar/v3/users/me/calendarList", g.calendarList)
 	g.Server = httptest.NewServer(mux)
 	t.Cleanup(g.Server.Close)
 	return g
@@ -101,6 +128,9 @@ func (g *Google) Endpoint() oauth2.Endpoint {
 
 // RevokeURL is the fake's revocation endpoint.
 func (g *Google) RevokeURL() string { return g.Server.URL + "/revoke" }
+
+// CalendarAPI is the fake's Calendar API base URL.
+func (g *Google) CalendarAPI() string { return g.Server.URL + "/calendar/v3" }
 
 // Authorize plays the consent screen for an authorization request with PKCE
 // challenge and returns the code Google would send back.
@@ -143,7 +173,51 @@ func (g *Google) AnswerRevoke(status int, body string) {
 	g.revokeStatus, g.revokeBody = status, body
 }
 
-// TokenCalls is how many requests reached the token endpoint.
+// RevokeGrant revokes every token issued so far, as the household removing
+// MealQuest's access in their Google account does.
+func (g *Google) RevokeGrant() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, t := range g.issued {
+		g.dead[t] = true
+	}
+}
+
+// SetCalendars makes the calendarList endpoint list cals, pageSize to a
+// page (all on one page when 0).
+func (g *Google) SetCalendars(pageSize int, cals ...Calendar) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.calendars, g.pageSize = slices.Clone(cals), pageSize
+}
+
+// FailCalendarList makes the calendarList endpoint answer status with a
+// body that quotes the access token.
+func (g *Google) FailCalendarList(status int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.calendarStatus = status
+}
+
+// CalendarCalls is how many requests reached the calendarList endpoint.
+func (g *Google) CalendarCalls() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.calendarCalls
+}
+
+// HoldCalendarList stops the next calendarList request before it is
+// answered. It returns a channel closed when the request arrives and the
+// function that lets it go on.
+func (g *Google) HoldCalendarList() (arrived <-chan struct{}, release func()) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.calendarHold = newHold()
+	return g.calendarHold.arrived, g.calendarHold.releaseFunc()
+}
+
+// TokenCalls is how many requests, exchanges and refreshes, reached the
+// token endpoint.
 func (g *Google) TokenCalls() int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -215,6 +289,10 @@ func (g *Google) token(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f := r.PostForm
+	if f.Get("grant_type") == "refresh_token" {
+		g.refresh(w, f)
+		return
+	}
 	challenge, known := g.codes[f.Get("code")]
 	delete(g.codes, f.Get("code"))
 	switch {
@@ -249,6 +327,114 @@ func (g *Google) token(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"access_token":%q,%s"expires_in":3599,"scope":%q,"token_type":"Bearer"}`,
 		AccessToken, refresh, g.scope)
+}
+
+// refresh answers a refresh_token grant: an access token for a live refresh
+// token, invalid_grant quoting the token for any other.
+func (g *Google) refresh(w http.ResponseWriter, f url.Values) {
+	token := f.Get("refresh_token")
+	switch {
+	case f.Get("client_id") != ClientID || f.Get("client_secret") != ClientSecret:
+		oauthError(w, http.StatusUnauthorized, "invalid_client")
+		return
+	case !slices.Contains(g.issued, token) || g.dead[token]:
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, `{"error":"invalid_grant","error_description":"Token has been expired or revoked: %s"}`, token)
+		return
+	case g.tokenStatus != http.StatusOK:
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(g.tokenStatus)
+		fmt.Fprintf(w, `{"error":"server_error","error_description":"echo %s %s"}`, token, ClientSecret)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"access_token":%q,"expires_in":3599,"scope":%q,"token_type":"Bearer"}`, AccessToken, g.scope)
+}
+
+// calendarList answers like Google's calendarList.list: the scripted
+// calendars, a page at a time, to a live grant's access token.
+func (g *Google) calendarList(w http.ResponseWriter, r *http.Request) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.calendarCalls++
+	h := g.calendarHold
+	g.calendarHold = nil
+	g.wait(h)
+	auth := r.Header.Get("Authorization")
+	if auth != "Bearer "+AccessToken || !g.grantLive() {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprintf(w, `{"error":{"code":401,"message":"Invalid Credentials: %s"}}`, auth)
+		return
+	}
+	if g.calendarStatus != http.StatusOK {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(g.calendarStatus)
+		fmt.Fprintf(w, `{"error":{"code":%d,"message":"echo %s"}}`, g.calendarStatus, auth)
+		return
+	}
+	start := 0
+	if pt := r.URL.Query().Get("pageToken"); pt != "" {
+		n, err := strconv.Atoi(strings.TrimPrefix(pt, "page-"))
+		if err != nil || n <= 0 || n > len(g.calendars) {
+			http.Error(w, "bad pageToken", http.StatusBadRequest)
+			return
+		}
+		start = n
+	}
+	end := len(g.calendars)
+	if g.pageSize > 0 {
+		end = min(start+g.pageSize, end)
+	}
+	items := []map[string]any{}
+	for _, c := range g.calendars[start:end] {
+		item := map[string]any{
+			"kind":            "calendar#calendarListEntry",
+			"etag":            `"1700000000000000"`,
+			"id":              c.ID,
+			"summary":         c.Summary,
+			"description":     c.Description,
+			"timeZone":        "America/New_York",
+			"colorId":         "14",
+			"backgroundColor": "#9fe1e7",
+			"foregroundColor": "#000000",
+			"selected":        true,
+			"accessRole":      c.AccessRole,
+			"defaultReminders": []map[string]any{
+				{"method": "popup", "minutes": 30},
+			},
+			"conferenceProperties": map[string]any{"allowedConferenceSolutionTypes": []string{"hangoutsMeet"}},
+		}
+		if c.Primary {
+			item["primary"] = true
+		}
+		if c.SummaryOverride != "" {
+			item["summaryOverride"] = c.SummaryOverride
+		}
+		items = append(items, item)
+	}
+	page := map[string]any{"kind": "calendar#calendarList", "etag": `"p33k"`, "items": items}
+	if end < len(g.calendars) {
+		page["nextPageToken"] = fmt.Sprintf("page-%d", end)
+	} else {
+		page["nextSyncToken"] = "sync-token"
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(page); err != nil {
+		panic(err)
+	}
+}
+
+// grantLive reports whether any refresh token issued is still live. The
+// caller holds g.mu.
+func (g *Google) grantLive() bool {
+	for _, t := range g.issued {
+		if !g.dead[t] {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *Google) revoke(w http.ResponseWriter, r *http.Request) {

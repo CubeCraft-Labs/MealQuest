@@ -236,6 +236,7 @@ func newTestGoogle(t *testing.T) *gcal.Service {
 		SecretKey:    []byte("server-secret-key"),
 		Endpoint:     oauth2.Endpoint{AuthURL: "http://127.0.0.1:1/auth", TokenURL: "http://127.0.0.1:1/token"},
 		RevokeURL:    "http://127.0.0.1:1/revoke",
+		CalendarAPI:  "http://127.0.0.1:1/calendar/v3",
 	})
 	if err != nil {
 		t.Fatal(err)

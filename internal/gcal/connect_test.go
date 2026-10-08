@@ -73,6 +73,7 @@ func newHarness(t *testing.T) *harness {
 		SecretKey:    []byte("server-secret-key"),
 		Endpoint:     google.Endpoint(),
 		RevokeURL:    google.RevokeURL(),
+		CalendarAPI:  google.CalendarAPI(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -535,7 +536,7 @@ func TestNewServiceRequiresConfig(t *testing.T) {
 	pub, _ := url.Parse(publicURL)
 	valid := gcal.Config{
 		ClientID: "id", ClientSecret: "secret", PublicURL: pub, SecretKey: []byte("k"),
-		Endpoint: gcal.GoogleEndpoint, RevokeURL: gcal.GoogleRevokeURL,
+		Endpoint: gcal.GoogleEndpoint, RevokeURL: gcal.GoogleRevokeURL, CalendarAPI: gcal.GoogleCalendarAPI,
 	}
 	if _, err := gcal.NewService(h.st, h.box, valid); err != nil {
 		t.Fatalf("valid config: %v", err)
@@ -547,6 +548,7 @@ func TestNewServiceRequiresConfig(t *testing.T) {
 		"secret key":    func(c *gcal.Config) { c.SecretKey = nil },
 		"token URL":     func(c *gcal.Config) { c.Endpoint.TokenURL = "" },
 		"revoke URL":    func(c *gcal.Config) { c.RevokeURL = "" },
+		"Calendar API":  func(c *gcal.Config) { c.CalendarAPI = "" },
 	} {
 		cfg := valid
 		edit(&cfg)

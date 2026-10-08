@@ -194,6 +194,8 @@ type Querier interface {
 	RedraftWeekPlan(ctx context.Context, arg RedraftWeekPlanParams) error
 	// An unknown id returns sql.ErrNoRows.
 	SetDinnerFavorite(ctx context.Context, arg SetDinnerFavoriteParams) (Dinner, error)
+	// Sets the chosen calendar; affects no row when nothing is connected.
+	SetIntegrationsGoogleCalendar(ctx context.Context, arg SetIntegrationsGoogleCalendarParams) (int64, error)
 	// Marks a pending batch running; a batch in any other status is left as
 	// it is (0 rows).
 	StartSuggestionBatch(ctx context.Context, arg StartSuggestionBatchParams) (int64, error)

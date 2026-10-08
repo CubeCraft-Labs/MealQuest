@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"reflect"
 	"slices"
@@ -11,9 +13,12 @@ import (
 	"testing"
 	"time"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/shopping"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 )
 
@@ -632,5 +637,153 @@ func TestPushPlanLeavesArchivedSupplyRun(t *testing.T) {
 	callShopping(t, e, http.MethodGet, shoppingPath+"2026-10-12", "", &l)
 	if !reflect.DeepEqual(l.render(), weekLines) {
 		t.Errorf("archived Supply run after push = %v, want unchanged", l.render())
+	}
+}
+
+// archiveJSON is a GET /shopping/archive answer decoded with every field
+// the API promises.
+type archiveJSON struct {
+	By      string `json:"by"`
+	Periods []struct {
+		Key     string `json:"key"`
+		Heading string `json:"heading"`
+		Posts   []struct {
+			WeekStart   string   `json:"weekStart"`
+			Label       string   `json:"label"`
+			Title       *string  `json:"title"`
+			DinnerCount int      `json:"dinnerCount"`
+			ItemCount   int      `json:"itemCount"`
+			OnHandCount int      `json:"onHandCount"`
+			Dinners     []string `json:"dinners"`
+			Current     bool     `json:"current"`
+		} `json:"posts"`
+	} `json:"periods"`
+}
+
+// weekSupplyRun plans a new dinner named name, grounded in a recipe
+// listing ings, on the Monday of the week starting monday, and generates
+// the week's Supply run.
+func (e plansEnv) weekSupplyRun(t *testing.T, monday store.LocalDate, name string, ings ...shopIng) supplyRunJSON {
+	t.Helper()
+	q := db.New(e.st.Writer)
+	now := store.Now().String()
+	d, err := q.CreateDinner(t.Context(), db.CreateDinnerParams{
+		ID: store.NewID(), Name: name, NormalizedName: harness.Normalize(name), Status: "regular", Origin: "regular",
+		GroundingStatus: "manual", CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planID := store.NewID()
+	if err := q.CreateWeekPlan(t.Context(), db.CreateWeekPlanParams{ID: planID, WeekStart: monday.String(), CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.PutPlanDay(t.Context(), db.PutPlanDayParams{ID: store.NewID(), PlanID: planID, Date: monday.String(),
+		DinnerID: sql.NullString{String: d.ID, Valid: true}, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	e.groundDay(t, monday.String(), ings...)
+	var l supplyRunJSON
+	if status, body := callShopping(t, e, http.MethodPost, shoppingPath+monday.String()+"/generate", "", &l); status != http.StatusOK {
+		t.Fatalf("generate %s = %d %v", monday, status, body)
+	}
+	return l
+}
+
+// TestSupplyArchive freezes last week's Supply run and reads the Supply
+// archive: posts newest first with exactly the promised fields, this
+// week's marked current. The frozen list is served read-only.
+func TestSupplyArchive(t *testing.T) {
+	t.Parallel()
+	e := newPlansRouter(t)
+	// The fixture's plan is for a fixed week; this test plans weeks
+	// around today instead.
+	if _, err := e.st.Writer.ExecContext(t.Context(), `DELETE FROM plan_days; DELETE FROM week_plans`); err != nil {
+		t.Fatal(err)
+	}
+	zone, err := household.LoadZone("America/New_York") // the env's household zone
+	if err != nil {
+		t.Fatal(err)
+	}
+	thisWeek := household.WeekStart(household.Today(time.Now(), zone))
+	y, m, d := thisWeek.Date()
+	lastWeek := store.LocalDateOf(time.Date(y, m, d-7, 0, 0, 0, 0, time.UTC))
+
+	last := e.weekSupplyRun(t, lastWeek, "Beef Stew", shopIng{"stewing beef", "2", "lb"}, shopIng{"carrots", "4", ""}, shopIng{"onion", "1", ""})
+	onion := last.itemID(t, "onion")
+	if status, body := callShopping(t, e, http.MethodPatch, shoppingPath+"items/"+onion, `{"needed":false}`, nil); status != http.StatusOK {
+		t.Fatalf("PATCH = %d %v", status, body)
+	}
+	e.weekSupplyRun(t, thisWeek, "Lemon Chicken", shopIng{"chicken thighs", "6", ""}, shopIng{"lemon", "1", ""})
+	if err := e.shop.Freeze(t.Context(), lastWeek); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.shop.Freeze(t.Context(), thisWeek); !errors.Is(err, shopping.ErrWeekNotEnded) {
+		t.Fatalf("Freeze this week = %v, want ErrWeekNotEnded", err)
+	}
+
+	var got archiveJSON
+	status, raw := callShopping(t, e, http.MethodGet, shoppingPath+"archive?by=week", "", &got)
+	if status != http.StatusOK {
+		t.Fatalf("GET archive = %d %v", status, raw)
+	}
+	if k := keys(raw); !reflect.DeepEqual(k, []string{"by", "periods"}) {
+		t.Errorf("archive fields = %v", k)
+	}
+	period := raw["periods"].([]any)[0].(map[string]any)
+	if k := keys(period); !reflect.DeepEqual(k, []string{"heading", "key", "posts"}) {
+		t.Errorf("period fields = %v", k)
+	}
+	wantPost := []string{"current", "dinnerCount", "dinners", "itemCount", "label", "onHandCount", "title", "weekStart"}
+	if k := keys(period["posts"].([]any)[0].(map[string]any)); !reflect.DeepEqual(k, wantPost) {
+		t.Errorf("post fields = %v, want %v", k, wantPost)
+	}
+	var posts []string
+	for _, p := range got.Periods {
+		if len(p.Posts) != 1 || p.Key != household.PeriodKey(mustLocalDate(t, p.Posts[0].WeekStart)) || p.Heading != p.Posts[0].Label {
+			t.Errorf("period %+v, want one post under its week", p)
+		}
+		for _, post := range p.Posts {
+			label, err := household.WeekLabel(mustLocalDate(t, post.WeekStart))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if post.Label != label || post.Title != nil {
+				t.Errorf("post %s: label %q title %v, want %q and null", post.WeekStart, post.Label, post.Title, label)
+			}
+			posts = append(posts, fmt.Sprintf("%s %d dinners %d items %d on hand %v current=%t",
+				post.WeekStart, post.DinnerCount, post.ItemCount, post.OnHandCount, post.Dinners, post.Current))
+		}
+	}
+	want := []string{
+		thisWeek.String() + " 1 dinners 2 items 0 on hand [Lemon Chicken] current=true",
+		lastWeek.String() + " 1 dinners 3 items 1 on hand [Beef Stew] current=false",
+	}
+	if got.By != "week" || !reflect.DeepEqual(posts, want) {
+		t.Errorf("archive by %s =\n  %s\nwant\n  %s", got.By, strings.Join(posts, "\n  "), strings.Join(want, "\n  "))
+	}
+
+	for _, q := range []string{"", "?by=", "?by=day", "?by=MONTH"} {
+		status, body := callShopping(t, e, http.MethodGet, shoppingPath+"archive"+q, "", nil)
+		if status != http.StatusBadRequest || errorCode(body) != "invalid_request" {
+			t.Errorf("GET archive%s = %d %v, want 400 invalid_request", q, status, body)
+		}
+	}
+
+	status, body := callShopping(t, e, http.MethodPatch, shoppingPath+"items/"+last.itemID(t, "carrots"), `{"needed":false}`, nil)
+	if status != http.StatusConflict || errorCode(body) != "archived" {
+		t.Errorf("PATCH after Freeze = %d %v, want 409 archived", status, body)
+	}
+	var frozen supplyRunJSON
+	if status, body := callShopping(t, e, http.MethodGet, shoppingPath+lastWeek.String(), "", &frozen); status != http.StatusOK {
+		t.Fatalf("GET frozen list = %d %v", status, body)
+	}
+	wantLines := []string{
+		"Monday " + lastWeek.String() + " Beef Stew: stewing beef [2 lb] needed",
+		"Monday " + lastWeek.String() + " Beef Stew: carrots [4] needed",
+		"Monday " + lastWeek.String() + " Beef Stew: onion [1] have it",
+	}
+	if frozen.Status != "archived" || frozen.NeededCount != 2 || frozen.TotalCount != 3 || !reflect.DeepEqual(frozen.render(), wantLines) {
+		t.Errorf("frozen list = %s %d/%d %v, want archived 2/3 %v", frozen.Status, frozen.NeededCount, frozen.TotalCount, frozen.render(), wantLines)
 	}
 }

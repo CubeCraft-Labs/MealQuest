@@ -87,6 +87,9 @@ type Querier interface {
 	// Records a pending or running batch as done or failed; a batch already
 	// finished is left as it is (0 rows).
 	FinishSuggestionBatch(ctx context.Context, arg FinishSuggestionBatchParams) (int64, error)
+	// Freezes list id into the Supply archive at frozen_at, unless it is
+	// frozen already.
+	FreezeShoppingList(ctx context.Context, arg FreezeShoppingListParams) (int64, error)
 	// Returns sql.ErrNoRows until the row exists.
 	GetAISettings(ctx context.Context) (AiSetting, error)
 	// The job of kind queued or running for the week starting week_start,
@@ -184,6 +187,9 @@ type Querier interface {
 	// The items of list list_id with their group's dinner, in list order: by
 	// group, then by item.
 	ListShoppingItems(ctx context.Context, listID string) ([]ListShoppingItemsRow, error)
+	// The Supply runs of the weeks starting on or before week_start, newest
+	// week first.
+	ListShoppingListsThrough(ctx context.Context, weekStart string) ([]ShoppingList, error)
 	// The ids of the dinners with status quest_log planned on date, on a plan
 	// of any status, that have no Rotation check for date yet.
 	ListTriedCandidates(ctx context.Context, date string) ([]string, error)

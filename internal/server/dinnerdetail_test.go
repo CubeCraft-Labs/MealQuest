@@ -265,6 +265,80 @@ func TestGetDinnerSourceHidesTokenURL(t *testing.T) {
 	}
 }
 
+// TestGetDinnerSiteNameNeverFromLink: a page that names no site is stored
+// under its host, so a recipe grounded in a pasted link whose host carries a
+// token has site_name null and nothing from the link in its detail; a page
+// that names its site keeps that name, even on a token-bearing host; and a
+// stored name shaped like another host, as a redirect leaves, is withheld.
+func TestGetDinnerSiteNameNeverFromLink(t *testing.T) {
+	t.Parallel()
+	e := newDinnersEnv(t)
+	const (
+		bareToken  = "private-token-abc123"
+		namedToken = "named-token-def456"
+		bare       = "https://" + bareToken + ".example.com/recipe"
+		named      = "https://www." + namedToken + ".example.com/recipe"
+	)
+	e.pages.Bodies[bare] = recipestest.RecipePage("Chicken Curry", "", "https://a.example/curry.jpg", 40)
+	e.pages.Bodies[named] = recipestest.RecipePage("Weeknight Curry", "Curry House", "https://b.example/curry.jpg", 25)
+	e.images.JPEGs["https://a.example/curry.jpg"] = recipestest.JPEG(t, 400, 320, 1)
+	e.images.JPEGs["https://b.example/curry.jpg"] = recipestest.JPEG(t, 400, 320, 2)
+	ground := func(dish, page string) (id, recipeID string) {
+		t.Helper()
+		id = createDinner(t, e.h, `{"name":"`+dish+`"}`) // runner not started: stays pending
+		e.model.QueueGenerate(recipestest.NormalizedReply("stovetop", 25))
+		if rec, _ := callDinners(t, e.h, http.MethodPost, dinnersPath+"/"+id+"/ground", `{"recipe_url":"`+page+`"}`); rec.Code != http.StatusOK {
+			t.Fatalf("POST ground %s = %d: %s", page, rec.Code, rec.Body)
+		}
+		if err := e.st.Reader.QueryRow(`SELECT recipe_id FROM dinners WHERE id = ?`, id).Scan(&recipeID); err != nil {
+			t.Fatal(err)
+		}
+		return id, recipeID
+	}
+	storedSite := func(recipeID string) string {
+		t.Helper()
+		var site string
+		if err := e.st.Reader.QueryRow(`SELECT site_name FROM recipes WHERE id = ?`, recipeID).Scan(&site); err != nil {
+			t.Fatal(err)
+		}
+		return site
+	}
+	check := func(what, id string, leaks []string, want any) {
+		t.Helper()
+		rec, _ := callDinners(t, e.h, http.MethodGet, dinnersPath+"/"+id, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d: %s", what, rec.Code, rec.Body)
+		}
+		for _, leak := range leaks {
+			if strings.Contains(strings.ToLower(rec.Body.String()), leak) {
+				t.Errorf("detail of %s contains %q: %s", what, leak, rec.Body)
+			}
+		}
+		raw, _ := getDetail(t, e.h, id)
+		if src, _ := raw["source"].(map[string]any); !reflect.DeepEqual(src, map[string]any{"site_name": want}) {
+			t.Errorf("source of %s = %v, want only site_name %v", what, raw["source"], want)
+		}
+	}
+
+	bareID, bareRecipe := ground("Chicken curry", bare)
+	if got := storedSite(bareRecipe); got != bareToken+".example.com" {
+		t.Fatalf("stored site_name = %q, want the link's host", got)
+	}
+	check("a page naming no site", bareID, []string{bare, bareToken, "example.com", `"url"`}, nil)
+
+	namedID, namedRecipe := ground("Weeknight curry", named)
+	if got := storedSite(namedRecipe); got != "Curry House" {
+		t.Fatalf("stored site_name = %q, want the page's", got)
+	}
+	check("a page naming its site", namedID, []string{named, namedToken, "example.com", `"url"`}, "Curry House")
+
+	const redirectHost = "redirect-token-ghi789.example.net"
+	if _, err := e.st.Writer.Exec(`UPDATE recipes SET site_name = ? WHERE id = ?`, redirectHost, namedRecipe); err != nil {
+		t.Fatal(err)
+	}
+	check("a page named by a redirect's host", namedID, []string{redirectHost, "redirect-token", namedToken}, nil)
+}
+
 // TestGetDinnerWhyPickedIsCreatingSuggestion: why_picked is the reason of
 // the suggestion that created the dinner, never that of an earlier
 // suggestion row for it that was declined.

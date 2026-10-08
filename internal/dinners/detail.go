@@ -5,7 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"strconv"
+	"strings"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
@@ -59,7 +62,9 @@ type Ingredient struct {
 // link, pasted or offered as a candidate, may carry a personal token, and
 // no stored link can be shown to be free of one, so like a dinner's
 // recipe_url and a candidate's page it never leaves the server. SiteName
-// is null when the page names no site.
+// is the name the page itself gives its site, and null when it gives none
+// or the stored name could have come from a link (see pageSiteName), so a
+// client shows "Recipe from {site}" only when SiteName is not null.
 type Source struct {
 	SiteName *string `json:"site_name"`
 }
@@ -140,7 +145,11 @@ func readRecipe(ctx context.Context, q *db.Queries, recipeID string, d *Detail) 
 		return fmt.Errorf("recipe %s: %w", recipeID, err)
 	}
 	if !IsManualRecipe(rec.SourceUrl) {
-		d.Source = &Source{SiteName: nullString(rec.SiteName)}
+		site, err := pageSiteName(rec.SiteName, rec.SourceUrl)
+		if err != nil {
+			return err
+		}
+		d.Source = &Source{SiteName: site}
 	}
 	ings, err := q.ListRecipeIngredients(ctx, recipeID)
 	if err != nil {
@@ -169,6 +178,35 @@ func readRecipe(ctx context.Context, q *db.Queries, recipeID string, d *Detail) 
 		d.Steps = append(d.Steps, step.Text)
 	}
 	return nil
+}
+
+// pageSiteName is the stored site name of a recipe fetched from sourceURL
+// when it is one the page gave, else nil. A page that names no site is
+// stored under recipes.HostSiteName of the URL it was served from: the
+// pasted link's host, which may hold a personal token (a private
+// subdomain), or that of a page the link redirected to, which is not
+// stored. Nothing records which a stored name is, so any name that could
+// be a host — the link's own host, an IP address, or a dotted host name —
+// is treated as one and withheld. A site that names itself as a domain,
+// such as "Food.com", loses its attribution with them: a recipe with no
+// attribution is better than one that leaks a link.
+func pageSiteName(stored sql.NullString, sourceURL string) (*string, error) {
+	if !stored.Valid {
+		return nil, nil
+	}
+	link, err := url.Parse(sourceURL)
+	if err != nil {
+		// Not wrapped: url.Parse's error quotes the link.
+		return nil, errors.New("source url does not parse")
+	}
+	name := stored.String
+	if strings.EqualFold(name, recipes.HostSiteName(link)) || net.ParseIP(name) != nil {
+		return nil, nil
+	}
+	if u, err := url.Parse("https://" + name + "/"); err == nil && u.Host == name && strings.Contains(name, ".") {
+		return nil, nil
+	}
+	return &name, nil
 }
 
 // duplicatePosition is the error for two recipe items of kind at position.

@@ -243,7 +243,7 @@ function WeekBoard({
   const [confirming, setConfirming] = useState(false)
   const swap = useSwapDay(weekStart)
   const push = usePushToCalendar(weekStart)
-  const pushing = push.isPending
+  const pushing = push.pending
   // The date of the day being swapped, while the swap sheet is open.
   const [swappingDate, setSwappingDate] = useState<string | null>(null)
   const label = weekLabel(weekStart)
@@ -302,11 +302,13 @@ function WeekBoard({
   const drafting = startDraft.isPending || (jobId !== null && job.status !== 'failed' && resultError === null)
 
   // A push sends the plan shown: it waits for a draft or a swap of the week
-  // to settle, and neither starts while it runs.
+  // to settle, and neither starts while it runs, even across leaving the
+  // week and coming back.
   const canPush = plan.isSuccess && plan.data !== null && !drafting && !swap.pending && !pushing
   function pushToCalendar() {
     if (!canPush) return
     swap.dismiss()
+    push.reset()
     push.mutate()
   }
 
@@ -336,7 +338,7 @@ function WeekBoard({
     else start(false)
   }
 
-  const failure = push.isError ? (
+  const failure = push.error !== null ? (
     <PushFailure error={push.error} onRetry={pushToCalendar} />
   ) : swap.failed !== null ? (
     <ErrorBanner onRetry={() => swapIn(swap.failed!.swap)}>

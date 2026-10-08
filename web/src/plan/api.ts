@@ -276,27 +276,80 @@ export function useSwapDay(weekStart: string): SwapDay {
   }
 }
 
+// pushKey keys the pushes of the week starting on weekStart in the mutation
+// cache, where they outlive the Draft board that sent them.
+function pushKey(weekStart: string) {
+  return ['plans', weekStart, 'push'] as const
+}
+
+// PushToCalendar is the push of one week, as the mutation cache holds it:
+// whether it is pending, and why the latest failed, if it failed.
+export type PushToCalendar = {
+  pending: boolean
+  error: Error | null
+  mutate: () => void
+  reset: () => void
+}
+
 // usePushToCalendar pushes the plan of the week starting on weekStart to the
 // chosen Google calendar (POST /api/v1/plans/{weekStart}/push-calendar). The
 // server answers with the plan as synced, which replaces the one shown, as a
 // swap's answer does. A push refused because the plan changed meanwhile
-// reads the plan again, and stays pending until that read lands: nothing is
-// pushed again before the changed plan is shown. One Google refused the
-// grant for reads the Google Calendar connection again, which is now
-// reconnect required.
-export function usePushToCalendar(weekStart: string) {
+// reads the plan again, whether or not the week is shown, and stays pending
+// until that read lands: nothing is pushed again before the changed plan is
+// the one shown. One Google refused the grant for reads the Google Calendar
+// connection again, which is now reconnect required.
+//
+// The week's pushes live in the mutation cache, not in the component, as its
+// swaps do, so leaving the week and coming back keeps one pending. reset
+// leaves settled pushes behind; it is refused while one is pending.
+export function usePushToCalendar(weekStart: string): PushToCalendar {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
   const key = planKey(weekStart)
-  return useMutation({
-    mutationFn: async (): Promise<Plan> => {
-      const path = `${planPath(weekStart)}/push-calendar`
-      return parsePlan(`POST ${path}`, weekStart, await apiFetch<unknown>(path, { method: 'POST' }), false)
-    },
-    onSuccess: (plan) => queryClient.setQueryData<Plan>(key, plan),
-    onError: async (error) => {
-      noteGoogleFailure(queryClient, error)
-      if (error instanceof ApiError && error.code === 'plan_changed') await queryClient.invalidateQueries({ queryKey: key })
-    },
+  const mutationKey = pushKey(weekStart)
+  const mutations = queryClient.getMutationCache()
+  // The week's pushes, in the order sent.
+  const pushes = useMutationState({
+    filters: { mutationKey },
+    select: (mutation) => ({ status: mutation.state.status, error: mutation.state.error }),
   })
+  const latest = pushes.at(-1)
+
+  function mutate() {
+    const mutation = mutations.build<Plan, Error, void, unknown>(queryClient, {
+      mutationKey,
+      // Kept until reset: a push pending in a week left must still be found
+      // when it is shown again.
+      gcTime: Infinity,
+      mutationFn: async () => {
+        const path = `${planPath(weekStart)}/push-calendar`
+        return parsePlan(`POST ${path}`, weekStart, await apiFetch<unknown>(path, { method: 'POST' }), false)
+      },
+      onSuccess: (plan) => queryClient.setQueryData<Plan>(key, plan),
+      onError: async (error) => {
+        noteGoogleFailure(queryClient, error)
+        if (error instanceof ApiError && error.code === 'plan_changed') {
+          await queryClient.invalidateQueries({ queryKey: key, refetchType: 'all' })
+        }
+      },
+    })
+    // A failure is the mutation's state, which error reports.
+    mutation.execute().catch(() => undefined)
+  }
+
+  function reset() {
+    const week = mutations.findAll({ mutationKey })
+    if (week.some((mutation) => mutation.state.status === 'pending')) {
+      throw new Error(`The week of ${weekStart} has a push pending, which cannot be reset.`)
+    }
+    for (const mutation of week) mutations.remove(mutation)
+  }
+
+  return {
+    pending: pushes.some((push) => push.status === 'pending'),
+    error: latest?.status === 'error' ? latest.error! : null,
+    mutate,
+    reset,
+  }
 }

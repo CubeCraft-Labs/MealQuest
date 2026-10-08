@@ -427,6 +427,77 @@ describe('PlanPage', () => {
     expect(posts(fetchMock)).toEqual([`${PUSH} undefined`, `${PUSH} undefined`])
   })
 
+  it('pushes nothing again until the changed plan is shown, even after leaving the week and coming back', async () => {
+    let read: () => Response | Promise<Response> = () => jsonResponse(200, planBody('draft'))
+    let push = () => errorResponse(409, 'plan_changed')
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => read(),
+      [`GET ${NEXT_WEEK}`]: () => errorResponse(404, 'not_found'),
+      [`POST ${PUSH}`]: () => push(),
+    })
+    await renderPage()
+
+    await screen.findByText('Beef tacos')
+    const reread = deferred()
+    read = () => reread.response
+    fireEvent.click(screen.getByRole('button', { name: 'Looks good — push to Calendar' }))
+    await waitFor(() => expect(planReads(fetchMock)).toBe(2))
+
+    // Leaving the week and coming back while the changed plan is read
+    // remounts the board: the push is still busy, and sends nothing again.
+    fireEvent.click(screen.getByRole('button', { name: 'Next week' }))
+    expect(await screen.findByRole('button', { name: 'Draft this week' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Previous week' }))
+    await screen.findByText('Beef tacos')
+    expect(screen.getByRole('button', { name: 'Pushing to Calendar…' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Pushing to Calendar…' }))
+    expect(posts(fetchMock)).toEqual([`${PUSH} undefined`])
+
+    await act(async () => reread.send(jsonResponse(200, planBody('draft', ['Lasagna', ...NAMES.slice(1)]))))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't push to Calendar. The plan changed while it was being pushed; push it again.")
+    expect(screen.getByText('Lasagna')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Looks good — push to Calendar' })).toBeEnabled()
+
+    push = () => jsonResponse(200, syncedNow())
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('Synced to Google Calendar just now')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(posts(fetchMock)).toEqual([`${PUSH} undefined`, `${PUSH} undefined`])
+  })
+
+  it('shows the changed plan read while the week was left, and pushes it', async () => {
+    let read: () => Response | Promise<Response> = () => jsonResponse(200, planBody('draft'))
+    let push = () => errorResponse(409, 'plan_changed')
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => read(),
+      [`GET ${NEXT_WEEK}`]: () => errorResponse(404, 'not_found'),
+      [`POST ${PUSH}`]: () => push(),
+    })
+    await renderPage()
+
+    await screen.findByText('Beef tacos')
+    const reread = deferred()
+    read = () => reread.response
+    fireEvent.click(screen.getByRole('button', { name: 'Looks good — push to Calendar' }))
+    await waitFor(() => expect(planReads(fetchMock)).toBe(2))
+    fireEvent.click(screen.getByRole('button', { name: 'Next week' }))
+    expect(await screen.findByRole('button', { name: 'Draft this week' })).toBeInTheDocument()
+    await act(async () => reread.send(jsonResponse(200, planBody('draft', ['Lasagna', ...NAMES.slice(1)]))))
+    read = () => jsonResponse(200, planBody('draft', ['Lasagna', ...NAMES.slice(1)]))
+    fireEvent.click(screen.getByRole('button', { name: 'Previous week' }))
+
+    // The board comes back on the changed plan: Push sends that one.
+    expect(await screen.findByText('Lasagna')).toBeInTheDocument()
+    expect(screen.queryByText('Beef tacos')).not.toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('The plan changed while it was being pushed; push it again.')
+    push = () => jsonResponse(200, syncedNow())
+    fireEvent.click(screen.getByRole('button', { name: 'Looks good — push to Calendar' }))
+    expect(await screen.findByText('Synced to Google Calendar just now')).toBeInTheDocument()
+    expect(posts(fetchMock)).toEqual([`${PUSH} undefined`, `${PUSH} undefined`])
+  })
+
   it('rebuilds a draft at once, showing skeleton tiles until the new plan is read', async () => {
     let plan = planBody('draft')
     let job = draftJob('running')

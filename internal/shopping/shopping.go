@@ -8,6 +8,10 @@
 // (see Generate). The one model call is the Supply run's title, written by
 // archive_title in a KindTitleSupplyRun job when the list is generated
 // untitled (see Generate).
+//
+// Freeze moves a week's Supply run into the Supply archive once its week
+// has ended, and Archive reads the archive back as posts grouped by week,
+// month or year.
 package shopping
 
 import (
@@ -19,6 +23,8 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
+	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
@@ -70,6 +76,14 @@ var ErrListNotFound = errors.New("the week has no Supply run")
 // ErrItemNotFound is a change to an item on no Supply run.
 var ErrItemNotFound = errors.New("no Supply run has that item")
 
+// ErrWeekNotEnded is a freeze of a Supply run whose week has not ended in
+// the household's time zone.
+var ErrWeekNotEnded = errors.New("the week has not ended")
+
+// ErrInvalidPeriod is an Archive grouping other than ByWeek, ByMonth and
+// ByYear.
+var ErrInvalidPeriod = errors.New("by must be week, month or year")
+
 // Titler runs archive_title on in; scope names the week, its plan revision
 // and its dinners.
 // In production it is skills.TitleArchive with the household's
@@ -82,6 +96,14 @@ type Service struct {
 	title    Titler
 	titleJob *jobs.Kind[TitleJob]
 	logger   *slog.Logger
+	// now is the clock weeks are ended and current on; tests replace it.
+	now func() time.Time
+	// titling orders the title writes against Freeze. A title job holds it
+	// shared from reading the list to storing its title, and Freeze holds
+	// it exclusively from reading the list to freezing it, so a freeze
+	// waits for the title jobs in flight to store their titles or fail,
+	// and no title job runs archive_title while a freeze is under way.
+	titling sync.RWMutex
 }
 
 // NewService returns a service over st that titles Supply runs with title
@@ -98,7 +120,7 @@ func NewService(st *store.Store, title Titler, runner *jobs.Runner, logger *slog
 	case logger == nil:
 		return nil, errors.New("shopping: nil logger")
 	}
-	s := &Service{st: st, title: title, logger: logger}
+	s := &Service{st: st, title: title, logger: logger, now: time.Now}
 	kind, err := jobs.Register(runner, KindTitleSupplyRun, s.runTitleJob, ReasonTitleFailed)
 	if err != nil {
 		return nil, err
@@ -345,10 +367,19 @@ func (s *Service) runTitleJob(ctx context.Context, p TitleJob, _ func(titleResul
 	return titleResult{ListID: p.ListID, Title: title}, nil
 }
 
-// writeTitle runs archive_title for p's Supply run and stores its title.
-// When the list was titled by another job, before this one ran or
-// meanwhile, that title stands and is returned.
+// writeTitle runs archive_title for p's Supply run and stores its title,
+// as storeTitle does, while no freeze is under way: it waits for one to
+// end first, and a freeze waits for it to end.
 func (s *Service) writeTitle(ctx context.Context, p TitleJob) (string, error) {
+	s.titling.RLock()
+	defer s.titling.RUnlock()
+	return s.storeTitle(ctx, p)
+}
+
+// storeTitle runs archive_title for p's Supply run and stores its title.
+// When the list was titled by another job, before this one ran or
+// meanwhile, that title stands and is returned. The caller holds titling.
+func (s *Service) storeTitle(ctx context.Context, p TitleJob) (string, error) {
 	q := db.New(s.st.Writer)
 	title, err := s.currentTitle(ctx, q, p)
 	if err != nil || title != "" {
@@ -423,13 +454,18 @@ func (s *Service) Get(ctx context.Context, weekStart store.LocalDate) (l List, e
 	if err != nil {
 		return List{}, fmt.Errorf("shopping: read list: %w", err)
 	}
+	return readList(ctx, q, list)
+}
+
+// readList reads the groups and items of list through q.
+func readList(ctx context.Context, q *db.Queries, list db.ShoppingList) (List, error) {
 	rows, err := q.ListShoppingGroupDinners(ctx, list.ID)
 	if err != nil {
-		return List{}, fmt.Errorf("shopping: read groups: %w", err)
+		return List{}, fmt.Errorf("shopping: read groups of %s: %w", list.WeekStart, err)
 	}
 	items, err := q.ListShoppingItems(ctx, list.ID)
 	if err != nil {
-		return List{}, fmt.Errorf("shopping: read items: %w", err)
+		return List{}, fmt.Errorf("shopping: read items of %s: %w", list.WeekStart, err)
 	}
 	byGroup := make(map[string][]Item, len(rows))
 	for _, r := range items {

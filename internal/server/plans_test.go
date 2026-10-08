@@ -37,6 +37,7 @@ type plansEnv struct {
 	h        http.Handler
 	st       *store.Store
 	svc      *plan.Service
+	shop     *shopping.Service
 	runner   *jobs.Runner
 	questLog string
 	// google is the fake Google the plan service pushes to; it starts
@@ -127,7 +128,7 @@ func newPlansRouterTitled(t *testing.T, title shopping.Titler) plansEnv {
 			t.Fatal(err)
 		}
 	}
-	return plansEnv{h: h, st: st, svc: svc, runner: runner, questLog: dinner("Pad Thai", "quest_log", "stovetop", 35),
+	return plansEnv{h: h, st: st, svc: svc, shop: shop, runner: runner, questLog: dinner("Pad Thai", "quest_log", "stovetop", 35),
 		google: google, gcal: googleSvc, logs: logs}
 }
 

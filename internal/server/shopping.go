@@ -143,6 +143,70 @@ func patchShoppingItem(logger *slog.Logger, svc *shopping.Service) http.HandlerF
 	}
 }
 
+// supplyArchive is the GET /shopping/archive answer: the Supply archive's
+// periods, newest first, as grouped by by.
+type supplyArchive struct {
+	By      string          `json:"by"`
+	Periods []archivePeriod `json:"periods"`
+}
+
+// archivePeriod is one heading of the Supply archive and its posts,
+// newest first.
+type archivePeriod struct {
+	Key     string        `json:"key"`
+	Heading string        `json:"heading"`
+	Posts   []archivePost `json:"posts"`
+}
+
+// archivePost is one week's Supply run in the Supply archive. label is
+// the week label, which stands in for title while it is null, and
+// onHandCount counts the items marked "have it".
+type archivePost struct {
+	WeekStart   string   `json:"weekStart"`
+	Label       string   `json:"label"`
+	Title       *string  `json:"title"`
+	DinnerCount int      `json:"dinnerCount"`
+	ItemCount   int      `json:"itemCount"`
+	OnHandCount int      `json:"onHandCount"`
+	Dinners     []string `json:"dinners"`
+	Current     bool     `json:"current"`
+}
+
+// getSupplyArchive answers GET /shopping/archive?by=week|month|year with
+// the Supply archive grouped by that period.
+func getSupplyArchive(logger *slog.Logger, svc *shopping.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		by := r.URL.Query().Get("by")
+		periods, err := svc.Archive(r.Context(), by)
+		if errors.Is(err, shopping.ErrInvalidPeriod) {
+			writeError(w, r, logger, http.StatusBadRequest, "invalid_request", shopping.ErrInvalidPeriod.Error())
+			return
+		}
+		if err != nil {
+			writeShoppingError(w, r, logger, "read Supply archive", err)
+			return
+		}
+		out := supplyArchive{By: by, Periods: make([]archivePeriod, len(periods))}
+		for i, p := range periods {
+			posts := make([]archivePost, len(p.Posts))
+			for j, post := range p.Posts {
+				posts[j] = archivePost{
+					WeekStart:   post.WeekStart,
+					Label:       post.Label,
+					Title:       post.Title,
+					DinnerCount: len(post.Dinners),
+					ItemCount:   post.Items,
+					OnHandCount: post.OnHand,
+					Dinners:     post.Dinners,
+					Current:     post.Current,
+				}
+			}
+			out.Periods[i] = archivePeriod{Key: p.Key, Heading: p.Heading, Posts: posts}
+		}
+		writeJSON(w, r, logger, http.StatusOK, out)
+	}
+}
+
 // supplyRunOf is l, the Supply run of the week starting week, as the API
 // shows it.
 func supplyRunOf(week store.LocalDate, l shopping.List) (supplyRun, error) {

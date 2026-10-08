@@ -88,3 +88,17 @@ WHERE id = ?;
 UPDATE shopping_lists
 SET title = ?, updated_at = ?
 WHERE id = ? AND title IS NULL AND status = 'current' AND frozen_at IS NULL;
+
+-- name: FreezeShoppingList :execrows
+-- Freezes list id into the Supply archive at frozen_at, unless it is
+-- frozen already.
+UPDATE shopping_lists
+SET status = 'archived', frozen_at = ?, updated_at = ?
+WHERE id = ? AND frozen_at IS NULL;
+
+-- name: ListShoppingListsThrough :many
+-- The Supply runs of the weeks starting on or before week_start, newest
+-- week first.
+SELECT * FROM shopping_lists
+WHERE week_start <= ?
+ORDER BY week_start DESC;

@@ -490,6 +490,25 @@ automatic** (D-021).
   generation: the list stays untitled (the UI shows the week label), the
   failure is logged as a warning and recorded in `ai_runs`, the job fails
   `title_failed`, and the week's next generation tries again.
+  `shopping.Freeze` titles a list still untitled once more before
+  freezing it (see Supply archive), through the same skill, scope and
+  conditional write.
+
+## Supply archive (Feature 17)
+
+`shopping.Freeze(weekStart)` moves a week's Supply run into the Supply
+archive: `status` becomes `archived` and `frozen_at` is set, after which
+generating the list or changing an item is 409 `archived`. It freezes only
+a week that has ended in the household's time zone (its Monday is before
+the Monday of the household's current week), so a week not yet ended is
+`ErrWeekNotEnded` and a week with no list `ErrListNotFound`; freezing a
+frozen list does nothing. A list still untitled is titled first with
+`archive_title` from the week's plan, as `Generate` titles it; a title
+that cannot be written is logged and the list is frozen untitled, when its
+week label stands in for good. A `title_supply_run` job still in flight
+with the same scope shares that run (`harness.Run`); whichever stores the
+title first wins, and a job storing after the freeze stores nothing. The
+`week_rollover` schedule is to call `Freeze` for last week.
 
 ## Recipe grounding
 
@@ -790,6 +809,20 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
   needed, needed_count, total_count}` with the list's counts after the
   change. 404 for an unknown item, 409 `archived` when the list is in the
   Supply archive, 400 `invalid_request` for a bad body.
+- `GET /api/v1/shopping/archive?by=week|month|year` returns the Supply
+  archive `{by, periods: [{key, heading, posts: [{weekStart, label,
+  title, dinnerCount, itemCount, onHandCount, dinners, current}]}]}`: the
+  Supply run of every week up to the household's current week, newest
+  first, grouped by the Monday's ISO week (`key` "2026-W41", `heading` the
+  week label), month ("2026-10", "October 2026") or year ("2026"). The
+  Monday is a household-local date, so the week of Monday 28 December
+  is in December. `label` is the week label ("Week 41 · Oct 5 – 11"; the
+  UI sets it in capitals), `title` null while untitled, `dinners` the
+  list's dinners in day order and `dinnerCount` their number,
+  `itemCount` all items, `onHandCount` the items marked "have it", and
+  `current` true for the household's current week. 400 `invalid_request`
+  for any other `by`. A frozen list is read through `GET
+  /api/v1/shopping/{weekStart}` with `status` `archived`.
 
 ## Frontend
 

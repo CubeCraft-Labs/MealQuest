@@ -49,7 +49,8 @@ type RouteMounter interface {
 // /api/v1/plans/{weekStart}/days/{date}, GET /api/v1/rotation-reviews and
 // POST /api/v1/dinners/{id}/rotation-review, and POST
 // /api/v1/plans/{weekStart}/push-calendar with shopSvc, which makes the
-// pushed week's Supply run; shopSvc serves GET /api/v1/shopping/{weekStart},
+// pushed week's Supply run; shopSvc serves GET /api/v1/shopping/archive,
+// GET /api/v1/shopping/{weekStart},
 // POST /api/v1/shopping/{weekStart}/generate and PATCH
 // /api/v1/shopping/items/{id}; googleSvc serves GET
 // /api/v1/integrations/google and its /connect, /callback and /calendars,
@@ -142,6 +143,7 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Post("/plans/{weekStart}/draft", postPlanDraft(logger, planSvc))
 	apiV1.Put("/plans/{weekStart}/days/{date}", putPlanDay(logger, planSvc))
 	apiV1.Post("/plans/{weekStart}/push-calendar", postPlanPush(logger, planSvc, shopSvc))
+	apiV1.Get("/shopping/archive", getSupplyArchive(logger, shopSvc))
 	apiV1.Get("/shopping/{weekStart}", getSupplyRun(logger, shopSvc))
 	apiV1.Post("/shopping/{weekStart}/generate", postSupplyRunGenerate(logger, shopSvc))
 	apiV1.Patch("/shopping/items/{id}", patchShoppingItem(logger, shopSvc))

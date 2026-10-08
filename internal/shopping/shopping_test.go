@@ -54,6 +54,9 @@ type env struct {
 	model *llm.Fake
 	// beforeTitle, when set, runs as archive_title is asked for a title.
 	beforeTitle func()
+	// afterTitle, when set, runs once archive_title has returned, before
+	// its title is stored.
+	afterTitle func()
 	// beforeModel, when set, runs as the model is sent a request.
 	beforeModel func(llm.Request)
 	// log holds what the service logged.
@@ -108,7 +111,11 @@ func newEnv(t *testing.T) *env {
 		if e.beforeTitle != nil {
 			e.beforeTitle()
 		}
-		return skills.TitleArchive(ctx, cfg, scope, in)
+		out, err := skills.TitleArchive(ctx, cfg, scope, in)
+		if e.afterTitle != nil {
+			e.afterTitle()
+		}
+		return out, err
 	}
 	logger := slog.New(slog.NewTextHandler(e.log, nil))
 	e.runner, err = jobs.NewRunner(st, logger, 2)

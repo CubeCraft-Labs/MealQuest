@@ -112,6 +112,28 @@ func (q *Queries) DeleteShoppingItem(ctx context.Context, id string) error {
 	return err
 }
 
+const freezeShoppingList = `-- name: FreezeShoppingList :execrows
+UPDATE shopping_lists
+SET status = 'archived', frozen_at = ?, updated_at = ?
+WHERE id = ? AND frozen_at IS NULL
+`
+
+type FreezeShoppingListParams struct {
+	FrozenAt  sql.NullString
+	UpdatedAt string
+	ID        string
+}
+
+// Freezes list id into the Supply archive at frozen_at, unless it is
+// frozen already.
+func (q *Queries) FreezeShoppingList(ctx context.Context, arg FreezeShoppingListParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, freezeShoppingList, arg.FrozenAt, arg.UpdatedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const getShoppingItemList = `-- name: GetShoppingItemList :one
 SELECT shopping_lists.id, shopping_lists.week_start, shopping_lists.plan_id, shopping_lists.title, shopping_lists.status, shopping_lists.sent_to_chat_at, shopping_lists.frozen_at, shopping_lists.created_at, shopping_lists.updated_at
 FROM shopping_items
@@ -285,6 +307,47 @@ func (q *Queries) ListShoppingItems(ctx context.Context, listID string) ([]ListS
 			&i.ShoppingItem.CreatedAt,
 			&i.ShoppingItem.UpdatedAt,
 			&i.DinnerID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listShoppingListsThrough = `-- name: ListShoppingListsThrough :many
+SELECT id, week_start, plan_id, title, status, sent_to_chat_at, frozen_at, created_at, updated_at FROM shopping_lists
+WHERE week_start <= ?
+ORDER BY week_start DESC
+`
+
+// The Supply runs of the weeks starting on or before week_start, newest
+// week first.
+func (q *Queries) ListShoppingListsThrough(ctx context.Context, weekStart string) ([]ShoppingList, error) {
+	rows, err := q.db.QueryContext(ctx, listShoppingListsThrough, weekStart)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ShoppingList
+	for rows.Next() {
+		var i ShoppingList
+		if err := rows.Scan(
+			&i.ID,
+			&i.WeekStart,
+			&i.PlanID,
+			&i.Title,
+			&i.Status,
+			&i.SentToChatAt,
+			&i.FrozenAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

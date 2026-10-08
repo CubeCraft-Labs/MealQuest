@@ -1,11 +1,14 @@
 package shopping_test
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -208,6 +211,121 @@ func TestFreezeTitlesUntitledList(t *testing.T) {
 		t.Errorf("%d model calls, want 1: the job finds the list titled", n)
 	}
 	wantTitle(t, "stored title after the job", e.storedTitle(t), "Tacos then Chili")
+}
+
+// pauseTitle makes the env's first archive_title run pause once it has
+// returned, before its title is stored, until the returned release is
+// called or the test ends; paused is closed as it pauses.
+func (e *env) pauseTitle(t *testing.T) (paused <-chan struct{}, release func()) {
+	t.Helper()
+	p, r := make(chan struct{}), make(chan struct{})
+	var first atomic.Bool
+	e.afterTitle = func() {
+		if first.CompareAndSwap(false, true) {
+			close(p)
+			select {
+			case <-r:
+			case <-t.Context().Done():
+			}
+		}
+	}
+	var released sync.Once
+	return p, func() { released.Do(func() { close(r) }) }
+}
+
+// waitClosed fails t unless c is closed within 10 seconds.
+func waitClosed(t *testing.T, what string, c <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-c:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+// TestFreezeWaitsForTitleJob: a freeze that starts while a title job's
+// archive_title run has returned but its title is not yet stored waits for
+// the job to store it, freezes the list with that title, and asks the
+// model nothing itself.
+func TestFreezeWaitsForTitleJob(t *testing.T) {
+	e := newEnv(t)
+	e.zoned(t, "America/New_York", "2026-10-19T12:00:00Z")
+	e.dinner(t, "Beef Chili", ing{"ground beef", "1", "lb"})
+	e.plan(t, "Beef Chili")
+	e.model.QueueGenerate(titled("Chili Night"))
+	paused, release := e.pauseTitle(t)
+	e.start(t)
+	g := e.generate(t)
+	waitClosed(t, "the title job's archive_title run", paused)
+
+	froze := make(chan error, 1)
+	go func() { froze <- e.svc.Freeze(context.Background(), week) }()
+	var err error
+	select {
+	case err = <-froze:
+		t.Errorf("Freeze = %v before the title job stored its title, want it to wait", err)
+		release()
+	case <-time.After(time.Second):
+		release()
+		err = <-froze
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantJob(t, e.waitTitle(t, g), jobs.StatusSucceeded, "")
+	wantTitle(t, "stored title", e.storedTitle(t), "Chili Night")
+	if status, _ := e.frozenState(t, week); status != shopping.StatusArchived {
+		t.Errorf("status = %q, want archived", status)
+	}
+	if n := len(e.model.Requests()); n != 1 {
+		t.Errorf("%d model calls, want 1: the freeze waits for the job's title", n)
+	}
+}
+
+// TestTitleJobWaitsForFreeze: a title job that starts while a freeze's
+// archive_title run has returned but its title is not yet stored waits for
+// the freeze, then finds the list titled and asks the model nothing.
+func TestTitleJobWaitsForFreeze(t *testing.T) {
+	e := newEnv(t)
+	e.zoned(t, "America/New_York", "2026-10-19T12:00:00Z")
+	e.dinner(t, "Beef Chili", ing{"ground beef", "1", "lb"})
+	e.plan(t, "Beef Chili")
+	e.model.QueueGenerate(titled("Chili Night"))
+	g := e.generate(t) // the runner is not started: its title job waits
+	paused, release := e.pauseTitle(t)
+
+	froze := make(chan error, 1)
+	go func() { froze <- e.svc.Freeze(context.Background(), week) }()
+	waitClosed(t, "the freeze's archive_title run", paused)
+	e.start(t)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		job, err := e.runner.Get(t.Context(), *g.TitleJobID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if job.Status == jobs.StatusRunning {
+			break
+		}
+		if job.Status != jobs.StatusQueued || time.Now().After(deadline) {
+			t.Fatalf("title job %s, want it running while the freeze is paused", job.Status)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	release()
+	if err := <-froze; err != nil {
+		t.Fatal(err)
+	}
+
+	wantJob(t, e.waitTitle(t, g), jobs.StatusSucceeded, "")
+	wantTitle(t, "stored title", e.storedTitle(t), "Chili Night")
+	if status, _ := e.frozenState(t, week); status != shopping.StatusArchived {
+		t.Errorf("status = %q, want archived", status)
+	}
+	if n := len(e.model.Requests()); n != 1 {
+		t.Errorf("%d model calls, want 1: the job waits for the freeze's title", n)
+	}
 }
 
 // TestFreezeUntitledWhenTitleFails: when archive_title cannot title the

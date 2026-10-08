@@ -32,10 +32,12 @@ const (
 // Generate titles it, so its post in the Supply archive gets a title when
 // the AI can write one. Titling never fails the freeze: a title that
 // cannot be written is logged and the list is frozen untitled, when its
-// week label stands in for the title for good. A title job still in
-// flight for the same plan revision and dinners shares Freeze's
-// archive_title run (see harness.Run), and whichever stores the title
-// first wins; a job whose write comes after the freeze stores nothing.
+// week label stands in for the title for good. Freeze first waits for the
+// title jobs in flight to store their titles or fail, and holds off new
+// ones until the list is frozen, so a title a job's archive_title run
+// wrote is stored before the freeze, and the freeze runs archive_title
+// only when no job is running it. A job that runs after the freeze finds
+// the list titled, or frozen untitled, and stores nothing.
 func (s *Service) Freeze(ctx context.Context, weekStart store.LocalDate) error {
 	if _, err := household.WeekDays(weekStart); err != nil {
 		return fmt.Errorf("shopping: freeze: %w", err)
@@ -48,6 +50,8 @@ func (s *Service) Freeze(ctx context.Context, weekStart store.LocalDate) error {
 	if weekStart.String() >= thisWeek.String() {
 		return fmt.Errorf("shopping: freeze %s: %w", weekStart, ErrWeekNotEnded)
 	}
+	s.titling.Lock()
+	defer s.titling.Unlock()
 	list, err := q.GetShoppingList(ctx, weekStart.String())
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrListNotFound
@@ -63,7 +67,7 @@ func (s *Service) Freeze(ctx context.Context, weekStart store.LocalDate) error {
 		if err != nil {
 			return err
 		}
-		if _, err := s.writeTitle(ctx, p); err != nil {
+		if _, err := s.storeTitle(ctx, p); err != nil {
 			s.logger.WarnContext(ctx, "Supply run frozen untitled; the Supply archive shows its week label",
 				"week", list.WeekStart, "list", list.ID, "error", err)
 		}

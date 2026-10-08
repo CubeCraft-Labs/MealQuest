@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
@@ -97,6 +98,12 @@ type Service struct {
 	logger   *slog.Logger
 	// now is the clock weeks are ended and current on; tests replace it.
 	now func() time.Time
+	// titling orders the title writes against Freeze. A title job holds it
+	// shared from reading the list to storing its title, and Freeze holds
+	// it exclusively from reading the list to freezing it, so a freeze
+	// waits for the title jobs in flight to store their titles or fail,
+	// and no title job runs archive_title while a freeze is under way.
+	titling sync.RWMutex
 }
 
 // NewService returns a service over st that titles Supply runs with title
@@ -360,10 +367,19 @@ func (s *Service) runTitleJob(ctx context.Context, p TitleJob, _ func(titleResul
 	return titleResult{ListID: p.ListID, Title: title}, nil
 }
 
-// writeTitle runs archive_title for p's Supply run and stores its title.
-// When the list was titled by another job, before this one ran or
-// meanwhile, that title stands and is returned.
+// writeTitle runs archive_title for p's Supply run and stores its title,
+// as storeTitle does, while no freeze is under way: it waits for one to
+// end first, and a freeze waits for it to end.
 func (s *Service) writeTitle(ctx context.Context, p TitleJob) (string, error) {
+	s.titling.RLock()
+	defer s.titling.RUnlock()
+	return s.storeTitle(ctx, p)
+}
+
+// storeTitle runs archive_title for p's Supply run and stores its title.
+// When the list was titled by another job, before this one ran or
+// meanwhile, that title stands and is returned. The caller holds titling.
+func (s *Service) storeTitle(ctx context.Context, p TitleJob) (string, error) {
 	q := db.New(s.st.Writer)
 	title, err := s.currentTitle(ctx, q, p)
 	if err != nil || title != "" {

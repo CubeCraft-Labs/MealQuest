@@ -8,6 +8,7 @@ import App, { routes } from './App.tsx'
 import { AI_SETTINGS, HOUSEHOLD_SETTINGS, RECIPE_SEARCH_SETTINGS, SETTINGS_API } from './test/ApiProviders.tsx'
 import { InDataRouter } from './test/dataRouter.tsx'
 import { dinnerBody } from './test/dinners.ts'
+import { defaultWeek } from './plan/week.ts'
 
 afterEach(() => {
   Reflect.deleteProperty(window, 'matchMedia')
@@ -31,6 +32,7 @@ function renderAppAt(path: string, location = fakeLocation(path)) {
 const SCREENS = {
   '/onboarding': true,
   '/plan': true,
+  '/plan/shopping': true,
   '/discover': true,
   '/settings': true,
   '/settings/ai': true,
@@ -103,6 +105,29 @@ describe('App routes', () => {
     const heading = await screen.findByRole('heading', { level: 1, name: 'AI assistant' })
     expect(screen.getByRole('main')).toContainElement(heading)
     expect(await screen.findByText('••••••••3f9a')).toBeInTheDocument()
+  })
+
+  it('/plan/shopping renders the Supply run inside the shell', async () => {
+    mockViewport(390)
+    const week = defaultWeek(HOUSEHOLD_SETTINGS, new Date())
+    stubFetchByPath({
+      ...SIGNED_IN,
+      [`/api/v1/shopping/${week}`]: () =>
+        jsonResponse(200, {
+          weekStart: week,
+          label: 'Week 41 · Oct 5 – 11',
+          title: null,
+          status: 'current',
+          sent_to_chat_at: null,
+          needed_count: 1,
+          total_count: 1,
+          groups: [{ dinner: { id: 'd1', name: 'Beef tacos' }, date: week, day: 'Monday', items: [{ id: 'i1', name: 'Ground beef', qty: '1 lb', needed: true }] }],
+        }),
+    })
+    renderAt('/plan/shopping')
+    const heading = await screen.findByRole('heading', { level: 1, name: 'Shopping list' })
+    expect(screen.getByRole('main')).toContainElement(heading)
+    expect(await screen.findByRole('checkbox', { name: 'Ground beef' })).toBeChecked()
   })
 
   it('/discover renders the Side quests deck inside the shell', async () => {

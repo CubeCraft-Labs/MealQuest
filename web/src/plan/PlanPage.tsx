@@ -600,10 +600,10 @@ function PushFailure({ error, cached, onRetry }: { error: Error; cached: boolean
   )
 }
 
-// Unavailable is an action with nothing behind it yet (the shopping list):
-// it stays focusable, so a tap or focus shows the tooltip saying why, above
-// it or, at the top of the page, below.
-function Unavailable({
+// Unavailable is an action with nothing behind it yet (the shopping list,
+// Send to Google Chat): it stays focusable, so a tap or focus shows the
+// tooltip saying why, above it or, at the top of the page, below.
+export function Unavailable({
   hint,
   variant = 'primary',
   below = false,

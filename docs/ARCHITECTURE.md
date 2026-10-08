@@ -505,9 +505,15 @@ the Monday of the household's current week), so a week not yet ended is
 frozen list does nothing. A list still untitled is titled first with
 `archive_title` from the week's plan, as `Generate` titles it; a title
 that cannot be written is logged and the list is frozen untitled, when its
-week label stands in for good. A `title_supply_run` job still in flight
-with the same scope shares that run (`harness.Run`); whichever stores the
-title first wins, and a job storing after the freeze stores nothing. The
+week label stands in for good. Titling and freezing are ordered by a
+per-service `RWMutex`: a `title_supply_run` job holds it shared across
+reading the list, the `archive_title` run and the title write, and `Freeze`
+holds it exclusively from reading the list to freezing it. So a freeze
+waits for a job in flight to store its title or fail for good; when the
+job failed, the freeze finds the list still untitled and makes its own
+`archive_title` attempt before freezing. A job that starts during a freeze
+waits for it, then finds the list titled (that title stands) or frozen
+untitled (the job fails `title_failed`), and stores nothing. The
 `week_rollover` schedule is to call `Freeze` for last week.
 
 ## Recipe grounding

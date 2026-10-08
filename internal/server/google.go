@@ -100,3 +100,74 @@ func deleteGoogle(logger *slog.Logger, svc *gcal.Service) http.HandlerFunc {
 		}
 	}
 }
+
+// maxGoogleCalendarBody bounds a PUT /integrations/google/calendar body.
+const maxGoogleCalendarBody = 4 << 10
+
+// googleCalendarChoice is the PUT /integrations/google/calendar body.
+type googleCalendarChoice struct {
+	CalendarID *string `json:"calendar_id"`
+}
+
+// getGoogleCalendars lists the connected account's calendars MealQuest can
+// push to, as [{id, summary, primary, accessRole}].
+func getGoogleCalendars(logger *slog.Logger, svc *gcal.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		cals, err := svc.Calendars(r.Context())
+		if err != nil {
+			writeGoogleCalendarError(w, r, logger, "list Google calendars", err)
+			return
+		}
+		writeJSON(w, r, logger, http.StatusOK, cals)
+	}
+}
+
+// putGoogleCalendar chooses the calendar MealQuest pushes to and answers
+// {calendar_id, calendar_name}.
+func putGoogleCalendar(logger *slog.Logger, svc *gcal.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodePatch[googleCalendarChoice](http.MaxBytesReader(w, r.Body, maxGoogleCalendarBody))
+		if err != nil {
+			writeError(w, r, logger, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		if body.CalendarID == nil || *body.CalendarID == "" {
+			writeError(w, r, logger, http.StatusBadRequest, "invalid_request", "calendar_id: required")
+			return
+		}
+		sel, err := svc.SelectCalendar(r.Context(), *body.CalendarID)
+		if err != nil {
+			writeGoogleCalendarError(w, r, logger, "choose Google calendar", err)
+			return
+		}
+		writeJSON(w, r, logger, http.StatusOK, sel)
+	}
+}
+
+// writeGoogleCalendarError maps a calendar listing or choice error to its
+// API error: 409 not_connected when nothing is connected, 422
+// unknown_calendar for a calendar MealQuest cannot push to, 502
+// reconnect_required when Google no longer accepts the stored grant, and 502
+// google_failed when Google refused or could not be reached.
+func writeGoogleCalendarError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, action string, err error) {
+	var calendar *gcal.CalendarError
+	switch {
+	case errors.Is(err, gcal.ErrNotConnected):
+		writeError(w, r, logger, http.StatusConflict, "not_connected", "Google Calendar is not connected")
+	case errors.Is(err, gcal.ErrUnknownCalendar):
+		writeError(w, r, logger, http.StatusUnprocessableEntity, "unknown_calendar",
+			"choose one of your calendars that MealQuest can add dinners to")
+	case errors.Is(err, gcal.ErrReconnect):
+		logger.WarnContext(r.Context(), action, "error", err)
+		writeError(w, r, logger, http.StatusBadGateway, "reconnect_required",
+			"Google no longer accepts MealQuest's access to your calendar; connect Google Calendar again")
+	case errors.As(err, &calendar):
+		logger.WarnContext(r.Context(), action, "error", err)
+		writeError(w, r, logger, http.StatusBadGateway, "google_failed",
+			"Google Calendar could not be reached; try again")
+	default:
+		logger.ErrorContext(r.Context(), action, "error", err)
+		writeError(w, r, logger, http.StatusInternalServerError, "internal", "internal error")
+	}
+}

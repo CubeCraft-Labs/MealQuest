@@ -106,6 +106,12 @@ ON CONFLICT (id) DO UPDATE SET
 	updated_at = excluded.updated_at
 RETURNING *;
 
+-- name: SetIntegrationsGoogleCalendar :execrows
+-- Sets the chosen calendar; affects no row when nothing is connected.
+UPDATE integrations_google
+SET calendar_id = ?, calendar_name = ?, updated_at = ?
+WHERE id = 1;
+
 -- name: DeleteIntegrationsGoogle :exec
 DELETE FROM integrations_google
 WHERE id = 1;

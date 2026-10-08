@@ -47,6 +47,9 @@ var Scopes = []string{
 // GoogleRevokeURL is Google's OAuth token revocation endpoint.
 const GoogleRevokeURL = "https://oauth2.googleapis.com/revoke"
 
+// GoogleCalendarAPI is the base URL of Google's Calendar API v3.
+const GoogleCalendarAPI = "https://www.googleapis.com/calendar/v3"
+
 // GoogleEndpoint is Google's OAuth authorization and token endpoint.
 var GoogleEndpoint = oauth2.Endpoint{
 	AuthURL:   endpoints.Google.AuthURL,
@@ -101,9 +104,13 @@ type Config struct {
 	// RevokeURL is Google's revocation endpoint; production uses
 	// GoogleRevokeURL and tests a fake.
 	RevokeURL string
+	// CalendarAPI is the Calendar API's base URL; production uses
+	// GoogleCalendarAPI and tests a fake.
+	CalendarAPI string
 }
 
-// Service connects and disconnects the household's Google account.
+// Service connects and disconnects the household's Google account and
+// chooses the calendar MealQuest pushes to.
 // MealQuest runs as one process, so the service's in-memory lock and pending
 // states see every request.
 type Service struct {
@@ -111,16 +118,19 @@ type Service struct {
 	box       *secretbox.Box
 	oauth     oauth2.Config
 	revokeURL string
-	client    *http.Client
-	cookie    auth.FlowCookie
+	// calendarAPI is the Calendar API's base URL.
+	calendarAPI string
+	client      *http.Client
+	cookie      auth.FlowCookie
 	// now is the clock; tests replace it.
 	now func() time.Time
 
-	// account serializes every change to the connected account — a
-	// connect's exchange and store, a disconnect's read, revoke and delete —
-	// across the request to Google and the database write. Google revokes the
-	// whole grant, so a revoke overlapping a connect would also kill the
-	// token the connect stores.
+	// account serializes every use of and change to the connected account —
+	// a connect's exchange and store, a disconnect's read, revoke and delete,
+	// a calendar listing's read and Calendar API calls, a calendar choice's
+	// listing and store — across the requests to Google and the database
+	// write. Google revokes the whole grant, so a revoke overlapping a
+	// connect would also kill the token the connect stores.
 	account sync.Mutex
 
 	// pending holds the state of every connect started and not yet
@@ -143,8 +153,8 @@ func NewService(st *store.Store, box *secretbox.Box, cfg Config) (*Service, erro
 		return nil, errors.New("gcal: public URL is required")
 	case len(cfg.SecretKey) == 0:
 		return nil, errors.New("gcal: secret key is required")
-	case cfg.Endpoint.AuthURL == "", cfg.Endpoint.TokenURL == "", cfg.RevokeURL == "":
-		return nil, errors.New("gcal: authorization, token and revoke endpoints are required")
+	case cfg.Endpoint.AuthURL == "", cfg.Endpoint.TokenURL == "", cfg.RevokeURL == "", cfg.CalendarAPI == "":
+		return nil, errors.New("gcal: authorization, token, revoke and Calendar API endpoints are required")
 	}
 	return &Service{
 		st:  st,
@@ -156,11 +166,12 @@ func NewService(st *store.Store, box *secretbox.Box, cfg Config) (*Service, erro
 			RedirectURL:  cfg.PublicURL.Scheme + "://" + cfg.PublicURL.Host + CallbackPath,
 			Scopes:       slices.Clone(Scopes),
 		},
-		revokeURL: cfg.RevokeURL,
-		client:    &http.Client{Timeout: googleTimeout, CheckRedirect: auth.CheckRedirect},
-		cookie:    auth.NewFlowCookie(connectCookieName, connectCookieKeyLabel, connectCookieTTL, cfg.SecretKey),
-		now:       time.Now,
-		pending:   map[string]time.Time{},
+		revokeURL:   cfg.RevokeURL,
+		calendarAPI: cfg.CalendarAPI,
+		client:      &http.Client{Timeout: googleTimeout, CheckRedirect: auth.CheckRedirect},
+		cookie:      auth.NewFlowCookie(connectCookieName, connectCookieKeyLabel, connectCookieTTL, cfg.SecretKey),
+		now:         time.Now,
+		pending:     map[string]time.Time{},
 	}, nil
 }
 

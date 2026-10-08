@@ -23,9 +23,11 @@ import (
 )
 
 const (
-	googleConnectPath  = "/api/v1/integrations/google/connect"
-	googleCallbackPath = "/api/v1/integrations/google/callback"
-	googlePath         = "/api/v1/integrations/google"
+	googleConnectPath   = "/api/v1/integrations/google/connect"
+	googleCallbackPath  = "/api/v1/integrations/google/callback"
+	googlePath          = "/api/v1/integrations/google"
+	googleCalendarsPath = "/api/v1/integrations/google/calendars"
+	googleCalendarPath  = "/api/v1/integrations/google/calendar"
 )
 
 // googleEnv is a router whose Google Calendar service talks to a fake
@@ -60,6 +62,7 @@ func newGoogleEnv(t *testing.T) *googleEnv {
 		SecretKey:    []byte("server-secret-key"),
 		Endpoint:     e.google.Endpoint(),
 		RevokeURL:    e.google.RevokeURL(),
+		CalendarAPI:  e.google.CalendarAPI(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -295,13 +298,157 @@ func TestGoogleRoutesRequireSession(t *testing.T) {
 		{http.MethodGet, googleConnectPath},
 		{http.MethodGet, googleCallbackPath + "?state=s&code=c"},
 		{http.MethodDelete, googlePath},
+		{http.MethodGet, googleCalendarsPath},
+		{http.MethodPut, googleCalendarPath},
 	} {
 		rec := e.serve(httptest.NewRequest(c.method, c.path, nil))
 		if rec.Code != http.StatusUnauthorized || rec.Body.String() != unauthenticatedJSON {
 			t.Errorf("%s %s signed out = %d %s, want 401", c.method, c.path, rec.Code, rec.Body)
 		}
 	}
-	if e.google.TokenCalls() != 0 || len(e.google.Revoked()) != 0 {
+	if e.google.TokenCalls() != 0 || len(e.google.Revoked()) != 0 || e.google.CalendarCalls() != 0 {
 		t.Error("a signed-out request reached Google")
 	}
+}
+
+// connected connects the test session's Google account and has the fake
+// list an owned primary calendar, a writable shared one and a read-only one.
+func (e *googleEnv) connected(t *testing.T) {
+	t.Helper()
+	consent, cookie := e.connect(t)
+	if rec := e.callback(cookie, e.consented(consent)); rec.Code != http.StatusSeeOther {
+		t.Fatalf("callback = %d %s", rec.Code, rec.Body)
+	}
+	e.google.SetCalendars(0,
+		gcaltest.Calendar{ID: "household@gmail.com", Summary: "household@gmail.com", Primary: true, AccessRole: "owner"},
+		gcaltest.Calendar{ID: "family@group.calendar.google.com", Summary: "Family", AccessRole: "writer", Description: "private notes"},
+		gcaltest.Calendar{ID: "holidays@group.v.calendar.google.com", Summary: "Holidays", AccessRole: "reader"},
+	)
+}
+
+func chooseCalendar(id string) *http.Request {
+	return signedIn(http.MethodPut, googleCalendarPath, strings.NewReader(`{"calendar_id":"`+id+`"}`))
+}
+
+func TestGoogleCalendarsListAndChoose(t *testing.T) {
+	t.Parallel()
+	e := newGoogleEnv(t)
+	e.connected(t)
+
+	rec := e.serve(signedIn(http.MethodGet, googleCalendarsPath, nil))
+	want := `[{"id":"household@gmail.com","summary":"household@gmail.com","primary":true,"accessRole":"owner"},` +
+		`{"id":"family@group.calendar.google.com","summary":"Family","primary":false,"accessRole":"writer"}]`
+	if rec.Code != http.StatusOK || rec.Body.String() != want {
+		t.Fatalf("GET calendars = %d %s, want 200 %s", rec.Code, rec.Body, want)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", cc)
+	}
+
+	// PUT needs the CSRF header like every other write.
+	req := httptest.NewRequest(http.MethodPut, googleCalendarPath, strings.NewReader(`{"calendar_id":"family@group.calendar.google.com"}`))
+	req.AddCookie(validSessionCookie)
+	if rec := e.serve(req); rec.Code != http.StatusForbidden {
+		t.Errorf("PUT without CSRF = %d, want 403", rec.Code)
+	}
+	if row, _ := db.New(e.st.Reader).GetIntegrationsGoogle(context.Background()); row.CalendarID.Valid {
+		t.Fatal("a PUT without CSRF chose a calendar")
+	}
+
+	rec = e.serve(chooseCalendar("family@group.calendar.google.com"))
+	if want := `{"calendar_id":"family@group.calendar.google.com","calendar_name":"Family"}`; rec.Code != http.StatusOK || rec.Body.String() != want {
+		t.Fatalf("PUT calendar = %d %s, want 200 %s", rec.Code, rec.Body, want)
+	}
+	row, err := db.New(e.st.Reader).GetIntegrationsGoogle(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.CalendarID.String != "family@group.calendar.google.com" || row.CalendarName.String != "Family" {
+		t.Errorf("stored calendar = %v %v", row.CalendarID, row.CalendarName)
+	}
+
+	for _, id := range []string{"holidays@group.v.calendar.google.com", "nobody@group.calendar.google.com"} {
+		rec := e.serve(chooseCalendar(id))
+		if code, _ := errorBodyCode(t, rec); rec.Code != http.StatusUnprocessableEntity || code != "unknown_calendar" {
+			t.Errorf("PUT %s = %d %s, want 422 unknown_calendar", id, rec.Code, rec.Body)
+		}
+	}
+	if row, _ := db.New(e.st.Reader).GetIntegrationsGoogle(context.Background()); row.CalendarID.String != "family@group.calendar.google.com" {
+		t.Errorf("a refused choice replaced the stored calendar with %v", row.CalendarID)
+	}
+}
+
+func TestGoogleCalendarChoiceBadRequest(t *testing.T) {
+	t.Parallel()
+	e := newGoogleEnv(t)
+	e.connected(t)
+	calls := e.google.CalendarCalls()
+	for _, body := range []string{``, `{}`, `{"calendar_id":""}`, `{"calendar_id":null}`, `{"calendar_id":7}`,
+		`{"calendar_id":"family@group.calendar.google.com","calendar_name":"Mine"}`} {
+		rec := e.serve(signedIn(http.MethodPut, googleCalendarPath, strings.NewReader(body)))
+		if code, _ := errorBodyCode(t, rec); rec.Code != http.StatusBadRequest || code != "invalid_request" {
+			t.Errorf("PUT %q = %d %s, want 400 invalid_request", body, rec.Code, rec.Body)
+		}
+	}
+	if e.google.CalendarCalls() != calls {
+		t.Error("a bad request reached Google")
+	}
+}
+
+func TestGoogleCalendarsNotConnected(t *testing.T) {
+	t.Parallel()
+	e := newGoogleEnv(t)
+	for _, req := range []*http.Request{
+		signedIn(http.MethodGet, googleCalendarsPath, nil),
+		chooseCalendar("family@group.calendar.google.com"),
+	} {
+		rec := e.serve(req)
+		code, message := errorBodyCode(t, rec)
+		if rec.Code != http.StatusConflict || code != "not_connected" || message != "Google Calendar is not connected" {
+			t.Errorf("%s %s = %d %s, want 409 not_connected", req.Method, req.URL.Path, rec.Code, rec.Body)
+		}
+	}
+	if e.google.TokenCalls() != 0 || e.google.CalendarCalls() != 0 {
+		t.Error("Google was called with nothing connected")
+	}
+}
+
+// TestGoogleCalendarsGrantRevoked lists and chooses after the household
+// removed MealQuest's access in their Google account: 502
+// reconnect_required, and the connection is kept for the household to
+// reconnect or disconnect.
+func TestGoogleCalendarsGrantRevoked(t *testing.T) {
+	t.Parallel()
+	e := newGoogleEnv(t)
+	e.connected(t)
+	e.google.RevokeGrant()
+	for _, req := range []*http.Request{
+		signedIn(http.MethodGet, googleCalendarsPath, nil),
+		chooseCalendar("family@group.calendar.google.com"),
+	} {
+		rec := e.serve(req)
+		code, message := errorBodyCode(t, rec)
+		if rec.Code != http.StatusBadGateway || code != "reconnect_required" || !strings.Contains(message, "connect Google Calendar again") {
+			t.Errorf("%s %s = %d %s, want 502 reconnect_required", req.Method, req.URL.Path, rec.Code, rec.Body)
+		}
+	}
+	if !e.stored(t) {
+		t.Error("the connection was cleared")
+	}
+	// newGoogleEnv's cleanup checks the responses and logs hold no secret.
+}
+
+func TestGoogleCalendarsFailureIsRedacted(t *testing.T) {
+	t.Parallel()
+	e := newGoogleEnv(t)
+	e.connected(t)
+	e.google.FailCalendarList(http.StatusInternalServerError)
+	rec := e.serve(signedIn(http.MethodGet, googleCalendarsPath, nil))
+	if code, _ := errorBodyCode(t, rec); rec.Code != http.StatusBadGateway || code != "google_failed" {
+		t.Errorf("GET calendars = %d %s, want 502 google_failed", rec.Code, rec.Body)
+	}
+	if !strings.Contains(e.logs.String(), "HTTP 500") {
+		t.Errorf("logs = %s, want the failure's status", e.logs)
+	}
+	// newGoogleEnv's cleanup checks the response and logs hold no secret.
 }

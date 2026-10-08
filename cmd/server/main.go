@@ -126,6 +126,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		SecretKey:    []byte(cfg.SecretKey.Reveal()),
 		Endpoint:     gcal.GoogleEndpoint,
 		RevokeURL:    gcal.GoogleRevokeURL,
+		CalendarAPI:  gcal.GoogleCalendarAPI,
 	})
 	if err != nil {
 		return err

@@ -139,6 +139,27 @@ func (q *Queries) GetRecipeSearchSettings(ctx context.Context) (RecipeSearchSett
 	return i, err
 }
 
+const setIntegrationsGoogleCalendar = `-- name: SetIntegrationsGoogleCalendar :execrows
+UPDATE integrations_google
+SET calendar_id = ?, calendar_name = ?, updated_at = ?
+WHERE id = 1
+`
+
+type SetIntegrationsGoogleCalendarParams struct {
+	CalendarID   sql.NullString
+	CalendarName sql.NullString
+	UpdatedAt    string
+}
+
+// Sets the chosen calendar; affects no row when nothing is connected.
+func (q *Queries) SetIntegrationsGoogleCalendar(ctx context.Context, arg SetIntegrationsGoogleCalendarParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setIntegrationsGoogleCalendar, arg.CalendarID, arg.CalendarName, arg.UpdatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const upsertAISettings = `-- name: UpsertAISettings :one
 INSERT INTO ai_settings (
 	id, provider, base_url, model, temperature, system_prompt, api_key_ct,

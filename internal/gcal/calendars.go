@@ -71,7 +71,8 @@ func (s *Service) Calendars(ctx context.Context) ([]Calendar, error) {
 // and name. id must be among Calendars at the time of the call; anything
 // else, including a calendar chosen earlier that has since been deleted or
 // is no longer writable, is ErrUnknownCalendar and leaves the stored
-// choice as it was.
+// choice as it was. Choosing another calendar than the one chosen returns
+// every plan pushed to that one to not synced; see saveSelection.
 func (s *Service) SelectCalendar(ctx context.Context, id string) (Selection, error) {
 	s.account.Lock()
 	defer s.account.Unlock()
@@ -84,22 +85,52 @@ func (s *Service) SelectCalendar(ctx context.Context, id string) (Selection, err
 			continue
 		}
 		sel := Selection{CalendarID: c.ID, CalendarName: c.Summary}
-		n, err := db.New(s.st.Writer).SetIntegrationsGoogleCalendar(ctx, db.SetIntegrationsGoogleCalendarParams{
-			CalendarID:   sql.NullString{String: sel.CalendarID, Valid: true},
-			CalendarName: sql.NullString{String: sel.CalendarName, Valid: true},
-			UpdatedAt:    store.Timestamp{Time: s.now().UTC().Truncate(time.Millisecond)}.String(),
-		})
-		if err != nil {
-			return Selection{}, fmt.Errorf("gcal: save calendar: %w", err)
-		}
-		if n != 1 {
-			// The lock is held since the connection was read, so only a
-			// change outside this service gets here.
-			return Selection{}, ErrNotConnected
+		if err := s.saveSelection(ctx, sel); err != nil {
+			return Selection{}, err
 		}
 		return sel, nil
 	}
 	return Selection{}, ErrUnknownCalendar
+}
+
+// saveSelection stores sel as the chosen calendar. Choosing another calendar
+// than the one stored also forgets every plan day's calendar event id, in
+// the same transaction, since those events are on the calendar no longer
+// chosen: each plan with one is edited, so a synced plan becomes changed and
+// its next push writes every day to sel. The caller holds s.account, which a
+// push also holds from its event writes through recording them, so a push
+// never records events written to another calendar than the chosen one.
+func (s *Service) saveSelection(ctx context.Context, sel Selection) error {
+	return s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		q := db.New(tx)
+		row, err := q.GetIntegrationsGoogle(ctx)
+		if errors.Is(err, sql.ErrNoRows) {
+			// The lock is held since the connection was read, so only a
+			// change outside this service gets here.
+			return ErrNotConnected
+		}
+		if err != nil {
+			return fmt.Errorf("gcal: read Google integration: %w", err)
+		}
+		now := store.Timestamp{Time: s.now().UTC().Truncate(time.Millisecond)}.String()
+		if _, err := q.SetIntegrationsGoogleCalendar(ctx, db.SetIntegrationsGoogleCalendarParams{
+			CalendarID:   sql.NullString{String: sel.CalendarID, Valid: true},
+			CalendarName: sql.NullString{String: sel.CalendarName, Valid: true},
+			UpdatedAt:    now,
+		}); err != nil {
+			return fmt.Errorf("gcal: save calendar: %w", err)
+		}
+		if row.CalendarID.Valid && row.CalendarID.String == sel.CalendarID {
+			return nil
+		}
+		if err := q.MarkCalendarPlansEdited(ctx, now); err != nil {
+			return fmt.Errorf("gcal: mark plans pushed to the earlier calendar edited: %w", err)
+		}
+		if err := q.ClearCalendarEvents(ctx, now); err != nil {
+			return fmt.Errorf("gcal: forget events on the earlier calendar: %w", err)
+		}
+		return nil
+	})
 }
 
 // calendars lists the writable calendars, each once, with the stored refresh

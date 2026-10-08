@@ -25,10 +25,11 @@ const eventLength = 60 * time.Minute
 // date.
 var ErrPlanChanged = errors.New("the plan changed while it was being pushed to Calendar; push again")
 
-// Calendar writes events to the household's chosen calendar. In
-// production it is *gcal.Service.
+// Calendar writes events to the household's chosen calendar, then runs
+// record while that calendar stays chosen. In production it is
+// *gcal.Service.
 type Calendar interface {
-	PushEvents(ctx context.Context, events []gcal.Event) error
+	PushEvents(ctx context.Context, events []gcal.Event, record func() error) error
 }
 
 // eventIDEncoding is base32hex, lowercase and unpadded: Google's alphabet
@@ -62,14 +63,18 @@ type pushDay struct {
 // pushed, swapped, or redrafted to another dinner since, whose
 // calendar_event_id is empty. When every day has one, Calendar shows the
 // whole plan and every day is written again, which puts back anything
-// changed in Calendar since: the app is the source of truth.
+// changed in Calendar since: the app is the source of truth. A stored event
+// id is always on the chosen calendar: choosing another clears them all
+// (gcal.Service.SelectCalendar), so the next push writes the whole week.
 //
 // Only a push that wrote every one of those events is recorded: the plan
 // becomes synced with calendar_synced_at now, and each day written stores
 // its event id. A push that failed part way records nothing and leaves the
 // plan's status as it was; since event ids are fixed, pushing again
-// updates the events already written rather than adding them twice. A
-// plan edited while it was pushed fails with ErrPlanChanged, unrecorded.
+// updates the events already written rather than adding them twice. The
+// push is recorded while the calendar written to is still the chosen one.
+// A plan edited while it was pushed, or whose events were forgotten by
+// choosing another calendar, fails with ErrPlanChanged, unrecorded.
 //
 // The week must have a plan (else ErrNotFound). The calendar's errors are
 // returned as they are: gcal.ErrNotConnected, gcal.ErrNoCalendar,
@@ -90,44 +95,43 @@ func (s *Service) Push(ctx context.Context, weekStart store.LocalDate) (Plan, er
 	for i, d := range days {
 		events[i] = d.event
 	}
-	if err := s.cal.PushEvents(ctx, events); err != nil {
-		return Plan{}, fmt.Errorf("plan: push %s to Calendar: %w", weekStart, err)
-	}
 	var p Plan
-	err = s.st.WithTx(ctx, func(tx *sql.Tx) error {
-		q := db.New(tx)
-		now := store.Now().String()
-		n, err := q.MarkWeekPlanSynced(ctx, db.MarkWeekPlanSyncedParams{
-			CalendarSyncedAt: sql.NullString{String: now, Valid: true},
-			UpdatedAt:        now,
-			ID:               planID,
-			Revision:         revision,
-		})
-		if err != nil {
-			return fmt.Errorf("plan: mark %s synced: %w", planID, err)
-		}
-		if n != 1 {
-			return ErrPlanChanged
-		}
-		for _, d := range days {
-			n, err := q.SetPlanDayCalendarEvent(ctx, db.SetPlanDayCalendarEventParams{
-				CalendarEventID: sql.NullString{String: d.event.ID, Valid: true},
-				UpdatedAt:       now,
-				PlanID:          planID,
-				Date:            d.date,
+	record := func() error {
+		return s.st.WithTx(ctx, func(tx *sql.Tx) error {
+			q := db.New(tx)
+			now := store.Now().String()
+			n, err := q.MarkWeekPlanSynced(ctx, db.MarkWeekPlanSyncedParams{
+				CalendarSyncedAt: sql.NullString{String: now, Valid: true},
+				UpdatedAt:        now,
+				ID:               planID,
+				Revision:         revision,
 			})
 			if err != nil {
-				return fmt.Errorf("plan: record event of %s of %s: %w", d.date, planID, err)
+				return fmt.Errorf("plan: mark %s synced: %w", planID, err)
 			}
 			if n != 1 {
-				return fmt.Errorf("plan: %s has no day %s", planID, d.date)
+				return ErrPlanChanged
 			}
-		}
-		p, err = readPlan(ctx, q, weekStart)
-		return err
-	})
-	if err != nil {
-		return Plan{}, err
+			for _, d := range days {
+				n, err := q.SetPlanDayCalendarEvent(ctx, db.SetPlanDayCalendarEventParams{
+					CalendarEventID: sql.NullString{String: d.event.ID, Valid: true},
+					UpdatedAt:       now,
+					PlanID:          planID,
+					Date:            d.date,
+				})
+				if err != nil {
+					return fmt.Errorf("plan: record event of %s of %s: %w", d.date, planID, err)
+				}
+				if n != 1 {
+					return fmt.Errorf("plan: %s has no day %s", planID, d.date)
+				}
+			}
+			p, err = readPlan(ctx, q, weekStart)
+			return err
+		})
+	}
+	if err := s.cal.PushEvents(ctx, events, record); err != nil {
+		return Plan{}, fmt.Errorf("plan: push %s to Calendar: %w", weekStart, err)
 	}
 	return p, nil
 }

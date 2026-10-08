@@ -22,6 +22,9 @@ func chosen(t *testing.T) *harness {
 	return h
 }
 
+// noRecord is a PushEvents record that stores nothing.
+func noRecord() error { return nil }
+
 // event is a valid event with id.
 func event(id string) gcal.Event {
 	start := time.Date(2026, 10, 12, 21, 30, 0, 0, time.UTC)
@@ -32,12 +35,12 @@ func event(id string) gcal.Event {
 func TestPushEventsInsertsThenUpdates(t *testing.T) {
 	t.Parallel()
 	h := chosen(t)
-	if err := h.svc.PushEvents(context.Background(), []gcal.Event{event("abcde0"), event("abcde1")}); err != nil {
+	if err := h.svc.PushEvents(context.Background(), []gcal.Event{event("abcde0"), event("abcde1")}, noRecord); err != nil {
 		t.Fatalf("PushEvents: %v", err)
 	}
 	renamed := event("abcde0")
 	renamed.Summary = "Dinner: Pot Roast"
-	if err := h.svc.PushEvents(context.Background(), []gcal.Event{renamed}); err != nil {
+	if err := h.svc.PushEvents(context.Background(), []gcal.Event{renamed}, noRecord); err != nil {
 		t.Fatalf("PushEvents again: %v", err)
 	}
 	if inserts, updates := h.google.EventWrites(); inserts != 2 || updates != 1 {
@@ -67,14 +70,14 @@ func TestPushEventsRefusesInvalidEvents(t *testing.T) {
 	} {
 		ev := event("abcde")
 		edit(&ev)
-		if err := h.svc.PushEvents(context.Background(), []gcal.Event{event("abcde0"), ev}); err == nil {
+		if err := h.svc.PushEvents(context.Background(), []gcal.Event{event("abcde0"), ev}, noRecord); err == nil {
 			t.Errorf("%s: PushEvents succeeded", name)
 		}
 	}
-	if err := h.svc.PushEvents(context.Background(), nil); err == nil {
+	if err := h.svc.PushEvents(context.Background(), nil, noRecord); err == nil {
 		t.Error("PushEvents of no events succeeded")
 	}
-	if err := h.svc.PushEvents(context.Background(), []gcal.Event{event(strings.Repeat("v", 1024))}); err != nil {
+	if err := h.svc.PushEvents(context.Background(), []gcal.Event{event(strings.Repeat("v", 1024))}, noRecord); err != nil {
 		t.Errorf("PushEvents of a 1024-character id: %v", err)
 	}
 	if inserts, _ := h.google.EventWrites(); inserts != 1 {
@@ -89,7 +92,10 @@ func TestPushEventsGrantNoLongerAccepted(t *testing.T) {
 	t.Parallel()
 	h := chosen(t)
 	h.google.FailEventWrite(1, http.StatusUnauthorized)
-	err := h.svc.PushEvents(context.Background(), []gcal.Event{event("abcde")})
+	err := h.svc.PushEvents(context.Background(), []gcal.Event{event("abcde")}, func() error {
+		t.Error("record ran after a failed write")
+		return nil
+	})
 	if !errors.Is(err, gcal.ErrReconnect) {
 		t.Fatalf("PushEvents = %v, want ErrReconnect", err)
 	}
@@ -106,13 +112,13 @@ func TestPushEventsGoogleFailureIsRedacted(t *testing.T) {
 			t.Parallel()
 			h := chosen(t)
 			if name == "update" {
-				if err := h.svc.PushEvents(context.Background(), []gcal.Event{event("abcde")}); err != nil {
+				if err := h.svc.PushEvents(context.Background(), []gcal.Event{event("abcde")}, noRecord); err != nil {
 					t.Fatal(err)
 				}
 			}
 			// The fake's failure body quotes the access token.
 			h.google.FailEventWrite(n, http.StatusInternalServerError)
-			err := h.svc.PushEvents(context.Background(), []gcal.Event{event("abcde")})
+			err := h.svc.PushEvents(context.Background(), []gcal.Event{event("abcde")}, noRecord)
 			var calendar *gcal.CalendarError
 			if !errors.As(err, &calendar) {
 				t.Fatalf("PushEvents = %v, want *CalendarError", err)
@@ -134,7 +140,7 @@ func TestPushEventsHoldsTheAccount(t *testing.T) {
 	arrived, release := h.google.HoldEvents()
 	defer release()
 	pushed := make(chan error, 1)
-	go func() { pushed <- h.svc.PushEvents(context.Background(), []gcal.Event{event("abcde")}) }()
+	go func() { pushed <- h.svc.PushEvents(context.Background(), []gcal.Event{event("abcde")}, noRecord) }()
 	<-arrived
 	disconnected := make(chan error, 1)
 	go func() { disconnected <- h.svc.Disconnect(context.Background()) }()
@@ -152,5 +158,32 @@ func TestPushEventsHoldsTheAccount(t *testing.T) {
 	}
 	if err := <-disconnected; err != nil {
 		t.Errorf("Disconnect: %v", err)
+	}
+}
+
+// TestPushEventsRecordsWhileTheCalendarIsChosen chooses another calendar
+// while a push records: the choice waits for the record, so a push never
+// records events on a calendar no longer chosen.
+func TestPushEventsRecordsWhileTheCalendarIsChosen(t *testing.T) {
+	t.Parallel()
+	h := chosen(t)
+	selected := make(chan error, 1)
+	err := h.svc.PushEvents(context.Background(), []gcal.Event{event("abcde")}, func() error {
+		go func() {
+			_, err := h.svc.SelectCalendar(context.Background(), family.ID)
+			selected <- err
+		}()
+		select {
+		case err := <-selected:
+			t.Errorf("SelectCalendar finished (%v) while a push was recording", err)
+		case <-time.After(200 * time.Millisecond):
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("PushEvents: %v", err)
+	}
+	if err := <-selected; err != nil {
+		t.Errorf("SelectCalendar: %v", err)
 	}
 }

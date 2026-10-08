@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -476,4 +477,157 @@ func TestPushFailsWhenPlanSwappedWhilePushing(t *testing.T) {
 		t.Fatalf("Push = %v, want ErrPlanChanged", err)
 	}
 	e.assertUnsynced(t, week, plan.StatusDraft)
+}
+
+// kitchenCal is the calendar the tests choose after pushing to dinnersCal.
+var kitchenCal = gcaltest.Calendar{ID: "kitchen@group.calendar.google.com", Summary: "Kitchen", AccessRole: "owner"}
+
+// assertWeekOn fails unless calendar shows each of names, Monday first, on
+// its day of the week starting weekStart, and each day stores that event's
+// id.
+func (e *env) assertWeekOn(t *testing.T, calendar string, weekStart store.LocalDate, dates []string, names ...string) {
+	t.Helper()
+	events := e.google.Events(calendar)
+	stored := e.eventIDs(t, weekStart)
+	for i, date := range dates {
+		id := plan.EventID(weekStart, mustDate(date))
+		if ev := events[id]; ev.Summary != "Dinner: "+names[i] || ev.Status != "confirmed" {
+			t.Errorf("%s on %s = %q %s, want \"Dinner: %s\" confirmed", date, calendar, ev.Summary, ev.Status, names[i])
+		}
+		if stored[date] != id {
+			t.Errorf("%s stored event id %q, want %s", date, stored[date], id)
+		}
+	}
+}
+
+func TestPushAfterChoosingAnotherCalendarWritesTheWholeWeek(t *testing.T) {
+	for _, swap := range []bool{false, true} {
+		name := "push again"
+		if swap {
+			name = "swap then push"
+		}
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			e.connectCalendar(t)
+			dates := e.storePlan(t, week, fullWeek...)
+			first, err := e.svc.Push(t.Context(), week)
+			if err != nil {
+				t.Fatal(err)
+			}
+			onDinners := e.google.Events(dinnersCal.ID)
+
+			// Choosing the same calendar again keeps the plan synced.
+			e.google.SetCalendars(0, dinnersCal, kitchenCal)
+			if _, err := e.gcal.SelectCalendar(t.Context(), dinnersCal.ID); err != nil {
+				t.Fatal(err)
+			}
+			if p, err := e.svc.Get(t.Context(), week); err != nil || p.Status != plan.StatusSynced {
+				t.Fatalf("plan after choosing the same calendar = %s, %v; want synced", p.Status, err)
+			}
+
+			if _, err := e.gcal.SelectCalendar(t.Context(), kitchenCal.ID); err != nil {
+				t.Fatal(err)
+			}
+			// The plan's events are on a calendar no longer chosen.
+			p, err := e.svc.Get(t.Context(), week)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.Status != plan.StatusChanged || *p.CalendarSyncedAt != *first.CalendarSyncedAt {
+				t.Errorf("plan after choosing another calendar = %s synced at %v, want changed", p.Status, *p.CalendarSyncedAt)
+			}
+			for date, id := range e.eventIDs(t, week) {
+				if id != "" {
+					t.Errorf("%s kept event id %q of the calendar no longer chosen", date, id)
+				}
+			}
+
+			names := slices.Clone(fullWeek)
+			if swap {
+				fishTacos := e.dinner(t, "Fish Tacos", "regular", "stovetop", 25)
+				if _, err := e.svc.Swap(t.Context(), week, "2026-10-14", fishTacos); err != nil {
+					t.Fatal(err)
+				}
+				names[2] = "Fish Tacos"
+			}
+
+			// A push that fails part way leaves the plan changed.
+			e.google.ResetEventWrites()
+			e.google.FailEventWrite(4, http.StatusServiceUnavailable)
+			if _, err := e.svc.Push(t.Context(), week); err == nil {
+				t.Fatal("Push succeeded, want the fourth event to fail")
+			}
+			if p, err := e.svc.Get(t.Context(), week); err != nil || p.Status != plan.StatusChanged {
+				t.Errorf("plan after a failed push = %s, %v; want changed", p.Status, err)
+			}
+
+			p, err = e.svc.Push(t.Context(), week)
+			if err != nil {
+				t.Fatalf("Push: %v", err)
+			}
+			if p.Status != plan.StatusSynced {
+				t.Errorf("status = %s, want synced", p.Status)
+			}
+			if n := len(e.google.Events(kitchenCal.ID)); n != 7 {
+				t.Errorf("%s has %d events, want 7", kitchenCal.ID, n)
+			}
+			e.assertWeekOn(t, kitchenCal.ID, week, dates, names...)
+			if after := e.google.Events(dinnersCal.ID); !maps.Equal(onDinners, after) {
+				t.Errorf("%s changed:\nbefore %+v\nafter  %+v", dinnersCal.ID, onDinners, after)
+			}
+		})
+	}
+}
+
+// TestChoosingAnotherCalendarWaitsForAPush chooses another calendar while a
+// push is at Google: the choice waits until the push is recorded, then
+// forgets its events, so the next push writes the whole week to the
+// calendar now chosen.
+func TestChoosingAnotherCalendarWaitsForAPush(t *testing.T) {
+	e := newEnv(t)
+	e.connectCalendar(t)
+	dates := e.storePlan(t, week, fullWeek...)
+	e.google.SetCalendars(0, dinnersCal, kitchenCal)
+	arrived, release := e.google.HoldEvents()
+	defer release()
+	pushed := make(chan error, 1)
+	go func() {
+		_, err := e.svc.Push(t.Context(), week)
+		pushed <- err
+	}()
+	<-arrived
+	selected := make(chan error, 1)
+	go func() {
+		_, err := e.gcal.SelectCalendar(t.Context(), kitchenCal.ID)
+		selected <- err
+	}()
+	select {
+	case err := <-selected:
+		t.Fatalf("SelectCalendar finished (%v) while a push was at Google", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	release()
+	if err := <-pushed; err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	if err := <-selected; err != nil {
+		t.Fatalf("SelectCalendar: %v", err)
+	}
+	p, err := e.svc.Get(t.Context(), week)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Status != plan.StatusChanged {
+		t.Errorf("plan = %s, want changed: its events are on %s", p.Status, dinnersCal.ID)
+	}
+	for date, id := range e.eventIDs(t, week) {
+		if id != "" {
+			t.Errorf("%s kept event id %q of the calendar no longer chosen", date, id)
+		}
+	}
+
+	if p, err = e.svc.Push(t.Context(), week); err != nil || p.Status != plan.StatusSynced {
+		t.Fatalf("Push = %s, %v; want synced", p.Status, err)
+	}
+	e.assertWeekOn(t, kitchenCal.ID, week, dates, fullWeek...)
 }

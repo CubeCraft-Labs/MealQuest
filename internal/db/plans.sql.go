@@ -10,6 +10,18 @@ import (
 	"database/sql"
 )
 
+const clearCalendarEvents = `-- name: ClearCalendarEvents :exec
+UPDATE plan_days
+SET calendar_event_id = NULL, updated_at = ?
+WHERE calendar_event_id IS NOT NULL
+`
+
+// Clears every day's calendar event id: none is on the chosen calendar.
+func (q *Queries) ClearCalendarEvents(ctx context.Context, updatedAt string) error {
+	_, err := q.db.ExecContext(ctx, clearCalendarEvents, updatedAt)
+	return err
+}
+
 const createWeekPlan = `-- name: CreateWeekPlan :exec
 INSERT INTO week_plans (id, week_start, status, ai_note, created_at, updated_at)
 VALUES (?, ?, 'draft', ?, ?, ?)
@@ -247,6 +259,26 @@ func (q *Queries) ListWeekPlanDinnerIDs(ctx context.Context, weekStart string) (
 		return nil, err
 	}
 	return items, nil
+}
+
+const markCalendarPlansEdited = `-- name: MarkCalendarPlansEdited :exec
+UPDATE week_plans
+SET status = CASE WHEN status = 'synced' THEN 'changed' ELSE status END,
+	revision = revision + 1,
+	updated_at = ?
+WHERE EXISTS (
+	SELECT 1 FROM plan_days
+	WHERE plan_days.plan_id = week_plans.id AND plan_days.calendar_event_id IS NOT NULL
+)
+`
+
+// Records that Calendar no longer shows the days with a calendar event id
+// as planned, since another calendar is chosen: every plan with such a day
+// is edited as MarkWeekPlanEdited does, so a synced plan becomes changed
+// and a push that read it before is refused.
+func (q *Queries) MarkCalendarPlansEdited(ctx context.Context, updatedAt string) error {
+	_, err := q.db.ExecContext(ctx, markCalendarPlansEdited, updatedAt)
+	return err
 }
 
 const markWeekPlanEdited = `-- name: MarkWeekPlanEdited :exec

@@ -128,8 +128,8 @@ type Service struct {
 	// account serializes every use of and change to the connected account —
 	// a connect's exchange and store, a disconnect's read, revoke and delete,
 	// a calendar listing's read and Calendar API calls, a calendar choice's
-	// listing and store, an event push's read and event writes — across the
-	// requests to Google and the database write. Google revokes the whole grant, so a revoke overlapping a
+	// listing and store, an event push's read, event writes and record —
+	// across the requests to Google and the database write. Google revokes the whole grant, so a revoke overlapping a
 	// connect would also kill the token the connect stores.
 	account sync.Mutex
 

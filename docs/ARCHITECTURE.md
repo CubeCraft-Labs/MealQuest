@@ -100,7 +100,7 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 | `suggestion_batches` | trigger, status, ai_run_id. |
 | `suggestions` | dinner_id, batch_id, name (the name the dish was suggested under, kept whatever its dinner is later renamed, so a Pass stays an immutable record every later batch dedupes against), reason, cited_regular_ids (JSON), status, decided_at. |
 | `week_plans` | week_start (unique), status (`draft` / `synced` / `changed`), ai_note, ai_run_id, calendar_synced_at, revision (raised by every swap and stored draft). |
-| `plan_days` | plan_id, date (unique per plan), dinner_id, is_new, calendar_event_id (set while Calendar shows the day as planned; cleared when its dinner changes). |
+| `plan_days` | plan_id, date (unique per plan), dinner_id, is_new, calendar_event_id (set while the chosen calendar shows the day as planned; cleared when its dinner changes or another calendar is chosen). |
 | `rotation_reviews` | dinner_id + plan_date (unique), status, decision (`keep` / `drop` / `not_made`), name (set only by a drop: the dinner's name when dropped, kept whatever it is later renamed, so a drop stays among the passed names), decided_at, updated_by. |
 | `shopping_lists` | week_start (unique), plan_id, title, status (`current` / `archived`), sent_to_chat_at, frozen_at. |
 | `shopping_groups` / `shopping_items` | One group per dinner/day; item name, qty, needed (bool), position. |
@@ -685,19 +685,28 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
   - A push writes the days whose `calendar_event_id` is empty (never
     pushed, swapped, or redrafted to another dinner). When none is, it
     writes every day again, which puts back anything changed in Calendar.
+  - A stored `calendar_event_id` is always an event on the chosen calendar.
+    Choosing a calendar other than the stored one clears every day's
+    `calendar_event_id` in the same transaction as the choice, and edits
+    each plan that had one (revision raised, `synced` → `changed`), so the
+    next push writes the whole week to the calendar now chosen and a push
+    that read such a plan before the choice is refused (409 `plan_changed`).
   - Only a push that wrote all its events is recorded, in one transaction:
     the plan becomes `synced` with `calendar_synced_at`, and each day
     written stores its event id. A push that failed part way records
     nothing and leaves the status as it was; pushing again updates the
-    events already written. A plan swapped or redrafted while it was being
-    pushed (its revision moved) is not recorded: 409 `plan_changed`.
+    events already written. The record runs under the account lock, in the
+    same hold as the event writes, so the chosen calendar cannot change
+    between them. A plan swapped or redrafted while it was being
+    pushed, or whose events another calendar choice cleared (its revision
+    moved), is not recorded: 409 `plan_changed`.
   - Errors: 409 `not_connected`, 409 `no_calendar` (connected, no calendar
     chosen), 409 `calendar_unavailable` (the chosen calendar was deleted —
     Google 404 — or is no longer writable — 403 `requiredAccessLevel`;
     choose another), 502 `reconnect_required` (the grant is refused; the
     connection is left as it is), 502 `google_failed`, 404 when the week
     has no plan, 400 `invalid_week`. The push holds the account lock
-    across its Google requests, like listing and choosing.
+    across its Google requests and its record, like listing and choosing.
   - The week's Supply run (Feature 17) is made from a pushed plan: a
     successful `Push` returns that plan, which is where Feature 17 hooks
     in. Nothing here generates a shopping list.

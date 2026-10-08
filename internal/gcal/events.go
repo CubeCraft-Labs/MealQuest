@@ -85,7 +85,12 @@ type eventTime struct {
 // ErrNoCalendar, a chosen calendar that was deleted or is no longer
 // writable is ErrCalendarUnavailable, a grant Google no longer accepts is
 // ErrReconnect, and any other Google failure is a *CalendarError.
-func (s *Service) PushEvents(ctx context.Context, events []Event) error {
+//
+// Once every event is written, PushEvents returns record(), which the
+// caller uses to store what it pushed. record runs under the same hold of
+// the account as the writes, so the chosen calendar cannot change between
+// them; it is not run when a write fails.
+func (s *Service) PushEvents(ctx context.Context, events []Event, record func() error) error {
 	if len(events) == 0 {
 		return errors.New("gcal: no events to push")
 	}
@@ -113,7 +118,7 @@ func (s *Service) PushEvents(ctx context.Context, events []Event) error {
 			return err
 		}
 	}
-	return nil
+	return record()
 }
 
 // writeEvent inserts e at base, the chosen calendar's events collection,

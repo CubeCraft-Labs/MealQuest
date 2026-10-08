@@ -58,6 +58,26 @@ UPDATE week_plans
 SET status = 'synced', calendar_synced_at = ?, updated_at = ?
 WHERE id = ? AND revision = ?;
 
+-- name: MarkCalendarPlansEdited :exec
+-- Records that Calendar no longer shows the days with a calendar event id
+-- as planned, since another calendar is chosen: every plan with such a day
+-- is edited as MarkWeekPlanEdited does, so a synced plan becomes changed
+-- and a push that read it before is refused.
+UPDATE week_plans
+SET status = CASE WHEN status = 'synced' THEN 'changed' ELSE status END,
+	revision = revision + 1,
+	updated_at = ?
+WHERE EXISTS (
+	SELECT 1 FROM plan_days
+	WHERE plan_days.plan_id = week_plans.id AND plan_days.calendar_event_id IS NOT NULL
+);
+
+-- name: ClearCalendarEvents :exec
+-- Clears every day's calendar event id: none is on the chosen calendar.
+UPDATE plan_days
+SET calendar_event_id = NULL, updated_at = ?
+WHERE calendar_event_id IS NOT NULL;
+
 -- name: MarkWeekPlanEdited :exec
 -- Records an edit of plan id, raising its revision: a synced plan becomes
 -- changed, any other keeps its status.

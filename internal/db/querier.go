@@ -15,6 +15,8 @@ type Querier interface {
 	// Marks the oldest queued job running and returns it. Returns sql.ErrNoRows
 	// when no job is queued.
 	ClaimNextJob(ctx context.Context, now sql.NullString) (Job, error)
+	// Clears every day's calendar event id: none is on the chosen calendar.
+	ClearCalendarEvents(ctx context.Context, updatedAt string) error
 	// Drops references to the runs created before the cutoff, so the purge
 	// can delete them.
 	ClearSuggestionBatchAIRunsBefore(ctx context.Context, cutoff string) (int64, error)
@@ -170,6 +172,11 @@ type Querier interface {
 	// The ids of the dinners planned in the week starting week_start, Monday
 	// first.
 	ListWeekPlanDinnerIDs(ctx context.Context, weekStart string) ([]sql.NullString, error)
+	// Records that Calendar no longer shows the days with a calendar event id
+	// as planned, since another calendar is chosen: every plan with such a day
+	// is edited as MarkWeekPlanEdited does, so a synced plan becomes changed
+	// and a push that read it before is refused.
+	MarkCalendarPlansEdited(ctx context.Context, updatedAt string) error
 	// Moves a dinner still in the Quest log to tried; a dinner with any other
 	// status is left as it is (0 rows).
 	MarkDinnerTried(ctx context.Context, arg MarkDinnerTriedParams) (int64, error)

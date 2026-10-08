@@ -1326,6 +1326,6 @@ func TestStartBatchRefusesUnknownTrigger(t *testing.T) {
 // noCalendar is a plan.Calendar for tests that never push.
 type noCalendar struct{}
 
-func (noCalendar) PushEvents(context.Context, []gcal.Event) error {
+func (noCalendar) PushEvents(context.Context, []gcal.Event, func() error) error {
 	return errors.New("no calendar in this test")
 }

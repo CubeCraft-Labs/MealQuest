@@ -16,6 +16,7 @@ import { HouseholdSettingsPage } from './settings/HouseholdSettingsPage.tsx'
 import { RegularsSettingsPage } from './settings/RegularsSettingsPage.tsx'
 import { SettingsPage } from './settings/SettingsPage.tsx'
 import { AppShell } from './shell/AppShell.tsx'
+import { SupplyRunPage } from './shopping/SupplyRunPage.tsx'
 
 // Every route the app serves, with the heading its placeholder page shows.
 export const routes = [
@@ -39,6 +40,7 @@ export const routes = [
 // The screens built so far; every other route shows its placeholder page.
 const screens: Partial<Record<(typeof routes)[number]['path'], ReactNode>> = {
   '/plan': <PlanPage />,
+  '/plan/shopping': <SupplyRunPage />,
   '/discover': <DiscoverPage />,
   '/settings': <SettingsPage />,
   '/settings/ai': <AISettingsPage />,

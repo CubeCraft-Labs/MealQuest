@@ -7,8 +7,10 @@ import { QUEST_LOG_KEY } from '../discover/api.ts'
 import { Confirm } from '../settings/LeaveGuard.tsx'
 import { methodLabels } from '../settings/RegularsSettingsPage.tsx'
 import { formatClockTime, useHouseholdSettings } from '../settings/api.ts'
+import { supplyRunScreen, useSupplyRun } from '../shopping/api.ts'
 import { useBreakpoint, type Breakpoint } from '../shell/useBreakpoint.ts'
 import { Button, type ButtonVariant } from '../ui/Button.tsx'
+import buttonStyles from '../ui/Button.module.css'
 import { EmptyState } from '../ui/EmptyState.tsx'
 import { ErrorBanner } from '../ui/ErrorBanner.tsx'
 import { Icon } from '../ui/Icon.tsx'
@@ -78,10 +80,6 @@ const settingsFailures: Record<string, { reason: string; fix: string }> = {
     fix: 'Choose another calendar',
   },
 }
-
-// SHOPPING_HINT is why the shopping list is unavailable.
-// TODO(Feature 17): open the Supply run, with its count, once it is built.
-const SHOPPING_HINT = 'The shopping list arrives once the Supply run is built.'
 
 // syncStatuses is the plan manager's line on whether the plan is on Calendar.
 const syncStatuses: Record<PlanStatus, string> = {
@@ -195,6 +193,22 @@ function DayColumn({ day, timezone, swapping, onSwap }: { day: PlanDay; timezone
   )
 }
 
+// ShoppingList opens the week's Supply run: an outline action in the plan
+// manager's header, a grape link under the Draft board on mobile. Once the
+// week has a Supply run it says how many items are still to buy, "Shopping
+// list · 28"; until then, while that is read, or when reading it failed, it
+// says no count, and the Supply run screen offers to make the list or shows
+// the failure.
+function ShoppingList({ weekStart, neededCount, layout }: { weekStart: string; neededCount: number | undefined; layout: Breakpoint }) {
+  const className = layout === 'mobile' ? styles.shoppingLink : [buttonStyles.button, buttonStyles.outline, styles.action].join(' ')
+  return (
+    <Link to={supplyRunScreen(weekStart)} className={className}>
+      <Icon icon={ShoppingCart} size="inline" />
+      {neededCount !== undefined ? `Shopping list · ${neededCount}` : 'Shopping list'}
+    </Link>
+  )
+}
+
 // SkeletonTiles stands in for the seven days while the plan loads or the AI
 // drafts it, as two columns of tiles on mobile and seven columns wider.
 function SkeletonTiles({ label, layout, children }: { label: string; layout: Breakpoint; children?: string }) {
@@ -217,9 +231,10 @@ function SkeletonTiles({ label, layout, children }: { label: string; layout: Bre
 // the plan is read again. Rebuilding a plan pushed to Calendar asks first,
 // and sends confirm. A failed draft is shown with Retry; no plan is made up.
 //
-// From tablet up it is the plan manager (mocks 2c, 2d): Rebuild week, Push to
-// Calendar and the unavailable Shopping list are actions in the header,
-// over the plan's sync status and the 7-column grid.
+// From tablet up it is the plan manager (mocks 2c, 2d): Shopping list,
+// Rebuild week and Push to Calendar are actions in the header, over the
+// plan's sync status and the 7-column grid. On mobile the Shopping list
+// link sits under the push button.
 //
 // Push to Calendar, on either layout, sends the plan shown and shows it as
 // synced once the server answers; a failure says why, linking to the Google
@@ -243,6 +258,7 @@ function WeekBoard({
   const [confirming, setConfirming] = useState(false)
   const swap = useSwapDay(weekStart)
   const push = usePushToCalendar(weekStart)
+  const run = useSupplyRun(weekStart)
   const pushing = push.pending
   // The date of the day being swapped, while the swap sheet is open.
   const [swappingDate, setSwappingDate] = useState<string | null>(null)
@@ -360,6 +376,16 @@ function WeekBoard({
   ) : (
     <ErrorBanner onRetry={job.poll}>Couldn't check on the draft. {job.error.message}</ErrorBanner>
   )
+  // A failed read of the week's Supply run is shown, with Retry, after the
+  // Draft board's Shopping list link or under the plan manager's board; the
+  // Shopping list action still opens the Supply run. The count is that of a
+  // successful read only: a failed refetch keeps the earlier Supply run in
+  // run.data, and its count is then no longer current.
+  const neededCount = run.isSuccess ? run.data?.needed_count : undefined
+  const shoppingList = <ShoppingList weekStart={weekStart} neededCount={neededCount} layout={layout} />
+  const supplyRunFailure = run.isError && (
+    <ErrorBanner onRetry={() => void run.refetch()}>Couldn't load this week's shopping list. {run.error.message}</ErrorBanner>
+  )
 
   // swapIn sends the swap chosen in the sheet and closes it.
   function swapIn(chosen: Swap) {
@@ -462,6 +488,8 @@ function WeekBoard({
             {pushing ? 'Pushing to Calendar…' : 'Looks good — push to Calendar'}
           </Button>
           <SyncStatus plan={plan.data} className={styles.mobileStatus} />
+          {shoppingList}
+          {supplyRunFailure}
           {sheet}
         </>
       )
@@ -493,10 +521,7 @@ function WeekBoard({
         <div className={styles.actionBar}>
           {plan.data ? <SyncStatus plan={plan.data} /> : <span className={styles.status} />}
           <div className={styles.actions}>
-            <Unavailable hint={SHOPPING_HINT} variant="outline" below className={styles.action}>
-              <Icon icon={ShoppingCart} size="inline" />
-              Shopping list
-            </Unavailable>
+            {shoppingList}
             <Button
               variant="outline"
               className={styles.action}
@@ -537,6 +562,7 @@ function WeekBoard({
       {header}
       {body}
       {failure}
+      {layout !== 'mobile' && supplyRunFailure}
       <Confirm
         open={confirming}
         title="Rebuild this week?"
@@ -600,10 +626,10 @@ function PushFailure({ error, cached, onRetry }: { error: Error; cached: boolean
   )
 }
 
-// Unavailable is an action with nothing behind it yet (the shopping list):
-// it stays focusable, so a tap or focus shows the tooltip saying why, above
-// it or, at the top of the page, below.
-function Unavailable({
+// Unavailable is an action with nothing behind it yet (Send to Google
+// Chat): it stays focusable, so a tap or focus shows the tooltip saying
+// why, above it or, at the top of the page, below.
+export function Unavailable({
   hint,
   variant = 'primary',
   below = false,

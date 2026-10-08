@@ -71,3 +71,6 @@ func (s *Service) RunGroundJob(ctx context.Context, p GroundJob) (string, error)
 	r, err := s.runGroundJob(ctx, p, nil)
 	return r.GroundingStatus, err
 }
+
+// PageSiteName is pageSiteName.
+var PageSiteName = pageSiteName

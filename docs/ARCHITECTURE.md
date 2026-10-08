@@ -204,6 +204,30 @@ automatic** (D-021).
   sets status `archived` and keeps the row; `POST
   /api/v1/dinners/{id}/favorite` toggles `is_favorite`. Every write records
   the session's subject as `updated_by`; an unknown id is 404.
+  `GET /api/v1/dinners/{id}` returns the dinner with its recipe, read in
+  one transaction: `{id, name, status, origin, method, minutes_total,
+  difficulty, cuisine, is_favorite, photo_urls, ingredients, steps,
+  source, grounding_status, grounding_error, why_picked}`. `photo_urls` is
+  `{"400": url, "1200": url}` (`/media/photos/{photo_id}-{size}.jpg`) or
+  null with no photo; `ingredients` is `[{name, qty, unit, note,
+  raw_text}]` and `steps` the step texts, both in recipe position order and
+  empty (`[]`) with no recipe, as for a dinner whose grounding is
+  `pending` or `failed`; a recipe entered by hand has only `raw_text`.
+  Two items at one position leave recipe order unknown, so such a recipe
+  is 500 rather than shown out of order. `source` is `{site_name}` of the
+  page the recipe was fetched from, null for a manual recipe or none; it
+  has no `url`, as the page's link may carry a personal token.
+  `site_name` is the name the page gives its site (publisher or
+  `og:site_name`) and null otherwise: a page naming no site is stored
+  under its host, which may be the pasted link's — a token in a
+  subdomain — or a redirect's, so any stored name that could be a host
+  (the link's host, an IP address or a dotted host name, even a real
+  name like "Food.com") is withheld. The detail screen shows "Recipe
+  from {site}" only when `site_name` is not null. `why_picked` is the reason of the
+  suggestion that created the dinner — its pending or accepted one, as
+  declining a suggestion archives its dinner — null for one no suggestion
+  created; a dinner with more than one such suggestion is 500, as nothing
+  records which created it. An unknown or archived dinner is 404.
 - Dinner grounding. `POST /api/v1/dinners` also enqueues a `ground_dinner`
   job and answers with its `grounding_job_id` without waiting for it
   (`GET /api/v1/jobs/{id}` reports it); if the job cannot be enqueued it

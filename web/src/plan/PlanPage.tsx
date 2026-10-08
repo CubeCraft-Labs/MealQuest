@@ -378,8 +378,11 @@ function WeekBoard({
   )
   // A failed read of the week's Supply run is shown, with Retry, after the
   // Draft board's Shopping list link or under the plan manager's board; the
-  // Shopping list action still opens the Supply run.
-  const shoppingList = <ShoppingList weekStart={weekStart} neededCount={run.data?.needed_count} layout={layout} />
+  // Shopping list action still opens the Supply run. The count is that of a
+  // successful read only: a failed refetch keeps the earlier Supply run in
+  // run.data, and its count is then no longer current.
+  const neededCount = run.isSuccess ? run.data?.needed_count : undefined
+  const shoppingList = <ShoppingList weekStart={weekStart} neededCount={neededCount} layout={layout} />
   const supplyRunFailure = run.isError && (
     <ErrorBanner onRetry={() => void run.refetch()}>Couldn't load this week's shopping list. {run.error.message}</ErrorBanner>
   )

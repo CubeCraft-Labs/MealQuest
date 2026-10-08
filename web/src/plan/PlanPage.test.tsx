@@ -795,6 +795,33 @@ describe('PlanPage', () => {
     expect(await screen.findByText('Opened /plan/shopping?week=2026-10-05')).toBeInTheDocument()
   })
 
+  it("drops the count when reading the week's shopping list again fails, showing the failure with Retry", async () => {
+    let failing = false
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      'GET /api/v1/shopping/2026-10-05': () => (failing ? errorResponse(500, 'internal') : jsonResponse(200, supplyRun(19))),
+    })
+    await renderPage()
+    expect(await screen.findByRole('link', { name: 'Shopping list · 19' })).toBeInTheDocument()
+
+    // Coming back to the page once the Supply run is stale reads it again,
+    // and that read fails.
+    failing = true
+    vi.setSystemTime(new Date('2026-10-07T16:01:00Z'))
+    act(() => {
+      window.dispatchEvent(new Event('visibilitychange'))
+    })
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't load this week's shopping list. internal message")
+    expect(screen.getByRole('link', { name: 'Shopping list' })).toHaveAttribute('href', '/plan/shopping?week=2026-10-05')
+    expect(screen.queryByRole('link', { name: 'Shopping list · 19' })).not.toBeInTheDocument()
+    // Retry reads it again, and the count is back.
+    failing = false
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByRole('link', { name: 'Shopping list · 19' })).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
   it('links to the Supply run with no count while the week has no shopping list', async () => {
     const fetchMock = stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')) })
     await renderPage()

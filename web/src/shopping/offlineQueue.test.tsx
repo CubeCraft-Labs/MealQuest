@@ -68,14 +68,21 @@ function goOnline() {
 // stubServer is the server's Supply runs of this week and next: a PATCH
 // marks its item and answers with its week's counts, unless refuse answers
 // it instead; when hold is given, the item is marked at once but the answer
-// waits for the promise hold returns, or until the request is aborted. This
-// week's counts as archived once archive is called.
-function stubServer(refuse: (id: string) => Response | undefined = () => undefined, hold?: () => Promise<void>) {
+// waits for the promise hold returns, or until the request is aborted; holdMe
+// holds GET /api/v1/me's answer the same way. This week's counts as archived
+// once archive is called.
+function stubServer(
+  refuse: (id: string) => Response | undefined = () => undefined,
+  hold?: () => Promise<void>,
+  holdMe?: () => Promise<void>,
+) {
   const needed = new Map(Object.values(WEEKS).flatMap((items) => items.map((item) => [item.id, item.needed] as const)))
   let status = 'current'
   // How many PATCHes are unanswered now, and the most there have been at once.
   let inFlight = 0
   let mostInFlight = 0
+  // How many GET /api/v1/me requests have been answered.
+  let meAnswered = 0
   const counts = (week: string) => {
     const marks = itemsOf(week).map((item) => needed.get(item.id)!)
     return { needed_count: marks.filter(Boolean).length, total_count: marks.length }
@@ -98,7 +105,11 @@ function stubServer(refuse: (id: string) => Response | undefined = () => undefin
   const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
     if (!onLine || !reachable) throw new TypeError('Failed to fetch')
     const key = `${init?.method ?? 'GET'} ${String(input)}`
-    if (key === 'GET /api/v1/me') return jsonResponse(200, ME)
+    if (key === 'GET /api/v1/me') {
+      await answerAfter(init?.signal, holdMe)
+      meAnswered++
+      return jsonResponse(200, ME)
+    }
     if (key === 'GET /api/v1/settings/household') return jsonResponse(200, HOUSEHOLD_SETTINGS)
     if (key === `GET ${THIS_WEEK}`) return jsonResponse(200, run('2026-10-05'))
     const week = Object.keys(WEEKS).find((w) => itemsOf(w).some((i) => key === `PATCH ${ITEM(i.id)}`))
@@ -112,10 +123,7 @@ function stubServer(refuse: (id: string) => Response | undefined = () => undefin
     inFlight++
     mostInFlight = Math.max(mostInFlight, inFlight)
     try {
-      await new Promise<void>((resolve, reject) => {
-        init?.signal?.addEventListener('abort', () => reject(init.signal!.reason as Error))
-        void (hold?.() ?? Promise.resolve()).then(resolve)
-      })
+      await answerAfter(init?.signal, hold)
     } finally {
       inFlight--
     }
@@ -126,10 +134,20 @@ function stubServer(refuse: (id: string) => Response | undefined = () => undefin
     fetchMock,
     run,
     mostInFlight: () => mostInFlight,
+    meAnswered: () => meAnswered,
     archive: () => {
       status = 'archived'
     },
   }
+}
+
+// answerAfter resolves once the promise hold returns does, at once without
+// hold, or rejects with signal's reason once it aborts.
+function answerAfter(signal: AbortSignal | null | undefined, hold?: () => Promise<void>) {
+  return new Promise<void>((resolve, reject) => {
+    signal?.addEventListener('abort', () => reject(signal.reason as Error))
+    void (hold?.() ?? Promise.resolve()).then(resolve)
+  })
 }
 
 // held is a hold for stubServer whose answers wait until release is called,
@@ -141,6 +159,11 @@ function held() {
     waiting: () => waiting.length,
     release: () => waiting.shift()!(),
   }
+}
+
+// mes counts the GET /api/v1/me requests sent.
+function mes(fetchMock: Mock<typeof fetch>) {
+  return fetchMock.mock.calls.filter(([input, init]) => String(input) === '/api/v1/me' && (init?.method ?? 'GET') === 'GET').length
 }
 
 // patches lists the PATCHes sent, as "path body".
@@ -444,6 +467,79 @@ describe('offline toggle queue, replay', () => {
       `${ITEM('i1')} {"needed":false}`,
     ])
     expect(server.mostInFlight()).toBe(1)
+    await waitFor(() => expect(screen.queryByText('will sync')).not.toBeInTheDocument())
+    expect(screen.getByText('2 / 3')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('abandons a GET /api/v1/me that never answers at its deadline and loads it afresh before the toggles after it', async () => {
+    let tries = 0
+    // The page loaded /me; the first toggle loads it again, and that /me never
+    // answers. Every later /me answers at once.
+    const server = stubServer(undefined, undefined, () => (++tries === 2 ? new Promise<void>(() => {}) : Promise.resolve()))
+    await openPage()
+    expect(await screen.findByText('2 / 3')).toBeInTheDocument()
+
+    fireEvent.click(checkbox('Taco seasoning'))
+    await waitFor(() => expect(tries).toBe(2))
+    fireEvent.click(checkbox('Ground beef'))
+    expect(queue()).toEqual(['i3 true', 'i1 false'])
+
+    // Past the deadline the hung /me is abandoned; both still wait, in order.
+    await advance(TOGGLE_DEADLINE)
+    expect(await within(row('Taco seasoning')).findByText('will sync')).toBeInTheDocument()
+    expect(within(row('Ground beef')).getByText('will sync')).toBeInTheDocument()
+    expect(patches(server.fetchMock)).toEqual([])
+
+    // The next try sends a fresh /me, which the server answers.
+    await advance(RETRY_FIRST)
+    await waitFor(() => expect(queue()).toEqual([]))
+    expect(mes(server.fetchMock)).toBe(3)
+    expect(patches(server.fetchMock)).toEqual([`${ITEM('i3')} {"needed":true}`, `${ITEM('i1')} {"needed":false}`])
+    expect(server.mostInFlight()).toBe(1)
+    await waitFor(() => expect(screen.queryByText('will sync')).not.toBeInTheDocument())
+    expect(screen.getByText('2 / 3')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('abandons the /me refresh of a csrf 403 that never answers at its deadline and refreshes afresh on the next try', async () => {
+    let tries = 0
+    // The session's token changed: each PATCH is refused for it until a /me
+    // after the first refusal has answered. The first such refresh never
+    // answers.
+    let refusedAt: number | null = null
+    const server = stubServer(
+      () => {
+        if (refusedAt !== null && server.meAnswered() > refusedAt) return undefined
+        refusedAt ??= server.meAnswered()
+        return errorResponse(403, 'csrf')
+      },
+      undefined,
+      () => (refusedAt !== null && ++tries === 1 ? new Promise<void>(() => {}) : Promise.resolve()),
+    )
+    await openPage()
+    expect(await screen.findByText('2 / 3')).toBeInTheDocument()
+
+    fireEvent.click(checkbox('Taco seasoning'))
+    await waitFor(() => expect(tries).toBe(1))
+    fireEvent.click(checkbox('Ground beef'))
+    expect(patches(server.fetchMock)).toHaveLength(1)
+
+    // Past the deadline the hung refresh is abandoned; both still wait, in order.
+    await advance(TOGGLE_DEADLINE)
+    expect(await within(row('Taco seasoning')).findByText('will sync')).toBeInTheDocument()
+    expect(within(row('Ground beef')).getByText('will sync')).toBeInTheDocument()
+    expect(queue()).toEqual(['i3 true', 'i1 false'])
+
+    // The next try is refused again and sends a fresh refresh, which answers.
+    await advance(RETRY_FIRST)
+    await waitFor(() => expect(queue()).toEqual([]))
+    expect(patches(server.fetchMock)).toEqual([
+      `${ITEM('i3')} {"needed":true}`,
+      `${ITEM('i3')} {"needed":true}`,
+      `${ITEM('i3')} {"needed":true}`,
+      `${ITEM('i1')} {"needed":false}`,
+    ])
     await waitFor(() => expect(screen.queryByText('will sync')).not.toBeInTheDocument())
     expect(screen.getByText('2 / 3')).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()

@@ -228,8 +228,9 @@ export type Toggles = {
 }
 
 // TOGGLE_DEADLINE is how long, in milliseconds, one try of a toggle — its
-// GET /api/v1/me and its PATCH — may take before it counts as the server not
-// answering. Only toggles have a deadline: the API client sets none.
+// GET /api/v1/me, its PATCH and the /me refresh a csrf 403 to it makes — may
+// take before it counts as the server not answering. Only toggles have a
+// deadline: the API client sets none.
 export const TOGGLE_DEADLINE = 10_000
 
 // RETRY_FIRST and RETRY_CEILING bound, in milliseconds, how long a toggle
@@ -255,14 +256,6 @@ function reachable(network: NetworkStatus, delay: number): Promise<void> {
     const stop = network.subscribe(() => {
       if (!network.offline()) done()
     })
-  })
-}
-
-// beforeDeadline is promise, rejected with signal's reason once it aborts.
-function beforeDeadline<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  return new Promise((resolve, reject) => {
-    signal.addEventListener('abort', () => reject(signal.reason as Error), { once: true })
-    promise.then(resolve, reject)
   })
 }
 
@@ -313,8 +306,11 @@ function toggleOptions(
         const deadline = new AbortController()
         const timer = setTimeout(() => deadline.abort(new DOMException(`${where}: no answer in time`, 'TimeoutError')), TOGGLE_DEADLINE)
         try {
-          const me = queryClient.ensureQueryData({ queryKey: meQueryKey, queryFn: api.loadMe, networkMode: 'always' })
-          await beforeDeadline(me, deadline.signal)
+          // Each try loads /me itself, under its deadline, rather than share
+          // a /me already in flight that may never answer.
+          if (queryClient.getQueryData(meQueryKey) === undefined) {
+            queryClient.setQueryData(meQueryKey, await api.loadMe(deadline.signal))
+          }
           body = await api.apiFetch<unknown>(path, { method: 'PATCH', body: { needed }, signal: deadline.signal })
           break
         } catch (error) {

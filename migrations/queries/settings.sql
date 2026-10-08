@@ -112,6 +112,14 @@ UPDATE integrations_google
 SET calendar_id = ?, calendar_name = ?, updated_at = ?
 WHERE id = 1;
 
+-- name: ClearIntegrationsGoogleToken :execrows
+-- Records that Google refuses the stored grant: clears the refresh token and
+-- sets last_sync_error, keeping the chosen calendar. Affects no row when
+-- nothing is connected.
+UPDATE integrations_google
+SET refresh_token_ct = NULL, last_sync_error = ?, updated_at = ?
+WHERE id = 1;
+
 -- name: DeleteIntegrationsGoogle :exec
 DELETE FROM integrations_google
 WHERE id = 1;

@@ -117,13 +117,13 @@ func TestPushEventsGoogleFailureIsRedacted(t *testing.T) {
 				}
 			}
 			// The fake's failure body quotes the access token.
-			h.google.FailEventWrite(n, http.StatusInternalServerError)
+			h.google.FailEventWrite(n, http.StatusBadRequest)
 			err := h.svc.PushEvents(context.Background(), []gcal.Event{event("abcde")}, noRecord)
 			var calendar *gcal.CalendarError
 			if !errors.As(err, &calendar) {
 				t.Fatalf("PushEvents = %v, want *CalendarError", err)
 			}
-			if !strings.Contains(err.Error(), "event "+name) || !strings.Contains(err.Error(), "HTTP 500") {
+			if !strings.Contains(err.Error(), "event "+name) || !strings.Contains(err.Error(), "HTTP 400") {
 				t.Errorf("error = %q, want the failed %s and its status", err, name)
 			}
 			assertNoSecret(t, "error", err.Error())

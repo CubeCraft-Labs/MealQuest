@@ -639,11 +639,17 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
     with `secretbox` into `integrations_google.refresh_token_ct`, sets
     `connected_at` and redirects to `/settings/calendar`. A reconnect keeps
     the chosen calendar and clears `last_sync_error`.
+  - `GET /api/v1/integrations/google` answers `{status, calendar_id,
+    calendar_name, connected_at, last_sync_error}`, where `status` is
+    `not_connected`, `connected` or `reconnect_required` (connected, but
+    Google refused the grant and its refresh token was cleared); absent
+    values are `null`. It never holds a token.
   - `DELETE /api/v1/integrations/google` (CSRF-checked) revokes the token at
     Google, then deletes the row and, in the same transaction, forgets every
     pushed event (see Push to Calendar); a token Google reports as
     `invalid_token` counts as revoked, and any other revoke failure keeps
-    the connection and its pushed events.
+    the connection and its pushed events. A connection that requires a
+    reconnect has no token to revoke and is deleted the same way.
   - `GET /api/v1/integrations/google/calendars` trades the stored refresh
     token for an access token and reads every page of the Calendar API's
     `users/me/calendarList`, answering `[{id, summary, primary,
@@ -659,10 +665,27 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
     read-only drops out of the listing and cannot be chosen again; the
     stored choice stays until the household chooses another.
   - Listing and choosing answer 409 `not_connected` when nothing is
-    connected, and 502 `reconnect_required` when Google no longer accepts
-    the grant (`invalid_grant` on refresh, or HTTP 401 from the Calendar
-    API); the connection is left as it is. Any other Google failure is 502
-    `google_failed`.
+    connected, and fail on Google as every Calendar call does (below).
+  - **Token failures**, the same for listing, choosing and pushing:
+    - When Google refuses the grant — `invalid_grant` on the token
+      refresh, or HTTP 401 from the Calendar API to the access token just
+      refreshed — the connection becomes reconnect required, under the
+      account lock: `refresh_token_ct` is cleared and `last_sync_error`
+      set to "Google access was revoked or expired — reconnect", and the
+      call answers 409 `google_reconnect_required`. Later calls answer the
+      same without contacting Google, until a reconnect stores a new token
+      (and clears `last_sync_error`) or a disconnect deletes the row. The
+      chosen calendar and every stored `calendar_event_id` are kept: the
+      pushed events are still on the chosen calendar, so the invariant
+      below holds, and the first push after reconnecting updates them in
+      place.
+    - HTTP 429 and 5xx from the token endpoint or the Calendar API are
+      retried at most twice (three tries), waiting 0.5 s then 1 s, still
+      under the account lock. If the last try fails the same way the call
+      answers 503 `google_unavailable` with `retryable: true`; nothing is
+      cleared or disconnected. An event insert retried after Google took it
+      is answered 409 and updated, so a retry never adds a second event.
+    - Any other Google failure is 502 `google_failed`.
   - Connect's exchange-and-store, disconnect's read-revoke-delete and
     every use of the stored token (listing and choosing calendars) hold one
     lock across the Google requests and the database write: Google revokes
@@ -695,8 +718,9 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
     `changed`), so the next push writes the whole week to the calendar then
     chosen and a push that read such a plan before is refused (409
     `plan_changed`). A reconnect while connected keeps the chosen calendar,
-    so it keeps the event ids. Nothing else clears the choice or the stored
-    token: a grant Google refuses leaves the connection as it is.
+    so it keeps the event ids. Nothing else clears the choice: a grant
+    Google refuses clears only the stored token (see Token failures), so
+    the event ids stay on the calendar still chosen.
   - Only a push that wrote all its events is recorded, in one transaction:
     the plan becomes `synced` with `calendar_synced_at`, and each day
     written stores its event id. A push that failed part way records
@@ -709,8 +733,9 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
   - Errors: 409 `not_connected`, 409 `no_calendar` (connected, no calendar
     chosen), 409 `calendar_unavailable` (the chosen calendar was deleted —
     Google 404 — or is no longer writable — 403 `requiredAccessLevel`;
-    choose another), 502 `reconnect_required` (the grant is refused; the
-    connection is left as it is), 502 `google_failed`, 404 when the week
+    choose another), 409 `google_reconnect_required`, 503
+    `google_unavailable` (retryable) and 502 `google_failed` (see Token
+    failures), 404 when the week
     has no plan, 400 `invalid_week`. The push holds the account lock
     across its Google requests and its record, like listing and choosing.
   - The week's Supply run (Feature 17) is made from a pushed plan: a

@@ -47,8 +47,8 @@ type RouteMounter interface {
 // /api/v1/plans/{weekStart}/draft, PUT
 // /api/v1/plans/{weekStart}/days/{date}, GET /api/v1/rotation-reviews and
 // POST /api/v1/dinners/{id}/rotation-review; googleSvc serves GET
-// /api/v1/integrations/google/connect, /callback and /calendars, PUT
-// /api/v1/integrations/google/calendar and DELETE
+// /api/v1/integrations/google and its /connect, /callback and /calendars,
+// PUT /api/v1/integrations/google/calendar and DELETE
 // /api/v1/integrations/google; runner serves
 // POST /api/v1/jobs and GET /api/v1/jobs/{id}; photos serves
 // GET /media/photos/{id}-{size}.jpg; assets is the web build
@@ -141,6 +141,7 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	// The callback's state is bound to the session that started connect.
 	apiV1.Get("/integrations/google/connect", getGoogleConnect(logger, googleSvc))
 	apiV1.Get("/integrations/google/callback", getGoogleCallback(logger, googleSvc))
+	apiV1.Get("/integrations/google", getGoogle(logger, googleSvc))
 	apiV1.Delete("/integrations/google", deleteGoogle(logger, googleSvc))
 	apiV1.Get("/integrations/google/calendars", getGoogleCalendars(logger, googleSvc))
 	apiV1.Put("/integrations/google/calendar", putGoogleCalendar(logger, googleSvc))

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"time"
@@ -55,16 +54,28 @@ type Selection struct {
 // response body.
 type CalendarError struct {
 	msg string
+	// retryable is set when Google answered every try with a transient
+	// failure (HTTP 429 or 5xx).
+	retryable bool
 }
 
 func (e *CalendarError) Error() string { return e.msg }
 
+// Retryable reports whether Google was only briefly unable to answer, so
+// trying again later may succeed. Nothing was disconnected.
+func (e *CalendarError) Retryable() bool { return e.retryable }
+
 // Calendars lists the connected account's calendars it can push to: those
-// it is a writer or owner of, in Google's order.
+// it is a writer or owner of, in Google's order. A grant Google refuses is
+// ErrReconnect, recorded as reconnect required (recordRefusal).
 func (s *Service) Calendars(ctx context.Context) ([]Calendar, error) {
 	s.account.Lock()
 	defer s.account.Unlock()
-	return s.calendars(ctx)
+	cals, err := s.calendars(ctx)
+	if err != nil {
+		return nil, s.recordRefusal(ctx, err)
+	}
+	return cals, nil
 }
 
 // SelectCalendar makes id the calendar MealQuest pushes to, storing its id
@@ -72,13 +83,15 @@ func (s *Service) Calendars(ctx context.Context) ([]Calendar, error) {
 // else, including a calendar chosen earlier that has since been deleted or
 // is no longer writable, is ErrUnknownCalendar and leaves the stored
 // choice as it was. Choosing another calendar than the one chosen returns
-// every plan pushed to that one to not synced; see saveSelection.
+// every plan pushed to that one to not synced; see saveSelection. A grant
+// Google refuses is ErrReconnect, recorded as reconnect required
+// (recordRefusal).
 func (s *Service) SelectCalendar(ctx context.Context, id string) (Selection, error) {
 	s.account.Lock()
 	defer s.account.Unlock()
 	cals, err := s.calendars(ctx)
 	if err != nil {
-		return Selection{}, err
+		return Selection{}, s.recordRefusal(ctx, err)
 	}
 	for _, c := range cals {
 		if c.ID != id {
@@ -194,21 +207,39 @@ func (s *Service) connection(ctx context.Context) (db.IntegrationsGoogle, error)
 	return row, nil
 }
 
-// accessToken trades row's refresh token for an access token. A grant
-// Google reports as invalid_grant is ErrReconnect.
+// accessToken trades row's refresh token for an access token, retrying a
+// transient failure as send does. A grant Google reports as invalid_grant,
+// or one already recorded as refused (no refresh token stored), is
+// ErrReconnect.
 func (s *Service) accessToken(ctx context.Context, row db.IntegrationsGoogle) (string, error) {
+	if row.RefreshTokenCt == nil {
+		return "", ErrReconnect
+	}
 	refresh, err := s.box.Decrypt(row.RefreshTokenCt)
 	if err != nil {
 		return "", fmt.Errorf("gcal: open refresh token: %w", err)
 	}
-	token, err := s.oauth.TokenSource(context.WithValue(ctx, oauth2.HTTPClient, s.client),
-		&oauth2.Token{RefreshToken: string(refresh)}).Token()
-	if err != nil {
+	for attempt := 0; ; attempt++ {
+		if attempt > 0 {
+			if err := s.backoff(ctx, attempt); err != nil {
+				return "", err
+			}
+		}
+		token, err := s.oauth.TokenSource(context.WithValue(ctx, oauth2.HTTPClient, s.client),
+			&oauth2.Token{RefreshToken: string(refresh)}).Token()
+		if err == nil {
+			return token.AccessToken, nil
+		}
 		var retrieve *oauth2.RetrieveError
 		var transport *url.Error
 		switch {
 		case errors.As(err, &retrieve) && retrieve.ErrorCode == "invalid_grant":
 			return "", ErrReconnect
+		case errors.As(err, &retrieve) && transient(retrieve.Response.StatusCode) && attempt < maxRetries:
+			continue
+		case errors.As(err, &retrieve) && transient(retrieve.Response.StatusCode):
+			return "", &CalendarError{retryable: true,
+				msg: fmt.Sprintf("gcal: Google could not take the token refresh (HTTP %d) in %d tries", retrieve.Response.StatusCode, maxRetries+1)}
 		case errors.As(err, &retrieve):
 			return "", &CalendarError{msg: fmt.Sprintf("gcal: Google refused the token refresh (HTTP %d)", retrieve.Response.StatusCode)}
 		case errors.As(err, &transport):
@@ -219,7 +250,6 @@ func (s *Service) accessToken(ctx context.Context, row db.IntegrationsGoogle) (s
 			return "", &CalendarError{msg: "gcal: token refresh returned an unusable response"}
 		}
 	}
-	return token.AccessToken, nil
 }
 
 // calendarListPage is the part of a calendarList page MealQuest reads.
@@ -234,35 +264,29 @@ type calendarListPage struct {
 }
 
 // calendarPage fetches the calendarList page at pageToken ("" for the
-// first) with access. HTTP 401 means Google no longer accepts the grant.
+// first) with access. HTTP 401 means Google no longer accepts the grant:
+// the access token was just refreshed from it.
 func (s *Service) calendarPage(ctx context.Context, access, pageToken string) (calendarListPage, error) {
 	q := url.Values{"maxResults": {fmt.Sprint(calendarPageSize)}}
 	if pageToken != "" {
 		q.Set("pageToken", pageToken)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.calendarAPI+"/users/me/calendarList?"+q.Encode(), nil)
-	if err != nil {
-		return calendarListPage{}, fmt.Errorf("gcal: build calendar list request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+access)
-	resp, err := s.client.Do(req)
-	if err != nil {
-		var transport *url.Error
-		if errors.As(err, &transport) {
-			return calendarListPage{}, &CalendarError{msg: fmt.Sprintf("gcal: calendar list request failed: %s: %v", transport.Op, transport.Err)}
+	status, body, err := s.send(ctx, "calendar list", maxCalendarBody+1, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.calendarAPI+"/users/me/calendarList?"+q.Encode(), nil)
+		if err != nil {
+			return nil, err
 		}
-		return calendarListPage{}, &CalendarError{msg: "gcal: calendar list request failed"}
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCalendarBody+1))
+		req.Header.Set("Authorization", "Bearer "+access)
+		return req, nil
+	})
 	if err != nil {
-		return calendarListPage{}, &CalendarError{msg: "gcal: read calendar list failed"}
+		return calendarListPage{}, err
 	}
 	switch {
-	case resp.StatusCode == http.StatusUnauthorized:
+	case status == http.StatusUnauthorized:
 		return calendarListPage{}, ErrReconnect
-	case resp.StatusCode != http.StatusOK:
-		return calendarListPage{}, &CalendarError{msg: fmt.Sprintf("gcal: Google refused the calendar list (HTTP %d)", resp.StatusCode)}
+	case status != http.StatusOK:
+		return calendarListPage{}, &CalendarError{msg: fmt.Sprintf("gcal: Google refused the calendar list (HTTP %d)", status)}
 	case len(body) > maxCalendarBody:
 		return calendarListPage{}, &CalendarError{msg: fmt.Sprintf("gcal: calendar list page exceeds %d bytes", maxCalendarBody)}
 	}

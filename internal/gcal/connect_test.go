@@ -80,6 +80,7 @@ func newHarness(t *testing.T) *harness {
 	}
 	h := &harness{svc: svc, google: google, st: st, box: box, clock: time.Date(2026, 10, 7, 18, 30, 0, 0, time.UTC)}
 	gcal.SetClock(svc, func() time.Time { return h.clock })
+	gcal.SetRetryDelay(svc, 0)
 	return h
 }
 

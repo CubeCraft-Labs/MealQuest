@@ -147,9 +147,8 @@ func putGoogleCalendar(logger *slog.Logger, svc *gcal.Service) http.HandlerFunc 
 
 // writeGoogleCalendarError maps a calendar listing or choice error to its
 // API error: 409 not_connected when nothing is connected, 422
-// unknown_calendar for a calendar MealQuest cannot push to, 502
-// reconnect_required when Google no longer accepts the stored grant, and 502
-// google_failed when Google refused or could not be reached.
+// unknown_calendar for a calendar MealQuest cannot push to, and a Google
+// failure as writeGoogleFailure does.
 func writeGoogleCalendarError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, action string, err error) {
 	var calendar *gcal.CalendarError
 	switch {
@@ -158,16 +157,47 @@ func writeGoogleCalendarError(w http.ResponseWriter, r *http.Request, logger *sl
 	case errors.Is(err, gcal.ErrUnknownCalendar):
 		writeError(w, r, logger, http.StatusUnprocessableEntity, "unknown_calendar",
 			"choose one of your calendars that MealQuest can add dinners to")
-	case errors.Is(err, gcal.ErrReconnect):
-		logger.WarnContext(r.Context(), action, "error", err)
-		writeError(w, r, logger, http.StatusBadGateway, "reconnect_required",
-			"Google no longer accepts MealQuest's access to your calendar; connect Google Calendar again")
-	case errors.As(err, &calendar):
-		logger.WarnContext(r.Context(), action, "error", err)
-		writeError(w, r, logger, http.StatusBadGateway, "google_failed",
-			"Google Calendar could not be reached; try again")
+	case errors.Is(err, gcal.ErrReconnect), errors.As(err, &calendar):
+		writeGoogleFailure(w, r, logger, action, err, "Google Calendar could not be reached; try again")
 	default:
 		logger.ErrorContext(r.Context(), action, "error", err)
 		writeError(w, r, logger, http.StatusInternalServerError, "internal", "internal error")
+	}
+}
+
+// writeGoogleFailure answers err, gcal.ErrReconnect or a *gcal.CalendarError,
+// the way every Google Calendar call does: 409 google_reconnect_required when
+// Google refused the stored grant (recorded as reconnect required, so only
+// connecting again helps), 503 google_unavailable, retryable, when Google
+// answered every try with HTTP 429 or 5xx (nothing was disconnected), and
+// 502 google_failed, with failed as its message, for any other failure.
+func writeGoogleFailure(w http.ResponseWriter, r *http.Request, logger *slog.Logger, action string, err error, failed string) {
+	logger.WarnContext(r.Context(), action, "error", err)
+	var calendar *gcal.CalendarError
+	switch {
+	case errors.Is(err, gcal.ErrReconnect):
+		writeError(w, r, logger, http.StatusConflict, "google_reconnect_required",
+			"Google access was revoked or expired; connect Google Calendar again")
+	case errors.As(err, &calendar) && calendar.Retryable():
+		writeAPIError(w, r, logger, http.StatusServiceUnavailable, apiError{Code: "google_unavailable",
+			Message: "Google Calendar is busy right now; try again in a few minutes", Retryable: true})
+	default:
+		writeError(w, r, logger, http.StatusBadGateway, "google_failed", failed)
+	}
+}
+
+// getGoogle answers the Google Calendar connection's status: {status,
+// calendar_id, calendar_name, connected_at, last_sync_error}, where status
+// is not_connected, connected or reconnect_required.
+func getGoogle(logger *slog.Logger, svc *gcal.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		st, err := svc.Status(r.Context())
+		if err != nil {
+			logger.ErrorContext(r.Context(), "read Google Calendar status", "error", err)
+			writeError(w, r, logger, http.StatusInternalServerError, "internal", "internal error")
+			return
+		}
+		writeJSON(w, r, logger, http.StatusOK, st)
 	}
 }

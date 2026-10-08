@@ -17,6 +17,10 @@ type Querier interface {
 	ClaimNextJob(ctx context.Context, now sql.NullString) (Job, error)
 	// Clears every day's calendar event id: none is on the chosen calendar.
 	ClearCalendarEvents(ctx context.Context, updatedAt string) error
+	// Records that Google refuses the stored grant: clears the refresh token and
+	// sets last_sync_error, keeping the chosen calendar. Affects no row when
+	// nothing is connected.
+	ClearIntegrationsGoogleToken(ctx context.Context, arg ClearIntegrationsGoogleTokenParams) (int64, error)
 	// Drops references to the runs created before the cutoff, so the purge
 	// can delete them.
 	ClearSuggestionBatchAIRunsBefore(ctx context.Context, cutoff string) (int64, error)

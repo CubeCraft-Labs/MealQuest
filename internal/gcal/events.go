@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -81,10 +80,13 @@ type eventTime struct {
 // includes an event deleted in Calendar) is updated in place instead, so
 // writing an event again never adds a second one. It stops at the first
 // failure; the events before it stay written, and writing them all again
-// is safe. Nothing connected is ErrNotConnected, no calendar chosen is
-// ErrNoCalendar, a chosen calendar that was deleted or is no longer
+// is safe. Nothing connected is ErrNotConnected, a grant already recorded
+// as refused is ErrReconnect whatever calendar is chosen, no calendar
+// chosen is ErrNoCalendar, a chosen calendar that was deleted or is no longer
 // writable is ErrCalendarUnavailable, a grant Google no longer accepts is
-// ErrReconnect, and any other Google failure is a *CalendarError.
+// ErrReconnect (recorded as reconnect required, see recordRefusal), and any
+// other Google failure is a *CalendarError, retryable when Google answered
+// every try with HTTP 429 or 5xx.
 //
 // Once every event is written, PushEvents returns record(), which the
 // caller uses to store what it pushed. record runs under the same hold of
@@ -101,7 +103,15 @@ func (s *Service) PushEvents(ctx context.Context, events []Event, record func() 
 	}
 	s.account.Lock()
 	defer s.account.Unlock()
-	row, err := s.connection(ctx)
+	return s.recordRefusal(ctx, s.pushEvents(ctx, events, record))
+}
+
+// pushEvents is PushEvents once the events are valid. The caller holds
+// s.account. A refused grant is reported before no calendar chosen
+// (grantedConnection): choosing a calendar cannot fix it, connecting again
+// can.
+func (s *Service) pushEvents(ctx context.Context, events []Event, record func() error) error {
+	row, err := s.grantedConnection(ctx)
 	if err != nil {
 		return err
 	}
@@ -148,43 +158,37 @@ func (s *Service) writeEvent(ctx context.Context, access, base string, e Event) 
 	return err
 }
 
-// eventRequest sends an event insert (POST) or update (PUT) and returns
-// HTTP 200 or, for an insert, 409; every other answer is an error.
+// eventRequest sends an event insert (POST) or update (PUT), retrying a
+// transient failure (send), and returns HTTP 200 or, for an insert, 409;
+// every other answer is an error. An insert Google took but answered with
+// a transient failure is answered 409 when retried, and updated.
 func (s *Service) eventRequest(ctx context.Context, access, method, target string, body []byte) (int, error) {
 	what := "event insert"
 	if method == http.MethodPut {
 		what = "event update"
 	}
-	req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(body))
-	if err != nil {
-		return 0, fmt.Errorf("gcal: build %s request: %w", what, err)
-	}
-	req.Header.Set("Authorization", "Bearer "+access)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.client.Do(req)
-	if err != nil {
-		var transport *url.Error
-		if errors.As(err, &transport) {
-			// The URL is dropped: after a refused redirect it is the
-			// Google-supplied Location.
-			return 0, &CalendarError{msg: fmt.Sprintf("gcal: %s request failed: %s: %v", what, transport.Op, transport.Err)}
+	status, reply, err := s.send(ctx, what, maxEventBody, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
 		}
-		return 0, &CalendarError{msg: fmt.Sprintf("gcal: %s request failed", what)}
-	}
-	defer resp.Body.Close()
-	reply, err := io.ReadAll(io.LimitReader(resp.Body, maxEventBody))
+		req.Header.Set("Authorization", "Bearer "+access)
+		req.Header.Set("Content-Type", "application/json")
+		return req, nil
+	})
 	if err != nil {
-		return 0, &CalendarError{msg: fmt.Sprintf("gcal: read %s response failed", what)}
+		return 0, err
 	}
 	switch {
-	case resp.StatusCode == http.StatusOK:
+	case status == http.StatusOK:
 		return http.StatusOK, nil
-	case resp.StatusCode == http.StatusConflict && method == http.MethodPost:
+	case status == http.StatusConflict && method == http.MethodPost:
 		return http.StatusConflict, nil
-	case resp.StatusCode == http.StatusUnauthorized:
+	case status == http.StatusUnauthorized:
+		// The access token was just refreshed from the grant.
 		return 0, ErrReconnect
-	case resp.StatusCode == http.StatusNotFound && method == http.MethodPost,
-		resp.StatusCode == http.StatusForbidden && errorReason(reply) == "requiredAccessLevel":
+	case status == http.StatusNotFound && method == http.MethodPost,
+		status == http.StatusForbidden && errorReason(reply) == "requiredAccessLevel":
 		// An insert into a deleted calendar, or one the account no longer
 		// sees, is not found; a write to one it can only read is
 		// requiredAccessLevel. An update not found is the event missing
@@ -192,7 +196,7 @@ func (s *Service) eventRequest(ctx context.Context, access, method, target strin
 		// says nothing about the calendar.
 		return 0, ErrCalendarUnavailable
 	}
-	return 0, &CalendarError{msg: fmt.Sprintf("gcal: Google refused the %s (HTTP %d)", what, resp.StatusCode)}
+	return 0, &CalendarError{msg: fmt.Sprintf("gcal: Google refused the %s (HTTP %d)", what, status)}
 }
 
 // errorReason is the reason of the first error in a Calendar API error

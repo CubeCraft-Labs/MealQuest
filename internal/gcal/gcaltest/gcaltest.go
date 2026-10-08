@@ -76,17 +76,22 @@ type Google struct {
 	calendars []Calendar
 	pageSize  int
 	// calendarStatus, when not 200, fails the calendarList endpoint with a
-	// body that quotes the access token.
+	// body that quotes the access token: every request when calendarFails
+	// is 0, else the next calendarFails requests.
 	calendarStatus int
+	calendarFails  int
 	calendarCalls  int
+	// rejectAccess makes the Calendar API answer HTTP 401 to every access
+	// token, while the grant stays live at the token endpoint.
+	rejectAccess bool
 	// events holds each calendar's events by id.
 	events map[string]map[string]Event
 	// inserts and updates count the events created and updated.
 	inserts, updates int
 	// eventWrites counts the requests that reached the events endpoints;
-	// failWrite, when not 0, fails the request that makes it that count
-	// with failStatus and a body that quotes the access token.
-	eventWrites, failWrite, failStatus int
+	// failWrite, when not 0, fails the requests that make it that count up
+	// to failLast with failStatus and a body that quotes the access token.
+	eventWrites, failWrite, failLast, failStatus int
 	// eventHold, when set, stops the next events request.
 	eventHold *hold
 }
@@ -257,7 +262,32 @@ func (g *Google) SetCalendars(pageSize int, cals ...Calendar) {
 func (g *Google) FailCalendarList(status int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.calendarStatus = status
+	g.calendarStatus, g.calendarFails = status, 0
+}
+
+// FailCalendarListNext makes the next n calendarList requests answer status
+// as FailCalendarList does, and later ones answer normally.
+func (g *Google) FailCalendarListNext(n, status int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.calendarStatus, g.calendarFails = status, n
+}
+
+// RejectAccessToken makes the Calendar API answer HTTP 401 to every access
+// token while refreshing the grant still succeeds, as Google does when it
+// refuses the access token it just issued.
+func (g *Google) RejectAccessToken() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.rejectAccess = true
+}
+
+// AcceptAccessToken undoes RejectAccessToken, as Google does for the grant
+// of a later connection.
+func (g *Google) AcceptAccessToken() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.rejectAccess = false
 }
 
 // CalendarCalls is how many requests reached the calendarList endpoint.
@@ -315,9 +345,23 @@ func (g *Google) CancelEvent(calendar, id string) {
 // FailEventWrite makes the nth request to the events endpoints from now
 // (1 for the next) answer status with a body that quotes the access token.
 func (g *Google) FailEventWrite(n, status int) {
+	g.FailEventWrites(n, 1, status)
+}
+
+// FailEventWrites makes count requests to the events endpoints in a row,
+// from the nth from now (1 for the next), answer status with a body that
+// quotes the access token.
+func (g *Google) FailEventWrites(n, count, status int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.failWrite, g.failStatus = g.eventWrites+n, status
+	g.failWrite, g.failLast, g.failStatus = g.eventWrites+n, g.eventWrites+n+count-1, status
+}
+
+// EventRequests is how many requests reached the events endpoints.
+func (g *Google) EventRequests() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.eventWrites
 }
 
 // HoldEvents stops the next request to the events endpoints before it is
@@ -476,16 +520,22 @@ func (g *Google) calendarList(w http.ResponseWriter, r *http.Request) {
 	g.calendarHold = nil
 	g.wait(h)
 	auth := r.Header.Get("Authorization")
-	if auth != "Bearer "+AccessToken || !g.grantLive() {
+	if auth != "Bearer "+AccessToken || !g.grantLive() || g.rejectAccess {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		fmt.Fprintf(w, `{"error":{"code":401,"message":"Invalid Credentials: %s"}}`, auth)
 		return
 	}
-	if g.calendarStatus != http.StatusOK {
+	if status := g.calendarStatus; status != http.StatusOK {
+		if g.calendarFails > 0 {
+			g.calendarFails--
+			if g.calendarFails == 0 {
+				g.calendarStatus = http.StatusOK
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(g.calendarStatus)
-		fmt.Fprintf(w, `{"error":{"code":%d,"message":"echo %s"}}`, g.calendarStatus, auth)
+		w.WriteHeader(status)
+		fmt.Fprintf(w, `{"error":{"code":%d,"message":"echo %s"}}`, status, auth)
 		return
 	}
 	start := 0
@@ -598,11 +648,11 @@ func (g *Google) eventCalendar(w http.ResponseWriter, r *http.Request) (string, 
 	g.eventHold = nil
 	g.wait(h)
 	auth := r.Header.Get("Authorization")
-	if auth != "Bearer "+AccessToken || !g.grantLive() {
+	if auth != "Bearer "+AccessToken || !g.grantLive() || g.rejectAccess {
 		apiError(w, http.StatusUnauthorized, "authError", "Invalid Credentials: "+auth)
 		return "", false
 	}
-	if g.failWrite != 0 && g.eventWrites == g.failWrite {
+	if g.failWrite != 0 && g.eventWrites >= g.failWrite && g.eventWrites <= g.failLast {
 		apiError(w, g.failStatus, "backendError", "echo "+auth)
 		return "", false
 	}

@@ -429,10 +429,18 @@ func TestPushPlanToCalendarErrors(t *testing.T) {
 		{"grant revoked", "2026-10-12", func(t *testing.T, e plansEnv) {
 			e.connectCalendar(t, true)
 			e.google.RevokeGrant()
-		}, http.StatusBadGateway, "reconnect_required"},
+		}, http.StatusConflict, "google_reconnect_required"},
+		{"401 after a refresh", "2026-10-12", func(t *testing.T, e plansEnv) {
+			e.connectCalendar(t, true)
+			e.google.RejectAccessToken()
+		}, http.StatusConflict, "google_reconnect_required"},
+		{"Google unavailable", "2026-10-12", func(t *testing.T, e plansEnv) {
+			e.connectCalendar(t, true)
+			e.google.FailEventWrites(3, 3, http.StatusServiceUnavailable)
+		}, http.StatusServiceUnavailable, "google_unavailable"},
 		{"Google fails part way", "2026-10-12", func(t *testing.T, e plansEnv) {
 			e.connectCalendar(t, true)
-			e.google.FailEventWrite(3, http.StatusServiceUnavailable)
+			e.google.FailEventWrite(3, http.StatusBadRequest)
 		}, http.StatusBadGateway, "google_failed"},
 		{"no plan", "2026-10-19", func(t *testing.T, e plansEnv) { e.connectCalendar(t, true) }, http.StatusNotFound, "not_found"},
 		{"not a Monday", "2026-10-13", func(t *testing.T, e plansEnv) { e.connectCalendar(t, true) }, http.StatusBadRequest, "invalid_week"},
@@ -445,6 +453,15 @@ func TestPushPlanToCalendarErrors(t *testing.T) {
 			if rec.Code != tc.status || errorCode(body) != tc.code {
 				t.Errorf("push = %d %s, want %d %s", rec.Code, rec.Body, tc.status, tc.code)
 			}
+			if apiErr, _ := body["error"].(map[string]any); apiErr["retryable"] != (tc.code == "google_unavailable") {
+				t.Errorf("push = %s, want retryable only when Google is unavailable", rec.Body)
+			}
+			if tc.code == "google_reconnect_required" {
+				_, status := callDinners(t, e.h, http.MethodGet, googlePath, "")
+				if status["status"] != "reconnect_required" || status["last_sync_error"] != gcal.ReconnectReason {
+					t.Errorf("GET %s after the push = %v, want reconnect_required with the reason", googlePath, status)
+				}
+			}
 			p, err := e.svc.Get(t.Context(), mustLocalDate(t, "2026-10-12"))
 			if err != nil {
 				t.Fatal(err)
@@ -453,6 +470,30 @@ func TestPushPlanToCalendarErrors(t *testing.T) {
 				t.Errorf("plan = %s synced at %v after a failed push, want draft", p.Status, p.CalendarSyncedAt)
 			}
 		})
+	}
+}
+
+// TestPushPlanAfterRefusalWithNoCalendar pushes after Google refused the
+// grant while listing calendars, before any was chosen: the push is 409
+// google_reconnect_required, not no_calendar, since only connecting again
+// restores it. After connecting again and choosing a calendar it succeeds.
+func TestPushPlanAfterRefusalWithNoCalendar(t *testing.T) {
+	t.Parallel()
+	e := newPlansRouter(t)
+	e.connectCalendar(t, false)
+	e.google.RevokeGrant()
+	if _, err := e.gcal.Calendars(t.Context()); !errors.Is(err, gcal.ErrReconnect) {
+		t.Fatalf("Calendars = %v, want ErrReconnect", err)
+	}
+
+	rec, body := e.push(t, "2026-10-12")
+	if rec.Code != http.StatusConflict || errorCode(body) != "google_reconnect_required" {
+		t.Errorf("push = %d %s, want 409 google_reconnect_required", rec.Code, rec.Body)
+	}
+
+	e.connectCalendar(t, true)
+	if rec, _ := e.push(t, "2026-10-12"); rec.Code != http.StatusOK {
+		t.Errorf("push after connecting again = %d: %s", rec.Code, rec.Body)
 	}
 }
 

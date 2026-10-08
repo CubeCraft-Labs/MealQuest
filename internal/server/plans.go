@@ -115,9 +115,9 @@ func postPlanPush(logger *slog.Logger, svc *plan.Service) http.HandlerFunc {
 // not_connected when Google Calendar is not connected, no_calendar when no
 // calendar is chosen, calendar_unavailable when the chosen calendar was
 // deleted or is no longer writable, and plan_changed when the plan was
-// edited during the push; 502 reconnect_required when Google no longer
-// accepts the grant, and google_failed when Google refused or could not be
-// reached. A failed push leaves the plan's status as it was. Any other
+// edited during the push; a Google failure as writeGoogleFailure maps it
+// (409 google_reconnect_required, 503 google_unavailable or 502
+// google_failed). A failed push leaves the plan's status as it was. Any other
 // error is the plan's, as writePlanError maps it.
 func writePlanPushError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error) {
 	var calendar *gcal.CalendarError
@@ -133,14 +133,8 @@ func writePlanPushError(w http.ResponseWriter, r *http.Request, logger *slog.Log
 			"the chosen calendar was deleted or MealQuest can no longer add dinners to it; choose another calendar in Settings")
 	case errors.Is(err, plan.ErrPlanChanged):
 		writeError(w, r, logger, http.StatusConflict, "plan_changed", err.Error())
-	case errors.Is(err, gcal.ErrReconnect):
-		logger.WarnContext(r.Context(), "push plan to Calendar", "error", err)
-		writeError(w, r, logger, http.StatusBadGateway, "reconnect_required",
-			"Google no longer accepts MealQuest's access to your calendar; connect Google Calendar again")
-	case errors.As(err, &calendar):
-		logger.WarnContext(r.Context(), "push plan to Calendar", "error", err)
-		writeError(w, r, logger, http.StatusBadGateway, "google_failed",
-			"Google Calendar could not be reached; push again")
+	case errors.Is(err, gcal.ErrReconnect), errors.As(err, &calendar):
+		writeGoogleFailure(w, r, logger, "push plan to Calendar", err, "Google Calendar could not be reached; push again")
 	default:
 		writePlanError(w, r, logger, "push plan to Calendar", err)
 	}

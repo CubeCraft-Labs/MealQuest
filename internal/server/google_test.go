@@ -413,41 +413,124 @@ func TestGoogleCalendarsNotConnected(t *testing.T) {
 	}
 }
 
-// TestGoogleCalendarsGrantRevoked lists and chooses after the household
-// removed MealQuest's access in their Google account: 502
-// reconnect_required, and the connection is kept for the household to
-// reconnect or disconnect.
+// getGoogleStatus answers GET /integrations/google, decoded.
+func (e *googleEnv) getGoogleStatus(t *testing.T) map[string]any {
+	t.Helper()
+	rec := e.serve(signedIn(http.MethodGet, googlePath, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d %s, want 200", googlePath, rec.Code, rec.Body)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("GET %s Cache-Control = %q, want no-store", googlePath, cc)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+// TestGoogleCalendarsGrantRevoked lists and chooses after Google stopped
+// accepting MealQuest's grant — the household removed its access in their
+// Google account (invalid_grant), or Google refuses the access token just
+// refreshed (HTTP 401): 409 google_reconnect_required, the refresh token is
+// cleared, and GET /integrations/google reports reconnect_required with the
+// reason, keeping the chosen calendar.
 func TestGoogleCalendarsGrantRevoked(t *testing.T) {
+	t.Parallel()
+	for name, refuse := range map[string]func(*gcaltest.Google){
+		"invalid_grant":       (*gcaltest.Google).RevokeGrant,
+		"401 after a refresh": (*gcaltest.Google).RejectAccessToken,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			e := newGoogleEnv(t)
+			e.connected(t)
+			if rec := e.serve(chooseCalendar("family@group.calendar.google.com")); rec.Code != http.StatusOK {
+				t.Fatalf("PUT calendar = %d %s", rec.Code, rec.Body)
+			}
+			refuse(e.google)
+			for _, req := range []*http.Request{
+				signedIn(http.MethodGet, googleCalendarsPath, nil),
+				chooseCalendar("household@gmail.com"),
+			} {
+				rec := e.serve(req)
+				code, message := errorBodyCode(t, rec)
+				if rec.Code != http.StatusConflict || code != "google_reconnect_required" || !strings.Contains(message, "connect Google Calendar again") {
+					t.Errorf("%s %s = %d %s, want 409 google_reconnect_required", req.Method, req.URL.Path, rec.Code, rec.Body)
+				}
+			}
+			got := e.getGoogleStatus(t)
+			if got["status"] != "reconnect_required" || got["last_sync_error"] != "Google access was revoked or expired — reconnect" ||
+				got["calendar_id"] != "family@group.calendar.google.com" {
+				t.Errorf("GET %s = %v, want reconnect_required with the reason and the calendar kept", googlePath, got)
+			}
+			row, err := db.New(e.st.Reader).GetIntegrationsGoogle(context.Background())
+			if err != nil || row.RefreshTokenCt != nil {
+				t.Errorf("connection = %+v, %v; want it kept without a refresh token", row, err)
+			}
+			// newGoogleEnv's cleanup checks the responses and logs hold no secret.
+		})
+	}
+}
+
+// TestGoogleCalendarsTransientFailure fails the calendar list with HTTP 503
+// on every try: it is tried three times, then 503 google_unavailable,
+// retryable, and the connection stays connected.
+func TestGoogleCalendarsTransientFailure(t *testing.T) {
 	t.Parallel()
 	e := newGoogleEnv(t)
 	e.connected(t)
-	e.google.RevokeGrant()
-	for _, req := range []*http.Request{
-		signedIn(http.MethodGet, googleCalendarsPath, nil),
-		chooseCalendar("family@group.calendar.google.com"),
-	} {
-		rec := e.serve(req)
-		code, message := errorBodyCode(t, rec)
-		if rec.Code != http.StatusBadGateway || code != "reconnect_required" || !strings.Contains(message, "connect Google Calendar again") {
-			t.Errorf("%s %s = %d %s, want 502 reconnect_required", req.Method, req.URL.Path, rec.Code, rec.Body)
-		}
+	e.google.FailCalendarList(http.StatusServiceUnavailable)
+	calls := e.google.CalendarCalls()
+	rec := e.serve(signedIn(http.MethodGet, googleCalendarsPath, nil))
+	var body struct {
+		Error apiError `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusServiceUnavailable || body.Error.Code != "google_unavailable" || !body.Error.Retryable {
+		t.Errorf("GET calendars = %d %s, want 503 google_unavailable, retryable", rec.Code, rec.Body)
+	}
+	if n := e.google.CalendarCalls() - calls; n != 3 {
+		t.Errorf("calendar list tried %d times, want 3", n)
+	}
+	if got := e.getGoogleStatus(t); got["status"] != "connected" || got["last_sync_error"] != nil {
+		t.Errorf("GET %s = %v, want connected with no error", googlePath, got)
 	}
 	if !e.stored(t) {
 		t.Error("the connection was cleared")
 	}
-	// newGoogleEnv's cleanup checks the responses and logs hold no secret.
+	// newGoogleEnv's cleanup checks the response and logs hold no secret.
+}
+
+func TestGoogleStatus(t *testing.T) {
+	t.Parallel()
+	e := newGoogleEnv(t)
+	if got := e.getGoogleStatus(t); got["status"] != "not_connected" {
+		t.Errorf("GET %s = %v, want not_connected", googlePath, got)
+	}
+	e.connected(t)
+	got := e.getGoogleStatus(t)
+	if got["status"] != "connected" || got["connected_at"] == nil || got["calendar_id"] != nil || got["last_sync_error"] != nil {
+		t.Errorf("GET %s = %v, want connected with no calendar", googlePath, got)
+	}
+	if len(got) != 5 {
+		t.Errorf("GET %s = %v, want exactly status, calendar_id, calendar_name, connected_at and last_sync_error", googlePath, got)
+	}
 }
 
 func TestGoogleCalendarsFailureIsRedacted(t *testing.T) {
 	t.Parallel()
 	e := newGoogleEnv(t)
 	e.connected(t)
-	e.google.FailCalendarList(http.StatusInternalServerError)
+	e.google.FailCalendarList(http.StatusForbidden)
 	rec := e.serve(signedIn(http.MethodGet, googleCalendarsPath, nil))
 	if code, _ := errorBodyCode(t, rec); rec.Code != http.StatusBadGateway || code != "google_failed" {
 		t.Errorf("GET calendars = %d %s, want 502 google_failed", rec.Code, rec.Body)
 	}
-	if !strings.Contains(e.logs.String(), "HTTP 500") {
+	if !strings.Contains(e.logs.String(), "HTTP 403") {
 		t.Errorf("logs = %s, want the failure's status", e.logs)
 	}
 	// newGoogleEnv's cleanup checks the response and logs hold no secret.

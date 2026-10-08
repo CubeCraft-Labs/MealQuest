@@ -360,13 +360,13 @@ func TestPushPartialFailureLeavesPlanUnsynced(t *testing.T) {
 	e := newEnv(t)
 	e.connectCalendar(t)
 	e.storePlan(t, week, fullWeek...)
-	// Google fails the fourth event.
-	e.google.FailEventWrite(4, http.StatusServiceUnavailable)
+	// Google fails the fourth event on every try.
+	e.google.FailEventWrites(4, 3, http.StatusServiceUnavailable)
 
 	_, err := e.svc.Push(t.Context(), week)
 	var calendar *gcal.CalendarError
-	if !errors.As(err, &calendar) {
-		t.Fatalf("Push = %v, want *gcal.CalendarError", err)
+	if !errors.As(err, &calendar) || !calendar.Retryable() {
+		t.Fatalf("Push = %v, want a retryable *gcal.CalendarError", err)
 	}
 	assertNoSecret(t, "error", err.Error())
 	if n := len(e.google.Events(dinnersCal.ID)); n != 3 {
@@ -402,7 +402,7 @@ func TestPushPartialFailureKeepsAChangedPlanChanged(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	e.google.FailEventWrite(2, http.StatusInternalServerError)
+	e.google.FailEventWrite(2, http.StatusBadRequest)
 	if _, err := e.svc.Push(t.Context(), week); err == nil {
 		t.Fatal("Push succeeded, want the second event to fail")
 	}
@@ -450,11 +450,97 @@ func TestPushGrantNoLongerAccepted(t *testing.T) {
 	}
 	assertNoSecret(t, "error", err.Error())
 	e.assertUnsynced(t, week, plan.StatusDraft)
-	// The connection is left as it is: forgetting it is not the push's to
-	// decide.
-	if _, err := db.New(e.st.Reader).GetIntegrationsGoogle(t.Context()); err != nil {
-		t.Errorf("connection after a refused grant: %v", err)
+	e.assertRefused(t)
+}
+
+// assertRefused fails unless the connection is recorded as reconnect
+// required: its refresh token cleared, last_sync_error the reason, and the
+// chosen calendar kept.
+func (e *env) assertRefused(t *testing.T) {
+	t.Helper()
+	row, err := db.New(e.st.Reader).GetIntegrationsGoogle(t.Context())
+	if err != nil {
+		t.Fatalf("connection after a refused grant: %v", err)
 	}
+	if row.RefreshTokenCt != nil || row.LastSyncError.String != gcal.ReconnectReason || row.CalendarID.String != dinnersCal.ID {
+		t.Errorf("connection after a refused grant: token %x, last_sync_error %v, calendar %v; want no token, %q, %s",
+			row.RefreshTokenCt, row.LastSyncError, row.CalendarID, gcal.ReconnectReason, dinnersCal.ID)
+	}
+}
+
+// TestRefusedGrantKeepsPushedWeeks: a grant Google refuses clears the
+// refresh token but keeps the chosen calendar, where every pushed event
+// still is, so every pushed week stays synced and keeps its event ids.
+// Connecting again keeps the calendar, and the next push updates the
+// events in place.
+func TestRefusedGrantKeepsPushedWeeks(t *testing.T) {
+	e := newEnv(t)
+	e.connectCalendar(t)
+	dates := map[store.LocalDate][]string{}
+	for _, w := range pushedWeeks {
+		dates[w] = e.storePlan(t, w, fullWeek...)
+		if _, err := e.svc.Push(t.Context(), w); err != nil {
+			t.Fatalf("Push %s: %v", w, err)
+		}
+	}
+	e.google.RevokeGrant()
+	if _, err := e.svc.Push(t.Context(), week); !errors.Is(err, gcal.ErrReconnect) {
+		t.Fatalf("Push = %v, want ErrReconnect", err)
+	}
+	e.assertRefused(t)
+	for _, w := range pushedWeeks {
+		if p, err := e.svc.Get(t.Context(), w); err != nil || p.Status != plan.StatusSynced {
+			t.Errorf("plan of %s after a refused grant = %s, %v; want synced", w, p.Status, err)
+		}
+		e.assertWeekOn(t, dinnersCal.ID, w, dates[w], fullWeek...)
+	}
+
+	// The refused token is not offered to Google again.
+	before := e.google.TokenCalls()
+	if _, err := e.svc.Push(t.Context(), week); !errors.Is(err, gcal.ErrReconnect) {
+		t.Fatalf("Push again = %v, want ErrReconnect", err)
+	}
+	if n := e.google.TokenCalls() - before; n != 0 {
+		t.Errorf("token endpoint called %d times after the grant was refused", n)
+	}
+
+	e.google.Connect(t, e.gcal)
+	e.google.ResetEventWrites()
+	p, err := e.svc.Push(t.Context(), week)
+	if err != nil || p.Status != plan.StatusSynced {
+		t.Fatalf("Push after connecting again = %s, %v; want synced", p.Status, err)
+	}
+	if inserts, updates := e.google.EventWrites(); inserts != 0 || updates != 7 {
+		t.Errorf("push after connecting again: %d inserts and %d updates, want 0 and 7", inserts, updates)
+	}
+	e.assertWeekOn(t, dinnersCal.ID, week, dates[week], fullWeek...)
+}
+
+// TestDisconnectAfterRefusedGrant: a connection whose grant Google refused
+// has no token to revoke; disconnecting deletes it and forgets every pushed
+// event, as any disconnect does.
+func TestDisconnectAfterRefusedGrant(t *testing.T) {
+	e := newEnv(t)
+	e.connectCalendar(t)
+	e.storePlan(t, week, fullWeek...)
+	if _, err := e.svc.Push(t.Context(), week); err != nil {
+		t.Fatal(err)
+	}
+	e.google.RevokeGrant()
+	if _, err := e.gcal.Calendars(t.Context()); !errors.Is(err, gcal.ErrReconnect) {
+		t.Fatalf("Calendars = %v, want ErrReconnect", err)
+	}
+	e.assertRefused(t)
+	if err := e.gcal.Disconnect(t.Context()); err != nil {
+		t.Fatalf("Disconnect: %v", err)
+	}
+	if n := len(e.google.Revoked()); n != 0 {
+		t.Errorf("revoked %d tokens; a refused grant has none to revoke", n)
+	}
+	if _, err := db.New(e.st.Reader).GetIntegrationsGoogle(t.Context()); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("connection after disconnecting = %v, want none", err)
+	}
+	e.assertForgotten(t, week, "after disconnecting")
 }
 
 func TestPushFailsWhenPlanSwappedWhilePushing(t *testing.T) {
@@ -553,7 +639,7 @@ func TestPushAfterChoosingAnotherCalendarWritesTheWholeWeek(t *testing.T) {
 
 			// A push that fails part way leaves the plan changed.
 			e.google.ResetEventWrites()
-			e.google.FailEventWrite(4, http.StatusServiceUnavailable)
+			e.google.FailEventWrite(4, http.StatusBadRequest)
 			if _, err := e.svc.Push(t.Context(), week); err == nil {
 				t.Fatal("Push succeeded, want the fourth event to fail")
 			}

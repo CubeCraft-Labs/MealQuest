@@ -516,6 +516,24 @@ func TestSchemaSingleRowTablesRejectSecondRow(t *testing.T) {
 	}
 }
 
+// TestSchemaGoogleTokenClearedOnlyWithReason: a Google connection may lose
+// its refresh token (reconnect required) only with last_sync_error saying
+// why.
+func TestSchemaGoogleTokenClearedOnlyWithReason(t *testing.T) {
+	s := migratedStore(t)
+	row := testRow("integrations_google", 0)
+	row["refresh_token_ct"] = nil
+	inRolledBackTx(t, s, func(tx *sql.Tx) {
+		wantConstraintError(t, insertSchemaRow(tx, "integrations_google", row), "CHECK", "integrations_google without a token or a reason")
+	})
+	row["last_sync_error"] = "Google access was revoked or expired — reconnect"
+	inRolledBackTx(t, s, func(tx *sql.Tx) {
+		if err := insertSchemaRow(tx, "integrations_google", row); err != nil {
+			t.Errorf("integrations_google without a token, with a reason: %v", err)
+		}
+	})
+}
+
 func TestSchemaDeleteParentWithChildrenRefused(t *testing.T) {
 	cases := []struct{ parent, child, column string }{
 		{"recipes", "recipe_ingredients", "recipe_id"},

@@ -122,6 +122,9 @@ type Service struct {
 	calendarAPI string
 	client      *http.Client
 	cookie      auth.FlowCookie
+	// retryDelay is the wait before the first retry of a transient
+	// failure; tests shorten it.
+	retryDelay time.Duration
 	// now is the clock; tests replace it.
 	now func() time.Time
 
@@ -170,6 +173,7 @@ func NewService(st *store.Store, box *secretbox.Box, cfg Config) (*Service, erro
 		calendarAPI: cfg.CalendarAPI,
 		client:      &http.Client{Timeout: googleTimeout, CheckRedirect: auth.CheckRedirect},
 		cookie:      auth.NewFlowCookie(connectCookieName, connectCookieKeyLabel, connectCookieTTL, cfg.SecretKey),
+		retryDelay:  firstRetryDelay,
 		now:         time.Now,
 		pending:     map[string]time.Time{},
 	}, nil
@@ -343,6 +347,9 @@ func (s *Service) store(ctx context.Context, sealed []byte) error {
 // MealQuest's access in their Google account) counts as revoked. Any other
 // revoke failure keeps the connection so the household can retry.
 //
+// A connection whose grant Google already refused (reconnect required, no
+// refresh token stored) has nothing to revoke and is deleted.
+//
 // No calendar is chosen once disconnected, so the same transaction that
 // deletes the connection forgets every pushed event (forgetEvents): every
 // synced plan becomes changed, and the next push after connecting again and
@@ -350,19 +357,18 @@ func (s *Service) store(ctx context.Context, sealed []byte) error {
 func (s *Service) Disconnect(ctx context.Context) error {
 	s.account.Lock()
 	defer s.account.Unlock()
-	row, err := db.New(s.st.Reader).GetIntegrationsGoogle(ctx)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ErrNotConnected
-	}
+	row, err := s.connection(ctx)
 	if err != nil {
-		return fmt.Errorf("gcal: read Google integration: %w", err)
-	}
-	token, err := s.box.Decrypt(row.RefreshTokenCt)
-	if err != nil {
-		return fmt.Errorf("gcal: open refresh token: %w", err)
-	}
-	if err := s.revoke(ctx, string(token)); err != nil {
 		return err
+	}
+	if row.RefreshTokenCt != nil {
+		token, err := s.box.Decrypt(row.RefreshTokenCt)
+		if err != nil {
+			return fmt.Errorf("gcal: open refresh token: %w", err)
+		}
+		if err := s.revoke(ctx, string(token)); err != nil {
+			return err
+		}
 	}
 	return s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		q := db.New(tx)

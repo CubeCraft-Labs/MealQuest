@@ -176,8 +176,8 @@ func TestMigrateEmbeddedMigrations(t *testing.T) {
 	if err := Migrate(context.Background(), s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required", got)
 	}
 }
 
@@ -197,8 +197,8 @@ func TestMigrateBootstrapThenEmbeddedInitApplies(t *testing.T) {
 	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required", got)
 	}
 	if !tableExists(t, s, "dinners") {
 		t.Error("table from 0001_init was not created")
@@ -716,5 +716,48 @@ func TestMigrateRotationReviewName(t *testing.T) {
 	}
 	if tableExists(t, s, "rotation_reviews_copy") {
 		t.Error("rotation_reviews_copy left behind")
+	}
+}
+
+// TestMigrateGoogleReconnectKeepsConnection applies 0015, which rebuilds
+// integrations_google, over a stored connection: every column survives.
+func TestMigrateGoogleReconnectKeepsConnection(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	before := fstest.MapFS{}
+	matches, err := fs.Glob(migrations.FS, "*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range matches {
+		if name >= "0015" {
+			continue
+		}
+		body, err := fs.ReadFile(migrations.FS, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[name] = &fstest.MapFile{Data: body}
+	}
+	if err := Migrate(ctx, s.Writer, before); err != nil {
+		t.Fatal(err)
+	}
+	const row = `1|token|family@group.calendar.google.com|Family|2026-10-01T00:00:00.000Z|earlier error|2026-09-01T00:00:00.000Z|2026-10-02T00:00:00.000Z`
+	if _, err := s.Writer.ExecContext(ctx, `INSERT INTO integrations_google VALUES (1, CAST('token' AS BLOB),
+		'family@group.calendar.google.com', 'Family', '2026-10-01T00:00:00.000Z', 'earlier error',
+		'2026-09-01T00:00:00.000Z', '2026-10-02T00:00:00.000Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	if err := s.Reader.QueryRowContext(ctx, `SELECT id || '|' || CAST(refresh_token_ct AS TEXT) || '|' || calendar_id || '|' ||
+		calendar_name || '|' || connected_at || '|' || last_sync_error || '|' || created_at || '|' || updated_at
+		FROM integrations_google`).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != row {
+		t.Errorf("connection after 0015 = %s, want %s", got, row)
 	}
 }

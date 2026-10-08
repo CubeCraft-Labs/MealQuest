@@ -10,6 +10,28 @@ import (
 	"database/sql"
 )
 
+const clearIntegrationsGoogleToken = `-- name: ClearIntegrationsGoogleToken :execrows
+UPDATE integrations_google
+SET refresh_token_ct = NULL, last_sync_error = ?, updated_at = ?
+WHERE id = 1
+`
+
+type ClearIntegrationsGoogleTokenParams struct {
+	LastSyncError sql.NullString
+	UpdatedAt     string
+}
+
+// Records that Google refuses the stored grant: clears the refresh token and
+// sets last_sync_error, keeping the chosen calendar. Affects no row when
+// nothing is connected.
+func (q *Queries) ClearIntegrationsGoogleToken(ctx context.Context, arg ClearIntegrationsGoogleTokenParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, clearIntegrationsGoogleToken, arg.LastSyncError, arg.UpdatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deleteIntegrationsGoogle = `-- name: DeleteIntegrationsGoogle :exec
 DELETE FROM integrations_google
 WHERE id = 1

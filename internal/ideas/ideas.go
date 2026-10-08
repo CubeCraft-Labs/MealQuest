@@ -99,6 +99,9 @@ func NewService(grounder *recipes.Grounder, generate Generator, runner *jobs.Run
 	if err := kind.ServiceOnly(); err != nil {
 		return nil, err
 	}
+	if err := kind.FailedResult(withoutIdeas); err != nil {
+		return nil, err
+	}
 	s.job = kind
 	return s, nil
 }
@@ -192,8 +195,10 @@ func IsQuick(method string, minutes *int) bool {
 // other grounding failure fails the job, as does ideas_from_ingredients
 // failing, with no idea made up instead. The result is published at each
 // stage and again as each idea is kept, so it fills as the ideas ground.
-// Before the job fails, its result is published again with no ideas, so a
-// failed job never shows ideas kept before the failure.
+// Before the job fails, its result is published again with no ideas, to
+// tidy the stored result. That write is not what keeps a failed job from
+// showing ideas, since it may fail and a job interrupted by restart never
+// makes it: withoutIdeas, applied whenever a failed job is read, is.
 func (s *Service) run(ctx context.Context, p FromIngredientsJob, publish func(Result) error) (Result, error) {
 	res, err := s.fill(ctx, p, publish)
 	if err != nil {
@@ -314,6 +319,18 @@ func (s *Service) ground(ctx context.Context, ideas []skills.Idea, kept func(i i
 		return err
 	}
 	return failed
+}
+
+// withoutIdeas is a failed job's stored result as the job shows it: with no
+// ideas, however the job failed, so a failed job never shows ideas kept
+// before the failure.
+func withoutIdeas(stored json.RawMessage) (json.RawMessage, error) {
+	var res Result
+	if err := json.Unmarshal(stored, &res); err != nil {
+		return nil, fmt.Errorf("ideas: decode failed job's result: %w", err)
+	}
+	res.Ideas = []Idea{}
+	return res.PublicJSON()
 }
 
 // ideaOf is idea as grounded by gr.

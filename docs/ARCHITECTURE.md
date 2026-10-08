@@ -332,8 +332,12 @@ automatic** (D-021).
   taking its place before those shown. It fails with `no_ideas_found`
   (every idea was dropped), `ai_failed` (the skill or `normalize_recipe`
   failed; no idea is made up instead, D-017), `search_not_configured` or
-  `search_failed`. Before it fails it publishes its result again with no
-  ideas, so a failed job shows none, even those kept before the failure.
+  `search_failed`. A failed job shows no ideas, even those kept before the
+  failure: the kind registers a `FailedResult` view, so `GET
+  /api/v1/jobs/{id}` empties the `ideas` of any failed job's result on
+  read, however it failed (including `interrupted by restart` and an
+  `internal_error` whose clearing write failed). Before it fails it also
+  publishes its result again with no ideas, to tidy what is stored.
   `GET /api/v1/suggestions/deck` returns `{suggestions: [{id, dinner_id,
   name, photo_url, difficulty, method, minutes_total, cuisine, reason,
   cited_regular_ids, status, dinner_status, decided_at, created_at}],

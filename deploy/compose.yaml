@@ -65,8 +65,9 @@ services:
   # the app's own user (owner of the volume) with a read-only root
   # filesystem, no privilege escalation and no Linux capabilities.
   #
-  # Restore: follow "Restore the database" in deploy/RUNBOOK.md (stop the
-  # stack, move the database with its -wal and -shm aside, restore, check).
+  # Restore: follow "Restore the database" in the CTXD project mealquest,
+  # RUNBOOKS.MD (stop the stack, move the database with its -wal and -shm
+  # aside, restore, check).
   litestream:
     image: litestream/litestream:0.5.17
     user: "10001:10001"

@@ -7,7 +7,7 @@ import {
   type MutationObserverOptions,
   type QueryClient,
 } from '@tanstack/react-query'
-import { useEffect, useReducer, useSyncExternalStore } from 'react'
+import { useEffect, useReducer, useRef, useSyncExternalStore } from 'react'
 import { ApiError, useApi, type ApiClient } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { meQueryKey } from '../AuthBootstrap.tsx'
@@ -200,6 +200,10 @@ function toggleKey(weekStart: string) {
   return ['shopping', weekStart, 'toggle'] as const
 }
 
+// TOGGLE_SCOPE is the one mutation scope of every toggle of every week, made
+// here or replayed from the queue saved on this device.
+const TOGGLE_SCOPE = 'shopping toggle'
+
 // Toggles is the toggles of one week's Supply run: shown, the Supply run
 // with those still pending laid over it, the items whose toggles will sync
 // once the server can be reached, the latest failed toggle no later toggle
@@ -228,12 +232,13 @@ function reachable(network: NetworkStatus): Promise<void> {
 // made on the Supply run screen (useToggles) or replayed from the queue saved
 // on this device (useSupplyRunSync).
 //
-// The week's toggles are sent one at a time, in the order made (one
-// mutation scope), so the counts each is answered with include every toggle
-// before it and none after. While the server cannot be reached — the device
-// is offline, or the toggle's PATCH failed with a network error (fetch
-// rejected with a TypeError) — a toggle waits, pending, and is sent once it
-// can be: those after it wait behind it. Any answer from the server settles
+// Toggles are sent one at a time, in the order made, whatever their week
+// (one mutation scope, TOGGLE_SCOPE), so the counts each is answered with
+// include every toggle before it and none after, and a replayed toggle never
+// overlaps another replayed or made here. While the server cannot be
+// reached — the device is offline, or the toggle's PATCH failed with a
+// network error (fetch rejected with a TypeError) — a toggle waits, pending,
+// and is sent once it can be: those after it wait behind it. Any answer from the server settles
 // it: a refusal (a 400, 404, 409 or any other error response) or a response
 // that is not the item as toggled fails it, and it is not sent again. Before
 // a toggle is sent, GET /api/v1/me has answered, so it carries the session's
@@ -250,7 +255,7 @@ function toggleOptions(
   const mutationKey = toggleKey(weekStart)
   return {
     mutationKey,
-    scope: { id: mutationKey.join(' ') },
+    scope: { id: TOGGLE_SCOPE },
     networkMode: 'always',
     retry: false,
     gcTime: Infinity,
@@ -312,8 +317,9 @@ function toggleOptions(
 // the counts it answers with there. Until then the toggle is pending and is
 // laid over the Supply run shown, so the item and the needed count change at
 // once; a refused toggle just stops being pending, which puts both back.
-// While the server cannot be reached, the items with pending toggles will
-// sync.
+// An item whose pending toggle was made, or waited, while the server could
+// not be reached will sync: it says so until that toggle settles, even once
+// the server can be reached again.
 //
 // The Supply run and the toggles are read straight from the query and
 // mutation caches as each render begins, never from the caches' batched
@@ -339,6 +345,9 @@ export function useToggles(weekStart: string): Toggles {
   useMutationState({ filters: { mutationKey } })
   const offline = useSyncExternalStore(api.network.subscribe, api.network.offline)
   const [, renderAgain] = useReducer((n: number) => n + 1, 0)
+  // The keys of the pending toggles seen while the server could not be
+  // reached: every change of the network status renders again.
+  const waited = useRef<ReadonlySet<string>>(new Set())
   const run = queryClient.getQueryData<SupplyRun | null>(key)
   if (!run) throw new Error(`The week of ${weekStart} has no Supply run read to toggle items of.`)
   const toggles = queryClient
@@ -346,13 +355,14 @@ export function useToggles(weekStart: string): Toggles {
     .findAll({ mutationKey })
     .map((mutation) => ({ status: mutation.state.status, toggle: mutation.state.variables as KeyedToggle, error: mutation.state.error }))
   const pending = toggles.filter((t) => t.status === 'pending').map((t) => t.toggle)
+  waited.current = new Set(pending.filter((t) => offline || waited.current.has(t.key)).map((t) => t.key))
   const failed = toggles
     .filter((t, i) => t.status === 'error' && !toggles.slice(i + 1).some((later) => later.toggle.id === t.toggle.id))
     .at(-1)
   const { mutate } = useMutation(toggleOptions(weekStart, api, queryClient))
   return {
     shown: shown(run, pending),
-    willSync: new Set(offline ? pending.map((toggle) => toggle.id) : []),
+    willSync: new Set(pending.filter((t) => waited.current.has(t.key)).map((t) => t.id)),
     failed: failed === undefined ? null : { toggle: { id: failed.toggle.id, needed: failed.toggle.needed }, error: failed.error! },
     toggle: ({ id, needed }) => {
       const queuedToggle = { key: crypto.randomUUID(), weekStart, id, needed }
@@ -367,9 +377,18 @@ export function useToggles(weekStart: string): Toggles {
 // to open offline — the household's schedule and each Supply run the server
 // sends (saveRun) — and replays, in the order made, the toggles saved in the
 // queue that are not already pending here: those of a page reloaded before
-// the server answered them. A replayed toggle's answer is written over the
-// Supply run saved, so the week's Supply run is cached from it first; it
-// is still read again (updatedAt 0) when the Supply run screen opens.
+// the server answered them.
+//
+// Replay is at-least-once, not exactly-once: a toggle leaves the saved queue
+// only once its answer settles here, so one the server applied just before a
+// reload is sent again. That duplicate is safe because a toggle sets needed
+// to a fixed value — the same PATCH applied twice leaves the item and the
+// counts as applying it once does — so no key is sent for the server to
+// deduplicate by.
+//
+// A replayed toggle's answer is written over the Supply run saved, so the
+// week's Supply run is cached from it first; it is still read again
+// (updatedAt 0) when the Supply run screen opens.
 export function useSupplyRunSync() {
   const api = useApi()
   const queryClient = useQueryClient()

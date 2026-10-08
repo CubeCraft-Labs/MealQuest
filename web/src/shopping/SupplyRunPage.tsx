@@ -1,4 +1,5 @@
 import { Archive, Check, CloudUpload, MessageSquare } from 'lucide-react'
+import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { Unavailable } from '../plan/PlanPage.tsx'
 import { defaultWeek, localNow, weekdayKicker, weekLabel, weekStart as weekOf } from '../plan/week.ts'
@@ -249,12 +250,15 @@ function ChosenSupplyRun() {
   const settings = useHouseholdSettings()
   const [params] = useSearchParams()
   const chosen = params.get(WEEK_PARAM)
+  // Read once, not on every render: a failed read reports a problem, which
+  // renders this again.
+  const [saved] = useState(() => keep(savedSchedule))
 
   if (chosen !== null && !isMonday(chosen)) {
     return <ErrorBanner>{`“${chosen}” is not the Monday of a week, as YYYY-MM-DD.`}</ErrorBanner>
   }
   // fetch rejects with a TypeError only when the network fails.
-  const schedule = settings.data ?? (settings.error instanceof TypeError ? keep(savedSchedule) : null)
+  const schedule = settings.data ?? (settings.error instanceof TypeError ? saved : null)
   if (settings.isError && !schedule) {
     return <ErrorBanner onRetry={() => void settings.refetch()}>Couldn't load the household settings. {settings.error.message}</ErrorBanner>
   }

@@ -1,8 +1,7 @@
 # Runs the nightly MealQuest media backup (/usr/local/sbin/mealquest-media-backup).
-# Triggered by mealquest-media-backup.timer; run by hand with
-#   systemctl start mealquest-media-backup
-# and read the result with
-#   journalctl -u mealquest-media-backup
+# Triggered by mealquest-media-backup.timer; output goes to the journal.
+# Installing it and running it by hand: CTXD project mealquest,
+# RUNBOOKS.MD "Media — nightly rsync".
 #
 # The script runs as the app's user (10001, host user "mealquest") with no
 # capabilities. systemd, as root, only bind-mounts the data volume's root

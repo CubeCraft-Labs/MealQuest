@@ -41,6 +41,10 @@ export type ApiRequest = {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
   // Sent as JSON. A GET must not have one.
   body?: unknown
+  // Aborts the request, including the /me refresh a csrf 403 makes it wait
+  // for; it then rejects with the signal's reason. No request has a deadline
+  // unless its caller aborts it.
+  signal?: AbortSignal
 }
 
 // ApiRead is a GET's decoded response body, and whether the service worker
@@ -55,8 +59,9 @@ export type ApiClient = {
   // apiRead is apiFetch's GET that also says whether the body is the service
   // worker's cached copy rather than the server's answer.
   apiRead<T>(path: string): Promise<ApiRead<T>>
-  // loadMe fetches GET /api/v1/me and caches its CSRF token.
-  loadMe(): Promise<Me>
+  // loadMe fetches GET /api/v1/me and caches its CSRF token; signal aborts
+  // it, as it does an apiFetch.
+  loadMe(signal?: AbortSignal): Promise<Me>
   // forbidden reports whether a request was refused because the signed-in
   // account is not in this household; subscribe is notified when it changes.
   forbidden(): boolean
@@ -70,15 +75,20 @@ export type ApiClient = {
   session: VerifiedSession
 }
 
+// Refresh is the /me request refreshMe shares: controller aborts it, waiting
+// counts the requests with a signal still waiting for it, and unbounded says
+// whether one without a signal is.
+type Refresh = { me: Promise<Me>; controller: AbortController; waiting: number; unbounded: boolean }
+
 // createApiClient builds the app's API client. location is window.location in
 // the app: a 401 sends it to /auth/login with the current path to return to.
 export function createApiClient(location: ApiLocation, network: NetworkStatus, session: VerifiedSession): ApiClient {
   let csrfToken: string | null = null
-  let refreshing: Promise<Me> | null = null
+  let refreshing: Refresh | null = null
   let forbidden = false
   const listeners = new Set<() => void>()
 
-  async function send(method: string, path: string, body: unknown): Promise<Response> {
+  async function send(method: string, path: string, body: unknown, signal: AbortSignal | undefined): Promise<Response> {
     const headers: Record<string, string> = { Accept: 'application/json' }
     if (body !== undefined) headers['Content-Type'] = 'application/json'
     if (method !== 'GET') {
@@ -97,7 +107,7 @@ export function createApiClient(location: ApiLocation, network: NetworkStatus, s
     }
     let response: Response
     try {
-      response = await fetch(path, { method, headers, credentials: 'same-origin', body: json })
+      response = await fetch(path, { method, headers, credentials: 'same-origin', body: json, signal })
     } catch (error) {
       // fetch rejects with a TypeError when the network fails; an abort is a
       // DOMException and says nothing about the network.
@@ -112,12 +122,46 @@ export function createApiClient(location: ApiLocation, network: NetworkStatus, s
   }
 
   // refreshMe shares one in-flight /me request between every request that
-  // got a csrf 403 at the same time.
-  function refreshMe(): Promise<Me> {
-    refreshing ??= loadMe().finally(() => {
-      refreshing = null
+  // got a csrf 403 at the same time. A request whose signal aborts stops
+  // waiting for it at once, and it is no longer shared: the next csrf 403
+  // starts a fresh /me rather than wait on one that may never answer. Once
+  // every request with a signal waiting for it has stopped, and none without
+  // one waits, it is aborted.
+  function refreshMe(signal: AbortSignal | undefined): Promise<Me> {
+    if (refreshing === null) {
+      const controller = new AbortController()
+      const refresh: Refresh = { me: loadMe(controller.signal), controller, waiting: 0, unbounded: false }
+      const done = () => {
+        if (refreshing === refresh) refreshing = null
+      }
+      refresh.me.then(done, done)
+      refreshing = refresh
+    }
+    const refresh = refreshing
+    if (signal === undefined) {
+      refresh.unbounded = true
+      return refresh.me
+    }
+    refresh.waiting++
+    return new Promise((resolve, reject) => {
+      const stop = () => {
+        if (refreshing === refresh) refreshing = null
+        if (--refresh.waiting === 0 && !refresh.unbounded) refresh.controller.abort(signal.reason)
+        reject(signal.reason as Error)
+      }
+      if (signal.aborted) return stop()
+      signal.addEventListener('abort', stop, { once: true })
+      refresh.me.then(
+        (me) => {
+          signal.removeEventListener('abort', stop)
+          resolve(me)
+        },
+        (error: unknown) => {
+          signal.removeEventListener('abort', stop)
+          reject(error as Error)
+        },
+      )
     })
-    return refreshing
   }
 
   async function apiFetch<T>(path: string, request: ApiRequest = {}): Promise<T> {
@@ -138,14 +182,14 @@ export function createApiClient(location: ApiLocation, network: NetworkStatus, s
     if (method === 'GET' && request.body !== undefined) {
       throw new Error(`GET ${path}: a GET request cannot carry a body`)
     }
-    let response = await send(method, url, request.body)
+    let response = await send(method, url, request.body, request.signal)
     if (response.status === 403) {
       const error = await parseForbidden(method, path, response)
       // Only a non-GET carries the token, so only it can be refused for it.
       if (error.code !== 'csrf' || method === 'GET') throw error
       // The session's token changed: refresh it once and retry once.
-      await refreshMe()
-      response = await send(method, url, request.body)
+      await refreshMe(request.signal)
+      response = await send(method, url, request.body, request.signal)
       if (response.status === 403) throw await parseForbidden(method, path, response)
     }
     return { body: await decode<T>(method, path, response), cached: response.headers.has(cacheFallbackHeader) }
@@ -176,8 +220,8 @@ export function createApiClient(location: ApiLocation, network: NetworkStatus, s
     return (await response.json()) as T
   }
 
-  async function loadMe(): Promise<Me> {
-    const me = await apiFetch<unknown>(ME_PATH)
+  async function loadMe(signal?: AbortSignal): Promise<Me> {
+    const me = await apiFetch<unknown>(ME_PATH, { signal })
     if (
       !isRecord(me) ||
       typeof me.name !== 'string' ||

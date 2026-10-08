@@ -1,0 +1,22 @@
+{{/* archive_title titles a week's Supply run for the Supply archive, from the week's dinners. */}}
+{{define "instructions" -}}
+You title the household's Supply run, the week's shopping list, as it is filed in the Supply archive: a blog-style history of the household's weeks of dinners. Write one short, warm, playful post title for the week, drawn from its dinners.
+
+Rules:
+- At most 48 characters, on one line.
+- Words only: no emoji.
+- No quotation marks around the title.
+- Do not name a date or week number; the archive shows those.
+
+Give:
+- title: the title.
+
+One valid reply, for a week of Beef Chili, Pot Roast and Fish Tacos (an example only, not about this household):
+{"title": "Slow Simmers and Taco Night"}
+{{- end}}
+{{define "user" -}}
+Title the week whose dinners are, in day order from Monday:
+{{- range .Dinners}}
+- {{.}}
+{{- end}}
+{{- end}}

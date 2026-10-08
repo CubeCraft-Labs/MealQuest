@@ -10,6 +10,21 @@ import { planKey, usePlan, usePushToCalendar, useSwapDay, type Plan, type PushTo
 
 const WEEK = '2026-10-05'
 const PLAN = `/api/v1/plans/${WEEK}`
+
+// GENERATED is a push answer's Supply run when the push made it.
+const GENERATED = { supply_run: { status: 'generated', error: null } }
+
+// SUPPLY_RUN_FAILED is a push answer's Supply run when it could not be made.
+const SUPPLY_RUN_FAILED = {
+  supply_run: {
+    status: 'failed',
+    error: {
+      code: 'supply_run_failed',
+      message: 'the plan is on Calendar, but its Supply run could not be made; make it again from the Supply run',
+      retryable: true,
+    },
+  },
+}
 const MONDAY = `${PLAN}/days/2026-10-05`
 const FRIDAY = `${PLAN}/days/2026-10-09`
 const DAYS = ['2026-10-05', '2026-10-06', '2026-10-07', '2026-10-08', '2026-10-09', '2026-10-10', '2026-10-11']
@@ -318,7 +333,7 @@ describe('week mutations', () => {
 
     // The push succeeds while the third week is shown: it is left behind,
     // and the week's pending swap is not.
-    await act(async () => nextPush.send(jsonResponse(200, { ...planBody(), week_start: NEXT })))
+    await act(async () => nextPush.send(jsonResponse(200, { ...planBody(), week_start: NEXT, ...GENERATED })))
     await waitFor(() => expect(weekMutations(queryClient, NEXT)).toEqual([]))
     expect(weekMutations(queryClient, WEEK)).toEqual(['swap pending', 'swap success'])
 
@@ -336,6 +351,43 @@ describe('week mutations', () => {
     await waitFor(() => expect(weekMutations(queryClient, LATER)).toEqual(['push error']))
     hook.rerender({ week: WEEK })
     expect(weekMutations(queryClient, LATER)).toEqual([])
+  })
+
+  it('keeps a push whose Supply run was not made, settled in a week no longer shown, to be shown on coming back', async () => {
+    const nextPush = deferred()
+    stubServer({
+      [`GET ${PLAN}`]: () => jsonResponse(200, planBody()),
+      [`GET /api/v1/plans/${NEXT}`]: () => jsonResponse(200, { ...planBody(), week_start: NEXT }),
+      [`POST /api/v1/plans/${NEXT}/push-calendar`]: () => nextPush.reply,
+    })
+    const api = createApiClient(fakeLocation('/plan'), createNetworkStatus(window), createVerifiedSession(localStorage))
+    await api.loadMe()
+    const queryClient = createQueryClient()
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <ApiProvider client={api}>
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      </ApiProvider>
+    )
+    const hook = renderHook(({ week }) => ({ plan: usePlan(week), push: usePushToCalendar(week) }), {
+      wrapper,
+      initialProps: { week: NEXT },
+    })
+    await waitFor(() => expect(hook.result.current.plan.isSuccess).toBe(true))
+
+    // The push is pushed to Calendar while another week is shown, but its
+    // Supply run is not made: it stays, though it succeeded.
+    act(() => hook.result.current.push.mutate())
+    hook.rerender({ week: WEEK })
+    await waitFor(() => expect(hook.result.current.plan.isSuccess).toBe(true))
+    const synced = { ...planBody(), week_start: NEXT, status: 'synced', calendar_synced_at: '2026-10-08T06:00:00Z' }
+    await act(async () => nextPush.send(jsonResponse(200, { ...synced, ...SUPPLY_RUN_FAILED })))
+    await waitFor(() => expect(weekMutations(queryClient, NEXT)).toEqual(['push success']))
+
+    // Coming back mounts the week's board again, as the Plan's does.
+    hook.unmount()
+    const back = renderHook(() => usePushToCalendar(NEXT), { wrapper })
+    expect(back.result.current.error).toBeNull()
+    expect(back.result.current.supplyRun).toEqual(SUPPLY_RUN_FAILED.supply_run)
   })
 
   it('leaves behind what settles once Plan is left for another route, and keeps what is pending', async () => {
@@ -394,7 +446,7 @@ describe('week mutations', () => {
     // The push succeeds: the plan as synced is recorded, and the push is
     // left behind.
     const synced = { ...planBody(), status: 'synced', calendar_synced_at: '2026-10-08T06:00:00Z' }
-    await act(async () => push.send(jsonResponse(200, synced)))
+    await act(async () => push.send(jsonResponse(200, { ...synced, ...GENERATED })))
     await waitFor(() => expect(weekMutations(queryClient, WEEK)).toEqual([]))
     expect(queryClient.getQueryData<Plan>(planKey(WEEK))).toMatchObject({ status: 'synced', calendar_synced_at: new Date('2026-10-08T06:00:00Z') })
   })

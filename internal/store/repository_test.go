@@ -43,7 +43,7 @@ var repoParents = map[string]repoRow{
 	}},
 	"shopping_groups": {"shopping_groups", map[string]any{
 		"id": "group-1", "list_id": "list-1", "dinner_id": "dinner-1",
-		"position": int64(0), "created_at": repoTime, "updated_at": repoTime,
+		"date": "2026-10-05", "position": int64(0), "created_at": repoTime, "updated_at": repoTime,
 	}},
 }
 
@@ -108,12 +108,12 @@ func TestRepositoryInsertReadUpdate(t *testing.T) {
 				"title": "Supply run", "status": "current", "sent_to_chat_at": nil, "frozen_at": nil,
 				"created_at": repoTime, "updated_at": repoTime,
 			}},
-			update: map[string]any{"status": "archived", "frozen_at": "2026-10-12T00:00:00Z"},
+			update: map[string]any{"title": nil, "status": "archived", "frozen_at": "2026-10-12T00:00:00Z"},
 		},
 		{
 			parents: []string{"dinners", "week_plans", "shopping_lists"},
 			row: repoRow{"shopping_groups", map[string]any{
-				"id": "group-2", "list_id": "list-1", "dinner_id": "dinner-1", "position": int64(0),
+				"id": "group-2", "list_id": "list-1", "dinner_id": "dinner-1", "date": "2026-10-06", "position": int64(0),
 				"created_at": repoTime, "updated_at": repoTime,
 			}},
 			update: map[string]any{"position": int64(3)},

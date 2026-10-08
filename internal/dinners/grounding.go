@@ -68,6 +68,13 @@ const (
 	manualSourcePrefix = "mealquest:manual:"
 )
 
+// IsManualRecipe reports whether sourceURL, a recipes.source_url, is that
+// of a recipe entered by hand. Its ingredients are stored as typed, in
+// raw_text only: no model normalizes them, so name, qty and unit are NULL.
+func IsManualRecipe(sourceURL string) bool {
+	return strings.HasPrefix(sourceURL, manualSourcePrefix)
+}
+
 // GroundTimeout bounds grounding a candidate or link by hand, which runs in
 // the request: the page fetch (recipes.Timeout), its photo download and
 // normalize_recipe (harness.DefaultTimeout), with some slack.

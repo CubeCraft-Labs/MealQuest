@@ -273,9 +273,9 @@ WHERE EXISTS (
 `
 
 // Records that Calendar no longer shows the days with a calendar event id
-// as planned, since another calendar is chosen: every plan with such a day
-// is edited as MarkWeekPlanEdited does, so a synced plan becomes changed
-// and a push that read it before is refused.
+// as planned, since another calendar or none is chosen: every plan with
+// such a day is edited as MarkWeekPlanEdited does, so a synced plan becomes
+// changed and a push that read it before is refused.
 func (q *Queries) MarkCalendarPlansEdited(ctx context.Context, updatedAt string) error {
 	_, err := q.db.ExecContext(ctx, markCalendarPlansEdited, updatedAt)
 	return err

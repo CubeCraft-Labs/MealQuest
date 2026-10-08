@@ -631,3 +631,124 @@ func TestChoosingAnotherCalendarWaitsForAPush(t *testing.T) {
 	}
 	e.assertWeekOn(t, kitchenCal.ID, week, dates, fullWeek...)
 }
+
+// pushedWeeks are the weeks the disconnect tests push: the calendar and the
+// connection are the household's, so a disconnect concerns every one.
+var pushedWeeks = []store.LocalDate{week, mustDate("2026-10-19"), mustDate("2026-10-26")}
+
+// assertForgotten fails unless the plan of weekStart is changed and no day
+// keeps an event id.
+func (e *env) assertForgotten(t *testing.T, weekStart store.LocalDate, why string) {
+	t.Helper()
+	p, err := e.svc.Get(t.Context(), weekStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Status != plan.StatusChanged {
+		t.Errorf("plan of %s %s = %s, want changed", weekStart, why, p.Status)
+	}
+	for date, id := range e.eventIDs(t, weekStart) {
+		if id != "" {
+			t.Errorf("%s kept event id %q %s", date, id, why)
+		}
+	}
+}
+
+func TestDisconnectForgetsEveryPushedWeek(t *testing.T) {
+	e := newEnv(t)
+	e.connectCalendar(t)
+	dates := map[store.LocalDate][]string{}
+	for _, w := range pushedWeeks {
+		dates[w] = e.storePlan(t, w, fullWeek...)
+		if _, err := e.svc.Push(t.Context(), w); err != nil {
+			t.Fatalf("Push %s: %v", w, err)
+		}
+	}
+	draftWeek := mustDate("2026-11-02")
+	e.storePlan(t, draftWeek, fullWeek...)
+
+	if err := e.gcal.Disconnect(t.Context()); err != nil {
+		t.Fatalf("Disconnect: %v", err)
+	}
+	for _, w := range pushedWeeks {
+		e.assertForgotten(t, w, "after disconnecting")
+	}
+	e.assertUnsynced(t, draftWeek, plan.StatusDraft)
+
+	// Connecting again chooses no calendar, so nothing is pushed until one
+	// is chosen; then a push writes the whole week to it.
+	e.google.Connect(t, e.gcal)
+	if _, err := e.svc.Push(t.Context(), week); !errors.Is(err, gcal.ErrNoCalendar) {
+		t.Fatalf("Push after connecting again = %v, want ErrNoCalendar", err)
+	}
+	e.google.SetCalendars(0, dinnersCal, kitchenCal)
+	if _, err := e.gcal.SelectCalendar(t.Context(), kitchenCal.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range pushedWeeks {
+		e.assertForgotten(t, w, "after connecting again")
+		p, err := e.svc.Push(t.Context(), w)
+		if err != nil || p.Status != plan.StatusSynced {
+			t.Fatalf("Push %s = %s, %v; want synced", w, p.Status, err)
+		}
+		e.assertWeekOn(t, kitchenCal.ID, w, dates[w], fullWeek...)
+	}
+}
+
+// TestDisconnectRefusedKeepsPushedWeeks: a revoke Google refuses keeps the
+// connection and its calendar, so every pushed week stays synced to it.
+func TestDisconnectRefusedKeepsPushedWeeks(t *testing.T) {
+	e := newEnv(t)
+	e.connectCalendar(t)
+	dates := map[store.LocalDate][]string{}
+	for _, w := range pushedWeeks {
+		dates[w] = e.storePlan(t, w, fullWeek...)
+		if _, err := e.svc.Push(t.Context(), w); err != nil {
+			t.Fatalf("Push %s: %v", w, err)
+		}
+	}
+	e.google.AnswerRevoke(http.StatusServiceUnavailable, "")
+	var revokeErr *gcal.RevokeError
+	if err := e.gcal.Disconnect(t.Context()); !errors.As(err, &revokeErr) {
+		t.Fatalf("Disconnect = %v, want a *RevokeError", err)
+	}
+	for _, w := range pushedWeeks {
+		if p, err := e.svc.Get(t.Context(), w); err != nil || p.Status != plan.StatusSynced {
+			t.Errorf("plan of %s after a refused disconnect = %s, %v; want synced", w, p.Status, err)
+		}
+		e.assertWeekOn(t, dinnersCal.ID, w, dates[w], fullWeek...)
+	}
+}
+
+// TestDisconnectWaitsForAPush disconnects while a push is at Google: the
+// disconnect waits until the push is recorded, then forgets its events.
+func TestDisconnectWaitsForAPush(t *testing.T) {
+	e := newEnv(t)
+	e.connectCalendar(t)
+	e.storePlan(t, week, fullWeek...)
+	arrived, release := e.google.HoldEvents()
+	defer release()
+	pushed := make(chan error, 1)
+	go func() {
+		_, err := e.svc.Push(t.Context(), week)
+		pushed <- err
+	}()
+	<-arrived
+	disconnected := make(chan error, 1)
+	go func() {
+		disconnected <- e.gcal.Disconnect(t.Context())
+	}()
+	select {
+	case err := <-disconnected:
+		t.Fatalf("Disconnect finished (%v) while a push was at Google", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	release()
+	if err := <-pushed; err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	if err := <-disconnected; err != nil {
+		t.Fatalf("Disconnect: %v", err)
+	}
+	e.assertForgotten(t, week, "after disconnecting")
+}

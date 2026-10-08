@@ -100,7 +100,7 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 | `suggestion_batches` | trigger, status, ai_run_id. |
 | `suggestions` | dinner_id, batch_id, name (the name the dish was suggested under, kept whatever its dinner is later renamed, so a Pass stays an immutable record every later batch dedupes against), reason, cited_regular_ids (JSON), status, decided_at. |
 | `week_plans` | week_start (unique), status (`draft` / `synced` / `changed`), ai_note, ai_run_id, calendar_synced_at, revision (raised by every swap and stored draft). |
-| `plan_days` | plan_id, date (unique per plan), dinner_id, is_new, calendar_event_id (set while the chosen calendar shows the day as planned; cleared when its dinner changes or another calendar is chosen). |
+| `plan_days` | plan_id, date (unique per plan), dinner_id, is_new, calendar_event_id (set while the chosen calendar shows the day as planned; cleared when its dinner changes, another calendar is chosen or Google Calendar is disconnected). |
 | `rotation_reviews` | dinner_id + plan_date (unique), status, decision (`keep` / `drop` / `not_made`), name (set only by a drop: the dinner's name when dropped, kept whatever it is later renamed, so a drop stays among the passed names), decided_at, updated_by. |
 | `shopping_lists` | week_start (unique), plan_id, title, status (`current` / `archived`), sent_to_chat_at, frozen_at. |
 | `shopping_groups` / `shopping_items` | One group per dinner/day; item name, qty, needed (bool), position. |
@@ -640,8 +640,10 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
     `connected_at` and redirects to `/settings/calendar`. A reconnect keeps
     the chosen calendar and clears `last_sync_error`.
   - `DELETE /api/v1/integrations/google` (CSRF-checked) revokes the token at
-    Google, then deletes the row; a token Google reports as `invalid_token`
-    counts as revoked, and any other revoke failure keeps the connection.
+    Google, then deletes the row and, in the same transaction, forgets every
+    pushed event (see Push to Calendar); a token Google reports as
+    `invalid_token` counts as revoked, and any other revoke failure keeps
+    the connection and its pushed events.
   - `GET /api/v1/integrations/google/calendars` trades the stored refresh
     token for an access token and reads every page of the Calendar API's
     `users/me/calendarList`, answering `[{id, summary, primary,
@@ -686,11 +688,15 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
     pushed, swapped, or redrafted to another dinner). When none is, it
     writes every day again, which puts back anything changed in Calendar.
   - A stored `calendar_event_id` is always an event on the chosen calendar.
-    Choosing a calendar other than the stored one clears every day's
-    `calendar_event_id` in the same transaction as the choice, and edits
-    each plan that had one (revision raised, `synced` → `changed`), so the
-    next push writes the whole week to the calendar now chosen and a push
-    that read such a plan before the choice is refused (409 `plan_changed`).
+    Choosing a calendar other than the stored one, and disconnecting (which
+    leaves none chosen; connecting again chooses none either), clear every
+    day's `calendar_event_id` in the same transaction as the choice or the
+    delete, and edit each plan that had one (revision raised, `synced` →
+    `changed`), so the next push writes the whole week to the calendar then
+    chosen and a push that read such a plan before is refused (409
+    `plan_changed`). A reconnect while connected keeps the chosen calendar,
+    so it keeps the event ids. Nothing else clears the choice or the stored
+    token: a grant Google refuses leaves the connection as it is.
   - Only a push that wrote all its events is recorded, in one transaction:
     the plan becomes `synced` with `calendar_synced_at`, and each day
     written stores its event id. A push that failed part way records

@@ -96,10 +96,11 @@ func (s *Service) SelectCalendar(ctx context.Context, id string) (Selection, err
 // saveSelection stores sel as the chosen calendar. Choosing another calendar
 // than the one stored also forgets every plan day's calendar event id, in
 // the same transaction, since those events are on the calendar no longer
-// chosen: each plan with one is edited, so a synced plan becomes changed and
-// its next push writes every day to sel. The caller holds s.account, which a
-// push also holds from its event writes through recording them, so a push
-// never records events written to another calendar than the chosen one.
+// chosen (forgetEvents): each plan with one is edited, so a synced plan
+// becomes changed and its next push writes every day to sel. The caller
+// holds s.account, which a push also holds from its event writes through
+// recording them, so a push never records events written to another
+// calendar than the chosen one.
 func (s *Service) saveSelection(ctx context.Context, sel Selection) error {
 	return s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		q := db.New(tx)
@@ -123,14 +124,24 @@ func (s *Service) saveSelection(ctx context.Context, sel Selection) error {
 		if row.CalendarID.Valid && row.CalendarID.String == sel.CalendarID {
 			return nil
 		}
-		if err := q.MarkCalendarPlansEdited(ctx, now); err != nil {
-			return fmt.Errorf("gcal: mark plans pushed to the earlier calendar edited: %w", err)
-		}
-		if err := q.ClearCalendarEvents(ctx, now); err != nil {
-			return fmt.Errorf("gcal: forget events on the earlier calendar: %w", err)
-		}
-		return nil
+		return forgetEvents(ctx, q, now)
 	})
+}
+
+// forgetEvents records, in the caller's transaction q, that no calendar
+// event id stored is on the chosen calendar any more: every plan with one is
+// edited (a synced plan becomes changed, and a push that read it before is
+// refused), then every id is cleared. Every change that ends the chosen
+// calendar — choosing another (saveSelection) or disconnecting
+// (Disconnect) — runs it in the transaction that makes the change.
+func forgetEvents(ctx context.Context, q *db.Queries, now string) error {
+	if err := q.MarkCalendarPlansEdited(ctx, now); err != nil {
+		return fmt.Errorf("gcal: mark plans pushed to the earlier calendar edited: %w", err)
+	}
+	if err := q.ClearCalendarEvents(ctx, now); err != nil {
+		return fmt.Errorf("gcal: forget events on the earlier calendar: %w", err)
+	}
+	return nil
 }
 
 // calendars lists the writable calendars, each once, with the stored refresh

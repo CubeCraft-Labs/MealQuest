@@ -64,8 +64,9 @@ type pushDay struct {
 // calendar_event_id is empty. When every day has one, Calendar shows the
 // whole plan and every day is written again, which puts back anything
 // changed in Calendar since: the app is the source of truth. A stored event
-// id is always on the chosen calendar: choosing another clears them all
-// (gcal.Service.SelectCalendar), so the next push writes the whole week.
+// id is always on the chosen calendar: choosing another
+// (gcal.Service.SelectCalendar) or disconnecting (gcal.Service.Disconnect)
+// clears them all, so the next push writes the whole week.
 //
 // Only a push that wrote every one of those events is recorded: the plan
 // becomes synced with calendar_synced_at now, and each day written stores
@@ -74,7 +75,8 @@ type pushDay struct {
 // updates the events already written rather than adding them twice. The
 // push is recorded while the calendar written to is still the chosen one.
 // A plan edited while it was pushed, or whose events were forgotten by
-// choosing another calendar, fails with ErrPlanChanged, unrecorded.
+// choosing another calendar or disconnecting, fails with ErrPlanChanged,
+// unrecorded.
 //
 // The week must have a plan (else ErrNotFound). The calendar's errors are
 // returned as they are: gcal.ErrNotConnected, gcal.ErrNoCalendar,

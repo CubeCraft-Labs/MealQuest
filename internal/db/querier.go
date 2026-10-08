@@ -173,9 +173,9 @@ type Querier interface {
 	// first.
 	ListWeekPlanDinnerIDs(ctx context.Context, weekStart string) ([]sql.NullString, error)
 	// Records that Calendar no longer shows the days with a calendar event id
-	// as planned, since another calendar is chosen: every plan with such a day
-	// is edited as MarkWeekPlanEdited does, so a synced plan becomes changed
-	// and a push that read it before is refused.
+	// as planned, since another calendar or none is chosen: every plan with
+	// such a day is edited as MarkWeekPlanEdited does, so a synced plan becomes
+	// changed and a push that read it before is refused.
 	MarkCalendarPlansEdited(ctx context.Context, updatedAt string) error
 	// Moves a dinner still in the Quest log to tried; a dinner with any other
 	// status is left as it is (0 rows).

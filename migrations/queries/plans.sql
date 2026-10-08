@@ -60,9 +60,9 @@ WHERE id = ? AND revision = ?;
 
 -- name: MarkCalendarPlansEdited :exec
 -- Records that Calendar no longer shows the days with a calendar event id
--- as planned, since another calendar is chosen: every plan with such a day
--- is edited as MarkWeekPlanEdited does, so a synced plan becomes changed
--- and a push that read it before is refused.
+-- as planned, since another calendar or none is chosen: every plan with
+-- such a day is edited as MarkWeekPlanEdited does, so a synced plan becomes
+-- changed and a push that read it before is refused.
 UPDATE week_plans
 SET status = CASE WHEN status = 'synced' THEN 'changed' ELSE status END,
 	revision = revision + 1,

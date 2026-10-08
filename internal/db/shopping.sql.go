@@ -112,6 +112,37 @@ func (q *Queries) DeleteShoppingItem(ctx context.Context, id string) error {
 	return err
 }
 
+const getShoppingItemList = `-- name: GetShoppingItemList :one
+SELECT shopping_lists.id, shopping_lists.week_start, shopping_lists.plan_id, shopping_lists.title, shopping_lists.status, shopping_lists.sent_to_chat_at, shopping_lists.frozen_at, shopping_lists.created_at, shopping_lists.updated_at
+FROM shopping_items
+JOIN shopping_groups ON shopping_groups.id = shopping_items.group_id
+JOIN shopping_lists ON shopping_lists.id = shopping_groups.list_id
+WHERE shopping_items.id = ?
+`
+
+type GetShoppingItemListRow struct {
+	ShoppingList ShoppingList
+}
+
+// The Supply run holding item id. Returns sql.ErrNoRows when there is no
+// such item.
+func (q *Queries) GetShoppingItemList(ctx context.Context, id string) (GetShoppingItemListRow, error) {
+	row := q.db.QueryRowContext(ctx, getShoppingItemList, id)
+	var i GetShoppingItemListRow
+	err := row.Scan(
+		&i.ShoppingList.ID,
+		&i.ShoppingList.WeekStart,
+		&i.ShoppingList.PlanID,
+		&i.ShoppingList.Title,
+		&i.ShoppingList.Status,
+		&i.ShoppingList.SentToChatAt,
+		&i.ShoppingList.FrozenAt,
+		&i.ShoppingList.CreatedAt,
+		&i.ShoppingList.UpdatedAt,
+	)
+	return i, err
+}
+
 const getShoppingList = `-- name: GetShoppingList :one
 SELECT id, week_start, plan_id, title, status, sent_to_chat_at, frozen_at, created_at, updated_at FROM shopping_lists
 WHERE week_start = ?
@@ -134,6 +165,52 @@ func (q *Queries) GetShoppingList(ctx context.Context, weekStart string) (Shoppi
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const listShoppingGroupDinners = `-- name: ListShoppingGroupDinners :many
+SELECT shopping_groups.id, shopping_groups.list_id, shopping_groups.dinner_id, shopping_groups.date, shopping_groups.position, shopping_groups.created_at, shopping_groups.updated_at, dinners.name AS dinner_name
+FROM shopping_groups
+JOIN dinners ON dinners.id = shopping_groups.dinner_id
+WHERE shopping_groups.list_id = ?
+ORDER BY shopping_groups.position, shopping_groups.id
+`
+
+type ListShoppingGroupDinnersRow struct {
+	ShoppingGroup ShoppingGroup
+	DinnerName    string
+}
+
+// The groups of list list_id with their dinner's name, in list order.
+func (q *Queries) ListShoppingGroupDinners(ctx context.Context, listID string) ([]ListShoppingGroupDinnersRow, error) {
+	rows, err := q.db.QueryContext(ctx, listShoppingGroupDinners, listID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListShoppingGroupDinnersRow
+	for rows.Next() {
+		var i ListShoppingGroupDinnersRow
+		if err := rows.Scan(
+			&i.ShoppingGroup.ID,
+			&i.ShoppingGroup.ListID,
+			&i.ShoppingGroup.DinnerID,
+			&i.ShoppingGroup.Date,
+			&i.ShoppingGroup.Position,
+			&i.ShoppingGroup.CreatedAt,
+			&i.ShoppingGroup.UpdatedAt,
+			&i.DinnerName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listShoppingGroups = `-- name: ListShoppingGroups :many
@@ -281,5 +358,23 @@ type RegenerateShoppingListParams struct {
 // Records a generation of list id from plan plan_id.
 func (q *Queries) RegenerateShoppingList(ctx context.Context, arg RegenerateShoppingListParams) error {
 	_, err := q.db.ExecContext(ctx, regenerateShoppingList, arg.PlanID, arg.UpdatedAt, arg.ID)
+	return err
+}
+
+const setShoppingItemNeeded = `-- name: SetShoppingItemNeeded :exec
+UPDATE shopping_items
+SET needed = ?, updated_at = ?
+WHERE id = ?
+`
+
+type SetShoppingItemNeededParams struct {
+	Needed    int64
+	UpdatedAt string
+	ID        string
+}
+
+// Marks item id needed (1) or "have it" (0).
+func (q *Queries) SetShoppingItemNeeded(ctx context.Context, arg SetShoppingItemNeededParams) error {
+	_, err := q.db.ExecContext(ctx, setShoppingItemNeeded, arg.Needed, arg.UpdatedAt, arg.ID)
 	return err
 }

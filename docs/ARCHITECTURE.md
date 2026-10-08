@@ -738,9 +738,34 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
     failures), 404 when the week
     has no plan, 400 `invalid_week`. The push holds the account lock
     across its Google requests and its record, like listing and choosing.
-  - The week's Supply run (Feature 17) is made from a pushed plan: a
-    successful `Push` returns that plan, which is where Feature 17 hooks
-    in. Nothing here generates a shopping list.
+  - The week's Supply run (Feature 17) is made from a pushed plan: after
+    a successful `Push`, the handler runs `shopping.Generate` for the week
+    and the 200 answer carries `supply_run: {status, error}`. `status` is
+    `generated`; `archived` when the week's Supply run is in the Supply
+    archive and was left as it was; or `failed` (error
+    `supply_run_failed`, retryable, logged as an error) when it could not
+    be made. Generation never fails or undoes the push — Calendar already
+    shows the plan — and `POST /api/v1/shopping/{weekStart}/generate`
+    makes it again.
+
+## Supply run API (Feature 17)
+
+- `GET /api/v1/shopping/{weekStart}` returns `{weekStart, label, title,
+  status, sent_to_chat_at, needed_count, total_count, groups: [{dinner:
+  {id, name}, date, day, items: [{id, name, qty, needed}]}]}`: `label` is
+  the week label (shown while `title` is null), `day` the plan day's
+  weekday ("Monday"), `qty` null when the recipe gives none,
+  `needed_count` the items still needed and `total_count` all items. 404
+  when the week has no Supply run, 400 `invalid_week`.
+- `POST /api/v1/shopping/{weekStart}/generate` makes or remakes the list
+  through `shopping.Generate` and answers with the same shape plus
+  `skipped: [{date, dinner_id, dinner_name, reason}]`. 404 when the week
+  has no plan, 409 `archived` when its list is in the Supply archive.
+- `PATCH /api/v1/shopping/items/{id}` takes `{needed}` (a required
+  boolean; it sets the flag, it does not flip it) and answers `{id,
+  needed, needed_count, total_count}` with the list's counts after the
+  change. 404 for an unknown item, 409 `archived` when the list is in the
+  Supply archive, 400 `invalid_request` for a bad body.
 
 ## Frontend
 

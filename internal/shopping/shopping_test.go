@@ -580,3 +580,97 @@ func TestGenerateRefusesUnnamedIngredient(t *testing.T) {
 		t.Errorf("%d lists stored, want none", n)
 	}
 }
+
+// TestGetReadsStoredList reads back what Generate stored, with what the
+// household marked, and counts it.
+func TestGetReadsStoredList(t *testing.T) {
+	e := newEnv(t)
+	e.dinner(t, "Beef Chili", ing{"ground beef", "1", "lb"}, ing{"onion", "1", ""})
+	e.dinner(t, "Pot Roast", ing{"carrots", "4", ""})
+	e.plan(t, "Beef Chili", "Pot Roast")
+	made := e.generate(t).List
+	e.haveIt(t, made, "Beef Chili", "onion")
+
+	got, err := e.svc.Get(t.Context(), week)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLines(t, "read list", lines(got), []string{
+		"0 2026-10-12 Beef Chili: 0 ground beef [1 lb] needed",
+		"0 2026-10-12 Beef Chili: 1 onion [1] have it",
+		"1 2026-10-13 Pot Roast: 0 carrots [4] needed",
+	})
+	if got.ID != made.ID || got.WeekStart != week.String() || got.Status != shopping.StatusCurrent || got.Title != nil || got.SentToChatAt != nil {
+		t.Errorf("read list = %+v", got)
+	}
+	if c := got.Counts(); c != (shopping.Counts{Needed: 2, Total: 3}) {
+		t.Errorf("Counts = %+v, want 2 of 3", c)
+	}
+}
+
+func TestGetWeekWithoutList(t *testing.T) {
+	e := newEnv(t)
+	if _, err := e.svc.Get(t.Context(), week); !errors.Is(err, shopping.ErrListNotFound) {
+		t.Fatalf("Get = %v, want ErrListNotFound", err)
+	}
+	if _, err := e.svc.Get(t.Context(), mustDate("2026-10-13")); err == nil {
+		t.Fatal("Get of a Tuesday succeeded")
+	}
+}
+
+// TestSetNeeded marks items and returns the counts after each change.
+func TestSetNeeded(t *testing.T) {
+	e := newEnv(t)
+	e.dinner(t, "Beef Chili", ing{"ground beef", "1", "lb"}, ing{"onion", "1", ""}, ing{"garlic", "2", "cloves"})
+	e.plan(t, "Beef Chili")
+	l := e.generate(t).List
+	onion, garlic := l.Groups[0].Items[1].ID, l.Groups[0].Items[2].ID
+
+	for _, step := range []struct {
+		id     string
+		needed bool
+		want   shopping.Counts
+	}{
+		{onion, false, shopping.Counts{Needed: 2, Total: 3}},
+		{onion, false, shopping.Counts{Needed: 2, Total: 3}},
+		{garlic, false, shopping.Counts{Needed: 1, Total: 3}},
+		{onion, true, shopping.Counts{Needed: 2, Total: 3}},
+	} {
+		c, err := e.svc.SetNeeded(t.Context(), step.id, step.needed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c != step.want {
+			t.Errorf("SetNeeded(%s, %v) = %+v, want %+v", step.id, step.needed, c, step.want)
+		}
+	}
+	wantLines(t, "stored list", e.stored(t), []string{
+		"0 2026-10-12 Beef Chili: 0 ground beef [1 lb] needed",
+		"0 2026-10-12 Beef Chili: 1 onion [1] needed",
+		"0 2026-10-12 Beef Chili: 2 garlic [2 cloves] have it",
+	})
+}
+
+func TestSetNeededUnknownItem(t *testing.T) {
+	e := newEnv(t)
+	if _, err := e.svc.SetNeeded(t.Context(), store.NewID(), false); !errors.Is(err, shopping.ErrItemNotFound) {
+		t.Fatalf("SetNeeded = %v, want ErrItemNotFound", err)
+	}
+}
+
+// TestSetNeededRefusesFrozenList leaves an item of a list in the Supply
+// archive as it was.
+func TestSetNeededRefusesFrozenList(t *testing.T) {
+	e := newEnv(t)
+	e.dinner(t, "Beef Chili", ing{"ground beef", "1", "lb"})
+	e.plan(t, "Beef Chili")
+	l := e.generate(t).List
+	if _, err := e.st.Writer.Exec(`UPDATE shopping_lists SET status = 'archived', frozen_at = '2026-10-19T04:05:00Z'`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := e.svc.SetNeeded(t.Context(), l.Groups[0].Items[0].ID, false); !errors.Is(err, shopping.ErrFrozen) {
+		t.Fatalf("SetNeeded = %v, want ErrFrozen", err)
+	}
+	wantLines(t, "stored list", e.stored(t), []string{"0 2026-10-12 Beef Chili: 0 ground beef [1 lb] needed"})
+}

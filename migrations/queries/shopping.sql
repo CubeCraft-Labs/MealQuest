@@ -58,3 +58,26 @@ WHERE id = ?;
 -- name: DeleteShoppingItem :exec
 DELETE FROM shopping_items
 WHERE id = ?;
+
+-- name: ListShoppingGroupDinners :many
+-- The groups of list list_id with their dinner's name, in list order.
+SELECT sqlc.embed(shopping_groups), dinners.name AS dinner_name
+FROM shopping_groups
+JOIN dinners ON dinners.id = shopping_groups.dinner_id
+WHERE shopping_groups.list_id = ?
+ORDER BY shopping_groups.position, shopping_groups.id;
+
+-- name: GetShoppingItemList :one
+-- The Supply run holding item id. Returns sql.ErrNoRows when there is no
+-- such item.
+SELECT sqlc.embed(shopping_lists)
+FROM shopping_items
+JOIN shopping_groups ON shopping_groups.id = shopping_items.group_id
+JOIN shopping_lists ON shopping_lists.id = shopping_groups.list_id
+WHERE shopping_items.id = ?;
+
+-- name: SetShoppingItemNeeded :exec
+-- Marks item id needed (1) or "have it" (0).
+UPDATE shopping_items
+SET needed = ?, updated_at = ?
+WHERE id = ?;

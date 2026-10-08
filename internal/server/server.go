@@ -19,6 +19,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/shopping"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/suggest"
 )
 
@@ -46,7 +47,11 @@ type RouteMounter interface {
 // /decline; planSvc serves GET /api/v1/plans/{weekStart}, POST
 // /api/v1/plans/{weekStart}/draft, PUT
 // /api/v1/plans/{weekStart}/days/{date}, GET /api/v1/rotation-reviews and
-// POST /api/v1/dinners/{id}/rotation-review; googleSvc serves GET
+// POST /api/v1/dinners/{id}/rotation-review, and POST
+// /api/v1/plans/{weekStart}/push-calendar with shopSvc, which makes the
+// pushed week's Supply run; shopSvc serves GET /api/v1/shopping/{weekStart},
+// POST /api/v1/shopping/{weekStart}/generate and PATCH
+// /api/v1/shopping/items/{id}; googleSvc serves GET
 // /api/v1/integrations/google and its /connect, /callback and /calendars,
 // PUT /api/v1/integrations/google/calendar and DELETE
 // /api/v1/integrations/google; runner serves
@@ -54,7 +59,7 @@ type RouteMounter interface {
 // GET /media/photos/{id}-{size}.jpg; assets is the web build
 // served for every other GET. /health, /auth and the web build are public.
 // Requests to /api/v1 other than GET also need the session's CSRF token in CSRFHeader.
-func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, settings *household.SettingsService, search *recipes.SearchSettingsService, ai *aisettings.Service, dinnerSvc *dinners.Service, suggestSvc *suggest.Service, planSvc *plan.Service, googleSvc *gcal.Service, runner *jobs.Runner, photos PhotoFiles, assets fs.FS) (http.Handler, error) {
+func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, settings *household.SettingsService, search *recipes.SearchSettingsService, ai *aisettings.Service, dinnerSvc *dinners.Service, suggestSvc *suggest.Service, planSvc *plan.Service, shopSvc *shopping.Service, googleSvc *gcal.Service, runner *jobs.Runner, photos PhotoFiles, assets fs.FS) (http.Handler, error) {
 	if settings == nil {
 		return nil, errors.New("server: nil household settings service")
 	}
@@ -72,6 +77,9 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	}
 	if planSvc == nil {
 		return nil, errors.New("server: nil plan service")
+	}
+	if shopSvc == nil {
+		return nil, errors.New("server: nil shopping service")
 	}
 	if googleSvc == nil {
 		return nil, errors.New("server: nil Google Calendar service")
@@ -133,7 +141,10 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Get("/plans/{weekStart}", getPlan(logger, planSvc))
 	apiV1.Post("/plans/{weekStart}/draft", postPlanDraft(logger, planSvc))
 	apiV1.Put("/plans/{weekStart}/days/{date}", putPlanDay(logger, planSvc))
-	apiV1.Post("/plans/{weekStart}/push-calendar", postPlanPush(logger, planSvc))
+	apiV1.Post("/plans/{weekStart}/push-calendar", postPlanPush(logger, planSvc, shopSvc))
+	apiV1.Get("/shopping/{weekStart}", getSupplyRun(logger, shopSvc))
+	apiV1.Post("/shopping/{weekStart}/generate", postSupplyRunGenerate(logger, shopSvc))
+	apiV1.Patch("/shopping/items/{id}", patchShoppingItem(logger, shopSvc))
 	apiV1.Get("/rotation-reviews", getRotationReviews(logger, planSvc))
 	apiV1.Post("/dinners/{id}/rotation-review", postRotationReview(logger, planSvc))
 	// connect and callback are top-level browser navigations, so they are

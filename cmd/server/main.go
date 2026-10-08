@@ -28,6 +28,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secretbox"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/server"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/shopping"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/suggest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/migrations"
@@ -132,6 +133,11 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
+	shopSvc, err := shopping.NewService(db)
+	if err != nil {
+		return err
+	}
+
 	sessions, err := auth.NewSessionManager(db, cfg.SessionIdle, cfg.SessionMax)
 	if err != nil {
 		return err
@@ -148,7 +154,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, search, ai, dinnerSvc, suggestSvc, planSvc, googleSvc, runner, photos, frontend.Assets())
+	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, search, ai, dinnerSvc, suggestSvc, planSvc, shopSvc, googleSvc, runner, photos, frontend.Assets())
 	if err != nil {
 		return err
 	}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/shopping"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 )
 
@@ -94,9 +96,35 @@ func putPlanDay(logger *slog.Logger, svc *plan.Service) http.HandlerFunc {
 	}
 }
 
+// pushedPlan is the POST /plans/{weekStart}/push-calendar answer: the
+// plan as synced, and what became of the week's Supply run.
+type pushedPlan struct {
+	plan.Plan
+	SupplyRun pushedSupplyRun `json:"supply_run"`
+}
+
+// pushedSupplyRun says whether a Push to Calendar made the week's Supply
+// run. status is generated when it did; archived when the week's Supply
+// run is in the Supply archive and was left as it was; or failed when it
+// could not be made, when error says so and POST
+// /shopping/{weekStart}/generate makes it again. error is null when
+// status is generated.
+type pushedSupplyRun struct {
+	Status string    `json:"status"`
+	Error  *apiError `json:"error"`
+}
+
 // postPlanPush pushes the week's plan to the chosen Google calendar
-// (Push to Calendar) and answers with the plan as synced.
-func postPlanPush(logger *slog.Logger, svc *plan.Service) http.HandlerFunc {
+// (Push to Calendar) and, once the push is recorded, makes the week's
+// Supply run from the plan pushed. It answers with the plan as synced and
+// the Supply run's outcome.
+//
+// The Supply run is made after the push, never as part of it: Calendar
+// already shows the plan, so a Supply run that cannot be made does not
+// undo or fail the push. The answer is still 200 with supply_run failed,
+// and the failure is logged as an error, so nothing claims a Supply run
+// that was not made.
+func postPlanPush(logger *slog.Logger, svc *plan.Service, shop *shopping.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		week, ok := weekStartOrFail(w, r, logger)
 		if !ok {
@@ -107,7 +135,22 @@ func postPlanPush(logger *slog.Logger, svc *plan.Service) http.HandlerFunc {
 			writePlanPushError(w, r, logger, err)
 			return
 		}
-		writeJSON(w, r, logger, http.StatusOK, p)
+		// The push is done: make the Supply run even if the client has
+		// gone.
+		ctx := context.WithoutCancel(r.Context())
+		run := pushedSupplyRun{Status: "generated"}
+		if _, err := shop.Generate(ctx, week); errors.Is(err, shopping.ErrFrozen) {
+			logger.InfoContext(ctx, "Supply run in the Supply archive left as it was after Push to Calendar", "week", week.String())
+			run = pushedSupplyRun{Status: "archived", Error: &apiError{Code: "archived", Message: err.Error()}}
+		} else if err != nil {
+			logger.ErrorContext(ctx, "generate Supply run after Push to Calendar", "week", week.String(), "error", err)
+			run = pushedSupplyRun{Status: "failed", Error: &apiError{
+				Code:      "supply_run_failed",
+				Message:   "the plan is on Calendar, but its Supply run could not be made; make it again from the Supply run",
+				Retryable: true,
+			}}
+		}
+		writeJSON(w, r, logger, http.StatusOK, pushedPlan{Plan: p, SupplyRun: run})
 	}
 }
 

@@ -39,9 +39,15 @@ const (
 // ErrPlanNotFound is a generation for a week with no plan.
 var ErrPlanNotFound = errors.New("the week has no plan")
 
-// ErrFrozen is a generation for a week whose Supply run is frozen into the
-// Supply archive, which is read-only.
+// ErrFrozen is a generation of, or a change to an item of, a Supply run
+// frozen into the Supply archive, which is read-only.
 var ErrFrozen = errors.New("the week's Supply run is in the Supply archive and can no longer change")
+
+// ErrListNotFound is a read of a week with no Supply run.
+var ErrListNotFound = errors.New("the week has no Supply run")
+
+// ErrItemNotFound is a change to an item on no Supply run.
+var ErrItemNotFound = errors.New("no Supply run has that item")
 
 // Service generates Supply runs.
 type Service struct {
@@ -66,7 +72,31 @@ type List struct {
 	// the week label stands in for it.
 	Title  *string `json:"title"`
 	Status string  `json:"status"`
-	Groups []Group `json:"groups"`
+	// SentToChatAt is when the list was sent to Google Chat; nil until it
+	// is.
+	SentToChatAt *string `json:"sent_to_chat_at"`
+	Groups       []Group `json:"groups"`
+}
+
+// Counts are how many items of a Supply run are still needed and how many
+// it has in all.
+type Counts struct {
+	Needed int `json:"needed_count"`
+	Total  int `json:"total_count"`
+}
+
+// Counts counts l's items.
+func (l List) Counts() Counts {
+	var c Counts
+	for _, g := range l.Groups {
+		for _, it := range g.Items {
+			c.Total++
+			if it.Needed {
+				c.Needed++
+			}
+		}
+	}
+	return c
 }
 
 // Group is the items of one plan day's dinner.
@@ -163,7 +193,7 @@ func (s *Service) Generate(ctx context.Context, weekStart store.LocalDate) (Gene
 			err = q.CreateShoppingList(ctx, db.CreateShoppingListParams{
 				ID: list.ID, WeekStart: list.WeekStart, PlanID: list.PlanID, CreatedAt: now, UpdatedAt: now,
 			})
-		case list.FrozenAt.Valid || list.Status == StatusArchived:
+		case frozen(list):
 			return ErrFrozen
 		default:
 			list.PlanID = plan.ID
@@ -176,23 +206,123 @@ func (s *Service) Generate(ctx context.Context, weekStart store.LocalDate) (Gene
 		if err != nil {
 			return err
 		}
-		out = Generated{
-			List: List{
-				ID:        list.ID,
-				WeekStart: list.WeekStart,
-				PlanID:    list.PlanID,
-				Title:     nullString(list.Title),
-				Status:    list.Status,
-				Groups:    groups,
-			},
-			Skipped: skipped,
-		}
+		out = Generated{List: listOf(list, groups), Skipped: skipped}
 		return nil
 	})
 	if err != nil {
 		return Generated{}, err
 	}
 	return out, nil
+}
+
+// Get returns the Supply run of the week starting weekStart, as stored: a
+// week with none is ErrListNotFound.
+func (s *Service) Get(ctx context.Context, weekStart store.LocalDate) (l List, err error) {
+	if _, err := household.WeekDays(weekStart); err != nil {
+		return List{}, fmt.Errorf("shopping: get: %w", err)
+	}
+	tx, err := s.st.Reader.BeginTx(ctx, nil)
+	if err != nil {
+		return List{}, fmt.Errorf("shopping: begin read: %w", err)
+	}
+	defer func() {
+		err = errors.Join(err, tx.Rollback())
+	}()
+	q := db.New(tx)
+	list, err := q.GetShoppingList(ctx, weekStart.String())
+	if errors.Is(err, sql.ErrNoRows) {
+		return List{}, ErrListNotFound
+	}
+	if err != nil {
+		return List{}, fmt.Errorf("shopping: read list: %w", err)
+	}
+	rows, err := q.ListShoppingGroupDinners(ctx, list.ID)
+	if err != nil {
+		return List{}, fmt.Errorf("shopping: read groups: %w", err)
+	}
+	items, err := q.ListShoppingItems(ctx, list.ID)
+	if err != nil {
+		return List{}, fmt.Errorf("shopping: read items: %w", err)
+	}
+	byGroup := make(map[string][]Item, len(rows))
+	for _, r := range items {
+		it := r.ShoppingItem
+		byGroup[it.GroupID] = append(byGroup[it.GroupID], Item{
+			ID: it.ID, Name: it.Name, Qty: nullString(it.Qty), Needed: it.Needed == 1, Position: int(it.Position),
+		})
+	}
+	groups := make([]Group, 0, len(rows))
+	for _, r := range rows {
+		g := r.ShoppingGroup
+		groups = append(groups, Group{
+			ID: g.ID, DinnerID: g.DinnerID, DinnerName: r.DinnerName, Date: g.Date, Position: int(g.Position),
+			Items: byGroup[g.ID],
+		})
+	}
+	return listOf(list, groups), nil
+}
+
+// SetNeeded marks item itemID needed, or "have it" when needed is false,
+// and returns its Supply run's counts after the change. An item on no
+// Supply run is ErrItemNotFound; one on a list frozen into the Supply
+// archive is ErrFrozen, and is left as it was.
+func (s *Service) SetNeeded(ctx context.Context, itemID string, needed bool) (Counts, error) {
+	var c Counts
+	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		q := db.New(tx)
+		row, err := q.GetShoppingItemList(ctx, itemID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrItemNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("shopping: read list of item %s: %w", itemID, err)
+		}
+		if frozen(row.ShoppingList) {
+			return ErrFrozen
+		}
+		flag := int64(0)
+		if needed {
+			flag = 1
+		}
+		if err := q.SetShoppingItemNeeded(ctx, db.SetShoppingItemNeededParams{
+			Needed: flag, UpdatedAt: store.Now().String(), ID: itemID,
+		}); err != nil {
+			return fmt.Errorf("shopping: mark item %s: %w", itemID, err)
+		}
+		items, err := q.ListShoppingItems(ctx, row.ShoppingList.ID)
+		if err != nil {
+			return fmt.Errorf("shopping: read items: %w", err)
+		}
+		for _, r := range items {
+			c.Total++
+			if r.ShoppingItem.Needed == 1 {
+				c.Needed++
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return Counts{}, err
+	}
+	return c, nil
+}
+
+// frozen reports whether list is frozen into the Supply archive.
+func frozen(list db.ShoppingList) bool {
+	return list.FrozenAt.Valid || list.Status == StatusArchived
+}
+
+// listOf is list with groups.
+func listOf(list db.ShoppingList, groups []Group) List {
+	return List{
+		ID:           list.ID,
+		WeekStart:    list.WeekStart,
+		PlanID:       list.PlanID,
+		Title:        nullString(list.Title),
+		Status:       list.Status,
+		SentToChatAt: nullString(list.SentToChatAt),
+		Groups:       groups,
+	}
 }
 
 // wantGroup is a group the plan asks for, before it is stored.

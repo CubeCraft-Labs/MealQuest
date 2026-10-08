@@ -476,14 +476,20 @@ automatic** (D-021).
   household temperature with no household context. A title must be 1–48
   characters on one line, with no emoji and no surrounding quotation
   marks; a reply breaking a rule gets the one repair turn, never a
-  truncation. `shopping.Generate` (and `GeneratePushed`) runs it after
-  storing a list that is still untitled — a new list, or one a failed
-  title left untitled — outside the generation's transaction, and writes
-  `shopping_lists.title` only while the list is untitled and not frozen.
-  A title is written once; a remake keeps it. A failed title never fails
-  the generation: the list stays untitled (the UI shows the week label),
-  the failure is logged as a warning and recorded in `ai_runs`, and the
-  week's next generation tries again.
+  truncation. `shopping.Generate` (and `GeneratePushed`), on storing a
+  list that is still untitled — a new list, or one a failed title left
+  untitled — enqueues a `title_supply_run` job in the generation's
+  transaction and returns without waiting for it, so neither Push to
+  Calendar nor `POST /shopping/{weekStart}/generate` waits for a model
+  call; the list reads untitled until the job stores its title. The job's
+  scope is `<weekStart>@<plan revision>/<sha256 of the dinner names in
+  order>`, so runs share a title only for the same names (a renamed dinner
+  changes the names, not the revision). It writes `shopping_lists.title`
+  only while the list is untitled and not frozen. A title is written once;
+  a remake keeps it and enqueues no job. A failed title never fails the
+  generation: the list stays untitled (the UI shows the week label), the
+  failure is logged as a warning and recorded in `ai_runs`, the job fails
+  `title_failed`, and the week's next generation tries again.
 
 ## Recipe grounding
 

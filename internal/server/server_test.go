@@ -214,7 +214,13 @@ func newTestPlan(t *testing.T) *plan.Service {
 // database, whose Supply runs stay untitled.
 func newTestShopping(t *testing.T) *shopping.Service {
 	t.Helper()
-	svc, err := shopping.NewService(newTestStore(t), untitled, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	st := newTestStore(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	runner, err := jobs.NewRunner(st, logger, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := shopping.NewService(st, untitled, runner, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,12 +4,16 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/llm"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/shopping"
 )
 
@@ -20,10 +24,11 @@ func titled(title string) llm.GenerateResult {
 }
 
 // titleWeek stores three dinners, one with no recipe, and plans them on
-// the week's first three days.
+// the week's first three days; its job runner is started.
 func titleWeek(t *testing.T) *env {
 	t.Helper()
 	e := newEnv(t)
+	e.start(t)
 	e.dinner(t, "Beef Chili", ing{"ground beef", "1", "lb"})
 	e.dinner(t, "Fish Tacos")
 	e.dinner(t, "Pad Thai", ing{"rice noodles", "8", "oz"})
@@ -88,16 +93,29 @@ func deref(s *string) any {
 	return *s
 }
 
-// TestGenerateTitlesNewList: a new list is titled by archive_title from
-// the plan's dinners in day order, a dinner with no group included, and
-// the title is stored and returned.
+// wantJob fails t unless job ended with status and, when failed, code.
+func wantJob(t *testing.T, job jobs.Job, status jobs.Status, code string) {
+	t.Helper()
+	if job.Status != status || (code != "" && (job.Error == nil || *job.Error != code)) {
+		t.Errorf("title job = %s %v, want %s %s", job.Status, deref(job.Error), status, code)
+	}
+}
+
+// TestGenerateTitlesNewList: a new list is returned untitled with a title
+// job, which titles it by archive_title from the plan's dinners in day
+// order, a dinner with no group included, and stores the title.
 func TestGenerateTitlesNewList(t *testing.T) {
 	e := titleWeek(t)
 	e.model.QueueGenerate(titled("Noodles, Tacos and Chili"))
 
 	g := e.generate(t)
+	wantUntitled(t, "returned title", g.List.Title)
+	job := e.waitTitle(t, g)
 
-	wantTitle(t, "returned title", g.List.Title, "Noodles, Tacos and Chili")
+	wantJob(t, job, jobs.StatusSucceeded, "")
+	if want := `{"list_id":"` + g.List.ID + `","title":"Noodles, Tacos and Chili"}`; string(job.Result) != want {
+		t.Errorf("job result = %s, want %s", job.Result, want)
+	}
 	wantTitle(t, "stored title", e.storedTitle(t), "Noodles, Tacos and Chili")
 	got, err := e.svc.Get(t.Context(), week)
 	if err != nil {
@@ -125,9 +143,8 @@ func TestGenerateTitleTooLongRepaired(t *testing.T) {
 	long := "Pad Thai Monday, Fish Taco Tuesday and Chili Wednesday"
 	e.model.QueueGenerate(titled(long), titled("Noodles, Tacos and Chili"))
 
-	g := e.generate(t)
+	wantJob(t, e.waitTitle(t, e.generate(t)), jobs.StatusSucceeded, "")
 
-	wantTitle(t, "returned title", g.List.Title, "Noodles, Tacos and Chili")
 	wantTitle(t, "stored title", e.storedTitle(t), "Noodles, Tacos and Chili")
 	reqs := e.model.Requests()
 	if len(reqs) != 2 || !strings.Contains(reqs[1].Messages[2].Content, "has 54 characters; shorten it to at most 48") {
@@ -140,7 +157,7 @@ func TestGenerateTitleTooLongRepaired(t *testing.T) {
 
 // TestGenerateTitleFailureKeepsList: archive_title giving an emoji twice
 // fails, and the list is still made, whole and untitled, with the failure
-// logged and recorded in ai_runs.
+// logged, recorded in ai_runs and failing the title job.
 func TestGenerateTitleFailureKeepsList(t *testing.T) {
 	e := titleWeek(t)
 	e.model.QueueGenerate(titled("Taco Week 🌮"), titled("Taco Week 🌮"))
@@ -159,6 +176,7 @@ func TestGenerateTitleFailureKeepsList(t *testing.T) {
 	if len(g.Skipped) != 1 || g.Skipped[0].DinnerName != "Fish Tacos" {
 		t.Errorf("skipped = %+v, want Fish Tacos", g.Skipped)
 	}
+	wantJob(t, e.waitTitle(t, g), jobs.StatusFailed, shopping.ReasonTitleFailed)
 	wantUntitled(t, "returned title", g.List.Title)
 	wantUntitled(t, "stored title", e.storedTitle(t))
 	if g.List.Status != shopping.StatusCurrent {
@@ -182,7 +200,8 @@ func TestGenerateRetriesTitle(t *testing.T) {
 	e := titleWeek(t)
 	e.model.QueueGenerate(llm.GenerateResult{Err: fmt.Errorf("%w: model down", llm.ErrProvider)})
 	first := e.generate(t)
-	wantUntitled(t, "first title", first.List.Title)
+	wantJob(t, e.waitTitle(t, first), jobs.StatusFailed, shopping.ReasonTitleFailed)
+	wantUntitled(t, "first title", e.storedTitle(t))
 	if !strings.Contains(e.log.String(), "model down") {
 		t.Errorf("log lacks the failure:\n%s", e.log.String())
 	}
@@ -199,12 +218,15 @@ func TestGenerateRetriesTitle(t *testing.T) {
 	if second.List.ID != first.List.ID {
 		t.Fatalf("second generation made list %s, want list %s again", second.List.ID, first.List.ID)
 	}
-	wantTitle(t, "retried title", second.List.Title, "Noodles, Tacos and Chili")
-	wantTitle(t, "stored title", e.storedTitle(t), "Noodles, Tacos and Chili")
+	wantJob(t, e.waitTitle(t, second), jobs.StatusSucceeded, "")
+	wantTitle(t, "retried title", e.storedTitle(t), "Noodles, Tacos and Chili")
 
 	e.swap(t, "2026-10-12", "Beef Chili")
 	third := e.generate(t)
 	wantTitle(t, "title after a remake", third.List.Title, "Noodles, Tacos and Chili")
+	if third.TitleJobID != nil {
+		t.Errorf("a remake of a titled list enqueued title job %s", *third.TitleJobID)
+	}
 	if n := len(e.model.Requests()); n != 2 {
 		t.Errorf("%d model calls, want 2: a titled list is not titled again", n)
 	}
@@ -222,11 +244,70 @@ func TestGenerateTitleNotStoredOnFrozenList(t *testing.T) {
 		}
 	}
 
-	g := e.generate(t)
+	wantJob(t, e.waitTitle(t, e.generate(t)), jobs.StatusFailed, shopping.ReasonTitleFailed)
 
-	wantUntitled(t, "returned title", g.List.Title)
 	wantUntitled(t, "stored title", e.storedTitle(t))
 	if !strings.Contains(e.log.String(), "the Supply run was frozen or replaced before its title was stored") {
 		t.Errorf("log lacks the failure:\n%s", e.log.String())
+	}
+}
+
+// TestGenerateTitleOverlapAcrossRename: a dinner renamed between two
+// generations of an untitled list changes the names to title but not the
+// plan revision. The two title jobs, running at once, each send the model
+// their own names; neither is given the other's title.
+func TestGenerateTitleOverlapAcrossRename(t *testing.T) {
+	e := titleWeek(t)
+	e.model.QueueGenerate(titled("Noodles, Tacos and Chili"), titled("Drunken Noodles Week"))
+	// Each model call waits for the other, so the runs overlap.
+	var arrived sync.WaitGroup
+	arrived.Add(2)
+	e.beforeModel = func(llm.Request) {
+		arrived.Done()
+		done := make(chan struct{})
+		go func() { arrived.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("the title runs did not overlap: one model call never came")
+		}
+	}
+	revision := func() int64 {
+		p, err := db.New(e.st.Reader).GetWeekPlan(t.Context(), week.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p.Revision
+	}
+
+	before := revision()
+	first := e.generate(t)
+	if _, err := e.st.Writer.Exec(`UPDATE dinners SET name = 'Drunken Noodles', normalized_name = 'drunken noodles' WHERE id = ?`, e.ids["Pad Thai"]); err != nil {
+		t.Fatal(err)
+	}
+	second := e.generate(t)
+	if revision() != before {
+		t.Fatalf("plan revision moved from %d to %d: the rename must leave it", before, revision())
+	}
+
+	wantJob(t, e.waitTitle(t, first), jobs.StatusSucceeded, "")
+	wantJob(t, e.waitTitle(t, second), jobs.StatusSucceeded, "")
+	var users []string
+	for _, r := range e.model.Requests() {
+		users = append(users, r.Messages[0].Content)
+	}
+	slices.Sort(users)
+	want := []string{
+		"Title the week whose dinners are, in day order from Monday:\n- Drunken Noodles\n- Fish Tacos\n- Beef Chili",
+		"Title the week whose dinners are, in day order from Monday:\n- Pad Thai\n- Fish Tacos\n- Beef Chili",
+	}
+	if !slices.Equal(users, want) {
+		t.Errorf("model was sent %q, want each generation's own names %q", users, want)
+	}
+	if s := e.runStatuses(t); len(s) != 2 {
+		t.Errorf("archive_title runs = %q, want two", s)
+	}
+	if got := e.storedTitle(t); got == nil || (*got != "Noodles, Tacos and Chili" && *got != "Drunken Noodles Week") {
+		t.Errorf("stored title = %v, want one of the two titles", deref(got))
 	}
 }

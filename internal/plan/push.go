@@ -84,20 +84,20 @@ type pushDay struct {
 //
 // A successful Push is the household confirming the week's plan, which is
 // what the week's Supply run (Feature 17) is made from; the returned plan
-// is the one pushed.
-func (s *Service) Push(ctx context.Context, weekStart store.LocalDate) (Plan, error) {
+// is the one pushed, and revision is its revision as pushed, so the Supply
+// run can be made from that plan and no later edit of it.
+func (s *Service) Push(ctx context.Context, weekStart store.LocalDate) (p Plan, revision int64, err error) {
 	if _, err := household.WeekDays(weekStart); err != nil {
-		return Plan{}, &InvalidWeekError{Value: weekStart.String()}
+		return Plan{}, 0, &InvalidWeekError{Value: weekStart.String()}
 	}
 	planID, revision, days, err := s.pushDays(ctx, weekStart)
 	if err != nil {
-		return Plan{}, err
+		return Plan{}, 0, err
 	}
 	events := make([]gcal.Event, len(days))
 	for i, d := range days {
 		events[i] = d.event
 	}
-	var p Plan
 	record := func() error {
 		return s.st.WithTx(ctx, func(tx *sql.Tx) error {
 			q := db.New(tx)
@@ -133,9 +133,9 @@ func (s *Service) Push(ctx context.Context, weekStart store.LocalDate) (Plan, er
 		})
 	}
 	if err := s.cal.PushEvents(ctx, events, record); err != nil {
-		return Plan{}, fmt.Errorf("plan: push %s to Calendar: %w", weekStart, err)
+		return Plan{}, 0, fmt.Errorf("plan: push %s to Calendar: %w", weekStart, err)
 	}
-	return p, nil
+	return p, revision, nil
 }
 
 // pushDays reads, in one read transaction, the plan of the week starting

@@ -135,7 +135,7 @@ func TestPushCreatesOneEventPerDay(t *testing.T) {
 	e.connectCalendar(t)
 	dates := e.storePlan(t, week, fullWeek...)
 
-	p, err := e.svc.Push(t.Context(), week)
+	p, _, err := e.svc.Push(t.Context(), week)
 	if err != nil {
 		t.Fatalf("Push: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestPushAgainUpdatesOnly(t *testing.T) {
 	e := newEnv(t)
 	e.connectCalendar(t)
 	e.storePlan(t, week, fullWeek...)
-	if _, err := e.svc.Push(t.Context(), week); err != nil {
+	if _, _, err := e.svc.Push(t.Context(), week); err != nil {
 		t.Fatal(err)
 	}
 	// The household deletes Monday's event in Google Calendar; Google keeps
@@ -206,7 +206,7 @@ func TestPushAgainUpdatesOnly(t *testing.T) {
 	e.google.CancelEvent(dinnersCal.ID, monday)
 	e.google.ResetEventWrites()
 
-	p, err := e.svc.Push(t.Context(), week)
+	p, _, err := e.svc.Push(t.Context(), week)
 	if err != nil {
 		t.Fatalf("second Push: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestSwapThenPushUpdatesThatDay(t *testing.T) {
 	e := newEnv(t)
 	e.connectCalendar(t)
 	e.storePlan(t, week, fullWeek...)
-	if _, err := e.svc.Push(t.Context(), week); err != nil {
+	if _, _, err := e.svc.Push(t.Context(), week); err != nil {
 		t.Fatal(err)
 	}
 	before := e.google.Events(dinnersCal.ID)
@@ -247,7 +247,7 @@ func TestSwapThenPushUpdatesThatDay(t *testing.T) {
 		t.Errorf("swapped day kept event id %q", id)
 	}
 
-	p, err := e.svc.Push(t.Context(), week)
+	p, _, err := e.svc.Push(t.Context(), week)
 	if err != nil {
 		t.Fatalf("Push: %v", err)
 	}
@@ -296,7 +296,7 @@ func TestPushAcrossDaylightSavingTime(t *testing.T) {
 			e := newEnv(t)
 			e.connectCalendar(t)
 			dates := e.storePlan(t, tc.week, fullWeek...)
-			if _, err := e.svc.Push(t.Context(), tc.week); err != nil {
+			if _, _, err := e.svc.Push(t.Context(), tc.week); err != nil {
 				t.Fatalf("Push: %v", err)
 			}
 			events := e.google.Events(dinnersCal.ID)
@@ -330,12 +330,12 @@ func TestPushAcrossDaylightSavingTime(t *testing.T) {
 func TestPushNeedsAChosenCalendar(t *testing.T) {
 	e := newEnv(t)
 	e.storePlan(t, week, fullWeek...)
-	if _, err := e.svc.Push(t.Context(), week); !errors.Is(err, gcal.ErrNotConnected) {
+	if _, _, err := e.svc.Push(t.Context(), week); !errors.Is(err, gcal.ErrNotConnected) {
 		t.Errorf("Push with nothing connected = %v, want ErrNotConnected", err)
 	}
 	e.google.SetCalendars(0, dinnersCal)
 	e.google.Connect(t, e.gcal)
-	if _, err := e.svc.Push(t.Context(), week); !errors.Is(err, gcal.ErrNoCalendar) {
+	if _, _, err := e.svc.Push(t.Context(), week); !errors.Is(err, gcal.ErrNoCalendar) {
 		t.Errorf("Push with no calendar chosen = %v, want ErrNoCalendar", err)
 	}
 	if inserts, updates := e.google.EventWrites(); inserts+updates != 0 {
@@ -348,7 +348,7 @@ func TestPushWithoutAPlan(t *testing.T) {
 	e := newEnv(t)
 	e.connectCalendar(t)
 	before := e.google.TokenCalls()
-	if _, err := e.svc.Push(t.Context(), week); !errors.Is(err, plan.ErrNotFound) {
+	if _, _, err := e.svc.Push(t.Context(), week); !errors.Is(err, plan.ErrNotFound) {
 		t.Errorf("Push = %v, want ErrNotFound", err)
 	}
 	if n := e.google.TokenCalls() - before; n != 0 {
@@ -363,7 +363,7 @@ func TestPushPartialFailureLeavesPlanUnsynced(t *testing.T) {
 	// Google fails the fourth event on every try.
 	e.google.FailEventWrites(4, 3, http.StatusServiceUnavailable)
 
-	_, err := e.svc.Push(t.Context(), week)
+	_, _, err := e.svc.Push(t.Context(), week)
 	var calendar *gcal.CalendarError
 	if !errors.As(err, &calendar) || !calendar.Retryable() {
 		t.Fatalf("Push = %v, want a retryable *gcal.CalendarError", err)
@@ -377,7 +377,7 @@ func TestPushPartialFailureLeavesPlanUnsynced(t *testing.T) {
 	// Pushing again writes every day: the three already there are updated,
 	// not added twice.
 	e.google.ResetEventWrites()
-	p, err := e.svc.Push(t.Context(), week)
+	p, _, err := e.svc.Push(t.Context(), week)
 	if err != nil {
 		t.Fatalf("retried Push: %v", err)
 	}
@@ -393,7 +393,7 @@ func TestPushPartialFailureKeepsAChangedPlanChanged(t *testing.T) {
 	e := newEnv(t)
 	e.connectCalendar(t)
 	e.storePlan(t, week, fullWeek...)
-	first, err := e.svc.Push(t.Context(), week)
+	first, _, err := e.svc.Push(t.Context(), week)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +403,7 @@ func TestPushPartialFailureKeepsAChangedPlanChanged(t *testing.T) {
 		}
 	}
 	e.google.FailEventWrite(2, http.StatusBadRequest)
-	if _, err := e.svc.Push(t.Context(), week); err == nil {
+	if _, _, err := e.svc.Push(t.Context(), week); err == nil {
 		t.Fatal("Push succeeded, want the second event to fail")
 	}
 	p, err := e.svc.Get(t.Context(), week)
@@ -431,7 +431,7 @@ func TestPushToStaleCalendar(t *testing.T) {
 			e.connectCalendar(t)
 			e.storePlan(t, week, fullWeek...)
 			edit(e.google)
-			if _, err := e.svc.Push(t.Context(), week); !errors.Is(err, gcal.ErrCalendarUnavailable) {
+			if _, _, err := e.svc.Push(t.Context(), week); !errors.Is(err, gcal.ErrCalendarUnavailable) {
 				t.Errorf("Push = %v, want ErrCalendarUnavailable", err)
 			}
 			e.assertUnsynced(t, week, plan.StatusDraft)
@@ -444,7 +444,7 @@ func TestPushGrantNoLongerAccepted(t *testing.T) {
 	e.connectCalendar(t)
 	e.storePlan(t, week, fullWeek...)
 	e.google.RevokeGrant()
-	_, err := e.svc.Push(t.Context(), week)
+	_, _, err := e.svc.Push(t.Context(), week)
 	if !errors.Is(err, gcal.ErrReconnect) {
 		t.Fatalf("Push = %v, want ErrReconnect", err)
 	}
@@ -479,12 +479,12 @@ func TestRefusedGrantKeepsPushedWeeks(t *testing.T) {
 	dates := map[store.LocalDate][]string{}
 	for _, w := range pushedWeeks {
 		dates[w] = e.storePlan(t, w, fullWeek...)
-		if _, err := e.svc.Push(t.Context(), w); err != nil {
+		if _, _, err := e.svc.Push(t.Context(), w); err != nil {
 			t.Fatalf("Push %s: %v", w, err)
 		}
 	}
 	e.google.RevokeGrant()
-	if _, err := e.svc.Push(t.Context(), week); !errors.Is(err, gcal.ErrReconnect) {
+	if _, _, err := e.svc.Push(t.Context(), week); !errors.Is(err, gcal.ErrReconnect) {
 		t.Fatalf("Push = %v, want ErrReconnect", err)
 	}
 	e.assertRefused(t)
@@ -497,7 +497,7 @@ func TestRefusedGrantKeepsPushedWeeks(t *testing.T) {
 
 	// The refused token is not offered to Google again.
 	before := e.google.TokenCalls()
-	if _, err := e.svc.Push(t.Context(), week); !errors.Is(err, gcal.ErrReconnect) {
+	if _, _, err := e.svc.Push(t.Context(), week); !errors.Is(err, gcal.ErrReconnect) {
 		t.Fatalf("Push again = %v, want ErrReconnect", err)
 	}
 	if n := e.google.TokenCalls() - before; n != 0 {
@@ -506,7 +506,7 @@ func TestRefusedGrantKeepsPushedWeeks(t *testing.T) {
 
 	e.google.Connect(t, e.gcal)
 	e.google.ResetEventWrites()
-	p, err := e.svc.Push(t.Context(), week)
+	p, _, err := e.svc.Push(t.Context(), week)
 	if err != nil || p.Status != plan.StatusSynced {
 		t.Fatalf("Push after connecting again = %s, %v; want synced", p.Status, err)
 	}
@@ -523,7 +523,7 @@ func TestDisconnectAfterRefusedGrant(t *testing.T) {
 	e := newEnv(t)
 	e.connectCalendar(t)
 	e.storePlan(t, week, fullWeek...)
-	if _, err := e.svc.Push(t.Context(), week); err != nil {
+	if _, _, err := e.svc.Push(t.Context(), week); err != nil {
 		t.Fatal(err)
 	}
 	e.google.RevokeGrant()
@@ -551,7 +551,7 @@ func TestPushFailsWhenPlanSwappedWhilePushing(t *testing.T) {
 	defer release()
 	pushed := make(chan error, 1)
 	go func() {
-		_, err := e.svc.Push(t.Context(), week)
+		_, _, err := e.svc.Push(t.Context(), week)
 		pushed <- err
 	}()
 	<-arrived
@@ -596,7 +596,7 @@ func TestPushAfterChoosingAnotherCalendarWritesTheWholeWeek(t *testing.T) {
 			e := newEnv(t)
 			e.connectCalendar(t)
 			dates := e.storePlan(t, week, fullWeek...)
-			first, err := e.svc.Push(t.Context(), week)
+			first, _, err := e.svc.Push(t.Context(), week)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -640,14 +640,14 @@ func TestPushAfterChoosingAnotherCalendarWritesTheWholeWeek(t *testing.T) {
 			// A push that fails part way leaves the plan changed.
 			e.google.ResetEventWrites()
 			e.google.FailEventWrite(4, http.StatusBadRequest)
-			if _, err := e.svc.Push(t.Context(), week); err == nil {
+			if _, _, err := e.svc.Push(t.Context(), week); err == nil {
 				t.Fatal("Push succeeded, want the fourth event to fail")
 			}
 			if p, err := e.svc.Get(t.Context(), week); err != nil || p.Status != plan.StatusChanged {
 				t.Errorf("plan after a failed push = %s, %v; want changed", p.Status, err)
 			}
 
-			p, err = e.svc.Push(t.Context(), week)
+			p, _, err = e.svc.Push(t.Context(), week)
 			if err != nil {
 				t.Fatalf("Push: %v", err)
 			}
@@ -678,7 +678,7 @@ func TestChoosingAnotherCalendarWaitsForAPush(t *testing.T) {
 	defer release()
 	pushed := make(chan error, 1)
 	go func() {
-		_, err := e.svc.Push(t.Context(), week)
+		_, _, err := e.svc.Push(t.Context(), week)
 		pushed <- err
 	}()
 	<-arrived
@@ -712,7 +712,7 @@ func TestChoosingAnotherCalendarWaitsForAPush(t *testing.T) {
 		}
 	}
 
-	if p, err = e.svc.Push(t.Context(), week); err != nil || p.Status != plan.StatusSynced {
+	if p, _, err = e.svc.Push(t.Context(), week); err != nil || p.Status != plan.StatusSynced {
 		t.Fatalf("Push = %s, %v; want synced", p.Status, err)
 	}
 	e.assertWeekOn(t, kitchenCal.ID, week, dates, fullWeek...)
@@ -746,7 +746,7 @@ func TestDisconnectForgetsEveryPushedWeek(t *testing.T) {
 	dates := map[store.LocalDate][]string{}
 	for _, w := range pushedWeeks {
 		dates[w] = e.storePlan(t, w, fullWeek...)
-		if _, err := e.svc.Push(t.Context(), w); err != nil {
+		if _, _, err := e.svc.Push(t.Context(), w); err != nil {
 			t.Fatalf("Push %s: %v", w, err)
 		}
 	}
@@ -764,7 +764,7 @@ func TestDisconnectForgetsEveryPushedWeek(t *testing.T) {
 	// Connecting again chooses no calendar, so nothing is pushed until one
 	// is chosen; then a push writes the whole week to it.
 	e.google.Connect(t, e.gcal)
-	if _, err := e.svc.Push(t.Context(), week); !errors.Is(err, gcal.ErrNoCalendar) {
+	if _, _, err := e.svc.Push(t.Context(), week); !errors.Is(err, gcal.ErrNoCalendar) {
 		t.Fatalf("Push after connecting again = %v, want ErrNoCalendar", err)
 	}
 	e.google.SetCalendars(0, dinnersCal, kitchenCal)
@@ -773,7 +773,7 @@ func TestDisconnectForgetsEveryPushedWeek(t *testing.T) {
 	}
 	for _, w := range pushedWeeks {
 		e.assertForgotten(t, w, "after connecting again")
-		p, err := e.svc.Push(t.Context(), w)
+		p, _, err := e.svc.Push(t.Context(), w)
 		if err != nil || p.Status != plan.StatusSynced {
 			t.Fatalf("Push %s = %s, %v; want synced", w, p.Status, err)
 		}
@@ -789,7 +789,7 @@ func TestDisconnectRefusedKeepsPushedWeeks(t *testing.T) {
 	dates := map[store.LocalDate][]string{}
 	for _, w := range pushedWeeks {
 		dates[w] = e.storePlan(t, w, fullWeek...)
-		if _, err := e.svc.Push(t.Context(), w); err != nil {
+		if _, _, err := e.svc.Push(t.Context(), w); err != nil {
 			t.Fatalf("Push %s: %v", w, err)
 		}
 	}
@@ -816,7 +816,7 @@ func TestDisconnectWaitsForAPush(t *testing.T) {
 	defer release()
 	pushed := make(chan error, 1)
 	go func() {
-		_, err := e.svc.Push(t.Context(), week)
+		_, _, err := e.svc.Push(t.Context(), week)
 		pushed <- err
 	}()
 	<-arrived

@@ -120,6 +120,9 @@ type Querier interface {
 	GetRecipeBySourceURL(ctx context.Context, sourceUrl string) (Recipe, error)
 	// Returns sql.ErrNoRows until the row exists.
 	GetRecipeSearchSettings(ctx context.Context) (RecipeSearchSetting, error)
+	// The Supply run holding item id. Returns sql.ErrNoRows when there is no
+	// such item.
+	GetShoppingItemList(ctx context.Context, id string) (GetShoppingItemListRow, error)
 	// The Supply run of the week starting week_start. Returns sql.ErrNoRows
 	// when there is none.
 	GetShoppingList(ctx context.Context, weekStart string) (ShoppingList, error)
@@ -174,6 +177,8 @@ type Querier interface {
 	ListRecentPassedNames(ctx context.Context, limit int64) ([]string, error)
 	ListRecipeIngredients(ctx context.Context, recipeID string) ([]RecipeIngredient, error)
 	ListRecipeSteps(ctx context.Context, recipeID string) ([]RecipeStep, error)
+	// The groups of list list_id with their dinner's name, in list order.
+	ListShoppingGroupDinners(ctx context.Context, listID string) ([]ListShoppingGroupDinnersRow, error)
 	// The groups of list list_id, in list order.
 	ListShoppingGroups(ctx context.Context, listID string) ([]ShoppingGroup, error)
 	// The items of list list_id with their group's dinner, in list order: by
@@ -236,6 +241,8 @@ type Querier interface {
 	// Records that the event calendar_event_id on Calendar shows date of
 	// plan_id as planned.
 	SetPlanDayCalendarEvent(ctx context.Context, arg SetPlanDayCalendarEventParams) (int64, error)
+	// Marks item id needed (1) or "have it" (0).
+	SetShoppingItemNeeded(ctx context.Context, arg SetShoppingItemNeededParams) error
 	// Marks a pending batch running; a batch in any other status is left as
 	// it is (0 rows).
 	StartSuggestionBatch(ctx context.Context, arg StartSuggestionBatchParams) (int64, error)

@@ -378,3 +378,25 @@ func (q *Queries) SetShoppingItemNeeded(ctx context.Context, arg SetShoppingItem
 	_, err := q.db.ExecContext(ctx, setShoppingItemNeeded, arg.Needed, arg.UpdatedAt, arg.ID)
 	return err
 }
+
+const setShoppingListTitle = `-- name: SetShoppingListTitle :execrows
+UPDATE shopping_lists
+SET title = ?, updated_at = ?
+WHERE id = ? AND title IS NULL AND status = 'current' AND frozen_at IS NULL
+`
+
+type SetShoppingListTitleParams struct {
+	Title     sql.NullString
+	UpdatedAt string
+	ID        string
+}
+
+// Titles list id, unless it has a title already or is frozen into the
+// Supply archive.
+func (q *Queries) SetShoppingListTitle(ctx context.Context, arg SetShoppingListTitleParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setShoppingListTitle, arg.Title, arg.UpdatedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}

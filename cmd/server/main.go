@@ -133,7 +133,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	shopSvc, err := shopping.NewService(db)
+	shopSvc, err := shopping.NewService(db, archiveTitler(ai, guard), logger)
 	if err != nil {
 		return err
 	}
@@ -322,6 +322,18 @@ func weekDrafter(ai *aisettings.Service, guard *harness.Guard) plan.Drafter {
 			return skills.Week{}, err
 		}
 		return skills.DraftWeek(ctx, cfg, scope, in)
+	}
+}
+
+// archiveTitler runs archive_title with the AI settings current at each
+// run, sharing guard.
+func archiveTitler(ai *aisettings.Service, guard *harness.Guard) shopping.Titler {
+	return func(ctx context.Context, scope string, in skills.ArchiveTitleRequest) (skills.ArchiveTitle, error) {
+		cfg, err := ai.HarnessConfig(ctx, guard)
+		if err != nil {
+			return skills.ArchiveTitle{}, err
+		}
+		return skills.TitleArchive(ctx, cfg, scope, in)
 	}
 }
 

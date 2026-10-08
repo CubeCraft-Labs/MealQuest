@@ -80,7 +80,7 @@ func newPlansRouter(t *testing.T) plansEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	shop, err := shopping.NewService(st)
+	shop, err := shopping.NewService(st, untitled, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

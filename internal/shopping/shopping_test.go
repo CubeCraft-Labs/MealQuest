@@ -1,6 +1,8 @@
 package shopping_test
 
 import (
+	"bytes"
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -8,10 +10,12 @@ import (
 	"log/slog"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/llm"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
@@ -42,6 +46,31 @@ type env struct {
 	planID  string
 	// ids are the dinners' ids by name.
 	ids map[string]string
+	// model answers archive_title, which titles the Supply runs; with
+	// nothing queued it fails, and the lists stay untitled.
+	model *llm.Fake
+	// beforeTitle, when set, runs as archive_title is asked for a title.
+	beforeTitle func()
+	// log holds what the service logged.
+	log *syncBuffer
+}
+
+// syncBuffer is a bytes.Buffer safe for concurrent use.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func newEnv(t *testing.T) *env {
@@ -59,11 +88,28 @@ func newEnv(t *testing.T) *env {
 	if err := store.Migrate(t.Context(), st.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	svc, err := shopping.NewService(st)
+	e := &env{st: st, dataDir: dataDir, ids: map[string]string{}, model: &llm.Fake{}, log: &syncBuffer{}}
+	guard, err := harness.NewGuard(harness.DefaultMaxCalls)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &env{svc: svc, st: st, dataDir: dataDir, ids: map[string]string{}}
+	cfg := harness.Config{
+		Settings:    llm.Settings{Provider: "anthropic", Model: "claude-test", Temperature: 0.7},
+		NewProvider: func(llm.Settings, string) (llm.Provider, error) { return e.model, nil },
+		Store:       st,
+		Guard:       guard,
+	}
+	title := func(ctx context.Context, scope string, in skills.ArchiveTitleRequest) (skills.ArchiveTitle, error) {
+		if e.beforeTitle != nil {
+			e.beforeTitle()
+		}
+		return skills.TitleArchive(ctx, cfg, scope, in)
+	}
+	e.svc, err = shopping.NewService(st, title, slog.New(slog.NewTextHandler(e.log, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e
 }
 
 // ing is a recipe ingredient as recipe grounding stores it: an empty

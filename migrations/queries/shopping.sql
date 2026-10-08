@@ -81,3 +81,10 @@ WHERE shopping_items.id = ?;
 UPDATE shopping_items
 SET needed = ?, updated_at = ?
 WHERE id = ?;
+
+-- name: SetShoppingListTitle :execrows
+-- Titles list id, unless it has a title already or is frozen into the
+-- Supply archive.
+UPDATE shopping_lists
+SET title = ?, updated_at = ?
+WHERE id = ? AND title IS NULL AND status = 'current' AND frozen_at IS NULL;

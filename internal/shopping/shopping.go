@@ -5,7 +5,8 @@
 // Generate makes a week's Supply run from its plan, and remakes it after
 // the plan changes. It is deterministic and runs no model: an item is one
 // ingredient of the dinner's recipe exactly as recipe grounding stored it
-// (see Generate).
+// (see Generate). The one model call is the Supply run's title, written by
+// archive_title when the list is generated untitled (see Generate).
 package shopping
 
 import (
@@ -13,8 +14,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
@@ -54,17 +57,30 @@ var ErrListNotFound = errors.New("the week has no Supply run")
 // ErrItemNotFound is a change to an item on no Supply run.
 var ErrItemNotFound = errors.New("no Supply run has that item")
 
+// Titler runs archive_title on in; scope names the week and its dinners.
+// In production it is skills.TitleArchive with the household's
+// harness.Config.
+type Titler func(ctx context.Context, scope string, in skills.ArchiveTitleRequest) (skills.ArchiveTitle, error)
+
 // Service generates Supply runs.
 type Service struct {
-	st *store.Store
+	st     *store.Store
+	title  Titler
+	logger *slog.Logger
 }
 
-// NewService returns a service over st.
-func NewService(st *store.Store) (*Service, error) {
-	if st == nil {
+// NewService returns a service over st that titles Supply runs with title
+// and logs to logger.
+func NewService(st *store.Store, title Titler, logger *slog.Logger) (*Service, error) {
+	switch {
+	case st == nil:
 		return nil, errors.New("shopping: nil store")
+	case title == nil:
+		return nil, errors.New("shopping: nil titler")
+	case logger == nil:
+		return nil, errors.New("shopping: nil logger")
 	}
-	return &Service{st: st}, nil
+	return &Service{st: st, title: title, logger: logger}, nil
 }
 
 // List is a Supply run.
@@ -166,6 +182,13 @@ type Generated struct {
 // new and needed; an item no longer on the plan is removed, and with it a
 // group no longer on the plan.
 //
+// A list still untitled once it is stored, as a new list always is, is
+// then titled by archive_title from the names of the plan's dinners in day
+// order, outside the transaction. A title is written once: a remake keeps
+// it. Titling never fails the generation: a title that cannot be written
+// leaves the list untitled, as it is returned, the failure is logged, and
+// the next generation of the week, Generate or GeneratePushed, tries again.
+//
 // A week with no plan is ErrPlanNotFound; a list frozen into the Supply
 // archive is ErrFrozen. A fetched recipe's ingredient without a name is an
 // error: grounding always names one.
@@ -193,7 +216,11 @@ func (s *Service) generate(ctx context.Context, weekStart store.LocalDate, check
 	if _, err := household.WeekDays(weekStart); err != nil {
 		return Generated{}, fmt.Errorf("shopping: generate: %w", err)
 	}
-	var out Generated
+	var (
+		out      Generated
+		revision int64
+		names    []string // the plan's dinners, in day order
+	)
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		q := db.New(tx)
 		plan, err := q.GetWeekPlan(ctx, weekStart.String())
@@ -206,10 +233,11 @@ func (s *Service) generate(ctx context.Context, weekStart store.LocalDate, check
 		if err := check(plan); err != nil {
 			return err
 		}
-		want, skipped, err := wanted(ctx, q, plan.ID)
+		want, skipped, dinnerNames, err := wanted(ctx, q, plan.ID)
 		if err != nil {
 			return err
 		}
+		revision, names = plan.Revision, dinnerNames
 		now := store.Now().String()
 		list, err := q.GetShoppingList(ctx, weekStart.String())
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -240,7 +268,53 @@ func (s *Service) generate(ctx context.Context, weekStart store.LocalDate, check
 	if err != nil {
 		return Generated{}, err
 	}
+	if out.List.Title == nil {
+		s.titleList(ctx, &out.List, revision, names)
+	}
 	return out, nil
+}
+
+// titleList titles l, an untitled Supply run made from dinners, the names
+// of its plan's dinners in day order at plan revision, with archive_title,
+// and stores the title on it. A title that cannot be written leaves l
+// untitled; the failure is logged, never returned.
+func (s *Service) titleList(ctx context.Context, l *List, revision int64, dinners []string) {
+	title, err := s.writeTitle(ctx, l, revision, dinners)
+	if err != nil {
+		s.logger.WarnContext(ctx, "Supply run left untitled; its next generation titles it again",
+			"week", l.WeekStart, "list", l.ID, "error", err)
+		return
+	}
+	l.Title = &title
+}
+
+// writeTitle runs archive_title for l and stores its title. When l was
+// titled by another generation meanwhile, that title stands and is
+// returned.
+func (s *Service) writeTitle(ctx context.Context, l *List, revision int64, dinners []string) (string, error) {
+	scope := fmt.Sprintf("%s@%d", l.WeekStart, revision)
+	out, err := s.title(ctx, scope, skills.ArchiveTitleRequest{Dinners: dinners})
+	if err != nil {
+		return "", fmt.Errorf("shopping: title: %w", err)
+	}
+	q := db.New(s.st.Writer)
+	n, err := q.SetShoppingListTitle(ctx, db.SetShoppingListTitleParams{
+		Title: sql.NullString{String: out.Title, Valid: true}, UpdatedAt: store.Now().String(), ID: l.ID,
+	})
+	if err != nil {
+		return "", fmt.Errorf("shopping: store title: %w", err)
+	}
+	if n == 1 {
+		return out.Title, nil
+	}
+	list, err := q.GetShoppingList(ctx, l.WeekStart)
+	if err != nil {
+		return "", fmt.Errorf("shopping: store title: read list: %w", err)
+	}
+	if list.ID != l.ID || !list.Title.Valid {
+		return "", errors.New("shopping: store title: the Supply run was frozen or replaced before its title was stored")
+	}
+	return list.Title.String, nil
 }
 
 // Get returns the Supply run of the week starting weekStart, as stored: a
@@ -365,18 +439,21 @@ type wantItem struct {
 }
 
 // wanted reads plan planID's days and their dinners' ingredients: the
-// groups the list must have, by date, and the days that get none.
-func wanted(ctx context.Context, q *db.Queries, planID string) ([]wantGroup, []SkippedDay, error) {
+// groups the list must have, by date, the days that get none, and the
+// names of the plan's dinners in day order.
+func wanted(ctx context.Context, q *db.Queries, planID string) ([]wantGroup, []SkippedDay, []string, error) {
 	days, err := q.ListPlanDays(ctx, planID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("shopping: read plan days: %w", err)
+		return nil, nil, nil, fmt.Errorf("shopping: read plan days: %w", err)
 	}
 	var (
 		groups  []wantGroup
 		skipped []SkippedDay
+		names   []string
 	)
 	for _, day := range days {
 		d := day.Dinner
+		names = append(names, d.Name)
 		skip := SkippedDay{Date: day.Date, DinnerID: d.ID, DinnerName: d.Name}
 		if !d.RecipeID.Valid {
 			skip.Reason = SkipNoRecipe
@@ -385,11 +462,11 @@ func wanted(ctx context.Context, q *db.Queries, planID string) ([]wantGroup, []S
 		}
 		recipe, err := q.GetRecipe(ctx, d.RecipeID.String)
 		if err != nil {
-			return nil, nil, fmt.Errorf("shopping: read recipe %s of dinner %s: %w", d.RecipeID.String, d.ID, err)
+			return nil, nil, nil, fmt.Errorf("shopping: read recipe %s of dinner %s: %w", d.RecipeID.String, d.ID, err)
 		}
 		ings, err := q.ListRecipeIngredients(ctx, recipe.ID)
 		if err != nil {
-			return nil, nil, fmt.Errorf("shopping: read ingredients of recipe %s: %w", recipe.ID, err)
+			return nil, nil, nil, fmt.Errorf("shopping: read ingredients of recipe %s: %w", recipe.ID, err)
 		}
 		if len(ings) == 0 {
 			skip.Reason = SkipNoIngredients
@@ -401,13 +478,13 @@ func wanted(ctx context.Context, q *db.Queries, planID string) ([]wantGroup, []S
 		for _, ing := range ings {
 			it, err := item(ing, manual)
 			if err != nil {
-				return nil, nil, fmt.Errorf("shopping: recipe %s: %w", recipe.ID, err)
+				return nil, nil, nil, fmt.Errorf("shopping: recipe %s: %w", recipe.ID, err)
 			}
 			g.items = append(g.items, it)
 		}
 		groups = append(groups, g)
 	}
-	return groups, skipped, nil
+	return groups, skipped, names, nil
 }
 
 // item is the item for ingredient ing of a recipe entered by hand

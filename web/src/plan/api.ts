@@ -280,8 +280,10 @@ export function useSwapDay(weekStart: string): SwapDay {
 // chosen Google calendar (POST /api/v1/plans/{weekStart}/push-calendar). The
 // server answers with the plan as synced, which replaces the one shown, as a
 // swap's answer does. A push refused because the plan changed meanwhile
-// reads the plan again; one Google refused the grant for reads the Google
-// Calendar connection again, which is now reconnect required.
+// reads the plan again, and stays pending until that read lands: nothing is
+// pushed again before the changed plan is shown. One Google refused the
+// grant for reads the Google Calendar connection again, which is now
+// reconnect required.
 export function usePushToCalendar(weekStart: string) {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
@@ -292,9 +294,9 @@ export function usePushToCalendar(weekStart: string) {
       return parsePlan(`POST ${path}`, weekStart, await apiFetch<unknown>(path, { method: 'POST' }), false)
     },
     onSuccess: (plan) => queryClient.setQueryData<Plan>(key, plan),
-    onError: (error) => {
-      if (error instanceof ApiError && error.code === 'plan_changed') void queryClient.invalidateQueries({ queryKey: key })
+    onError: async (error) => {
       noteGoogleFailure(queryClient, error)
+      if (error instanceof ApiError && error.code === 'plan_changed') await queryClient.invalidateQueries({ queryKey: key })
     },
   })
 }

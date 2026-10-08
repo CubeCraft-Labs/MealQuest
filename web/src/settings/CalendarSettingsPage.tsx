@@ -96,7 +96,8 @@ function Connection({ connection }: { connection: GoogleConnection }) {
 }
 
 // ReconnectBanner is the grape banner of a grant Google refused, with why
-// and Reconnect.
+// and Reconnect. Why and what to do are an alert, as ErrorBanner's message
+// is: a calendar request that meets the refusal turns the screen to it.
 function ReconnectBanner({ error }: { error: string | null }) {
   const titleId = useId()
   return (
@@ -104,8 +105,10 @@ function ReconnectBanner({ error }: { error: string | null }) {
       <h2 id={titleId} className={styles.reconnectTitle}>
         Reconnect Google Calendar
       </h2>
-      {error !== null && <p className={styles.reconnectText}>{error}</p>}
-      <p className={styles.reconnectText}>Nothing can be pushed to Calendar until you connect again.</p>
+      <div role="alert" className={styles.reconnectStatus}>
+        {error !== null && <p className={styles.reconnectText}>{error}</p>}
+        <p className={styles.reconnectText}>Nothing can be pushed to Calendar until you connect again.</p>
+      </div>
       <ConnectLink icon={RefreshCw}>Reconnect</ConnectLink>
     </section>
   )

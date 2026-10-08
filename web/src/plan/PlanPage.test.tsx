@@ -392,6 +392,41 @@ describe('PlanPage', () => {
     expect(planReads(fetchMock)).toBe(2)
   })
 
+  it('pushes nothing again until the changed plan is read and shown', async () => {
+    let read: () => Response | Promise<Response> = () => jsonResponse(200, planBody('draft'))
+    let push = () => errorResponse(409, 'plan_changed')
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => read(),
+      [`POST ${PUSH}`]: () => push(),
+    })
+    await renderPage()
+
+    await screen.findByText('Beef tacos')
+    const reread = deferred()
+    read = () => reread.response
+    const pushButton = screen.getByRole('button', { name: 'Looks good — push to Calendar' })
+    fireEvent.click(pushButton)
+    await waitFor(() => expect(planReads(fetchMock)).toBe(2))
+    // While the changed plan is read, the push stays busy: neither Push
+    // nor Retry sends it again.
+    expect(screen.getByRole('button', { name: 'Pushing to Calendar…' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Pushing to Calendar…' }))
+    expect(screen.getByText('Beef tacos')).toBeInTheDocument()
+    expect(posts(fetchMock)).toEqual([`${PUSH} undefined`])
+
+    reread.send(jsonResponse(200, planBody('draft', ['Lasagna', ...NAMES.slice(1)])))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't push to Calendar. The plan changed while it was being pushed; push it again.")
+    expect(screen.getByText('Lasagna')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Looks good — push to Calendar' })).toBeEnabled()
+
+    push = () => jsonResponse(200, syncedNow())
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('Synced to Google Calendar just now')).toBeInTheDocument()
+    expect(posts(fetchMock)).toEqual([`${PUSH} undefined`, `${PUSH} undefined`])
+  })
+
   it('rebuilds a draft at once, showing skeleton tiles until the new plan is read', async () => {
     let plan = planBody('draft')
     let job = draftJob('running')

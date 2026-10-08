@@ -129,6 +129,12 @@
   font-weight: 400;
 }
 
+.reconnectStatus {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .reconnectText {
   margin: 0;
   font-family: var(--font-body);

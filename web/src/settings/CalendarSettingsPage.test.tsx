@@ -279,7 +279,14 @@ describe('CalendarSettingsPage', () => {
     })
     await renderPage()
 
-    expect(await screen.findByRole('region', { name: 'Reconnect Google Calendar' })).toBeInTheDocument()
+    const banner = await screen.findByRole('region', { name: 'Reconnect Google Calendar' })
+    // Why and what to do are announced as the screen turns to the banner.
+    const alert = screen.getByRole('alert')
+    expect(banner).toContainElement(alert)
+    expect(alert).toHaveTextContent(
+      'Google access was revoked or expired — reconnect' + 'Nothing can be pushed to Calendar until you connect again.',
+    )
+    expect(within(alert).queryByRole('link')).not.toBeInTheDocument()
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
     expect(screen.queryByText('Connected · Dinners')).not.toBeInTheDocument()
   })

@@ -1,7 +1,8 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { CalendarDays, Check, ChevronLeft, ChevronRight, Plus, RefreshCw, ShoppingCart } from 'lucide-react'
 import { useEffect, useId, useMemo, useState, type ReactNode } from 'react'
-import { useJob } from '../api/index.ts'
+import { Link } from 'react-router'
+import { ApiError, useJob } from '../api/index.ts'
 import { QUEST_LOG_KEY } from '../discover/api.ts'
 import { Confirm } from '../settings/LeaveGuard.tsx'
 import { methodLabels } from '../settings/RegularsSettingsPage.tsx'
@@ -20,6 +21,7 @@ import {
   parseDraftResult,
   planKey,
   usePlan,
+  usePushToCalendar,
   useStartDraft,
   useSwapDay,
   type DraftResult,
@@ -62,9 +64,20 @@ const draftFailures: Record<string, string> = {
   internal_error: 'Something went wrong on the server.',
 }
 
-// PUSH_HINT is why Push to Calendar is unavailable.
-// TODO(Feature 16): connect Push to Calendar once Google Calendar is.
-const PUSH_HINT = 'Push to Calendar arrives once Google Calendar can be connected.'
+// CALENDAR_SETTINGS is the Google Calendar settings screen.
+const CALENDAR_SETTINGS = '/settings/calendar'
+
+// settingsFailures says why a push failed, by its API error code, for the
+// failures only the Google Calendar settings can fix, and what to do there.
+const settingsFailures: Record<string, { reason: string; fix: string }> = {
+  google_reconnect_required: { reason: 'Google access was revoked or expired.', fix: 'Reconnect Google Calendar' },
+  not_connected: { reason: 'Google Calendar is not connected.', fix: 'Connect Google Calendar' },
+  no_calendar: { reason: 'No calendar is chosen for dinners yet.', fix: 'Choose a calendar in Settings' },
+  calendar_unavailable: {
+    reason: 'The chosen calendar was deleted or MealQuest can no longer add dinners to it.',
+    fix: 'Choose another calendar',
+  },
+}
 
 // SHOPPING_HINT is why the shopping list is unavailable.
 // TODO(Feature 17): open the Supply run, with its count, once it is built.
@@ -204,9 +217,13 @@ function SkeletonTiles({ label, layout, children }: { label: string; layout: Bre
 // the plan is read again. Rebuilding a plan pushed to Calendar asks first,
 // and sends confirm. A failed draft is shown with Retry; no plan is made up.
 //
-// From tablet up it is the plan manager (mocks 2c, 2d): Rebuild week and the
-// unavailable Shopping list and Push to Calendar are actions in the header,
+// From tablet up it is the plan manager (mocks 2c, 2d): Rebuild week, Push to
+// Calendar and the unavailable Shopping list are actions in the header,
 // over the plan's sync status and the 7-column grid.
+//
+// Push to Calendar, on either layout, sends the plan shown and shows it as
+// synced once the server answers; a failure says why, linking to the Google
+// Calendar settings when only they can fix it.
 function WeekBoard({
   weekStart,
   timezone,
@@ -225,6 +242,8 @@ function WeekBoard({
   const job = useJob<unknown>(DRAFT_JOB_KIND, jobId)
   const [confirming, setConfirming] = useState(false)
   const swap = useSwapDay(weekStart)
+  const push = usePushToCalendar(weekStart)
+  const pushing = push.isPending
   // The date of the day being swapped, while the swap sheet is open.
   const [swappingDate, setSwappingDate] = useState<string | null>(null)
   const label = weekLabel(weekStart)
@@ -282,13 +301,23 @@ function WeekBoard({
 
   const drafting = startDraft.isPending || (jobId !== null && job.status !== 'failed' && resultError === null)
 
+  // A push sends the plan shown: it waits for a draft or a swap of the week
+  // to settle, and neither starts while it runs.
+  const canPush = plan.isSuccess && plan.data !== null && !drafting && !swap.pending && !pushing
+  function pushToCalendar() {
+    if (!canPush) return
+    swap.dismiss()
+    push.mutate()
+  }
+
   const { mutate } = startDraft
   function start(confirm: boolean) {
     setConfirming(false)
-    // A draft asked for again leaves the last one's failure, and a failed
-    // swap's, behind.
+    // A draft asked for again leaves the last one's failure, a failed
+    // swap's and a failed push's behind.
     setJobId(null)
     swap.dismiss()
+    push.reset()
     mutate(
       { weekStart, confirm },
       {
@@ -302,12 +331,14 @@ function WeekBoard({
   // It waits for a swap of the week still pending, which may yet fail: the
   // Rebuild week tile is disabled meanwhile.
   function rebuild() {
-    if (swap.pending) return
+    if (swap.pending || pushing) return
     if (plan.data && pushedToCalendar(plan.data.status)) setConfirming(true)
     else start(false)
   }
 
-  const failure = swap.failed !== null ? (
+  const failure = push.isError ? (
+    <PushFailure error={push.error} onRetry={pushToCalendar} />
+  ) : swap.failed !== null ? (
     <ErrorBanner onRetry={() => swapIn(swap.failed!.swap)}>
       Couldn't swap {weekdayName(swap.failed.swap.date)}'s dinner. {swap.failed.error.message}
     </ErrorBanner>
@@ -328,6 +359,7 @@ function WeekBoard({
   // swapIn sends the swap chosen in the sheet and closes it.
   function swapIn(chosen: Swap) {
     setSwappingDate(null)
+    push.reset()
     swap.mutate(chosen)
   }
   // dropIn swaps in a dinner dragged onto a day. A drag is not picked up,
@@ -338,9 +370,10 @@ function WeekBoard({
   }
   // openSwap opens the swap sheet on a day. One swap of the week is sent at
   // a time, even across leaving the week and coming back: the plan the
-  // server answers it with must not overwrite another still pending.
+  // server answers it with must not overwrite another still pending. Nor is
+  // one sent while the week is being pushed to Calendar.
   function openSwap(date: string) {
-    if (swap.pending) return
+    if (swap.pending || pushing) return
     swap.dismiss()
     setSwappingDate(date)
   }
@@ -379,7 +412,7 @@ function WeekBoard({
     body =
       layout !== 'mobile' ? (
         <>
-          <DropBoard days={days} pending={swap.pending} drop={dropIn} />
+          <DropBoard days={days} pending={swap.pending || pushing} drop={dropIn} />
           <ul className={`${styles.week} ${styles[layout]}`} aria-label="Dinners this week">
             {days.map((day) => (
               <DayColumn
@@ -414,15 +447,16 @@ function WeekBoard({
               />
             ))}
             <li className={styles.rebuildCell}>
-              <button type="button" className={styles.rebuild} onClick={rebuild} disabled={swap.pending}>
+              <button type="button" className={styles.rebuild} onClick={rebuild} disabled={swap.pending || pushing}>
                 <Icon icon={Plus} size="inline" />
                 Rebuild week
               </button>
             </li>
           </ul>
-          <Unavailable hint={PUSH_HINT} className={styles.pushButton}>
-            Looks good — push to Calendar
-          </Unavailable>
+          <Button className={styles.pushButton} onClick={pushToCalendar} disabled={!canPush} aria-busy={pushing}>
+            {pushing ? 'Pushing to Calendar…' : 'Looks good — push to Calendar'}
+          </Button>
+          <SyncStatus plan={plan.data} className={styles.mobileStatus} />
           {sheet}
         </>
       )
@@ -458,14 +492,19 @@ function WeekBoard({
               <Icon icon={ShoppingCart} size="inline" />
               Shopping list
             </Unavailable>
-            <Button variant="outline" className={styles.action} onClick={rebuild} disabled={swap.pending || drafting || !plan.isSuccess}>
+            <Button
+              variant="outline"
+              className={styles.action}
+              onClick={rebuild}
+              disabled={swap.pending || pushing || drafting || !plan.isSuccess}
+            >
               <Icon icon={RefreshCw} size="inline" />
               Rebuild week
             </Button>
-            <Unavailable hint={PUSH_HINT} below className={styles.action}>
+            <Button className={styles.action} onClick={pushToCalendar} disabled={!canPush} aria-busy={pushing}>
               <Icon icon={CalendarDays} size="inline" />
-              Push to Calendar
-            </Unavailable>
+              {pushing ? 'Pushing…' : 'Push to Calendar'}
+            </Button>
           </div>
         </div>
       </header>
@@ -507,10 +546,11 @@ function WeekBoard({
   )
 }
 
-// SyncStatus is the plan manager's status line: whether the plan is on
-// Google Calendar and, once synced, how long ago it was pushed, kept current
-// minute by minute.
-function SyncStatus({ plan }: { plan: Plan }) {
+// SyncStatus is the plan's status line, in the plan manager's header and
+// under the Draft board's push button: whether the plan is on Google
+// Calendar and, once synced, how long ago it was pushed, kept current minute
+// by minute.
+function SyncStatus({ plan, className }: { plan: Plan; className?: string }) {
   const { status, calendar_synced_at: syncedAt } = plan
   const [now, setNow] = useState(() => new Date())
   useEffect(() => {
@@ -518,7 +558,7 @@ function SyncStatus({ plan }: { plan: Plan }) {
     return () => clearInterval(timer)
   }, [])
   return (
-    <p className={[styles.status, status === 'synced' && styles.synced].filter(Boolean).join(' ')}>
+    <p className={[styles.status, status === 'synced' && styles.synced, className].filter(Boolean).join(' ')}>
       {status === 'synced' && <Icon icon={Check} size="inline" />}
       {syncStatuses[status]}
       {status === 'synced' && syncedAt !== null && ` ${ago(syncedAt, now)}`}
@@ -526,9 +566,32 @@ function SyncStatus({ plan }: { plan: Plan }) {
   )
 }
 
-// Unavailable is an action with nothing behind it yet (Push to Calendar, the
-// shopping list): it stays focusable, so a tap or focus shows the tooltip
-// saying why, above it or, at the top of the page, below.
+// PushFailure says why Push to Calendar failed. A failure only the Google
+// Calendar settings can fix links there; any other offers to push again.
+function PushFailure({ error, onRetry }: { error: Error; onRetry: () => void }) {
+  const code = error instanceof ApiError ? error.code : null
+  const settings = code !== null && Object.hasOwn(settingsFailures, code) ? settingsFailures[code] : undefined
+  if (settings !== undefined) {
+    return (
+      <ErrorBanner>
+        Couldn't push to Calendar. {settings.reason}{' '}
+        <Link to={CALENDAR_SETTINGS} className={styles.settingsLink}>
+          {settings.fix}
+        </Link>
+      </ErrorBanner>
+    )
+  }
+  return (
+    <ErrorBanner onRetry={onRetry}>
+      Couldn't push to Calendar.{' '}
+      {code === 'plan_changed' ? 'The plan changed while it was being pushed; push it again.' : error.message}
+    </ErrorBanner>
+  )
+}
+
+// Unavailable is an action with nothing behind it yet (the shopping list):
+// it stays focusable, so a tap or focus shows the tooltip saying why, above
+// it or, at the top of the page, below.
 function Unavailable({
   hint,
   variant = 'primary',

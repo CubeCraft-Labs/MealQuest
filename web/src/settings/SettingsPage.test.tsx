@@ -4,7 +4,7 @@ import { Route, Routes, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
-import { AI_SETTINGS, HOUSEHOLD_SETTINGS, SETTINGS_API } from '../test/ApiProviders.tsx'
+import { AI_SETTINGS, GOOGLE_NOT_CONNECTED, HOUSEHOLD_SETTINGS, SETTINGS_API } from '../test/ApiProviders.tsx'
 import { declaredStyle } from '../test/cssRules.ts'
 import { InDataRouter } from '../test/dataRouter.tsx'
 import { errorResponse, fakeLocation, jsonResponse, stubFetchByPath } from '../test/fetchStub.ts'
@@ -22,7 +22,7 @@ afterEach(() => {
 })
 
 const REGULARS_PATH = '/api/v1/dinners?status=regular'
-const CALENDAR_PATH = '/api/v1/settings/calendar'
+const CALENDAR_PATH = '/api/v1/integrations/google'
 const NOTIFICATIONS_PATH = '/api/v1/settings/notifications'
 
 // stubSettings answers as today's server does (see SETTINGS_API), with
@@ -96,9 +96,9 @@ describe('SettingsPage', () => {
     expect(within(row('Household')).getByText('America/New_York · Dinner at 5:30 pm')).toBeInTheDocument()
     expect(fetchMock.mock.calls.map(([input]) => String(input)).sort()).toEqual([
       REGULARS_PATH,
+      CALENDAR_PATH,
       '/api/v1/settings/ai',
       '/api/v1/settings/ai/models',
-      CALENDAR_PATH,
       '/api/v1/settings/household',
       NOTIFICATIONS_PATH,
       '/api/v1/settings/recipe-search',
@@ -109,7 +109,6 @@ describe('SettingsPage', () => {
     stubSettings()
     renderSettings()
     expect(await within(row('Regular dinners')).findByText('Rotation count unavailable')).toBeInTheDocument()
-    expect(await within(row('Google Calendar')).findByText('Not connected')).toBeInTheDocument()
     expect(
       await within(row('Notifications & Google Chat')).findByText('Push off · Google Chat not connected'),
     ).toBeInTheDocument()
@@ -119,7 +118,8 @@ describe('SettingsPage', () => {
   it('shows the Regulars on rotation, the connected calendar and the notifications once served', async () => {
     stubSettings({
       [REGULARS_PATH]: () => jsonResponse(200, { dinners: Array.from({ length: 7 }, (_, i) => ({ id: `d${i}` })) }),
-      [CALENDAR_PATH]: () => jsonResponse(200, { connected: true, calendar_name: 'Dinners calendar' }),
+      [CALENDAR_PATH]: () =>
+        jsonResponse(200, { ...GOOGLE_NOT_CONNECTED, status: 'connected', calendar_id: 'c1', calendar_name: 'Dinners calendar' }),
       [NOTIFICATIONS_PATH]: () => jsonResponse(200, { push: true, chat_space: 'Dinner Crew space' }),
     })
     renderSettings()
@@ -133,7 +133,7 @@ describe('SettingsPage', () => {
   it('shows no Regulars, a disconnected calendar and push off with no Google Chat space', async () => {
     stubSettings({
       [REGULARS_PATH]: () => jsonResponse(200, { dinners: [] }),
-      [CALENDAR_PATH]: () => jsonResponse(200, { connected: false }),
+      [CALENDAR_PATH]: () => jsonResponse(200, GOOGLE_NOT_CONNECTED),
       [NOTIFICATIONS_PATH]: () => jsonResponse(200, { push: false, chat_space: null }),
     })
     renderSettings()
@@ -144,6 +144,15 @@ describe('SettingsPage', () => {
     ).toBeInTheDocument()
   })
 
+  it.each([
+    ['connected with no calendar chosen', { status: 'connected' }, 'Connected · no calendar chosen'],
+    ['reconnect required', { status: 'reconnect_required', calendar_id: 'c1', calendar_name: 'Dinners' }, 'Reconnect needed'],
+  ])('says Google Calendar is %s', async (_, connection, said) => {
+    stubSettings({ [CALENDAR_PATH]: () => jsonResponse(200, { ...GOOGLE_NOT_CONNECTED, ...connection }) })
+    renderSettings()
+    expect(await within(row('Google Calendar')).findByText(said)).toBeInTheDocument()
+  })
+
   it('reports a status endpoint failure other than a missing endpoint', async () => {
     stubSettings({ [CALENDAR_PATH]: () => errorResponse(500, 'internal') })
     renderSettings()
@@ -151,10 +160,10 @@ describe('SettingsPage', () => {
     expect(row('Google Calendar')).toHaveAccessibleName('Google Calendar')
   })
 
-  it('refuses a connected calendar without a name', async () => {
-    stubSettings({ [CALENDAR_PATH]: () => jsonResponse(200, { connected: true }) })
+  it('refuses a Google Calendar status it does not know', async () => {
+    stubSettings({ [CALENDAR_PATH]: () => jsonResponse(200, { ...GOOGLE_NOT_CONNECTED, status: 'paused' }) })
     renderSettings()
-    expect(await screen.findByRole('alert')).toHaveTextContent('response is not a calendar status')
+    expect(await screen.findByRole('alert')).toHaveTextContent('response is not a Google Calendar connection')
   })
 
   it('shows another provider and model as the settings name them', async () => {

@@ -1,11 +1,12 @@
 import { QueryClientProvider, type QueryClient } from '@tanstack/react-query'
-import { act, renderHook, waitFor } from '@testing-library/react'
+import { act, render, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
+import { MemoryRouter, Route, Routes, useNavigate, type NavigateFunction } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
-import { planKey, usePlan, usePushToCalendar, useSwapDay, type Plan } from './api.ts'
+import { planKey, usePlan, usePushToCalendar, useSwapDay, type Plan, type PushToCalendar, type SwapDay } from './api.ts'
 
 const WEEK = '2026-10-05'
 const PLAN = `/api/v1/plans/${WEEK}`
@@ -335,5 +336,66 @@ describe('week mutations', () => {
     await waitFor(() => expect(weekMutations(queryClient, LATER)).toEqual(['push error']))
     hook.rerender({ week: WEEK })
     expect(weekMutations(queryClient, LATER)).toEqual([])
+  })
+
+  it('leaves behind what settles once Plan is left for another route, and keeps what is pending', async () => {
+    const friday = deferred()
+    const monday = deferred()
+    const push = deferred()
+    stubServer({
+      [`GET ${PLAN}`]: () => jsonResponse(200, planBody()),
+      [`PUT ${FRIDAY}`]: () => friday.reply,
+      [`PUT ${MONDAY}`]: () => monday.reply,
+      [`POST ${PLAN}/push-calendar`]: () => push.reply,
+    })
+    const api = createApiClient(fakeLocation('/plan'), createNetworkStatus(window), createVerifiedSession(localStorage))
+    await api.loadMe()
+    const queryClient = createQueryClient()
+    let week!: { plan: ReturnType<typeof usePlan>; swap: SwapDay; push: PushToCalendar }
+    let navigate!: NavigateFunction
+    function Week() {
+      week = { plan: usePlan(WEEK), swap: useSwapDay(WEEK), push: usePushToCalendar(WEEK) }
+      return null
+    }
+    function Navigator() {
+      navigate = useNavigate()
+      return null
+    }
+    render(
+      <ApiProvider client={api}>
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/plan']}>
+            <Navigator />
+            <Routes>
+              <Route path="/plan" element={<Week />} />
+              <Route path="/settings" element={null} />
+            </Routes>
+          </MemoryRouter>
+        </QueryClientProvider>
+      </ApiProvider>,
+    )
+    await waitFor(() => expect(week.plan.isSuccess).toBe(true))
+
+    // Two swaps and a push of the week are left pending, and Settings is
+    // shown.
+    act(() => week.swap.mutate(ORZO))
+    act(() => week.swap.mutate(FISH))
+    act(() => week.push.mutate())
+    await waitFor(() => expect(weekMutations(queryClient, WEEK)).toEqual(['swap pending', 'swap pending', 'push pending']))
+    act(() => void navigate('/settings'))
+
+    // The swaps settle: once neither is pending they are left behind, and
+    // the push still pending is not.
+    await act(async () => monday.send(jsonResponse(200, planBody({ 0: { id: 'r1', name: 'Fish tacos' } }))))
+    await waitFor(() => expect(weekMutations(queryClient, WEEK)).toEqual(['swap pending', 'swap success', 'push pending']))
+    await act(async () => friday.send(jsonResponse(200, planBody({ 0: { id: 'r1', name: 'Fish tacos' }, 4: { id: 'q1', name: 'Lemon orzo', is_new: true } }))))
+    await waitFor(() => expect(weekMutations(queryClient, WEEK)).toEqual(['push pending']))
+
+    // The push succeeds: the plan as synced is recorded, and the push is
+    // left behind.
+    const synced = { ...planBody(), status: 'synced', calendar_synced_at: '2026-10-08T06:00:00Z' }
+    await act(async () => push.send(jsonResponse(200, synced)))
+    await waitFor(() => expect(weekMutations(queryClient, WEEK)).toEqual([]))
+    expect(queryClient.getQueryData<Plan>(planKey(WEEK))).toMatchObject({ status: 'synced', calendar_synced_at: new Date('2026-10-08T06:00:00Z') })
   })
 })

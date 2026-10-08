@@ -131,6 +131,16 @@ type recorder struct {
 	published []Result
 }
 
+// latest returns the last result published.
+func (r *recorder) latest() (Result, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.published) == 0 {
+		return Result{}, false
+	}
+	return r.published[len(r.published)-1], true
+}
+
 func (r *recorder) publish(res Result) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -152,6 +162,17 @@ func (e *env) run(t *testing.T, ingredients []string, quickOnly bool) (Result, [
 	var rec recorder
 	res, err := e.svc.run(t.Context(), FromIngredientsJob{Ingredients: ings, QuickOnly: quickOnly}, rec.publish)
 	return res, rec.published, err
+}
+
+// within reports whether every name in sub appears in list, in list's
+// order.
+func within(sub, list []string) bool {
+	for _, name := range list {
+		if len(sub) > 0 && sub[0] == name {
+			sub = sub[1:]
+		}
+	}
+	return len(sub) == 0
 }
 
 func names(list []Idea) []string {
@@ -214,9 +235,13 @@ func TestResultFillsAsEachIdeaGrounds(t *testing.T) {
 	if !reflect.DeepEqual(stages, wantStages) || !reflect.DeepEqual(counts, []int{0, 0, 1, 2, 3, 4, 5}) {
 		t.Fatalf("published stages %q with %v ideas, want %q with 0, 0, 1, 2, 3, 4, 5", stages, counts, wantStages)
 	}
+	// Ideas ground concurrently, so one may appear before an earlier one,
+	// but each publish keeps every idea already shown, in the model's
+	// order.
 	for i := 3; i < len(published); i++ {
-		if !reflect.DeepEqual(published[i].Ideas[:i-2], published[i-1].Ideas) {
-			t.Errorf("publish %d changed ideas already published", i+1)
+		prev, cur := names(published[i-1].Ideas), names(published[i].Ideas)
+		if !within(prev, cur) || !within(cur, want) {
+			t.Errorf("publish %d shows %q after %q, want earlier ideas kept in the model's order %q", i+1, cur, prev, want)
 		}
 	}
 
@@ -342,15 +367,122 @@ func TestFailures(t *testing.T) {
 	}
 }
 
-func TestEveryIdeaUngroundableEndsDoneEmpty(t *testing.T) {
+func TestEachIdeaShowsAsSoonAsItGrounds(t *testing.T) {
 	e := newEnv(t)
-	e.reply(idea("Mystery Stew", "stovetop", 30, "rice"))
-	res, _, err := e.run(t, pantry, false)
+	for _, name := range []string{"Burrito Bowls", "Fried Rice", "Black Bean Soup"} {
+		e.recipe(t, name, name, 35)
+	}
+	// The first idea's search waits, so the two after it ground first.
+	gate := make(chan struct{})
+	e.search.Gates = map[string]chan struct{}{"Burrito Bowls": gate}
+	e.reply(
+		idea("Burrito Bowls", "stovetop", 35, "rice", "black beans"),
+		idea("Fried Rice", "stovetop", 20, "rice"),
+		idea("Black Bean Soup", "stovetop", 40, "black beans"),
+	)
+	ings, err := skills.CleanIngredients(pantry)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Stage != StageDone || len(res.Ideas) != 0 || res.Dropped != 1 {
-		t.Fatalf("result = %+v, want done with none and 1 dropped", res)
+	var rec recorder
+	type outcome struct {
+		res Result
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		res, err := e.svc.run(t.Context(), FromIngredientsJob{Ingredients: ings}, rec.publish)
+		done <- outcome{res, err}
+	}()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if latest, ok := rec.latest(); ok && len(latest.Ideas) == 2 {
+			if got := names(latest.Ideas); !reflect.DeepEqual(got, []string{"Fried Rice", "Black Bean Soup"}) {
+				t.Fatalf("while the first idea grounds, ideas = %q, want the two grounded", got)
+			}
+			if latest.Stage != StageGrounding {
+				t.Fatalf("stage = %s, want grounding", latest.Stage)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the ideas that grounded were not shown while the first idea was still grounding")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(gate)
+	out := <-done
+	if out.err != nil {
+		t.Fatal(out.err)
+	}
+	want := []string{"Burrito Bowls", "Fried Rice", "Black Bean Soup"}
+	if got := names(out.res.Ideas); !reflect.DeepEqual(got, want) || out.res.Stage != StageDone {
+		t.Fatalf("result = %s %q, want done with %q in the model's order", out.res.Stage, got, want)
+	}
+}
+
+func TestNoIdeaKeptFailsTheJob(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		quickOnly bool
+		setup     func(t *testing.T, e *env)
+	}{
+		{"no recipe grounds any", false, func(t *testing.T, e *env) {
+			e.reply(idea("Mystery Stew", "stovetop", 30, "rice"), idea("Unknown Casserole", "oven", 50, "rice"))
+		}},
+		{"no grounded recipe is quick", true, func(t *testing.T, e *env) {
+			e.recipe(t, "Roast Chicken", "Roast Chicken", 90)
+			e.reply(idea("Roast Chicken", "oven", 25, "Chicken thighs"))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			tc.setup(t, e)
+			_, published, err := e.run(t, pantry, tc.quickOnly)
+			var failure *jobs.Failure
+			if !errors.As(err, &failure) || failure.Code != ReasonNoIdeasFound {
+				t.Fatalf("err = %v, want failure %s", err, ReasonNoIdeasFound)
+			}
+			for _, p := range published {
+				if len(p.Ideas) != 0 || p.Stage == StageDone {
+					t.Fatalf("a job that kept no idea published %+v", p)
+				}
+			}
+		})
+	}
+}
+
+func TestLaterRoundFailureClearsPublishedIdeas(t *testing.T) {
+	e := newEnv(t)
+	kept := []string{"Burrito Bowls", "Fried Rice", "Black Bean Soup", "Chicken Tacos"}
+	for _, name := range kept {
+		e.recipe(t, name, name, 35)
+	}
+	// The first round keeps four ideas; the second round's search fails.
+	e.search.Fail = map[string]error{"Rice Pilaf": errors.New("boom")}
+	e.reply(
+		idea("Burrito Bowls", "stovetop", 35, "rice"),
+		idea("Mystery Stew", "stovetop", 35, "rice"),
+		idea("Fried Rice", "stovetop", 20, "rice"),
+		idea("Black Bean Soup", "stovetop", 40, "black beans"),
+		idea("Chicken Tacos", "stovetop", 25, "Chicken thighs"),
+		idea("Rice Pilaf", "stovetop", 30, "rice"),
+	)
+	_, published, err := e.run(t, pantry, false)
+	var failure *jobs.Failure
+	if !errors.As(err, &failure) || failure.Code != ReasonSearchFailed {
+		t.Fatalf("err = %v, want failure %s", err, ReasonSearchFailed)
+	}
+	most := 0
+	for _, p := range published {
+		most = max(most, len(p.Ideas))
+	}
+	if most != len(kept) {
+		t.Fatalf("at most %d ideas published, want the first round's %d before the failure", most, len(kept))
+	}
+	if last := published[len(published)-1]; len(last.Ideas) != 0 {
+		t.Fatalf("last publish before the failure shows %q, want no ideas", names(last.Ideas))
 	}
 }
 

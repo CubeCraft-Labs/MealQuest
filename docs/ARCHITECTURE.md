@@ -317,7 +317,7 @@ automatic** (D-021).
   job (service-only: `POST /jobs` refuses the kind) and answers 202
   `{jobId}` without waiting. The job runs `ideas_from_ingredients` (scope:
   `skills.IdeasScope`, the flag and the normalized list in order), then
-  grounds its ideas in the model's order with `Grounder.GroundMany`, as
+  grounds its ideas in the model's order with `Grounder.GroundEach`, as
   many as are still wanted at a time, until 5 are kept or none are left.
   An idea no recipe grounds is dropped; with `quick_only`, so is one whose
   grounded recipe is not a Quick dinner (`ideas.IsQuick`: method
@@ -326,10 +326,14 @@ automatic** (D-021).
   `{stage, ingredients, quick_only, ideas: [{name, uses, missing, summary,
   method, minutes_total, difficulty, quick, recipe_id, photo_url,
   source_url, site_name}], dropped}` at each stage (`suggesting`,
-  `grounding`, `done`) and again each time an idea is kept, so the result
-  fills as the ideas ground; it may end `done` with no ideas. It fails
-  with `ai_failed` (the skill or `normalize_recipe` failed; no idea is
-  made up instead, D-017), `search_not_configured` or `search_failed`.
+  `grounding`, `done`) and again as each idea is kept, the moment its
+  grounding finishes, so the result fills idea by idea; the ideas shown
+  are always in the model's order, an earlier idea that grounds later
+  taking its place before those shown. It fails with `no_ideas_found`
+  (every idea was dropped), `ai_failed` (the skill or `normalize_recipe`
+  failed; no idea is made up instead, D-017), `search_not_configured` or
+  `search_failed`. Before it fails it publishes its result again with no
+  ideas, so a failed job shows none, even those kept before the failure.
   `GET /api/v1/suggestions/deck` returns `{suggestions: [{id, dinner_id,
   name, photo_url, difficulty, method, minutes_total, cuisine, reason,
   cited_regular_ids, status, dinner_status, decided_at, created_at}],
@@ -663,7 +667,8 @@ untitled (the job fails `title_failed`), and stores nothing. The
   candidates `Ground` would try, without grounding any. Search failures
   wrap `recipes.ErrSearchFailed` and model provider failures
   `recipes.ErrNormalizeFailed`. `GroundMany` grounds items 3 at a time and returns one result per
-  item, so one failure never affects its siblings. A recipe is usable only
+  item, so one failure never affects its siblings; `GroundEach` grounds
+  the same way but reports each item, one at a time, as it finishes. A recipe is usable only
   with ingredients, an image and, if given, a positive total time.
 
 ## Scheduler

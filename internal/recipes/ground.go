@@ -292,7 +292,22 @@ type GroundResult struct {
 // affect the others.
 func (g *Grounder) GroundMany(ctx context.Context, reqs []GroundRequest) []GroundResult {
 	results := make([]GroundResult, len(reqs))
+	g.GroundEach(ctx, reqs, func(i int, r GroundResult) { results[i] = r })
+	return results
+}
+
+// GroundEach grounds each request as GroundMany does, but calls done with
+// each item's index and result as soon as that item finishes, one call at
+// a time. It returns once every item has finished and every call has
+// returned.
+func (g *Grounder) GroundEach(ctx context.Context, reqs []GroundRequest, done func(i int, r GroundResult)) {
 	slots := make(chan struct{}, GroundConcurrency)
+	var mu sync.Mutex
+	report := func(i int, r GroundResult) {
+		mu.Lock()
+		defer mu.Unlock()
+		done(i, r)
+	}
 	var wg sync.WaitGroup
 	for i, req := range reqs {
 		wg.Add(1)
@@ -301,16 +316,15 @@ func (g *Grounder) GroundMany(ctx context.Context, reqs []GroundRequest) []Groun
 			select {
 			case slots <- struct{}{}:
 			case <-ctx.Done():
-				results[i] = GroundResult{Err: ctx.Err()}
+				report(i, GroundResult{Err: ctx.Err()})
 				return
 			}
-			defer func() { <-slots }()
 			gr, err := g.Ground(ctx, req.DishName, req.Query)
-			results[i] = GroundResult{Grounded: gr, Err: err}
+			<-slots
+			report(i, GroundResult{Grounded: gr, Err: err})
 		}()
 	}
 	wg.Wait()
-	return results
 }
 
 // stored returns the grounding of the recipe stored for sourceURL, and

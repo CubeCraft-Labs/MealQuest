@@ -2,8 +2,9 @@
 // of ingredients on hand, ideas_from_ingredients proposes dinners, each is
 // grounded with the recipe grounding pipeline (dropping those no recipe
 // grounds), and the ideas kept are reported as a job's result, which fills
-// as each idea grounds. Ideas are not stored as dinners: the household
-// acts on one later.
+// as each idea grounds. A job that keeps no idea, or fails, shows no idea:
+// nothing is made up instead (D-017). Ideas are not stored as dinners: the
+// household acts on one later.
 package ideas
 
 import (
@@ -12,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
@@ -43,10 +45,15 @@ const (
 	ReasonSearchNotConfigured = "search_not_configured"
 	// ReasonSearchFailed: the search provider failed.
 	ReasonSearchFailed = "search_failed"
+	// ReasonNoIdeasFound: every idea was dropped, by
+	// ideas_from_ingredients' rules, because no recipe grounds it, or, for
+	// a Quick only request, because its grounded recipe is not a Quick
+	// dinner.
+	ReasonNoIdeasFound = "no_ideas_found"
 )
 
 // Reasons are every failure reason of the job.
-var Reasons = []string{ReasonAIFailed, ReasonSearchNotConfigured, ReasonSearchFailed}
+var Reasons = []string{ReasonAIFailed, ReasonSearchNotConfigured, ReasonSearchFailed, ReasonNoIdeasFound}
 
 // InvalidError is a request the household must correct, such as an empty
 // ingredient list.
@@ -153,7 +160,9 @@ type Idea struct {
 }
 
 // Result is the KindFromIngredients result, published as the job goes:
-// its stage, the request, the ideas grounded so far in the model's order,
+// its stage, the request, the ideas grounded so far in the model's order
+// (an idea that grounds sooner than one before it is shown first, and the
+// earlier one is put back in its place when it grounds),
 // and how many ideas were dropped, by ideas_from_ingredients' rules,
 // because no recipe grounds them, or, for a Quick only request, because
 // the grounded recipe is not a Quick dinner.
@@ -179,19 +188,29 @@ func IsQuick(method string, minutes *int) bool {
 // most the number still wanted at a time, until skills.IdeasKept are kept
 // or none are left. An idea no recipe grounds is dropped, and so, for a
 // Quick only request, is one whose grounded recipe is not a Quick dinner;
-// any other grounding failure fails the job, as does
-// ideas_from_ingredients failing, with no idea made up instead. The
-// result is published at each stage and again as each idea is kept, so it
-// fills as the ideas ground. The job may end done with no ideas, when
-// every one was dropped.
+// when every idea is dropped the job fails with ReasonNoIdeasFound. Any
+// other grounding failure fails the job, as does ideas_from_ingredients
+// failing, with no idea made up instead. The result is published at each
+// stage and again as each idea is kept, so it fills as the ideas ground.
+// Before the job fails, its result is published again with no ideas, so a
+// failed job never shows ideas kept before the failure.
 func (s *Service) run(ctx context.Context, p FromIngredientsJob, publish func(Result) error) (Result, error) {
 	res, err := s.fill(ctx, p, publish)
 	if err != nil {
+		if ctx.Err() != nil {
+			return Result{}, err
+		}
 		var failure *jobs.Failure
-		if ctx.Err() == nil && errors.As(err, &failure) {
+		if errors.As(err, &failure) {
 			// Only the code is logged: the error may quote a model's or
 			// search provider's response.
 			s.logger.InfoContext(ctx, "ideas from ingredients failed", "reason", failure.Code)
+		}
+		if len(res.Ideas) > 0 {
+			res.Ideas = []Idea{}
+			if perr := publish(res); perr != nil {
+				return Result{}, fmt.Errorf("ideas: clear failed job's ideas: %w", perr)
+			}
 		}
 		return Result{}, err
 	}
@@ -199,83 +218,102 @@ func (s *Service) run(ctx context.Context, p FromIngredientsJob, publish func(Re
 }
 
 // fill does run's work, returning a *jobs.Failure for a failure the
-// household may see.
+// household may see. On failure it returns the result last published with
+// the error, so run can clear its ideas.
 func (s *Service) fill(ctx context.Context, p FromIngredientsJob, publish func(Result) error) (Result, error) {
 	res := Result{Stage: StageSuggesting, Ingredients: p.Ingredients, QuickOnly: p.QuickOnly, Ideas: []Idea{}}
 	if err := publish(res); err != nil {
-		return Result{}, err
+		return res, err
 	}
 	in := skills.IdeasRequest{Ingredients: p.Ingredients, QuickOnly: p.QuickOnly}
 	out, err := s.generate(ctx, skills.IdeasScope(in), in)
 	if err != nil {
 		if ctx.Err() != nil {
-			return Result{}, ctx.Err()
+			return res, ctx.Err()
 		}
-		return Result{}, &jobs.Failure{Code: ReasonAIFailed}
+		return res, &jobs.Failure{Code: ReasonAIFailed}
 	}
 	res.Stage = StageGrounding
 	res.Dropped = len(out.Dropped)
 	if err := publish(res); err != nil {
-		return Result{}, err
+		return res, err
 	}
-	left := out.Ideas
-	for len(res.Ideas) < skills.IdeasKept && len(left) > 0 {
-		round := left[:min(skills.IdeasKept-len(res.Ideas), len(left))]
-		left = left[len(round):]
-		results, err := s.ground(ctx, round)
-		if err != nil {
-			return Result{}, err
-		}
-		for i, r := range results {
-			if r == nil {
+	// order[k] is the index in out.Ideas of res.Ideas[k], so each idea is
+	// put in its place in the model's order as it grounds.
+	var order []int
+	for next := 0; len(res.Ideas) < skills.IdeasKept && next < len(out.Ideas); {
+		first := next
+		round := out.Ideas[first:min(first+skills.IdeasKept-len(res.Ideas), len(out.Ideas))]
+		next += len(round)
+		err := s.ground(ctx, round, func(i int, gr *recipes.Grounded) error {
+			if gr == nil {
 				res.Dropped++
-				continue
+				return nil
 			}
-			idea := ideaOf(round[i], *r)
+			idea := ideaOf(round[i], *gr)
 			if p.QuickOnly && !idea.Quick {
 				res.Dropped++
-				continue
+				return nil
 			}
-			res.Ideas = append(res.Ideas, idea)
-			if err := publish(res); err != nil {
-				return Result{}, err
+			at := len(order)
+			for at > 0 && order[at-1] > first+i {
+				at--
 			}
+			order = slices.Insert(order, at, first+i)
+			res.Ideas = slices.Insert(res.Ideas, at, idea)
+			return publish(res)
+		})
+		if err != nil {
+			return res, err
 		}
+	}
+	if len(res.Ideas) == 0 {
+		return res, &jobs.Failure{Code: ReasonNoIdeasFound}
 	}
 	res.Stage = StageDone
 	return res, nil
 }
 
-// ground grounds ideas by their search queries and returns one result per
-// idea, in order: its grounding, or nil when no recipe grounds it. Any
-// other failure fails the job.
-func (s *Service) ground(ctx context.Context, ideas []skills.Idea) ([]*recipes.Grounded, error) {
+// ground grounds ideas by their search queries and calls kept, one call at
+// a time, as each idea grounds, with its index in ideas and its
+// grounding, or nil when no recipe grounds it. Any other grounding
+// failure, or kept failing, stops the groundings still running and is
+// returned, as a *jobs.Failure when the household may see it.
+func (s *Service) ground(ctx context.Context, ideas []skills.Idea, kept func(i int, gr *recipes.Grounded) error) error {
+	groundCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	reqs := make([]recipes.GroundRequest, len(ideas))
 	for i, idea := range ideas {
 		reqs[i] = recipes.GroundRequest{DishName: idea.Name, Query: idea.SearchQuery}
 	}
-	results := s.grounder.GroundMany(ctx, reqs)
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	out := make([]*recipes.Grounded, len(results))
-	for i, r := range results {
+	var failed error
+	s.grounder.GroundEach(groundCtx, reqs, func(i int, r recipes.GroundResult) {
+		if failed != nil {
+			return
+		}
 		var ungroundable *recipes.ErrUngroundable
 		switch {
 		case r.Err == nil:
-			out[i] = &r.Grounded
+			failed = kept(i, &r.Grounded)
 		case errors.As(r.Err, &ungroundable):
+			failed = kept(i, nil)
 		case errors.Is(r.Err, recipes.ErrSearchNotConfigured):
-			return nil, &jobs.Failure{Code: ReasonSearchNotConfigured}
+			failed = &jobs.Failure{Code: ReasonSearchNotConfigured}
 		case errors.Is(r.Err, recipes.ErrSearchFailed):
-			return nil, &jobs.Failure{Code: ReasonSearchFailed}
+			failed = &jobs.Failure{Code: ReasonSearchFailed}
 		case errors.Is(r.Err, recipes.ErrNormalizeFailed):
-			return nil, &jobs.Failure{Code: ReasonAIFailed}
+			failed = &jobs.Failure{Code: ReasonAIFailed}
 		default:
-			return nil, fmt.Errorf("ideas: ground %q: %w", ideas[i].Name, r.Err)
+			failed = fmt.Errorf("ideas: ground %q: %w", ideas[i].Name, r.Err)
 		}
+		if failed != nil {
+			cancel()
+		}
+	})
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	return out, nil
+	return failed
 }
 
 // ideaOf is idea as grounded by gr.

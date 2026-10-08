@@ -3,9 +3,12 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -161,6 +164,61 @@ func TestPostIdeasFromIngredientsRunsTheJob(t *testing.T) {
 	}
 	if got["recipe_id"] == "" || got["photo_url"] == "" {
 		t.Errorf("idea = %v, want a recipe and photo", got)
+	}
+}
+
+func TestFailedIdeasJobShowsNoIdeas(t *testing.T) {
+	t.Parallel()
+	idea := func(name string) string {
+		return fmt.Sprintf(`{"name":%q,"uses":["rice"],"missing":[],"est_minutes":30,"method":"stovetop","difficulty":"easy","search_query":%q}`, name, name)
+	}
+	for _, tc := range []struct {
+		name string
+		// grounds are the ideas a recipe grounds; the others ground none.
+		grounds []string
+		ideas   []string
+		fail    map[string]error
+		code    string
+	}{
+		{"no idea kept", nil, []string{"Mystery Stew"}, nil, "no_ideas_found"},
+		{"a later round fails after ideas were shown",
+			[]string{"Fried Rice", "Rice Bowls", "Rice Soup", "Rice Salad"},
+			[]string{"Fried Rice", "Mystery Stew", "Rice Bowls", "Rice Soup", "Rice Salad", "Rice Pilaf"},
+			map[string]error{"Rice Pilaf": errors.New("boom")}, "search_failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			model, normalize := &llm.Fake{}, &llm.Fake{}
+			search := &recipestest.Search{Results: map[string][]recipes.Candidate{}, Fail: tc.fail}
+			pages := &recipestest.Pages{Bodies: map[string][]byte{}}
+			images := &recipestest.Images{JPEGs: map[string][]byte{}}
+			for i, name := range tc.grounds {
+				page, photo := fmt.Sprintf("https://r.example/%d", i), fmt.Sprintf("https://r.example/%d.jpg", i)
+				search.Results[name] = []recipes.Candidate{{URL: page}}
+				pages.Bodies[page] = recipestest.RecipePage(name, "R Kitchen", photo, 25)
+				images.JPEGs[photo] = recipestest.JPEG(t, 400, 320, uint8(i+1))
+				normalize.QueueGenerate(recipestest.NormalizedReply("stovetop", 25))
+			}
+			list := make([]string, len(tc.ideas))
+			for i, name := range tc.ideas {
+				list[i] = idea(name)
+			}
+			js := `{"ideas":[` + strings.Join(list, ",") + `]}`
+			model.QueueGenerate(llm.GenerateResult{Response: llm.Response{Text: js, JSON: json.RawMessage(js)}})
+			h, _ := newIdeasRouter(t, model, normalize, search, pages, images, true)
+
+			rec, body := callDinners(t, h, http.MethodPost, ideasPath, `{"ingredients": ["rice"], "quick_only": false}`)
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("POST = %d: %s", rec.Code, rec.Body)
+			}
+			job := waitJob(t, h, body["jobId"].(string))
+			if job["status"] != "failed" || job["error"] != tc.code {
+				t.Fatalf("GET job = %v, want failed with %s", job, tc.code)
+			}
+			if res, _ := job["result"].(map[string]any); res == nil || len(res["ideas"].([]any)) != 0 {
+				t.Fatalf("failed job result = %v, want no ideas", job["result"])
+			}
+		})
 	}
 }
 

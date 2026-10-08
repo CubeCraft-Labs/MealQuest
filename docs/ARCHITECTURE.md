@@ -100,7 +100,7 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 | `suggestion_batches` | trigger, status, ai_run_id. |
 | `suggestions` | dinner_id, batch_id, name (the name the dish was suggested under, kept whatever its dinner is later renamed, so a Pass stays an immutable record every later batch dedupes against), reason, cited_regular_ids (JSON), status, decided_at. |
 | `week_plans` | week_start (unique), status (`draft` / `synced` / `changed`), ai_note, ai_run_id, calendar_synced_at, revision (raised by every swap and stored draft). |
-| `plan_days` | plan_id, date (unique per plan), dinner_id, is_new, calendar_event_id. |
+| `plan_days` | plan_id, date (unique per plan), dinner_id, is_new, calendar_event_id (set while the chosen calendar shows the day as planned; cleared when its dinner changes, another calendar is chosen or Google Calendar is disconnected). |
 | `rotation_reviews` | dinner_id + plan_date (unique), status, decision (`keep` / `drop` / `not_made`), name (set only by a drop: the dinner's name when dropped, kept whatever it is later renamed, so a drop stays among the passed names), decided_at, updated_by. |
 | `shopping_lists` | week_start (unique), plan_id, title, status (`current` / `archived`), sent_to_chat_at, frozen_at. |
 | `shopping_groups` / `shopping_items` | One group per dinner/day; item name, qty, needed (bool), position. |
@@ -350,8 +350,9 @@ automatic** (D-021).
   409 `draft_running` and enqueues nothing. The job runs the `draft_week` skill on every Regular
   and every Quest log dinner no other plan for the current or a later week
   has, with the household context and last week's dinners, and stores the
-  week: a new plan is `draft`; a redraft keeps each day's
-  `calendar_event_id`, and a `synced` or `changed` plan becomes `changed`.
+  week: a new plan is `draft`; a redraft keeps the `calendar_event_id` of
+  each day whose dinner stays the same and clears it for the others; a
+  `synced` or `changed` plan becomes `changed`.
   Drafting over a `synced` or `changed` plan needs `{"confirm": true}`, else
   409 `confirm_required`; a plan synced while an unconfirmed draft runs is
   left as it is and the job fails `confirm_required`. The job reads the
@@ -366,8 +367,8 @@ automatic** (D-021).
   dinners fails the job `not_enough_dinners`, draft_week failing
   `ai_failed`. `PUT /api/v1/plans/{weekStart}/days/{date}` takes
   `{dinner_id}`, a Regular or Quest log dinner, swaps the day, recomputes
-  `is_new`, moves a `synced` plan to `changed`, and answers 200 with the
-  plan. A date outside the week is 400 `invalid_date`, an unknown dinner or
+  `is_new`, clears the day's `calendar_event_id`, moves a `synced` plan to
+  `changed`, and answers 200 with the plan. A date outside the week is 400 `invalid_date`, an unknown dinner or
   a week with no plan 404, any other dinner 409 `dinner_not_plannable`, and
   a dinner already on another day of the week 409 `dinner_already_planned`.
 - Rotation check (`plan.Service`, D-021). This release provides the
@@ -639,8 +640,10 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
     `connected_at` and redirects to `/settings/calendar`. A reconnect keeps
     the chosen calendar and clears `last_sync_error`.
   - `DELETE /api/v1/integrations/google` (CSRF-checked) revokes the token at
-    Google, then deletes the row; a token Google reports as `invalid_token`
-    counts as revoked, and any other revoke failure keeps the connection.
+    Google, then deletes the row and, in the same transaction, forgets every
+    pushed event (see Push to Calendar); a token Google reports as
+    `invalid_token` counts as revoked, and any other revoke failure keeps
+    the connection and its pushed events.
   - `GET /api/v1/integrations/google/calendars` trades the stored refresh
     token for an access token and reads every page of the Calendar API's
     `users/me/calendarList`, answering `[{id, summary, primary,
@@ -667,8 +670,52 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
     leave a stored token Google has already revoked.
   - No response, log line or error ever holds a token or Google's response
     text.
-- **Deterministic event ids**; each plan day records its
-  `calendar_event_id`.
+- Push to Calendar: `POST /api/v1/plans/{weekStart}/push-calendar`
+  (CSRF-checked, `plan.Service.Push` writing through
+  `gcal.Service.PushEvents`) answers 200 with the plan as synced. Each day
+  is one event in the chosen calendar: summary `Dinner: {name}`, from the
+  household `dinner_time` on that date for 60 minutes, as `dateTime` with
+  the household `timeZone` (so its UTC instant follows a DST change within
+  the week), and a description of the dinner's name, `Start by {time}` for
+  a crock-pot dinner of known minutes, and
+  `{MEALQUEST_PUBLIC_URL}/dinner/{id}`.
+  - **Deterministic event ids**: lowercase unpadded base32hex of SHA-256 of
+    `mealquest|{weekStart}|{date}` — 52 characters of `a`–`v` and `0`–`9`,
+    within Google's id rule. Each event is inserted; a 409 (the id exists,
+    even as an event deleted in Calendar) updates it instead, with status
+    `confirmed`, so pushing again never adds a second event.
+  - A push writes the days whose `calendar_event_id` is empty (never
+    pushed, swapped, or redrafted to another dinner). When none is, it
+    writes every day again, which puts back anything changed in Calendar.
+  - A stored `calendar_event_id` is always an event on the chosen calendar.
+    Choosing a calendar other than the stored one, and disconnecting (which
+    leaves none chosen; connecting again chooses none either), clear every
+    day's `calendar_event_id` in the same transaction as the choice or the
+    delete, and edit each plan that had one (revision raised, `synced` →
+    `changed`), so the next push writes the whole week to the calendar then
+    chosen and a push that read such a plan before is refused (409
+    `plan_changed`). A reconnect while connected keeps the chosen calendar,
+    so it keeps the event ids. Nothing else clears the choice or the stored
+    token: a grant Google refuses leaves the connection as it is.
+  - Only a push that wrote all its events is recorded, in one transaction:
+    the plan becomes `synced` with `calendar_synced_at`, and each day
+    written stores its event id. A push that failed part way records
+    nothing and leaves the status as it was; pushing again updates the
+    events already written. The record runs under the account lock, in the
+    same hold as the event writes, so the chosen calendar cannot change
+    between them. A plan swapped or redrafted while it was being
+    pushed, or whose events another calendar choice cleared (its revision
+    moved), is not recorded: 409 `plan_changed`.
+  - Errors: 409 `not_connected`, 409 `no_calendar` (connected, no calendar
+    chosen), 409 `calendar_unavailable` (the chosen calendar was deleted —
+    Google 404 — or is no longer writable — 403 `requiredAccessLevel`;
+    choose another), 502 `reconnect_required` (the grant is refused; the
+    connection is left as it is), 502 `google_failed`, 404 when the week
+    has no plan, 400 `invalid_week`. The push holds the account lock
+    across its Google requests and its record, like listing and choosing.
+  - The week's Supply run (Feature 17) is made from a pushed plan: a
+    successful `Push` returns that plan, which is where Feature 17 hooks
+    in. Nothing here generates a shopping list.
 
 ## Frontend
 

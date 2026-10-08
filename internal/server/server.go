@@ -133,6 +133,7 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Get("/plans/{weekStart}", getPlan(logger, planSvc))
 	apiV1.Post("/plans/{weekStart}/draft", postPlanDraft(logger, planSvc))
 	apiV1.Put("/plans/{weekStart}/days/{date}", putPlanDay(logger, planSvc))
+	apiV1.Post("/plans/{weekStart}/push-calendar", postPlanPush(logger, planSvc))
 	apiV1.Get("/rotation-reviews", getRotationReviews(logger, planSvc))
 	apiV1.Post("/dinners/{id}/rotation-review", postRotationReview(logger, planSvc))
 	// connect and callback are top-level browser navigations, so they are

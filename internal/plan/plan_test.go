@@ -2,12 +2,15 @@ package plan_test
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -18,9 +21,12 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/llm"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal/gcaltest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secretbox"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/migrations"
 )
@@ -30,6 +36,9 @@ var (
 	week      = mustDate("2026-10-12")
 	weekDates = []string{"2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16", "2026-10-17", "2026-10-18"}
 )
+
+// publicURL is MEALQUEST_PUBLIC_URL in these tests.
+var publicURL = &url.URL{Scheme: "https", Host: "meals.example.com"}
 
 func mustDate(s string) store.LocalDate {
 	d, err := store.ParseLocalDate(s)
@@ -44,6 +53,9 @@ type env struct {
 	st     *store.Store
 	runner *jobs.Runner
 	model  *llm.Fake
+	// google is the fake Google the service pushes to through gcal.
+	google *gcaltest.Google
+	gcal   *gcal.Service
 	// ids are the seeded dinners' ids by name.
 	ids map[string]string
 
@@ -55,7 +67,8 @@ type env struct {
 // America/New_York with dinner time 17:30, the Regulars below and Quest
 // log dinners Pad Thai and Shawarma Bowls, and an unstarted job runner
 // with two workers. It drafts through the real harness and draft_week with
-// the scripted e.model.
+// the scripted e.model, and pushes through gcal to e.google, which starts
+// unconnected.
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	ctx := t.Context()
@@ -111,7 +124,26 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.svc, err = plan.NewService(st, drafter, e.runner, logger)
+	e.google = gcaltest.New(t, "https://meals.example.com"+gcal.CallbackPath)
+	key := make([]byte, secretbox.KeySize)
+	rand.Read(key)
+	box, err := secretbox.New(base64.StdEncoding.EncodeToString(key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.gcal, err = gcal.NewService(st, box, gcal.Config{
+		ClientID:     gcaltest.ClientID,
+		ClientSecret: gcaltest.ClientSecret,
+		PublicURL:    publicURL,
+		SecretKey:    []byte("server-secret-key"),
+		Endpoint:     e.google.Endpoint(),
+		RevokeURL:    e.google.RevokeURL(),
+		CalendarAPI:  e.google.CalendarAPI(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.svc, err = plan.NewService(st, drafter, e.runner, e.gcal, publicURL, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -781,12 +813,26 @@ func TestDraftOverSyncedOrChangedPlanNeedsConfirm(t *testing.T) {
 			if got := dayNames(p); !slices.Equal(got, reversed) {
 				t.Errorf("days = %v, want %v", got, reversed)
 			}
-			var events int
-			if err := e.st.Reader.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM plan_days WHERE calendar_event_id = 'ev-' || date`).Scan(&events); err != nil {
+			// Reversed, only Thursday keeps its dinner, so only Thursday
+			// keeps its event id: Calendar no longer shows the others as
+			// planned.
+			rows, err := e.st.Reader.QueryContext(t.Context(), `SELECT date FROM plan_days WHERE calendar_event_id = 'ev-' || date ORDER BY date`)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if events != 7 {
-				t.Errorf("%d days kept their calendar event id, want 7", events)
+			var kept []string
+			for rows.Next() {
+				var date string
+				if err := rows.Scan(&date); err != nil {
+					t.Fatal(err)
+				}
+				kept = append(kept, date)
+			}
+			if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(kept, []string{"2026-10-15"}) {
+				t.Errorf("days that kept their calendar event id = %v, want only the unchanged 2026-10-15", kept)
 			}
 		})
 	}

@@ -109,8 +109,8 @@ type Config struct {
 	CalendarAPI string
 }
 
-// Service connects and disconnects the household's Google account and
-// chooses the calendar MealQuest pushes to.
+// Service connects and disconnects the household's Google account,
+// chooses the calendar MealQuest pushes to and writes events to it.
 // MealQuest runs as one process, so the service's in-memory lock and pending
 // states see every request.
 type Service struct {
@@ -128,8 +128,8 @@ type Service struct {
 	// account serializes every use of and change to the connected account —
 	// a connect's exchange and store, a disconnect's read, revoke and delete,
 	// a calendar listing's read and Calendar API calls, a calendar choice's
-	// listing and store — across the requests to Google and the database
-	// write. Google revokes the whole grant, so a revoke overlapping a
+	// listing and store, an event push's read, event writes and record —
+	// across the requests to Google and the database write. Google revokes the whole grant, so a revoke overlapping a
 	// connect would also kill the token the connect stores.
 	account sync.Mutex
 
@@ -342,6 +342,11 @@ func (s *Service) store(ctx context.Context, sealed []byte) error {
 // connection. A token Google no longer knows (the household already removed
 // MealQuest's access in their Google account) counts as revoked. Any other
 // revoke failure keeps the connection so the household can retry.
+//
+// No calendar is chosen once disconnected, so the same transaction that
+// deletes the connection forgets every pushed event (forgetEvents): every
+// synced plan becomes changed, and the next push after connecting again and
+// choosing a calendar writes the whole week.
 func (s *Service) Disconnect(ctx context.Context) error {
 	s.account.Lock()
 	defer s.account.Unlock()
@@ -359,10 +364,13 @@ func (s *Service) Disconnect(ctx context.Context) error {
 	if err := s.revoke(ctx, string(token)); err != nil {
 		return err
 	}
-	if err := db.New(s.st.Writer).DeleteIntegrationsGoogle(ctx); err != nil {
-		return fmt.Errorf("gcal: delete Google integration: %w", err)
-	}
-	return nil
+	return s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		q := db.New(tx)
+		if err := q.DeleteIntegrationsGoogle(ctx); err != nil {
+			return fmt.Errorf("gcal: delete Google integration: %w", err)
+		}
+		return forgetEvents(ctx, q, store.Timestamp{Time: s.now().UTC().Truncate(time.Millisecond)}.String())
+	})
 }
 
 // RevokeError is a revoke Google refused or that failed in transit. Its text

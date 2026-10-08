@@ -7,7 +7,7 @@ WHERE week_start = ?;
 -- name: ListPlanDays :many
 -- The days of plan plan_id with their dinners, Monday first. A day with
 -- no dinner is left out.
-SELECT plan_days.date, plan_days.is_new, sqlc.embed(dinners)
+SELECT plan_days.date, plan_days.is_new, plan_days.calendar_event_id, sqlc.embed(dinners)
 FROM plan_days
 JOIN dinners ON dinners.id = plan_days.dinner_id
 WHERE plan_days.plan_id = ?
@@ -25,19 +25,58 @@ SET status = ?, ai_note = ?, revision = revision + 1, updated_at = ?
 WHERE id = ?;
 
 -- name: PutPlanDay :exec
--- Plans dinner_id on date of plan_id, keeping the day's calendar event id
--- when the day exists.
+-- Plans dinner_id on date of plan_id. An existing day keeps its calendar
+-- event id while its dinner stays the same; a new dinner clears it, since
+-- Calendar no longer shows the day as planned.
 INSERT INTO plan_days (id, plan_id, date, dinner_id, is_new, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (plan_id, date) DO UPDATE
-SET dinner_id = excluded.dinner_id, is_new = excluded.is_new, updated_at = excluded.updated_at;
+SET dinner_id = excluded.dinner_id, is_new = excluded.is_new,
+	calendar_event_id = CASE WHEN plan_days.dinner_id IS excluded.dinner_id THEN plan_days.calendar_event_id END,
+	updated_at = excluded.updated_at;
 
 -- name: SwapPlanDay :execrows
--- Plans dinner_id on an existing day of plan_id; a date the plan does not
--- have is left as it is (0 rows).
+-- Plans dinner_id on an existing day of plan_id, clearing its calendar
+-- event id since Calendar no longer shows the day as planned; a date the
+-- plan does not have is left as it is (0 rows).
 UPDATE plan_days
-SET dinner_id = ?, is_new = ?, updated_at = ?
+SET dinner_id = ?, is_new = ?, calendar_event_id = NULL, updated_at = ?
 WHERE plan_id = ? AND date = ?;
+
+-- name: SetPlanDayCalendarEvent :execrows
+-- Records that the event calendar_event_id on Calendar shows date of
+-- plan_id as planned.
+UPDATE plan_days
+SET calendar_event_id = ?, updated_at = ?
+WHERE plan_id = ? AND date = ?;
+
+-- name: MarkWeekPlanSynced :execrows
+-- Records a Push to Calendar of plan id as it was at revision: the plan
+-- becomes synced. A plan edited since (another revision) is left as it is
+-- (0 rows).
+UPDATE week_plans
+SET status = 'synced', calendar_synced_at = ?, updated_at = ?
+WHERE id = ? AND revision = ?;
+
+-- name: MarkCalendarPlansEdited :exec
+-- Records that Calendar no longer shows the days with a calendar event id
+-- as planned, since another calendar or none is chosen: every plan with
+-- such a day is edited as MarkWeekPlanEdited does, so a synced plan becomes
+-- changed and a push that read it before is refused.
+UPDATE week_plans
+SET status = CASE WHEN status = 'synced' THEN 'changed' ELSE status END,
+	revision = revision + 1,
+	updated_at = ?
+WHERE EXISTS (
+	SELECT 1 FROM plan_days
+	WHERE plan_days.plan_id = week_plans.id AND plan_days.calendar_event_id IS NOT NULL
+);
+
+-- name: ClearCalendarEvents :exec
+-- Clears every day's calendar event id: none is on the chosen calendar.
+UPDATE plan_days
+SET calendar_event_id = NULL, updated_at = ?
+WHERE calendar_event_id IS NOT NULL;
 
 -- name: MarkWeekPlanEdited :exec
 -- Records an edit of plan id, raising its revision: a synced plan becomes

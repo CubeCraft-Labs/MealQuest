@@ -1,7 +1,9 @@
 // Package gcaltest provides a fake Google OAuth server for tests of the
 // Google Calendar connection: a token endpoint that checks the client, the
-// redirect URI and PKCE, and a revoke endpoint that records what it revoked.
-// It never touches the network beyond its own httptest server.
+// redirect URI and PKCE and issues a distinct refresh token per exchange, and
+// a revoke endpoint that, like Google's, revokes the whole grant: every token
+// issued so far. It never touches the network beyond its own httptest
+// server.
 package gcaltest
 
 import (
@@ -10,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -19,7 +22,9 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal"
 )
 
-// Fixed credentials and tokens the fake issues and expects.
+// Fixed credentials and tokens the fake issues and expects. The first
+// exchange issues RefreshToken; exchange n after it issues RefreshToken
+// followed by "-n", so every issued refresh token contains RefreshToken.
 const (
 	ClientID     = "mealquest-test.apps.googleusercontent.com"
 	ClientSecret = "google-client-s3cret-4f1c"
@@ -49,6 +54,19 @@ type Google struct {
 	codes        map[string]string // code -> PKCE challenge
 	tokenCalls   int
 	revoked      []string
+	// issued is every refresh token issued, in order; dead is those a
+	// revoke has invalidated.
+	issued []string
+	dead   map[string]bool
+	// tokenHold and revokeHold, when set, stop the next request to that
+	// endpoint.
+	tokenHold, revokeHold *hold
+}
+
+// hold stops one request: arrived is closed when it arrives, and it goes on
+// once release is closed.
+type hold struct {
+	arrived, release chan struct{}
 }
 
 // New starts a fake Google that requires redirectURL at its token endpoint.
@@ -61,6 +79,7 @@ func New(t *testing.T, redirectURL string) *Google {
 		tokenStatus:  http.StatusOK,
 		revokeStatus: http.StatusOK,
 		codes:        map[string]string{},
+		dead:         map[string]bool{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /token", g.token)
@@ -138,6 +157,55 @@ func (g *Google) Revoked() []string {
 	return append([]string(nil), g.revoked...)
 }
 
+// Live reports whether token was issued by the fake and no revoke has
+// invalidated it since.
+func (g *Google) Live(token string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Contains(g.issued, token) && !g.dead[token]
+}
+
+// HoldToken stops the next token request after its refresh token is issued
+// and before it is answered, so a revoke can land in between. It returns a
+// channel closed when the request arrives and the function that lets it go
+// on.
+func (g *Google) HoldToken() (arrived <-chan struct{}, release func()) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.tokenHold = newHold()
+	return g.tokenHold.arrived, g.tokenHold.releaseFunc()
+}
+
+// HoldRevoke stops the next revoke request before Google acts on it. It
+// returns a channel closed when the request arrives and the function that
+// lets it go on.
+func (g *Google) HoldRevoke() (arrived <-chan struct{}, release func()) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.revokeHold = newHold()
+	return g.revokeHold.arrived, g.revokeHold.releaseFunc()
+}
+
+func newHold() *hold {
+	return &hold{arrived: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (h *hold) releaseFunc() func() {
+	var once sync.Once
+	return func() { once.Do(func() { close(h.release) }) }
+}
+
+// wait stops the request at h, if any, without holding g.mu.
+func (g *Google) wait(h *hold) {
+	if h == nil {
+		return
+	}
+	g.mu.Unlock()
+	close(h.arrived)
+	<-h.release
+	g.mu.Lock()
+}
+
 func (g *Google) token(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -168,8 +236,16 @@ func (g *Google) token(w http.ResponseWriter, r *http.Request) {
 	}
 	refresh := ""
 	if !g.omitRefresh {
-		refresh = fmt.Sprintf(`"refresh_token":%q,`, RefreshToken)
+		issue := RefreshToken
+		if n := len(g.issued); n > 0 {
+			issue = fmt.Sprintf("%s-%d", RefreshToken, n+1)
+		}
+		g.issued = append(g.issued, issue)
+		refresh = fmt.Sprintf(`"refresh_token":%q,`, issue)
 	}
+	h := g.tokenHold
+	g.tokenHold = nil
+	g.wait(h)
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"access_token":%q,%s"expires_in":3599,"scope":%q,"token_type":"Bearer"}`,
 		AccessToken, refresh, g.scope)
@@ -186,8 +262,18 @@ func (g *Google) revoke(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
+	h := g.revokeHold
+	g.revokeHold = nil
+	g.wait(h)
 	token := r.PostForm.Get("token")
 	g.revoked = append(g.revoked, token)
+	if g.revokeStatus == http.StatusOK && slices.Contains(g.issued, token) {
+		// Google revokes the grant, not just the token: every token issued
+		// to it so far stops working.
+		for _, t := range g.issued {
+			g.dead[t] = true
+		}
+	}
 	body := g.revokeBody
 	if body == "" && g.revokeStatus != http.StatusOK {
 		body = "cannot revoke " + token

@@ -290,6 +290,31 @@ func TestCompleteRefusesBadState(t *testing.T) {
 	}
 }
 
+// TestCompleteRefusesReplayedState presents a connect's cookie and state a
+// second time, with a second valid code from the same consent URL, as an
+// attacker holding a copy of the cookie could. The server refuses it,
+// whatever the browser did with the cleared cookie.
+func TestCompleteRefusesReplayedState(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	c := h.connect(t, session)
+	if _, err := h.callback(c, session, h.consented(c)); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	stored, _ := h.row(t)
+
+	_, err := h.callback(c, session, h.consented(c))
+	if !errors.Is(err, gcal.ErrBadState) {
+		t.Fatalf("replayed Complete error = %v, want ErrBadState", err)
+	}
+	if got := h.google.TokenCalls(); got != 1 {
+		t.Errorf("token endpoint called %d times, want once: the replayed code was exchanged", got)
+	}
+	if row, _ := h.row(t); !bytes.Equal(row.RefreshTokenCt, stored.RefreshTokenCt) {
+		t.Error("the replay replaced the stored token")
+	}
+}
+
 func TestCompleteRefusesMissingRefreshToken(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
@@ -369,6 +394,91 @@ func TestDisconnectRevokesAndClears(t *testing.T) {
 	if err := h.svc.Disconnect(context.Background()); !errors.Is(err, gcal.ErrNotConnected) {
 		t.Errorf("second Disconnect = %v, want ErrNotConnected", err)
 	}
+}
+
+// TestDisconnectRacingReconnect drives a disconnect and a reconnect into
+// each other at Google, with distinct tokens. However they interleave, the
+// end state is consistent: disconnected, or connected with a token Google
+// has not revoked.
+func TestDisconnectRacingReconnect(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		// hold stops the request the other operation must not slip past.
+		hold func(*gcaltest.Google) (<-chan struct{}, func())
+		// first is held at Google while second runs.
+		first, second func(h *harness, c connect, q url.Values) error
+	}{
+		{
+			// The disconnect has read the stored token and is revoking it
+			// when the reconnect would store a new one.
+			name:   "reconnect during revoke",
+			hold:   (*gcaltest.Google).HoldRevoke,
+			first:  disconnect,
+			second: reconnect,
+		},
+		{
+			// The reconnect's new token is issued but not yet stored when
+			// the disconnect would revoke the old one.
+			name:   "disconnect during exchange",
+			hold:   (*gcaltest.Google).HoldToken,
+			first:  reconnect,
+			second: disconnect,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t)
+			first := h.connect(t, session)
+			if _, err := h.callback(first, session, h.consented(first)); err != nil {
+				t.Fatal(err)
+			}
+			c := h.connect(t, session)
+			q := h.consented(c)
+
+			arrived, release := tc.hold(h.google)
+			defer release()
+			firstDone := make(chan error, 1)
+			go func() { firstDone <- tc.first(h, c, q) }()
+			<-arrived
+			secondDone := make(chan error, 1)
+			go func() { secondDone <- tc.second(h, c, q) }()
+			// Let the second operation run as far as it can while the first
+			// is held at Google: to the end when nothing serializes them.
+			select {
+			case err := <-secondDone:
+				secondDone <- err
+			case <-time.After(500 * time.Millisecond):
+			}
+			release()
+			for _, done := range []chan error{firstDone, secondDone} {
+				if err := <-done; err != nil {
+					t.Logf("operation: %v", err)
+				}
+			}
+
+			row, ok := h.row(t)
+			if !ok {
+				return
+			}
+			plain, err := h.box.Decrypt(row.RefreshTokenCt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !h.google.Live(string(plain)) {
+				t.Errorf("stored as connected with a revoked token (Google revoked %d tokens)", len(h.google.Revoked()))
+			}
+		})
+	}
+}
+
+func disconnect(h *harness, _ connect, _ url.Values) error {
+	return h.svc.Disconnect(context.Background())
+}
+
+func reconnect(h *harness, c connect, q url.Values) error {
+	_, err := h.callback(c, session, q)
+	return err
 }
 
 func TestDisconnectTokenAlreadyRevokedAtGoogle(t *testing.T) {

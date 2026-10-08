@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -82,9 +83,6 @@ var (
 	ErrScopes = errors.New("gcal: Google did not grant every Calendar permission")
 	// ErrNotConnected means no Google account is connected.
 	ErrNotConnected = errors.New("gcal: Google Calendar is not connected")
-	// ErrChanged means the connection changed while it was being
-	// disconnected.
-	ErrChanged = errors.New("gcal: Google Calendar connection changed during disconnect")
 )
 
 // Config is what NewService needs to talk to Google.
@@ -106,6 +104,8 @@ type Config struct {
 }
 
 // Service connects and disconnects the household's Google account.
+// MealQuest runs as one process, so the service's in-memory lock and pending
+// states see every request.
 type Service struct {
 	st        *store.Store
 	box       *secretbox.Box
@@ -115,6 +115,19 @@ type Service struct {
 	cookie    auth.FlowCookie
 	// now is the clock; tests replace it.
 	now func() time.Time
+
+	// account serializes every change to the connected account — a
+	// connect's exchange and store, a disconnect's read, revoke and delete —
+	// across the request to Google and the database write. Google revokes the
+	// whole grant, so a revoke overlapping a connect would also kill the
+	// token the connect stores.
+	account sync.Mutex
+
+	// pending holds the state of every connect started and not yet
+	// completed, with when it expires. Complete consumes a state once, so a
+	// replayed cookie finds it gone.
+	pendingMu sync.Mutex
+	pending   map[string]time.Time
 }
 
 // NewService returns the service over st, sealing refresh tokens with box.
@@ -147,6 +160,7 @@ func NewService(st *store.Store, box *secretbox.Box, cfg Config) (*Service, erro
 		client:    &http.Client{Timeout: googleTimeout, CheckRedirect: auth.CheckRedirect},
 		cookie:    auth.NewFlowCookie(connectCookieName, connectCookieKeyLabel, connectCookieTTL, cfg.SecretKey),
 		now:       time.Now,
+		pending:   map[string]time.Time{},
 	}, nil
 }
 
@@ -180,9 +194,11 @@ func (s *Service) Connect(w http.ResponseWriter, session auth.Session) (string, 
 		Verifier: oauth2.GenerateVerifier(),
 		Session:  sessionBinding(session),
 	}
-	if err := s.cookie.Set(w, &state, s.now()); err != nil {
+	now := s.now()
+	if err := s.cookie.Set(w, &state, now); err != nil {
 		return "", fmt.Errorf("gcal: set connect cookie: %w", err)
 	}
+	s.addPending(state.State, now)
 	return s.oauth.AuthCodeURL(state.State,
 		oauth2.AccessTypeOffline,
 		oauth2.ApprovalForce,
@@ -191,12 +207,12 @@ func (s *Service) Connect(w http.ResponseWriter, session auth.Session) (string, 
 }
 
 // Complete finishes the connect Google redirected r back with. It clears the
-// connect cookie, checks the state against it and session, exchanges the
-// code and stores the refresh token, sealed, with connected_at now. A
-// reconnect replaces the stored token and keeps the chosen calendar.
+// connect cookie, checks the state against it and session, consumes the
+// state, exchanges the code and stores the refresh token, sealed, with
+// connected_at now. A reconnect replaces the stored token and keeps the
+// chosen calendar.
 func (s *Service) Complete(w http.ResponseWriter, r *http.Request, session auth.Session) error {
 	ctx := r.Context()
-	// The connect cookie is single-use.
 	s.cookie.Clear(w)
 
 	var state connectState
@@ -210,6 +226,11 @@ func (s *Service) Complete(w http.ResponseWriter, r *http.Request, session auth.
 	if subtle.ConstantTimeCompare([]byte(sessionBinding(session)), []byte(state.Session)) != 1 {
 		return fmt.Errorf("%w: started by another session", ErrBadState)
 	}
+	// A copy of the cookie verifies until it expires, so the state is
+	// single-use only because it is consumed here.
+	if !s.consumePending(state.State) {
+		return fmt.Errorf("%w: already used", ErrBadState)
+	}
 	if q.Get("error") != "" {
 		// error and error_description are Google-supplied text; neither is
 		// kept.
@@ -220,6 +241,8 @@ func (s *Service) Complete(w http.ResponseWriter, r *http.Request, session auth.
 		return ErrNoCode
 	}
 
+	s.account.Lock()
+	defer s.account.Unlock()
 	token, err := s.oauth.Exchange(context.WithValue(ctx, oauth2.HTTPClient, s.client), code,
 		oauth2.VerifierOption(state.Verifier))
 	if err != nil {
@@ -236,6 +259,29 @@ func (s *Service) Complete(w http.ResponseWriter, r *http.Request, session auth.
 		return fmt.Errorf("gcal: seal refresh token: %w", err)
 	}
 	return s.store(ctx, sealed)
+}
+
+// addPending records state, started at now, as pending until the connect
+// cookie expires, and forgets expired ones.
+func (s *Service) addPending(state string, now time.Time) {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	for k, expires := range s.pending {
+		if !now.Before(expires) {
+			delete(s.pending, k)
+		}
+	}
+	s.pending[state] = now.Add(connectCookieTTL)
+}
+
+// consumePending removes state from the pending states, reporting whether
+// it was there.
+func (s *Service) consumePending(state string) bool {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	_, ok := s.pending[state]
+	delete(s.pending, state)
+	return ok
 }
 
 // checkScopes fails with ErrScopes unless token's granted scopes include
@@ -286,6 +332,8 @@ func (s *Service) store(ctx context.Context, sealed []byte) error {
 // MealQuest's access in their Google account) counts as revoked. Any other
 // revoke failure keeps the connection so the household can retry.
 func (s *Service) Disconnect(ctx context.Context) error {
+	s.account.Lock()
+	defer s.account.Unlock()
 	row, err := db.New(s.st.Reader).GetIntegrationsGoogle(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotConnected
@@ -300,12 +348,8 @@ func (s *Service) Disconnect(ctx context.Context) error {
 	if err := s.revoke(ctx, string(token)); err != nil {
 		return err
 	}
-	n, err := db.New(s.st.Writer).DeleteIntegrationsGoogle(ctx, row.RefreshTokenCt)
-	if err != nil {
+	if err := db.New(s.st.Writer).DeleteIntegrationsGoogle(ctx); err != nil {
 		return fmt.Errorf("gcal: delete Google integration: %w", err)
-	}
-	if n == 0 {
-		return ErrChanged
 	}
 	return nil
 }

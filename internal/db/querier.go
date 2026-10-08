@@ -50,10 +50,7 @@ type Querier interface {
 	// decided is left as it is (0 rows).
 	DecideSuggestion(ctx context.Context, arg DecideSuggestionParams) (int64, error)
 	DeleteAIRunsBefore(ctx context.Context, cutoff string) (int64, error)
-	// Deletes the row only while it still holds refresh_token_ct, so a
-	// connection made after the caller read the row is kept. Returns the number
-	// of rows deleted.
-	DeleteIntegrationsGoogle(ctx context.Context, refreshTokenCt []byte) (int64, error)
+	DeleteIntegrationsGoogle(ctx context.Context) error
 	DeleteRecipeIngredients(ctx context.Context, recipeID string) error
 	DeleteRecipeSteps(ctx context.Context, recipeID string) error
 	FailJob(ctx context.Context, arg FailJobParams) (int64, error)

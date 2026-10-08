@@ -115,8 +115,9 @@ func (c FlowCookie) Set(w http.ResponseWriter, v flowValue, now time.Time) error
 	return nil
 }
 
-// Clear removes the cookie. A callback clears it before reading, so it is
-// single-use.
+// Clear asks the browser to discard the cookie. A copy of it still verifies
+// until it expires, so a flow that must be single-use also consumes its
+// state on the server.
 func (c FlowCookie) Clear(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     c.name,

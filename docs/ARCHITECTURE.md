@@ -627,7 +627,10 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
     `access_type=offline`, `prompt=consent` and PKCE. Its `state` travels in
     the signed `__Host-mealquest_google` flow cookie (the same
     `auth.FlowCookie` mechanism as the login cookie), bound to the session by
-    a hash of the session's CSRF token.
+    a hash of the session's CSRF token. The service also keeps each started
+    connect's `state` in memory until the cookie expires; the callback
+    consumes it, so a replayed cookie is refused (`invalid_state`), and a
+    restart mid-connect means connecting again.
   - `GET /api/v1/integrations/google/callback` (the redirect URI:
     `MEALQUEST_PUBLIC_URL`'s origin plus this path) checks the state and
     session, exchanges the code, refuses a response with no refresh token
@@ -638,6 +641,10 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
   - `DELETE /api/v1/integrations/google` (CSRF-checked) revokes the token at
     Google, then deletes the row; a token Google reports as `invalid_token`
     counts as revoked, and any other revoke failure keeps the connection.
+  - Connect's exchange-and-store and disconnect's read-revoke-delete hold
+    one lock across the Google request and the database write: Google
+    revokes the whole grant, so a revoke overlapping a reconnect would
+    otherwise leave a stored token Google has already revoked.
   - No response, log line or error ever holds a token or Google's response
     text.
 - **Deterministic event ids**; each plan day records its

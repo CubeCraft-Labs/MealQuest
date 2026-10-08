@@ -90,9 +90,6 @@ func deleteGoogle(logger *slog.Logger, svc *gcal.Service) http.HandlerFunc {
 			w.WriteHeader(http.StatusNoContent)
 		case errors.Is(err, gcal.ErrNotConnected):
 			writeError(w, r, logger, http.StatusConflict, "not_connected", "Google Calendar is not connected")
-		case errors.Is(err, gcal.ErrChanged):
-			writeError(w, r, logger, http.StatusConflict, "conflict",
-				"the Google Calendar connection changed; reload and try again")
 		case errors.As(err, &revoke):
 			logger.WarnContext(r.Context(), "revoke Google access", "error", err)
 			writeError(w, r, logger, http.StatusBadGateway, "revoke_failed",

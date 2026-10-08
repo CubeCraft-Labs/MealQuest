@@ -106,12 +106,9 @@ ON CONFLICT (id) DO UPDATE SET
 	updated_at = excluded.updated_at
 RETURNING *;
 
--- name: DeleteIntegrationsGoogle :execrows
--- Deletes the row only while it still holds refresh_token_ct, so a
--- connection made after the caller read the row is kept. Returns the number
--- of rows deleted.
+-- name: DeleteIntegrationsGoogle :exec
 DELETE FROM integrations_google
-WHERE id = 1 AND refresh_token_ct = ?;
+WHERE id = 1;
 
 -- name: GetChatSettings :one
 -- Returns sql.ErrNoRows until the row exists.

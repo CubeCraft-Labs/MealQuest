@@ -43,6 +43,11 @@ type Querier interface {
 	CreateRecipeIngredient(ctx context.Context, arg CreateRecipeIngredientParams) error
 	CreateRecipeStep(ctx context.Context, arg CreateRecipeStepParams) error
 	CreateRotationReview(ctx context.Context, arg CreateRotationReviewParams) error
+	CreateShoppingGroup(ctx context.Context, arg CreateShoppingGroupParams) error
+	// A new item is needed until the household marks it "have it".
+	CreateShoppingItem(ctx context.Context, arg CreateShoppingItemParams) error
+	// A new, untitled Supply run: the title is written later, by the AI.
+	CreateShoppingList(ctx context.Context, arg CreateShoppingListParams) error
 	// name is the name the dish is suggested under, kept whatever its dinner is
 	// later renamed.
 	CreateSuggestion(ctx context.Context, arg CreateSuggestionParams) error
@@ -59,6 +64,8 @@ type Querier interface {
 	DeleteIntegrationsGoogle(ctx context.Context) error
 	DeleteRecipeIngredients(ctx context.Context, recipeID string) error
 	DeleteRecipeSteps(ctx context.Context, recipeID string) error
+	DeleteShoppingGroup(ctx context.Context, id string) error
+	DeleteShoppingItem(ctx context.Context, id string) error
 	FailJob(ctx context.Context, arg FailJobParams) (int64, error)
 	// Fails every unarchived dinner still pending whose grounding job for its
 	// current grounding_revision is no longer queued or running: the process
@@ -113,6 +120,9 @@ type Querier interface {
 	GetRecipeBySourceURL(ctx context.Context, sourceUrl string) (Recipe, error)
 	// Returns sql.ErrNoRows until the row exists.
 	GetRecipeSearchSettings(ctx context.Context) (RecipeSearchSetting, error)
+	// The Supply run of the week starting week_start. Returns sql.ErrNoRows
+	// when there is none.
+	GetShoppingList(ctx context.Context, weekStart string) (ShoppingList, error)
 	// A suggestion with its dinner. Returns sql.ErrNoRows for an unknown id.
 	GetSuggestion(ctx context.Context, id string) (GetSuggestionRow, error)
 	// The id of the job that runs batch batch_id.
@@ -164,6 +174,11 @@ type Querier interface {
 	ListRecentPassedNames(ctx context.Context, limit int64) ([]string, error)
 	ListRecipeIngredients(ctx context.Context, recipeID string) ([]RecipeIngredient, error)
 	ListRecipeSteps(ctx context.Context, recipeID string) ([]RecipeStep, error)
+	// The groups of list list_id, in list order.
+	ListShoppingGroups(ctx context.Context, listID string) ([]ShoppingGroup, error)
+	// The items of list list_id with their group's dinner, in list order: by
+	// group, then by item.
+	ListShoppingItems(ctx context.Context, listID string) ([]ListShoppingItemsRow, error)
 	// The ids of the dinners with status quest_log planned on date, on a plan
 	// of any status, that have no Rotation check for date yet.
 	ListTriedCandidates(ctx context.Context, date string) ([]string, error)
@@ -191,6 +206,10 @@ type Querier interface {
 	// becomes synced. A plan edited since (another revision) is left as it is
 	// (0 rows).
 	MarkWeekPlanSynced(ctx context.Context, arg MarkWeekPlanSyncedParams) (int64, error)
+	MoveShoppingGroup(ctx context.Context, arg MoveShoppingGroupParams) error
+	// Places item id in group group_id at position with quantity qty; its
+	// name and needed flag are kept.
+	MoveShoppingItem(ctx context.Context, arg MoveShoppingItemParams) error
 	// Moves a dinner still suggested to status (quest_log or archived),
 	// recording updated_by; a dinner no longer suggested is left as it is
 	// (0 rows).
@@ -208,6 +227,8 @@ type Querier interface {
 	// Records a new draft over plan id: its status and note, raising its
 	// revision.
 	RedraftWeekPlan(ctx context.Context, arg RedraftWeekPlanParams) error
+	// Records a generation of list id from plan plan_id.
+	RegenerateShoppingList(ctx context.Context, arg RegenerateShoppingListParams) error
 	// An unknown id returns sql.ErrNoRows.
 	SetDinnerFavorite(ctx context.Context, arg SetDinnerFavoriteParams) (Dinner, error)
 	// Sets the chosen calendar; affects no row when nothing is connected.

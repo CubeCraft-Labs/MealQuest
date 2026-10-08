@@ -176,8 +176,8 @@ func TestMigrateEmbeddedMigrations(t *testing.T) {
 	if err := Migrate(context.Background(), s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled", got)
 	}
 }
 
@@ -197,8 +197,8 @@ func TestMigrateBootstrapThenEmbeddedInitApplies(t *testing.T) {
 	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled", got)
 	}
 	if !tableExists(t, s, "dinners") {
 		t.Error("table from 0001_init was not created")
@@ -759,5 +759,133 @@ func TestMigrateGoogleReconnectKeepsConnection(t *testing.T) {
 	}
 	if got != row {
 		t.Errorf("connection after 0015 = %s, want %s", got, row)
+	}
+}
+
+// migrateBefore applies every migration whose name sorts before prefix.
+func migrateBefore(t *testing.T, s *Store, prefix string) {
+	t.Helper()
+	before := fstest.MapFS{}
+	matches, err := fs.Glob(migrations.FS, "*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range matches {
+		if name >= prefix {
+			continue
+		}
+		body, err := fs.ReadFile(migrations.FS, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[name] = &fstest.MapFile{Data: body}
+	}
+	if err := Migrate(context.Background(), s.Writer, before); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// seedShopping stores two dinners, a plan with dinner-1 on 2026-10-13
+// and dinner-2 on 2026-10-14, and a titled list with a group of
+// groupDinner holding an item marked "have it".
+func seedShopping(t *testing.T, s *Store, groupDinner string) {
+	t.Helper()
+	for _, stmt := range []string{
+		`INSERT INTO dinners (id, name, normalized_name, status, origin, is_favorite, grounding_status, created_at, updated_at)
+			VALUES ('dinner-1', 'Pho', 'pho', 'regular', 'regular', 0, 'grounded', 'c', 'u'),
+			       ('dinner-2', 'Ramen', 'ramen', 'regular', 'regular', 0, 'grounded', 'c', 'u'),
+			       ('dinner-3', 'Laksa', 'laksa', 'regular', 'regular', 0, 'grounded', 'c', 'u')`,
+		`INSERT INTO week_plans (id, week_start, status, created_at, updated_at)
+			VALUES ('plan-1', '2026-10-12', 'synced', 'c', 'u')`,
+		`INSERT INTO plan_days (id, plan_id, date, dinner_id, is_new, created_at, updated_at)
+			VALUES ('day-1', 'plan-1', '2026-10-13', 'dinner-1', 0, 'c', 'u'),
+			       ('day-2', 'plan-1', '2026-10-14', 'dinner-2', 0, 'c', 'u')`,
+		`INSERT INTO shopping_lists (id, week_start, plan_id, title, status, sent_to_chat_at, frozen_at, created_at, updated_at)
+			VALUES ('list-1', '2026-10-12', 'plan-1', 'Noodle week', 'current', 's', NULL, 'c1', 'u1')`,
+		`INSERT INTO shopping_groups (id, list_id, dinner_id, position, created_at, updated_at)
+			VALUES ('group-1', 'list-1', '` + groupDinner + `', 0, 'c2', 'u2')`,
+		`INSERT INTO shopping_items (id, group_id, name, qty, needed, position, created_at, updated_at)
+			VALUES ('item-1', 'group-1', 'rice noodles', '200 g', 0, 0, 'c3', 'u3')`,
+	} {
+		if _, err := s.Writer.Exec(stmt); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+}
+
+// TestMigrateShoppingListUntitled applies 0016, which rebuilds the
+// shopping tables: every row survives, a group takes its dinner's plan
+// day, and a list may then be untitled but never have an empty title.
+func TestMigrateShoppingListUntitled(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	migrateBefore(t, s, "0016")
+	seedShopping(t, s, "dinner-2")
+
+	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+
+	var got string
+	if err := s.Reader.QueryRowContext(ctx, `SELECT
+		l.id || '|' || l.week_start || '|' || l.plan_id || '|' || l.title || '|' || l.status || '|' ||
+		l.sent_to_chat_at || '|' || COALESCE(l.frozen_at, '') || '|' || l.created_at || '|' || l.updated_at || ' / ' ||
+		g.id || '|' || g.list_id || '|' || g.dinner_id || '|' || g.date || '|' || g.position || '|' || g.created_at || '|' || g.updated_at || ' / ' ||
+		i.id || '|' || i.group_id || '|' || i.name || '|' || i.qty || '|' || i.needed || '|' || i.position || '|' || i.created_at || '|' || i.updated_at
+		FROM shopping_lists l JOIN shopping_groups g ON g.list_id = l.id JOIN shopping_items i ON i.group_id = g.id`).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	const want = `list-1|2026-10-12|plan-1|Noodle week|current|s||c1|u1 / ` +
+		`group-1|list-1|dinner-2|2026-10-14|0|c2|u2 / ` +
+		`item-1|group-1|rice noodles|200 g|0|0|c3|u3`
+	if got != want {
+		t.Errorf("shopping rows after 0016 =\n %s\nwant\n %s", got, want)
+	}
+
+	if _, err := s.Writer.Exec(`UPDATE shopping_lists SET title = NULL WHERE id = 'list-1'`); err != nil {
+		t.Errorf("untitled list refused: %v", err)
+	}
+	for _, tc := range []struct{ name, stmt, want string }{
+		{"empty title", `UPDATE shopping_lists SET title = '' WHERE id = 'list-1'`, "CHECK constraint failed"},
+		{"group with no date", `UPDATE shopping_groups SET date = NULL WHERE id = 'group-1'`, "NOT NULL constraint failed"},
+		{"group of an unknown list", `UPDATE shopping_groups SET list_id = 'nope' WHERE id = 'group-1'`, "FOREIGN KEY constraint failed"},
+		{"item of an unknown group", `UPDATE shopping_items SET group_id = 'nope' WHERE id = 'item-1'`, "FOREIGN KEY constraint failed"},
+		{"needed not a boolean", `UPDATE shopping_items SET needed = 2 WHERE id = 'item-1'`, "CHECK constraint failed"},
+		{"second list of a week", `INSERT INTO shopping_lists (id, week_start, plan_id, status, created_at, updated_at)
+			VALUES ('list-2', '2026-10-12', 'plan-1', 'current', 'c', 'u')`, "UNIQUE constraint failed"},
+	} {
+		if _, err := s.Writer.Exec(tc.stmt); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: error %v, want %s", tc.name, err, tc.want)
+		}
+	}
+	for _, table := range []string{"shopping_lists_copy", "shopping_groups_copy", "shopping_items_copy"} {
+		if tableExists(t, s, table) {
+			t.Errorf("%s left behind", table)
+		}
+	}
+}
+
+// TestMigrateShoppingListUntitledRefusesUndatedGroup applies 0016 over a
+// group whose dinner is not on its list's plan: it has no plan day, so the
+// migration fails and leaves the database as it was.
+func TestMigrateShoppingListUntitledRefusesUndatedGroup(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	migrateBefore(t, s, "0016")
+	seedShopping(t, s, "dinner-3")
+
+	err := Migrate(ctx, s.Writer, migrations.FS)
+	if err == nil || !strings.Contains(err.Error(), "NOT NULL constraint failed: shopping_groups.date") {
+		t.Fatalf("Migrate = %v, want the undated group refused", err)
+	}
+	var n int
+	if err := s.Reader.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations WHERE version = '0016_shopping_list_untitled'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Error("0016 recorded as applied")
+	}
+	if tableExists(t, s, "shopping_groups_copy") {
+		t.Error("shopping_groups_copy left behind")
 	}
 }

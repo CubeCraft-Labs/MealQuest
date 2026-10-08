@@ -33,6 +33,8 @@ On office-srvr (10.60.1.14), as recorded on 2026-10-05:
 Elsewhere:
 
 - Admin access to Authentik at <https://auth.cubecraftlabs.com>.
+- Owner access to the Google Cloud project that holds MealQuest's OAuth
+  client (see "Google Calendar OAuth client").
 - SSH access to the Traefik host 10.60.1.33.
 - Cloudflare access for the `cubecraftlabs.com` zone, and admin access to
   both Pi-holes (10.60.1.101 `dns.ccl`, 10.60.1.85 `dns2.ccl`).
@@ -129,6 +131,7 @@ Values in use:
 | `MEALQUEST_OIDC_ISSUER` | `https://auth.cubecraftlabs.com/application/o/mealquest/` |
 | `MEALQUEST_OIDC_CLIENT_ID` | `i6zraqmWsF552b8nmte070LXz0SI5pRdArBxFxeq` (not a secret) |
 | `MEALQUEST_OIDC_ALLOWED_GROUPS` | `mealquest-admin` |
+| `MEALQUEST_GOOGLE_CLIENT_ID` | Client ID of the Google OAuth web client (not a secret; see "Google Calendar OAuth client") |
 | `MEALQUEST_SESSION_IDLE` / `MEALQUEST_SESSION_MAX` | `720h` / `4320h` |
 
 `MEALQUEST_HTTP_ADDR`, `MEALQUEST_DATA_DIR` and the `*_FILE` variables are
@@ -146,6 +149,7 @@ service refuses to start.
 | --- | --- | --- |
 | `secret_key` | base64 of 32 random bytes; encrypts stored secrets (AES-256-GCM) | `/run/secrets/secret_key` |
 | `oidc_client_secret` | Client Secret of the Authentik provider `mealquest` | `/run/secrets/oidc_client_secret` |
+| `google_client_secret` | Client secret of the Google OAuth web client | `/run/secrets/google_client_secret` |
 | `litestream_key` | dedicated SSH private key for the NAS (see "Backups") | `/etc/litestream/sftp_key` |
 | `searxng.env` | `SEARXNG_SECRET=<64 hex characters>`; SearXNG's secret key | not mounted; compose passes it as an environment variable |
 
@@ -156,11 +160,12 @@ it (as `env_file`), so it is owned by `overseer`, mode 0600.
 mkdir -p deploy/secrets && chmod 700 deploy/secrets
 head -c 32 /dev/urandom | base64 > deploy/secrets/secret_key
 printf '%s\n' '<Authentik client secret>' > deploy/secrets/oidc_client_secret
+printf '%s\n' '<Google OAuth client secret>' > deploy/secrets/google_client_secret
 # litestream_key: see "Backups" > "Database — Litestream"
-sudo chown 10001:10001 deploy/secrets/secret_key deploy/secrets/oidc_client_secret deploy/secrets/litestream_key
+sudo chown 10001:10001 deploy/secrets/secret_key deploy/secrets/oidc_client_secret deploy/secrets/google_client_secret deploy/secrets/litestream_key
 sudo chmod 600 deploy/secrets/*
 (umask 077; printf 'SEARXNG_SECRET=%s\n' "$(openssl rand -hex 32)" > deploy/secrets/searxng.env)
-sudo ls -la deploy/secrets   # three files mealquest mealquest, searxng.env overseer overseer; all -rw-------
+sudo ls -la deploy/secrets   # four files mealquest mealquest, searxng.env overseer overseer; all -rw-------
 ```
 
 The `mealquest` host user (uid/gid 10001) is created in "Media — nightly
@@ -237,6 +242,38 @@ curl -s -o /dev/null -w "%{http_code}\n" \
 On 2026-10-05 discovery returned 200 with issuer
 `https://auth.cubecraftlabs.com/application/o/mealquest/` and
 `id_token_signing_alg_values_supported: ["RS256"]`.
+
+## Google Calendar OAuth client
+
+Push to Calendar connects the household's Google account with a Google
+OAuth web client. MealQuest calls Google's OAuth and Calendar REST
+endpoints directly. **The service will not start without
+`MEALQUEST_GOOGLE_CLIENT_ID` and `deploy/secrets/google_client_secret`**,
+so create the client before deploying a release that contains Feature 16.
+
+In the Google Cloud console, in the project that holds MealQuest:
+
+| Object | Setting |
+| --- | --- |
+| API | Google Calendar API enabled |
+| OAuth consent screen | User type External; app name MealQuest; publishing status **In production** (a client left in Testing gets refresh tokens that expire after 7 days, so Push to Calendar would stop working a week after connecting) |
+| Scopes | `https://www.googleapis.com/auth/calendar.events` and `https://www.googleapis.com/auth/calendar.calendarlist.readonly` |
+| Credentials | OAuth client ID, application type **Web application**, name `mealquest` |
+| Authorized redirect URI | `https://mealquest.cubecraftlabs.com/api/v1/integrations/google/callback` (exactly; it is `MEALQUEST_PUBLIC_URL`'s origin plus that path) |
+| Client ID | in `deploy/.env` as `MEALQUEST_GOOGLE_CLIENT_ID` (not a secret) |
+| Client secret | in `deploy/secrets/google_client_secret` only |
+
+The app is unverified, so Google shows an "unverified app" warning on the
+consent screen; choose to continue. That is expected for a single-household
+deployment.
+
+To connect, a signed-in household member opens
+`https://mealquest.cubecraftlabs.com/api/v1/integrations/google/connect`
+(the Settings screen links there once it ships). MealQuest asks for offline
+access with consent always prompted, and lands back on
+`/settings/calendar` once the refresh token is stored. Disconnecting
+(`DELETE /api/v1/integrations/google`) revokes the token at Google and
+forgets it.
 
 ## Reverse proxy (Traefik)
 
@@ -491,42 +528,263 @@ Every deploy builds the image on the host from the checked-out commit.
 
 ### Deploy
 
+1. Check out and build the release. Nothing restarts yet; production
+   keeps running the previous SHA.
+
 ```sh
-cd /home/overseer/mealquest
-git fetch origin
-git rev-parse --short HEAD          # the SHA being replaced: note it for rollback
-git checkout --detach origin/main   # or a release tag
+cd /home/overseer/mealquest &&
+git fetch origin &&
+git rev-parse --short HEAD &&         # the SHA being replaced: note it for rollback
+git checkout --detach origin/main &&  # or a release tag
 docker compose -f deploy/compose.yaml build
-sudo systemctl restart mealquest    # applies the firewall, then down + up -d
-docker compose -f deploy/compose.yaml ps   # mealquest healthy, litestream up, searxng healthy
-curl -fsS http://10.60.1.14:8090/health
-curl -s -o /dev/null -w "%{http_code}\n" https://mealquest.cubecraftlabs.com/health   # 200
-git rev-parse HEAD                  # the deployed SHA
 ```
 
-Record the deployed SHA, the previous SHA and the date in the Maestro task
-for the release. Migrations run at start-up; the service refuses to start
-if the database has an applied migration it does not know.
+   Each command runs only if the one before it succeeded. If `echo $?`
+   then prints anything but `0`, stop: nothing has restarted.
+
+2. **Verify a restorable pre-deploy point — before the restart.** The
+   restart applies any new migrations, and an older SHA refuses the
+   upgraded schema, so the only rollback is restoring the database to a
+   point before the restart (see "Rollback to a previous SHA"). Check that
+   Litestream is replicating and that its replica restores to the current
+   data, with the commands from "Database — Litestream", "Restore the
+   database" and "Count check". First write `/tmp/mqcount.py` and
+   `/tmp/mqsnap.py` with the `cat` command in "Count check", then:
+
+```sh
+cd /home/overseer/mealquest && (
+set -eu   # any failed step ends the verification with a nonzero status
+D=/var/lib/docker/volumes/mealquest-data/_data
+fail() { echo "$*" >&2; exit 1; }
+point=
+# On the way out, run both clean-ups whatever happens, keep any failure,
+# and print the restore point only if every check and clean-up succeeded.
+trap 'st=$?
+rm -rf /tmp/mqcheck || st=1
+sudo sh -c "rm -f $D/predeploy-check.db*" || st=1
+if [ "$st" -eq 0 ] && [ -n "$point" ]; then echo "pre-deploy restore point: $point"
+else [ "$st" -ne 0 ] || st=1; echo "verification FAILED (status $st): do not restart" >&2; fi
+exit "$st"' EXIT
+rm -rf /tmp/mqcheck
+mkdir /tmp/mqcheck
+
+# a. Replication is running: litestream up, no errors in its log, and the
+#    newest LTX file (listed) is from the latest writes. Each command's own
+#    status is checked: grep exits 0 on a match, 1 on none, 2+ on an error.
+id=$(docker compose -f deploy/compose.yaml ps --status running --quiet litestream) || fail "docker compose ps failed"
+[ -n "$id" ] || fail "litestream is not running"
+docker compose -f deploy/compose.yaml logs --since 24h litestream > /tmp/mqcheck/litestream.log || fail "docker compose logs failed"
+gs=0
+grep -i error /tmp/mqcheck/litestream.log > /tmp/mqcheck/litestream.errors || gs=$?
+case "$gs" in
+  0) cat /tmp/mqcheck/litestream.errors; fail "litestream logged errors in the last 24h";;
+  1) ;;   # no match: no errors logged
+  *) fail "the litestream log scan failed (status $gs)";;
+esac
+docker compose -f deploy/compose.yaml exec -T litestream \
+  litestream ltx -config /etc/litestream.yml -level all /data/mealquest.db
+
+# b. Restore the replica to a scratch file beside the live database (the
+#    live files are not touched) and move it off the volume; then take a
+#    consistent snapshot of the live database next to it.
+docker compose -f deploy/compose.yaml run --rm --no-deps litestream \
+  restore -config /etc/litestream.yml -o /data/predeploy-check.db /data/mealquest.db
+sudo sh -c "mv $D/predeploy-check.db* /tmp/mqcheck/"
+sudo python3 /tmp/mqsnap.py "$D/mealquest.db" /tmp/mqcheck/live.db
+sudo chown -R "$USER" /tmp/mqcheck
+sudo ls -ln "$D"   # mealquest.db-wal and -shm owned by 10001, not 0: see "Count check"
+
+# c. Count check both: the restored replica must report integrity ok and
+#    exactly the live snapshot's counts and content-sha256.
+python3 /tmp/mqcount.py /tmp/mqcheck/predeploy-check.db > /tmp/mqcheck/restored.txt
+python3 /tmp/mqcount.py /tmp/mqcheck/live.db > /tmp/mqcheck/live.txt
+cat /tmp/mqcheck/restored.txt
+grep -qx 'integrity ok' /tmp/mqcheck/restored.txt || fail "the restored replica failed integrity_check"
+diff /tmp/mqcheck/restored.txt /tmp/mqcheck/live.txt || fail "the restored replica differs from the live snapshot"
+
+# d. The pre-deploy restore point: now, after every check passed, before
+#    the restart. It is printed on the way out, once the clean-ups succeed.
+point=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+)
+```
+
+   The verification runs in a subshell that stops at the first failed
+   step. On the way out it always attempts both clean-ups — removing
+   `/tmp/mqcheck` and any `predeploy-check.db` left on the volume — and a
+   failed clean-up fails the verification too. The restore point is
+   printed last, and only when every check and both clean-ups succeeded.
+   Read it like this:
+
+   - `pre-deploy restore point:` followed by a UTC time, and `echo $?`
+     prints `0` — the backup is verified and cleaned up. Note the time for
+     rollback, with the previous SHA, and go on to step 3.
+   - `verification FAILED`, any other error, or a nonzero `echo $?` — no
+     restore point was printed. If only the counts differed, a write
+     landed between the restore and the snapshot: run the block again. If
+     a clean-up failed, remove what it names by hand before running the
+     block again.
+   - The `ls` in step b shows `mealquest.db-wal` or `-shm` owned by `0`
+     — stop, as in "Count check", even if the rest passed.
+
+   **If any check fails, do not restart.** Production stays on the
+   previous SHA (only the new image was built). Restore replication first
+   — `docker compose -f deploy/compose.yaml up -d --force-recreate
+   litestream`, then read its log for the cause (NAS reachable, key,
+   host key) — and repeat this step until it passes. Never deploy a
+   release on an unverified backup.
+
+3. Restart and check the deployed release.
+
+```sh
+cd /home/overseer/mealquest && (
+set -eu   # any failed step ends the check with a nonzero status
+fail() { echo "$*" >&2; exit 1; }
+sha=
+# On the way out, print the deployed SHA only if every check passed.
+trap 'st=$?
+if [ "$st" -eq 0 ] && [ -n "$sha" ]; then echo "deployed SHA: $sha"
+else [ "$st" -ne 0 ] || st=1; echo "deploy FAILED (status $st): no SHA is deployed" >&2; fi
+exit "$st"' EXIT
+sudo systemctl restart mealquest    # applies the firewall, then down + up -d
+docker compose -f deploy/compose.yaml ps
+for s in mealquest litestream searxng; do
+  id=$(docker compose -f deploy/compose.yaml ps --status running --quiet "$s") || fail "docker compose ps failed"
+  [ -n "$id" ] || fail "$s is not running"
+done
+curl -fsS http://10.60.1.14:8090/health
+code=$(curl -sS -o /dev/null -w "%{http_code}" https://mealquest.cubecraftlabs.com/health)
+[ "$code" = 200 ] || fail "the public /health returned $code, not 200"
+sha=$(git rev-parse HEAD)   # the checked-out SHA, now running and healthy
+)
+```
+
+   The check stops at the first failed step and prints the SHA last, only
+   when the restart, all three services running and both health checks
+   succeeded. `restart` returns once `mealquest` is healthy (Litestream
+   waits for it); SearXNG may still show `health: starting` for its first
+   15 seconds.
+
+   - `deployed SHA:` followed by the SHA, and `echo $?` prints `0` —
+     record that SHA, the previous SHA, the pre-deploy restore point and
+     the date in the Maestro task for the release.
+   - `deploy FAILED`, any other error, or a nonzero `echo $?` — record
+     nothing as deployed: the release is not running healthy, and after a
+     failed restart the stack may be down. Read
+     `journalctl -u mealquest` and `docker compose -f deploy/compose.yaml
+     logs`, then fix the cause or roll back ("Rollback to a previous SHA").
+
+Migrations run at start-up; the service refuses to start if the database
+has an applied migration it does not know.
 
 If `deploy/.env.example` gained a variable, add it to `deploy/.env` before
 the restart; the service fails fast at boot naming any missing required variable.
 
 ### Rollback to a previous SHA
 
+First check whether the rollback crosses a migration, with the rule the
+service applies at start-up (`internal/store/migrate.go`): the older build
+refuses a database holding a version in `schema_migrations` that is not one
+of its own migration files — the `*.sql` files directly in `migrations/`
+(`migrations/queries/` holds sqlc queries, not migrations). Compare the
+versions a consistent snapshot of the live database has applied with the
+files the previous SHA has. First write `/tmp/mqsnap.py` with the `cat`
+command in "Count check", then:
+
 ```sh
-cd /home/overseer/mealquest
-git checkout --detach <previous SHA>
+cd /home/overseer/mealquest && (
+set -eu   # any failed step ends the check with a nonzero status
+D=/var/lib/docker/volumes/mealquest-data/_data
+P=<previous SHA>
+# On the way out, remove /tmp/mqcheck whatever happens, keep any failure,
+# and report every nonzero exit.
+trap 'st=$?
+rm -rf /tmp/mqcheck || st=1
+if [ "$st" -ne 0 ]; then echo "check FAILED (status $st): stop and fix the cause" >&2; fi
+exit "$st"' EXIT
+rm -rf /tmp/mqcheck
+mkdir /tmp/mqcheck
+sudo python3 /tmp/mqsnap.py "$D/mealquest.db" /tmp/mqcheck/mealquest.db
+sudo chown -R "$USER" /tmp/mqcheck
+git ls-tree --name-only "$P" migrations/ > /tmp/mqcheck/known   # top level only
+python3 - /tmp/mqcheck/mealquest.db /tmp/mqcheck/known <<'PY'
+import sqlite3, sys
+applied = {v for (v,) in sqlite3.connect(sys.argv[1]).execute("select version from schema_migrations")}
+known = {n[len("migrations/"):-len(".sql")] for n in open(sys.argv[2]).read().split() if n.endswith(".sql")}
+if not applied or not known:
+    sys.exit("no versions read: check the snapshot and the previous SHA, then run again")
+unknown = sorted(applied - known)
+print("unknown to the previous SHA:", " ".join(unknown) if unknown else "none")
+PY
+)
+```
+
+The check runs in a subshell that stops at the first failed step — the
+snapshot or its integrity check, `git ls-tree` or the comparison. On the
+way out it always attempts to remove `/tmp/mqcheck`, and a failed removal
+fails the check too; every nonzero exit prints `check FAILED`. Read it
+like this:
+
+- `unknown to the previous SHA: none` and `echo $?` prints `0` — no
+  migration crossed: take the plain restart below.
+- `unknown to the previous SHA:` followed by versions, and `echo $?`
+  prints `0` — the older build does not know them: the migration-crossing
+  path below is required.
+- `check FAILED`, any other error, or a nonzero `echo $?` — stop and fix
+  the cause, then run the check again. Do not pick a path, even if an
+  `unknown to the previous SHA:` line was printed before it. If the
+  clean-up failed, remove `/tmp/mqcheck` by hand first.
+
+**No migration crossed** — rebuild and restart the older SHA:
+
+```sh
+cd /home/overseer/mealquest && (
+set -eu   # any failed step ends the rollback with a nonzero status
+P=<previous SHA>
+fail() { echo "$*" >&2; exit 1; }
+sha=
+# On the way out, print the running SHA only if every check passed.
+trap 'st=$?
+if [ "$st" -eq 0 ] && [ -n "$sha" ]; then echo "rolled back to: $sha"
+else [ "$st" -ne 0 ] || st=1; echo "rollback FAILED (status $st)" >&2; fi
+exit "$st"' EXIT
+git checkout --detach "$P"
 docker compose -f deploy/compose.yaml build
 sudo systemctl restart mealquest
 docker compose -f deploy/compose.yaml ps
+for s in mealquest litestream searxng; do
+  id=$(docker compose -f deploy/compose.yaml ps --status running --quiet "$s") || fail "docker compose ps failed"
+  [ -n "$id" ] || fail "$s is not running"
+done
 curl -fsS http://10.60.1.14:8090/health
+sha=$(git rev-parse HEAD)
+)
 ```
 
-A rollback across a release that added a migration fails at start-up
-(the older binary refuses the newer schema). In that case restore the
-database to a point before the upgrade — "Restore the database" with
-`-timestamp` set just before the deploy — then start the older SHA.
-Changes made since that point are lost; say so to the household.
+Each step runs only if the one before it succeeded, so the health
+check answers only for the older SHA. Only `rolled back to:` followed by
+the SHA, with `echo $?` printing `0`, means the rollback is done. On
+`rollback FAILED` or a nonzero `echo $?` it is not: the first error names
+the failed step, and if it came before the restart, production is still
+on the release being rolled back from.
+
+**A migration crossed** — the older binary refuses the newer schema, so the
+database is restored first and the older SHA started after. Changes made
+since the pre-deploy restore point are lost; say so to the household.
+
+1. Check out and build the older SHA. Nothing restarts yet.
+
+```sh
+git checkout --detach <previous SHA> &&
+docker compose -f deploy/compose.yaml build
+```
+
+   If `echo $?` then prints anything but `0`, stop: the database has not
+   been touched and nothing has restarted.
+
+2. Run "Restore the database" steps 1–4, adding
+   `-timestamp <pre-deploy restore point>` (recorded in step 2 of
+   "Deploy") to the `restore` command. Its step 5 then starts the older
+   SHA and checks health.
 
 ## Backups
 
@@ -613,11 +871,20 @@ database it replaced. So all three files are moved aside together, with
 Litestream's local state directory `.mealquest.db-litestream`, before the
 restore — and the restore runs into an empty volume.
 
-Run from `/home/overseer/mealquest`:
+Steps 1–3:
 
 ```sh
+cd /home/overseer/mealquest && (
+set -eu   # any failed step ends the restore with a nonzero status
 D=/var/lib/docker/volumes/mealquest-data/_data
 A=/var/tmp/mealquest-restore-aside-$(date +%Y%m%d%H%M)
+fail() { echo "$*" >&2; exit 1; }
+# On the way out, name the aside directory; on any failure the stack
+# stays stopped.
+trap 'st=$?
+if [ "$st" -eq 0 ]; then echo "restored mealquest.db; the old files are in $A: run step 4"
+else echo "restore FAILED (status $st): leave the stack stopped; anything moved aside is in $A" >&2; fi
+exit "$st"' EXIT
 
 # 1. Stop the whole stack (app and Litestream). Nothing may hold the
 #    database open; a clean close checkpoints the WAL into mealquest.db.
@@ -630,24 +897,54 @@ sudo mkdir "$A"
 for f in mealquest.db mealquest.db-wal mealquest.db-shm .mealquest.db-litestream; do
   if sudo test -e "$D/$f"; then sudo mv "$D/$f" "$A/"; fi
 done
-sudo ls -la "$D"   # must list only media/
+left=$(sudo ls -A "$D")
+[ "$left" = media ] || fail "the volume must hold only media/, not: $left"
 
 # 3. Restore from the NAS. --no-deps keeps the app stopped so it cannot
 #    create a fresh, empty database first.
 docker compose -f deploy/compose.yaml run --rm --no-deps litestream \
   restore -config /etc/litestream.yml -o /data/mealquest.db /data/mealquest.db
-sudo ls -la "$D"   # mealquest.db only: no -wal, no -shm
-
-# 4. Check the restored file before starting the app (see "Count check").
-
-# 5. Start the stack and check health.
-sudo systemctl start mealquest
-docker compose -f deploy/compose.yaml ps
-curl -s -o /dev/null -w "health %{http_code}\n" http://10.60.1.14:8090/health
+left=$(sudo ls -A "$D")
+[ "$left" = "$(printf 'mealquest.db\nmedia')" ] || fail "the volume must hold only mealquest.db and media/ (no -wal, no -shm), not: $left"
+)
 ```
 
 To restore to a point in time, add `-timestamp 2026-10-05T23:00:00Z` (or
 `-txid`) to the `restore` command.
+
+The block stops at the first failed step. Only `restored mealquest.db`
+with `echo $?` printing `0` lets you go on; on `restore FAILED` leave the
+stack stopped, fix the cause and run the block again (a new aside
+directory is made; the earlier one keeps what it holds).
+
+4. Check the restored file before starting the app: run the copy block
+   in "Count check".
+
+5. Start the stack and check health, only after step 4 passed:
+
+```sh
+cd /home/overseer/mealquest && (
+set -eu   # any failed step ends the check with a nonzero status
+fail() { echo "$*" >&2; exit 1; }
+sha=
+# On the way out, print the running SHA only if every check passed.
+trap 'st=$?
+if [ "$st" -eq 0 ] && [ -n "$sha" ]; then echo "stack running and healthy at $sha"
+else [ "$st" -ne 0 ] || st=1; echo "start FAILED (status $st)" >&2; fi
+exit "$st"' EXIT
+sudo systemctl start mealquest
+docker compose -f deploy/compose.yaml ps
+for s in mealquest litestream searxng; do
+  id=$(docker compose -f deploy/compose.yaml ps --status running --quiet "$s") || fail "docker compose ps failed"
+  [ -n "$id" ] || fail "$s is not running"
+done
+curl -fsS http://10.60.1.14:8090/health
+sha=$(git rev-parse HEAD)
+)
+```
+
+   Only `stack running and healthy at` with `echo $?` printing `0` ends
+   the restore; then the aside directory may go.
 
 ### Count check
 
@@ -655,9 +952,35 @@ To restore to a point in time, add `-timestamp 2026-10-05T23:00:00Z` (or
 application tables, a SHA-256 over every application row (first 16 hex
 digits; Litestream's own `_litestream*` tables are excluded) and
 `PRAGMA integrity_check`. Run it on a **copy** of the database, never on the
-live file; copy `-wal`/`-shm` along with it when the app is running.
+live file.
 
-```python
+While the app or Litestream has the database open, the copy is a snapshot
+from `/tmp/mqsnap.py`: it opens the live database read-only, copies it
+with SQLite's online backup API (one consistent read, whatever is still in
+the WAL included) and exits nonzero unless the snapshot's
+`PRAGMA integrity_check` is `ok`. Never copy `mealquest.db` and its `-wal`
+as files while they are open: a checkpoint between the two copies leaves
+an older state that still reads cleanly. "Deploy" step 2 and "Rollback to
+a previous SHA" use the snapshot. With the stack stopped, as in "Restore
+the database" step 4, the files are closed and checkpointed, and a plain
+copy is consistent (a read-only open there would leave a `-wal` and
+`-shm` beside the restored file).
+
+`mode=ro` stops writes through the snapshot's own connection, but SQLite
+can still create a missing `-wal` or `-shm` beside the database, and under
+`sudo` it would be owned by root. The live snapshot therefore expects the
+app and Litestream to be running and holding the existing
+`mealquest.db-wal` and `mealquest.db-shm`, owned by `10001`. If
+`sudo ls -ln "$D"` after a live snapshot shows either sidecar owned by
+`0` — the snapshot created it — stop before going further: check
+`docker compose -f deploy/compose.yaml ps` (mealquest and litestream
+running) and, with the cause understood, return the sidecars to
+`10001:10001` before proceeding.
+
+`/tmp` is temporary, so write the scripts before every check:
+
+```sh
+cat > /tmp/mqcount.py <<'EOF' &&
 import sqlite3, sys, hashlib
 c = sqlite3.connect(sys.argv[1])
 tabs = [r[0] for r in c.execute("select name from sqlite_master where type=\"table\" and name not like \"sqlite_%\" and name not like \"_litestream%\" order by name")]
@@ -669,15 +992,56 @@ for t in tabs:
         h.update(repr(row).encode())
 print("tables", len(tabs), "content-sha256", h.hexdigest()[:16])
 print("integrity", c.execute("pragma integrity_check").fetchone()[0])
+EOF
+cat > /tmp/mqsnap.py <<'EOF'
+import os, sqlite3, sys
+src, dst = sys.argv[1], sys.argv[2]
+if os.path.exists(dst):
+    sys.exit(f"{dst} already exists")
+s = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+d = sqlite3.connect(dst)
+s.backup(d)
+s.close()
+result = d.execute("pragma integrity_check").fetchall()
+d.close()
+if result != [("ok",)]:
+    sys.exit(f"snapshot integrity_check failed: {result}")
+print("snapshot", dst, "integrity ok")
+EOF
 ```
+
+The second file is written only if the first was; `echo $?` must then
+print `0` before either script is used.
+
+With the stack stopped, copy the database and run it:
 
 ```sh
-rm -rf /tmp/mqcheck && mkdir /tmp/mqcheck
-sudo sh -c "cp -a $D/mealquest.db* /tmp/mqcheck/" && sudo chown -R "$USER" /tmp/mqcheck
-python3 /tmp/mqcount.py /tmp/mqcheck/mealquest.db
+cd /home/overseer/mealquest && (
+set -eu   # any failed step ends the check with a nonzero status
+D=/var/lib/docker/volumes/mealquest-data/_data
+fail() { echo "$*" >&2; exit 1; }
+# On the way out, remove /tmp/mqcheck whatever happens, keep any failure,
+# and give the verdict only if every step and the clean-up succeeded.
+trap 'st=$?
+rm -rf /tmp/mqcheck || st=1
+if [ "$st" -eq 0 ]; then echo "count check: integrity ok"
+else echo "count check FAILED (status $st): do not start the stack" >&2; fi
+exit "$st"' EXIT
+rm -rf /tmp/mqcheck
+mkdir /tmp/mqcheck
+sudo sh -c "cp -a $D/mealquest.db* /tmp/mqcheck/"
+sudo chown -R "$USER" /tmp/mqcheck
+python3 /tmp/mqcount.py /tmp/mqcheck/mealquest.db > /tmp/mqcheck/counts.txt
+cat /tmp/mqcheck/counts.txt
+grep -qx 'integrity ok' /tmp/mqcheck/counts.txt || fail "the copy failed integrity_check"
+)
 ```
 
-Before and after must match exactly.
+The check stops at the first failed step — the clean-up of an earlier
+`/tmp/mqcheck`, the copy, the count or the integrity check — so it never
+reads a file left by an earlier run. Only `count check: integrity ok`
+with `echo $?` printing `0` passes; then the counts printed above it,
+before and after, must match exactly.
 
 ## Restore photos (media)
 
@@ -694,20 +1058,52 @@ not start the service until the restore is verified.
 Run from `/home/overseer/mealquest`:
 
 ```sh
+cd /home/overseer/mealquest && (
+set -eu   # any failed step ends the restore with a nonzero status
 M=/var/lib/docker/volumes/mealquest-data/_data/media
 NAS=/volume1/homes/Joshua/mealquest-backups/media
 SSH="ssh -i deploy/secrets/litestream_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/etc/mealquest/known_hosts -o StrictHostKeyChecking=yes"
+fail() { echo "$*" >&2; exit 1; }
+nas= here= w=
+# On the way out, give the counts only if every step passed; on any
+# failure, report the timer's actual state, not an assumed one.
+trap 'st=$?
+[ -z "$w" ] || rm -rf "$w"
+if [ "$st" -eq 0 ] && [ -n "$here" ]; then echo "media restored: $here files here, $nas on the NAS, all $nas match the NAS manifest"
+else [ "$st" -ne 0 ] || st=1; t=$(systemctl is-active mealquest-media-backup.timer) || :
+  if [ "$t" = inactive ]; then echo "media restore FAILED (status $st): the timer is inactive; leave it stopped and find out why" >&2
+  else echo "media restore FAILED (status $st): the timer is ${t:-unknown}, not inactive; run sudo systemctl stop mealquest-media-backup.timer mealquest-media-backup.service and confirm it is inactive before anything else" >&2; fi; fi
+exit "$st"' EXIT
+w=$(mktemp -d)
 
 # 1. Stop the nightly mirror: the timer AND any run in flight.
 sudo systemctl stop mealquest-media-backup.timer mealquest-media-backup.service
 
-# 2. Pre-check — all three must hold before media/ is touched. If any
-#    fails, stop here and find out why.
-systemctl is-active mealquest-media-backup.timer     # inactive
-systemctl is-active mealquest-media-backup.service   # inactive (or failed)
-pgrep -a -u mealquest rsync || echo "no rsync"       # no rsync
-sudo $SSH joshua@10.60.1.50 "find $NAS -type f | wc -l"
-#    ^ note this NAS file count; it must be non-zero and is the target below.
+# 2. Pre-check — all must hold before media/ is touched. is-active exits
+#    nonzero for every state but active, so its printed state is checked;
+#    pgrep exits 0 on a match, 1 on none, 2+ on an error.
+ts=$(systemctl is-active mealquest-media-backup.timer) || :
+[ "$ts" = inactive ] || fail "the timer is ${ts:-unknown}, not inactive"
+ss=$(systemctl is-active mealquest-media-backup.service) || :
+case "$ss" in
+  inactive|failed) ;;
+  *) fail "the service is ${ss:-unknown}, not inactive or failed";;
+esac
+ps=0
+pgrep -a -u mealquest rsync || ps=$?
+case "$ps" in
+  0) fail "an rsync is still running as mealquest";;
+  1) ;;   # no match: no rsync
+  *) fail "pgrep failed (status $ps)";;
+esac
+l=$(sudo $SSH joshua@10.60.1.50 "find $NAS -type f") || fail "listing the NAS copy failed"
+[ -n "$l" ] || fail "the NAS copy holds no files"
+nas=$(printf '%s\n' "$l" | wc -l)   # the target below
+# The NAS manifest: one "sha256  ./path" line per file, taken now, before
+# the copy. Every check below compares content against it, not counts.
+sudo $SSH joshua@10.60.1.50 "cd $NAS && find . -type f -exec sha256sum {} +" >"$w/raw" || fail "hashing the NAS copy failed"
+LC_ALL=C sort "$w/raw" >"$w/nas"
+[ "$(wc -l <"$w/nas")" -eq "$nas" ] || fail "the NAS manifest has $(wc -l <"$w/nas") files, the listing $nas"
 
 # 3. Stop the app (no writes into media/ meanwhile).
 docker compose -f deploy/compose.yaml stop mealquest
@@ -716,24 +1112,46 @@ docker compose -f deploy/compose.yaml stop mealquest
 sudo install -d -o 10001 -g 10001 -m 0755 "$M"
 
 # 5. Copy back from the NAS as uid 10001's files. No --delete in this
-#    direction: the NAS copy is the source and is only read.
-sudo rsync -a --stats --chown=10001:10001 -e "$SSH" "joshua@10.60.1.50:$NAS/" "$M/"
+#    direction: the NAS copy is the source and is only read. --checksum
+#    compares content, so a local file with the NAS size and mtime but
+#    other bytes is still replaced.
+sudo rsync -a --checksum --stats --chown=10001:10001 -e "$SSH" "joshua@10.60.1.50:$NAS/" "$M/"
 
-# 6. Post-condition — before anything can mirror again:
-sudo find "$M" -type f | wc -l                            # >= the NAS count from step 2
-sudo $SSH joshua@10.60.1.50 "find $NAS -type f | wc -l"   # unchanged from step 2
+# 6. Post-condition — before anything can mirror again: at least the NAS
+#    count here, and the NAS count unchanged.
+l=$(sudo find "$M" -type f) || fail "listing $M failed"
+[ -n "$l" ] || fail "$M holds no files after the copy"
+n=$(printf '%s\n' "$l" | wc -l)
+[ "$n" -ge "$nas" ] || fail "only $n of the NAS's $nas files are here: the copy did not complete"
+l=$(sudo $SSH joshua@10.60.1.50 "find $NAS -type f") || fail "listing the NAS copy failed"
+[ -n "$l" ] && [ "$(printf '%s\n' "$l" | wc -l)" -eq "$nas" ] || fail "the NAS file count changed from $nas"
+# Content: every file in the NAS manifest is here with the same bytes,
+# and the NAS still matches the manifest taken before the copy.
+sudo sh -c 'cd "$1" && find . -type f -exec sha256sum {} +' sh "$M" >"$w/raw" || fail "hashing $M failed"
+LC_ALL=C sort "$w/raw" >"$w/here"
+LC_ALL=C comm -23 "$w/nas" "$w/here" >"$w/bad"
+[ ! -s "$w/bad" ] || { cat "$w/bad" >&2; fail "$(wc -l <"$w/bad") NAS file(s) above are missing here or differ in content"; }
+sudo $SSH joshua@10.60.1.50 "cd $NAS && find . -type f -exec sha256sum {} +" >"$w/raw" || fail "hashing the NAS copy failed"
+LC_ALL=C sort "$w/raw" | cmp -s - "$w/nas" || fail "the NAS copy changed during the restore"
+here=$n
 
 # 7. Start the app, then the timer again. Only now may the service run.
 docker compose -f deploy/compose.yaml up -d
 curl -fsS http://10.60.1.14:8090/health
 sudo systemctl start mealquest-media-backup.timer
-systemctl is-active mealquest-media-backup.timer          # active
+systemctl is-active mealquest-media-backup.timer   # active; exits nonzero otherwise
+)
 ```
 
-The local count may exceed the NAS count only if `media/` still held
-files the NAS never received (photos added since the last nightly run);
-the next nightly run then copies them up. If the local count is lower,
-the copy did not complete: leave the timer stopped and re-run step 5.
+The block stops at the first failed step and gives the counts last, only
+when every step passed and every file in the NAS manifest (a SHA-256 of
+each file, taken before the copy) is present locally with the same bytes.
+On `media restore FAILED` or a nonzero `echo $?` the message gives the
+timer's actual state: if it is not `inactive`, stop it as the message says
+before anything else; then leave it stopped. The local count may exceed the NAS count only if
+`media/` still held files the NAS never received (photos added since the
+last nightly run); the next nightly run then copies them up. If the local count is lower,
+the copy did not complete: fix the cause and run the block again.
 
 When the database is restored too, restore it first ("Restore the
 database"), then the media, so every photo the database refers to is
@@ -931,6 +1349,23 @@ docker compose -f deploy/compose.yaml up -d --force-recreate mealquest
 Sign in at <https://mealquest.cubecraftlabs.com> to confirm; sign-ins
 fail between regenerating the secret in Authentik and recreating the
 service.
+
+### Google OAuth client secret (`deploy/secrets/google_client_secret`)
+
+In the Google Cloud console, open the OAuth client `mealquest`, add a new
+client secret, write it to the file (same owner and mode as above) and
+recreate the service:
+
+```sh
+printf '%s\n' '<new Google OAuth client secret>' | sudo tee deploy/secrets/google_client_secret >/dev/null
+sudo chown 10001:10001 deploy/secrets/google_client_secret
+sudo chmod 600 deploy/secrets/google_client_secret
+docker compose -f deploy/compose.yaml up -d --force-recreate mealquest
+```
+
+Then disable and delete the old secret in the console. A new client secret
+leaves the household's stored refresh token valid, so nothing needs
+reconnecting.
 
 ### LLM API key
 

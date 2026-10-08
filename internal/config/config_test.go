@@ -29,6 +29,10 @@ func TestLoad(t *testing.T) {
 	if err := os.WriteFile(clientSecretPath, []byte("client-s3cret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	googleSecretPath := filepath.Join(dir, "google_client_secret")
+	if err := os.WriteFile(googleSecretPath, []byte("google-s3cret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	emptyPath := filepath.Join(dir, "empty_secret")
 	if err := os.WriteFile(emptyPath, []byte("\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -46,6 +50,9 @@ func TestLoad(t *testing.T) {
 			EnvOIDCClientID:         "mealquest",
 			EnvOIDCClientSecretFile: clientSecretPath,
 			EnvOIDCAllowedGroups:    "mealquest-admin",
+
+			EnvGoogleClientID:         "mealquest.apps.googleusercontent.com",
+			EnvGoogleClientSecretFile: googleSecretPath,
 		}
 	}
 	with := func(changes map[string]string, unset ...string) map[string]string {
@@ -94,6 +101,7 @@ func TestLoad(t *testing.T) {
 			badVars: []string{
 				EnvHTTPAddr, EnvPublicURL, EnvDataDir, EnvShutdownTimeout, EnvSecretKeyFile,
 				EnvOIDCIssuer, EnvOIDCClientID, EnvOIDCClientSecretFile, EnvOIDCAllowedGroups,
+				EnvGoogleClientID, EnvGoogleClientSecretFile,
 			},
 		},
 		{
@@ -210,6 +218,31 @@ func TestLoad(t *testing.T) {
 			name:    "inline secret rejected",
 			env:     with(map[string]string{"MEALQUEST_SECRET_KEY": "inline"}),
 			badVars: []string{"MEALQUEST_SECRET_KEY"},
+		},
+		{
+			name:    "Google client ID missing",
+			env:     with(nil, EnvGoogleClientID),
+			badVars: []string{EnvGoogleClientID},
+		},
+		{
+			name:    "Google client secret file missing",
+			env:     with(nil, EnvGoogleClientSecretFile),
+			badVars: []string{EnvGoogleClientSecretFile},
+		},
+		{
+			name:    "Google client secret file unreadable",
+			env:     with(map[string]string{EnvGoogleClientSecretFile: unreadablePath}),
+			badVars: []string{EnvGoogleClientSecretFile},
+		},
+		{
+			name:    "Google client secret file empty",
+			env:     with(map[string]string{EnvGoogleClientSecretFile: emptyPath}),
+			badVars: []string{EnvGoogleClientSecretFile},
+		},
+		{
+			name:    "inline Google client secret rejected",
+			env:     with(map[string]string{"MEALQUEST_GOOGLE_CLIENT_SECRET": "inline"}),
+			badVars: []string{"MEALQUEST_GOOGLE_CLIENT_SECRET"},
 		},
 		{
 			name:    "inline OIDC client secret rejected",
@@ -409,6 +442,10 @@ func TestLoadValues(t *testing.T) {
 	if err := os.WriteFile(clientSecretPath, []byte("client-s3cret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	googleSecretPath := filepath.Join(dir, "google_client_secret")
+	if err := os.WriteFile(googleSecretPath, []byte("google-s3cret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	env := map[string]string{
 		EnvHTTPAddr:        "127.0.0.1:9000",
 		EnvPublicURL:       "http://localhost:9000",
@@ -420,6 +457,9 @@ func TestLoadValues(t *testing.T) {
 		EnvOIDCClientID:         "mealquest",
 		EnvOIDCClientSecretFile: clientSecretPath,
 		EnvOIDCAllowedGroups:    " mealquest-admin ,family",
+
+		EnvGoogleClientID:         "mealquest.apps.googleusercontent.com",
+		EnvGoogleClientSecretFile: googleSecretPath,
 
 		EnvDefaultTZ: "Europe/London",
 
@@ -453,6 +493,12 @@ func TestLoadValues(t *testing.T) {
 	}
 	if cfg.OIDCClientSecret.Reveal() != "client-s3cret" {
 		t.Errorf("OIDCClientSecret.Reveal() = %q", cfg.OIDCClientSecret.Reveal())
+	}
+	if cfg.GoogleClientID != "mealquest.apps.googleusercontent.com" {
+		t.Errorf("GoogleClientID = %q", cfg.GoogleClientID)
+	}
+	if cfg.GoogleClientSecret.Reveal() != "google-s3cret" {
+		t.Errorf("GoogleClientSecret.Reveal() = %q", cfg.GoogleClientSecret.Reveal())
 	}
 	if want := []string{"mealquest-admin", "family"}; !slices.Equal(cfg.OIDCAllowedGroups, want) {
 		t.Errorf("OIDCAllowedGroups = %q, want %q", cfg.OIDCAllowedGroups, want)
@@ -492,7 +538,7 @@ func TestSecretRedacted(t *testing.T) {
 
 	s := Secret{value: "s3cret-value"}
 	for _, format := range []string{"%v", "%s", "%+v", "%#v"} {
-		cfg := Config{SecretKey: s, OIDCClientSecret: s}
+		cfg := Config{SecretKey: s, OIDCClientSecret: s, GoogleClientSecret: s}
 		for _, out := range []string{fmt.Sprintf(format, s), fmt.Sprintf(format, cfg)} {
 			if strings.Contains(out, "s3cret-value") {
 				t.Errorf("format %s leaked secret: %s", format, out)

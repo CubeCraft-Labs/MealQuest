@@ -107,7 +107,7 @@ func New(ctx context.Context, cfg Config, sessions Sessions, logger *slog.Logger
 		return nil, err
 	}
 
-	client := &http.Client{Timeout: providerTimeout, CheckRedirect: checkRedirect}
+	client := &http.Client{Timeout: providerTimeout, CheckRedirect: CheckRedirect}
 	discovery := *client
 	recorder := &statusRecorder{next: http.DefaultTransport}
 	discovery.Transport = recorder
@@ -205,11 +205,12 @@ func checkEndpoint(name, raw string) error {
 // maxRedirects matches net/http's default redirect limit.
 const maxRedirects = 10
 
-// checkRedirect is the provider client's redirect policy. On a 307 or 308 to
-// the same host Go resends the body and Authorization header, which carry the
-// code and client secret, so every target must pass secureurl.Check and an
-// https:// request never follows a redirect to plain http://, even loopback.
-func checkRedirect(req *http.Request, via []*http.Request) error {
+// CheckRedirect is the redirect policy of every client that talks to an
+// OAuth provider. On a 307 or 308 to the same host Go resends the body and
+// Authorization header, which carry the code and client secret, so every
+// target must pass secureurl.Check and an https:// request never follows a
+// redirect to plain http://, even loopback.
+func CheckRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= maxRedirects {
 		return fmt.Errorf("stopped after %d redirects", maxRedirects)
 	}
@@ -350,7 +351,7 @@ func (a *Auth) verify(ctx context.Context, code string, state loginState) (Claim
 	token, err := a.oauth.Exchange(context.WithValue(ctx, oauth2.HTTPClient, a.client), code,
 		oauth2.VerifierOption(state.Verifier))
 	if err != nil {
-		return Claims{}, exchangeError(err)
+		return Claims{}, ExchangeError(err)
 	}
 	raw, ok := token.Extra("id_token").(string)
 	if !ok || raw == "" {
@@ -400,7 +401,7 @@ func (a *Auth) userinfoGroups(ctx context.Context, token *oauth2.Token, subject 
 }
 
 // userinfoError reduces a failed userinfo request to a fixed category, like
-// exchangeError: go-oidc's error text can carry the response body.
+// ExchangeError: go-oidc's error text can carry the response body.
 func userinfoError(err error) error {
 	var transport *url.Error
 	if errors.As(err, &transport) {
@@ -425,10 +426,11 @@ func (a *Auth) member(groups []string) bool {
 	return slices.ContainsFunc(groups, func(g string) bool { return slices.Contains(a.allowed, g) })
 }
 
-// exchangeError reduces a failed code exchange to a fixed category and safe
-// metadata. The oauth2 error text can carry the token endpoint's response
-// body or error_description, which may echo credentials, so it is dropped.
-func exchangeError(err error) error {
+// ExchangeError reduces a failed OAuth code exchange to a fixed category and
+// safe metadata. The oauth2 error text can carry the token endpoint's
+// response body or error_description, which may echo credentials, so it is
+// dropped.
+func ExchangeError(err error) error {
 	var retrieve *oauth2.RetrieveError
 	var transport *url.Error
 	switch {

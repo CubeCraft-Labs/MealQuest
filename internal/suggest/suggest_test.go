@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
@@ -927,7 +929,7 @@ func TestLaterBatchNeverResuggestsRenamedDrop(t *testing.T) {
 	fail := func(context.Context, string, skills.WeekRequest) (skills.Week, error) {
 		return skills.Week{}, errors.New("no draft in this test")
 	}
-	planSvc, err := plan.NewService(e.st, fail, e.runner, logger)
+	planSvc, err := plan.NewService(e.st, fail, e.runner, noCalendar{}, &url.URL{Scheme: "https", Host: "meals.example.com"}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1319,4 +1321,11 @@ func TestStartBatchRefusesUnknownTrigger(t *testing.T) {
 	if _, err := e.svc.StartBatch(t.Context(), "whenever"); err == nil {
 		t.Fatal("unknown trigger accepted")
 	}
+}
+
+// noCalendar is a plan.Calendar for tests that never push.
+type noCalendar struct{}
+
+func (noCalendar) PushEvents(context.Context, []gcal.Event, func() error) error {
+	return errors.New("no calendar in this test")
 }

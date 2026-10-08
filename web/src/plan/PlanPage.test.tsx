@@ -15,6 +15,7 @@ const THIS_WEEK = '/api/v1/plans/2026-10-05'
 const NEXT_WEEK = '/api/v1/plans/2026-10-12'
 const PREVIOUS_WEEK = '/api/v1/plans/2026-09-28'
 const DRAFT = `${THIS_WEEK}/draft`
+const PUSH = `${THIS_WEEK}/push-calendar`
 const JOB = '/api/v1/jobs/j1'
 
 const DAYS = ['2026-10-05', '2026-10-06', '2026-10-07', '2026-10-08', '2026-10-09', '2026-10-10', '2026-10-11']
@@ -48,6 +49,21 @@ function planBody(status: string, names = NAMES) {
     })),
     updated_at: '2026-10-04T15:00:00Z',
   }
+}
+
+// syncedNow is the plan of the week of Oct 5 as a push answers it: synced
+// at the tests' noon.
+function syncedNow() {
+  return { ...planBody('synced'), calendar_synced_at: '2026-10-07T16:00:00Z' }
+}
+
+// deferred is a response the test sends when it chooses.
+function deferred() {
+  let send!: (response: Response) => void
+  const response = new Promise<Response>((resolve) => {
+    send = resolve
+  })
+  return { response, send }
 }
 
 // draftJob is job j1 drafting the week of Oct 5 into plan planId: a
@@ -225,17 +241,312 @@ describe('PlanPage', () => {
     expect(screen.queryByText('Draft')).not.toBeInTheDocument()
   })
 
-  it('offers Push to Calendar unavailable, with a tooltip saying why', async () => {
-    const fetchMock = stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')) })
+  it('pushes the plan to Calendar, showing progress, then the plan as synced', async () => {
+    const answer = deferred()
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      [`POST ${PUSH}`]: () => answer.response,
+    })
     await renderPage()
 
-    const push = await screen.findByRole('button', { name: 'Looks good — push to Calendar' })
-    expect(push).toHaveAttribute('aria-disabled', 'true')
-    expect(push).toHaveAccessibleDescription('Push to Calendar arrives once Google Calendar can be connected.')
-    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('Push to Calendar arrives once Google Calendar can be connected.')
+    expect(await screen.findByText('Not pushed to Google Calendar yet')).toBeInTheDocument()
+    const push = screen.getByRole('button', { name: 'Looks good — push to Calendar' })
     expect(declaredStyle(push).minHeight).toBe('50px')
     fireEvent.click(push)
-    expect(posts(fetchMock)).toEqual([])
+    await waitFor(() => expect(posts(fetchMock)).toEqual([`${PUSH} undefined`]))
+    const call = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST')!
+    expect(new Headers(call[1]?.headers).get('X-MealQuest-CSRF')).toBe(ME.csrfToken)
+
+    // In progress: the button says so and is disabled, as is Rebuild week,
+    // and no day can be swapped.
+    const pushing = await screen.findByRole('button', { name: 'Pushing to Calendar…' })
+    expect(pushing).toBeDisabled()
+    expect(pushing).toHaveAttribute('aria-busy', 'true')
+    expect(screen.getByRole('button', { name: 'Rebuild week' })).toBeDisabled()
+    fireEvent.click(within(tile('MON')).getByRole('button'))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+
+    answer.send(jsonResponse(200, syncedNow()))
+    const status = await screen.findByText('Synced to Google Calendar just now')
+    expect(declaredStyle(status).color).toBe('var(--color-accent-2-800)')
+    expect(status.querySelector('svg')).not.toBeNull()
+    expect(screen.getByText('Synced')).toBeInTheDocument()
+    expect(screen.queryByText('Draft')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Looks good — push to Calendar' })).toBeEnabled()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    // The plan shown is the one the push answered with: no second read.
+    expect(planReads(fetchMock)).toBe(1)
+  })
+
+  it('says a synced plan is on Google Calendar, and how long ago it was pushed', async () => {
+    stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('synced')) })
+    await renderPage()
+
+    const status = await screen.findByText('Synced to Google Calendar 2 min ago')
+    expect(declaredStyle(status).color).toBe('var(--color-accent-2-800)')
+    expect(status.querySelector('svg')).not.toBeNull()
+  })
+
+  it('says changes to a pushed plan are not pushed, and pushes them', async () => {
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('changed')),
+      [`POST ${PUSH}`]: () => jsonResponse(200, syncedNow()),
+    })
+    await renderPage()
+
+    expect(await screen.findByText('Changes not pushed')).toBeInTheDocument()
+    const status = screen.getByText('Changes not pushed to Google Calendar')
+    expect(declaredStyle(status).color).toBe('var(--color-neutral-700)')
+    fireEvent.click(screen.getByRole('button', { name: 'Looks good — push to Calendar' }))
+    expect(await screen.findByText('Synced to Google Calendar just now')).toBeInTheDocument()
+    expect(screen.queryByText('Changes not pushed')).not.toBeInTheDocument()
+    expect(posts(fetchMock)).toEqual([`${PUSH} undefined`])
+  })
+
+  it.each([
+    ['google_reconnect_required', 'Google access was revoked or expired.', 'Reconnect Google Calendar'],
+    ['no_calendar', 'No calendar is chosen for dinners yet.', 'Choose a calendar in Settings'],
+    ['not_connected', 'Google Calendar is not connected.', 'Connect Google Calendar'],
+    ['calendar_unavailable', 'The chosen calendar was deleted or MealQuest can no longer add dinners to it.', 'Choose another calendar'],
+  ])('sends a %s push failure to the Google Calendar settings', async (code, reason, fix) => {
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      [`POST ${PUSH}`]: () => errorResponse(409, code),
+    })
+    await renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Looks good — push to Calendar' }))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(`Couldn't push to Calendar. ${reason} ${fix}`)
+    expect(within(alert).getByRole('link', { name: fix })).toHaveAttribute('href', '/settings/calendar')
+    expect(within(alert).queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+    // The plan is as it was: not synced.
+    expect(screen.getByText('Draft')).toBeInTheDocument()
+    expect(screen.getByText('Not pushed to Google Calendar yet')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Looks good — push to Calendar' })).toBeEnabled()
+  })
+
+  it('marks the Google Calendar connection to be read again when Google refused the grant', async () => {
+    const connection = { status: 'connected', calendar_id: 'c1', calendar_name: 'Dinners', connected_at: null, last_sync_error: null }
+    const api = createApiClient(fakeLocation('/plan'), createNetworkStatus(window), createVerifiedSession(localStorage))
+    const queryClient = createQueryClient()
+    queryClient.setQueryData(['integrations', 'google'], connection)
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      [`POST ${PUSH}`]: () => errorResponse(409, 'google_reconnect_required'),
+    })
+    await api.loadMe()
+    render(
+      <ApiProvider client={api}>
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/plan']}>
+            <PlanPage />
+          </MemoryRouter>
+        </QueryClientProvider>
+      </ApiProvider>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Looks good — push to Calendar' }))
+    expect(await screen.findByRole('link', { name: 'Reconnect Google Calendar' })).toBeInTheDocument()
+    // The settings screen reads it again as it opens: it is now reconnect
+    // required.
+    expect(queryClient.getQueryState(['integrations', 'google'])?.isInvalidated).toBe(true)
+    expect(posts(fetchMock)).toEqual([`${PUSH} undefined`])
+  })
+
+  it('says why any other push failed, and pushes again on Retry', async () => {
+    let push = () => errorResponse(502, 'google_failed')
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      [`POST ${PUSH}`]: () => push(),
+    })
+    await renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Looks good — push to Calendar' }))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't push to Calendar. google_failed message")
+    expect(within(alert).queryByRole('link')).not.toBeInTheDocument()
+
+    push = () => jsonResponse(200, syncedNow())
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('Synced to Google Calendar just now')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(posts(fetchMock)).toEqual([`${PUSH} undefined`, `${PUSH} undefined`])
+  })
+
+  it('reads the plan again when it changed while being pushed', async () => {
+    let plan = planBody('draft')
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, plan),
+      [`POST ${PUSH}`]: () => errorResponse(409, 'plan_changed'),
+    })
+    await renderPage()
+
+    await screen.findByText('Beef tacos')
+    plan = planBody('draft', ['Lasagna', ...NAMES.slice(1)])
+    fireEvent.click(screen.getByRole('button', { name: 'Looks good — push to Calendar' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      "Couldn't push to Calendar. The plan changed while it was being pushed; push it again.",
+    )
+    expect(await screen.findByText('Lasagna')).toBeInTheDocument()
+    expect(planReads(fetchMock)).toBe(2)
+  })
+
+  it('pushes nothing again until the changed plan is read and shown', async () => {
+    let read: () => Response | Promise<Response> = () => jsonResponse(200, planBody('draft'))
+    let push = () => errorResponse(409, 'plan_changed')
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => read(),
+      [`POST ${PUSH}`]: () => push(),
+    })
+    await renderPage()
+
+    await screen.findByText('Beef tacos')
+    const reread = deferred()
+    read = () => reread.response
+    const pushButton = screen.getByRole('button', { name: 'Looks good — push to Calendar' })
+    fireEvent.click(pushButton)
+    await waitFor(() => expect(planReads(fetchMock)).toBe(2))
+    // While the changed plan is read, the push stays busy: neither Push
+    // nor Retry sends it again.
+    expect(screen.getByRole('button', { name: 'Pushing to Calendar…' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Pushing to Calendar…' }))
+    expect(screen.getByText('Beef tacos')).toBeInTheDocument()
+    expect(posts(fetchMock)).toEqual([`${PUSH} undefined`])
+
+    reread.send(jsonResponse(200, planBody('draft', ['Lasagna', ...NAMES.slice(1)])))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't push to Calendar. The plan changed while it was being pushed; push it again.")
+    expect(screen.getByText('Lasagna')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Looks good — push to Calendar' })).toBeEnabled()
+
+    push = () => jsonResponse(200, syncedNow())
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('Synced to Google Calendar just now')).toBeInTheDocument()
+    expect(posts(fetchMock)).toEqual([`${PUSH} undefined`, `${PUSH} undefined`])
+  })
+
+  it('pushes nothing again until the changed plan is shown, even after leaving the week and coming back', async () => {
+    let read: () => Response | Promise<Response> = () => jsonResponse(200, planBody('draft'))
+    let push = () => errorResponse(409, 'plan_changed')
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => read(),
+      [`GET ${NEXT_WEEK}`]: () => errorResponse(404, 'not_found'),
+      [`POST ${PUSH}`]: () => push(),
+    })
+    await renderPage()
+
+    await screen.findByText('Beef tacos')
+    const reread = deferred()
+    read = () => reread.response
+    fireEvent.click(screen.getByRole('button', { name: 'Looks good — push to Calendar' }))
+    await waitFor(() => expect(planReads(fetchMock)).toBe(2))
+
+    // Leaving the week and coming back while the changed plan is read
+    // remounts the board: the push is still busy, and sends nothing again.
+    fireEvent.click(screen.getByRole('button', { name: 'Next week' }))
+    expect(await screen.findByRole('button', { name: 'Draft this week' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Previous week' }))
+    await screen.findByText('Beef tacos')
+    expect(screen.getByRole('button', { name: 'Pushing to Calendar…' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Pushing to Calendar…' }))
+    expect(posts(fetchMock)).toEqual([`${PUSH} undefined`])
+
+    await act(async () => reread.send(jsonResponse(200, planBody('draft', ['Lasagna', ...NAMES.slice(1)]))))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't push to Calendar. The plan changed while it was being pushed; push it again.")
+    expect(screen.getByText('Lasagna')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Looks good — push to Calendar' })).toBeEnabled()
+
+    push = () => jsonResponse(200, syncedNow())
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('Synced to Google Calendar just now')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(posts(fetchMock)).toEqual([`${PUSH} undefined`, `${PUSH} undefined`])
+  })
+
+  it("pushes nothing again while the changed plan's read is answered from the cache", async () => {
+    let read = () => jsonResponse(200, planBody('draft'))
+    let push = () => errorResponse(409, 'plan_changed')
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => read(),
+      [`POST ${PUSH}`]: () => push(),
+    })
+    await renderPage()
+
+    await screen.findByText('Beef tacos')
+    // The server can't be reached: the service worker answers the read of
+    // the changed plan with the plan it cached before.
+    read = () => {
+      const response = jsonResponse(200, planBody('draft'))
+      response.headers.set(cacheFallbackHeader, '1')
+      return response
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Looks good — push to Calendar' }))
+    const cachedCopy = "The plan changed while it was being pushed. The plan shown came from this device's cache, not the server; read it again before pushing."
+    const failed = await screen.findByRole('alert')
+    expect(planReads(fetchMock)).toBe(2)
+    expect(screen.getByText('Beef tacos')).toBeInTheDocument()
+    const pushButton = screen.getByRole('button', { name: 'Looks good — push to Calendar' })
+    expect(pushButton).toBeDisabled()
+    fireEvent.click(pushButton)
+    expect(failed).toHaveTextContent(cachedCopy)
+
+    // Retry reads the plan again rather than pushing: still the cache, so
+    // nothing is pushed.
+    fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(planReads(fetchMock)).toBe(3))
+    expect(await screen.findByRole('alert')).toHaveTextContent(cachedCopy)
+    expect(screen.getByRole('button', { name: 'Looks good — push to Calendar' })).toBeDisabled()
+    expect(posts(fetchMock)).toEqual([`${PUSH} undefined`])
+
+    // The server is back: Retry shows the changed plan, and only then may it
+    // be pushed.
+    read = () => jsonResponse(200, planBody('draft', ['Lasagna', ...NAMES.slice(1)]))
+    fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('Lasagna')).toBeInTheDocument()
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't push to Calendar. The plan changed while it was being pushed; push it again.")
+    expect(screen.getByRole('button', { name: 'Looks good — push to Calendar' })).toBeEnabled()
+    expect(posts(fetchMock)).toEqual([`${PUSH} undefined`])
+
+    push = () => jsonResponse(200, syncedNow())
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('Synced to Google Calendar just now')).toBeInTheDocument()
+    expect(posts(fetchMock)).toEqual([`${PUSH} undefined`, `${PUSH} undefined`])
+  })
+
+  it('shows the changed plan read while the week was left, and pushes it', async () => {
+    let read: () => Response | Promise<Response> = () => jsonResponse(200, planBody('draft'))
+    let push = () => errorResponse(409, 'plan_changed')
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => read(),
+      [`GET ${NEXT_WEEK}`]: () => errorResponse(404, 'not_found'),
+      [`POST ${PUSH}`]: () => push(),
+    })
+    await renderPage()
+
+    await screen.findByText('Beef tacos')
+    const reread = deferred()
+    read = () => reread.response
+    fireEvent.click(screen.getByRole('button', { name: 'Looks good — push to Calendar' }))
+    await waitFor(() => expect(planReads(fetchMock)).toBe(2))
+    fireEvent.click(screen.getByRole('button', { name: 'Next week' }))
+    expect(await screen.findByRole('button', { name: 'Draft this week' })).toBeInTheDocument()
+    await act(async () => reread.send(jsonResponse(200, planBody('draft', ['Lasagna', ...NAMES.slice(1)]))))
+    read = () => jsonResponse(200, planBody('draft', ['Lasagna', ...NAMES.slice(1)]))
+    fireEvent.click(screen.getByRole('button', { name: 'Previous week' }))
+
+    // The board comes back on the changed plan: Push sends that one.
+    expect(await screen.findByText('Lasagna')).toBeInTheDocument()
+    expect(screen.queryByText('Beef tacos')).not.toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('The plan changed while it was being pushed; push it again.')
+    push = () => jsonResponse(200, syncedNow())
+    fireEvent.click(screen.getByRole('button', { name: 'Looks good — push to Calendar' }))
+    expect(await screen.findByText('Synced to Google Calendar just now')).toBeInTheDocument()
+    expect(posts(fetchMock)).toEqual([`${PUSH} undefined`, `${PUSH} undefined`])
   })
 
   it('rebuilds a draft at once, showing skeleton tiles until the new plan is read', async () => {
@@ -715,20 +1026,19 @@ describe.each([
     expect(screen.getByRole('button', { name: 'Next week' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'This week' }) !== null).toBe(layout === 'desktop')
 
-    // Actions: the shopping list and Push to Calendar unavailable, saying
-    // why; Rebuild week outlined and working.
+    // Actions: the shopping list unavailable, saying why; Rebuild week
+    // outlined and Push to Calendar primary, both working.
     const shopping = screen.getByRole('button', { name: 'Shopping list' })
     expect(shopping).toHaveAttribute('aria-disabled', 'true')
     expect(shopping).toHaveAccessibleDescription('The shopping list arrives once the Supply run is built.')
     const push = screen.getByRole('button', { name: 'Push to Calendar' })
-    expect(push).toHaveAttribute('aria-disabled', 'true')
-    expect(push).toHaveAccessibleDescription('Push to Calendar arrives once Google Calendar can be connected.')
+    expect(push).toBeEnabled()
+    expect(push).not.toHaveAttribute('aria-disabled')
     expect(declaredStyle(push).background).toBe('var(--color-accent)')
     const rebuild = screen.getByRole('button', { name: 'Rebuild week' })
     expect(rebuild).toBeEnabled()
     expect(declaredStyle(rebuild).borderColor).toBe('var(--color-neutral-300)')
     fireEvent.click(shopping)
-    fireEvent.click(push)
     expect(posts(fetchMock)).toEqual([])
     // Mobile's own pieces are not shown.
     expect(screen.queryByRole('button', { name: 'Looks good — push to Calendar' })).not.toBeInTheDocument()
@@ -793,6 +1103,43 @@ describe.each([
     await renderPage()
 
     expect(await screen.findByText('Changes not pushed to Google Calendar')).toBeInTheDocument()
+  })
+
+  it('pushes the plan from the header, showing progress, then the plan as synced', async () => {
+    const answer = deferred()
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('changed')),
+      [`POST ${PUSH}`]: () => answer.response,
+      ...lists,
+    })
+    await renderPage()
+
+    await screen.findByText('Beef tacos')
+    fireEvent.click(screen.getByRole('button', { name: 'Push to Calendar' }))
+    const pushing = await screen.findByRole('button', { name: 'Pushing…' })
+    expect(pushing).toBeDisabled()
+    expect(pushing).toHaveAttribute('aria-busy', 'true')
+    expect(screen.getByRole('button', { name: 'Rebuild week' })).toBeDisabled()
+
+    answer.send(jsonResponse(200, syncedNow()))
+    const status = await screen.findByText('Synced to Google Calendar just now')
+    expect(declaredStyle(status).color).toBe('var(--color-accent-2-800)')
+    expect(screen.getByRole('button', { name: 'Push to Calendar' })).toBeEnabled()
+  })
+
+  it('links a google_reconnect_required push failure to the Google Calendar settings', async () => {
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('synced')),
+      [`POST ${PUSH}`]: () => errorResponse(409, 'google_reconnect_required'),
+      ...lists,
+    })
+    await renderPage()
+
+    await screen.findByText('Beef tacos')
+    fireEvent.click(screen.getByRole('button', { name: 'Push to Calendar' }))
+    const alert = await screen.findByRole('alert')
+    expect(within(alert).getByRole('link', { name: 'Reconnect Google Calendar' })).toHaveAttribute('href', '/settings/calendar')
+    expect(screen.getByText('Synced to Google Calendar 2 min ago')).toBeInTheDocument()
   })
 
   if (layout === 'desktop') {

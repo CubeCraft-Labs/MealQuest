@@ -11,16 +11,15 @@ import { Tag } from '../ui/Tag.tsx'
 import { useBreakpoint } from '../shell/useBreakpoint.ts'
 import {
   aiStatus,
-  calendarStatus,
   formatClockTime,
   notificationsStatus,
   regularDinnersStatus,
   useAISettings,
-  useCalendarStatus,
   useHouseholdSettings,
   useNotificationsStatus,
   useRegularDinnersCount,
 } from './api.ts'
+import { calendarStatus, useGoogleConnection } from './calendarApi.ts'
 import styles from './SettingsPage.module.css'
 import { SettingsTabs } from './SettingsTabs.tsx'
 
@@ -39,14 +38,14 @@ export function SettingsPage() {
 }
 
 // The mobile settings list (handoff mock 1p). Each row opens its settings
-// page and shows a live status line. Regular dinners, Google Calendar and
-// Notifications & Google Chat read endpoints their features have not served
-// yet; until then each shows its not-yet-available state (see api.ts).
+// page and shows a live status line. Regular dinners and Notifications &
+// Google Chat read endpoints their features have not served yet; until then
+// each shows its not-yet-available state (see api.ts).
 function SettingsList() {
   const household = useHouseholdSettings()
   const ai = useAISettings()
   const regulars = useRegularDinnersCount()
-  const calendar = useCalendarStatus()
+  const calendar = useGoogleConnection()
   const notifications = useNotificationsStatus()
   const failed = [regulars, calendar, household, notifications, ai].filter((query) => query.isError)
 

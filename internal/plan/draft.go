@@ -136,9 +136,10 @@ func (s *Service) request(ctx context.Context, weekStart store.LocalDate) (skill
 
 // storeDraft stores week as the plan of the week starting weekStart in one
 // transaction and returns the plan's id. A new plan is draft. A draft
-// replaces the days of an existing plan, keeping each day's calendar
-// event id; a draft plan stays draft and a synced or changed one becomes
-// changed, since Calendar no longer shows it. A plan synced since the
+// replaces the days of an existing plan, keeping the calendar event id of
+// each day whose dinner stays the same and clearing the others'; a draft
+// plan stays draft and a synced or changed one becomes changed, since
+// Calendar no longer shows it. A plan synced since the
 // draft was asked for without confirm is left as it is, failing with
 // ReasonConfirmRequired, and so is a plan no longer at revision base (the
 // revision before draft_week ran, or noPlan), failing with

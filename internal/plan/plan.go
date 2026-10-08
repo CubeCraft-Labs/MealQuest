@@ -4,7 +4,7 @@
 // a day from Monday to Sunday, and the job stores them as the week's plan,
 // replacing any draft before it unless the household edited the plan
 // while draft_week ran. A plan is draft until Push to Calendar
-// syncs it (Feature 16); an edit of a synced plan makes it changed.
+// syncs it (Push); an edit of a synced plan makes it changed.
 //
 // The Rotation check follows a plan day: MarkTried moves the Quest log
 // dinners planned on it to tried, and the household answers "Keep it in
@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"slices"
 	"time"
 
@@ -132,19 +133,24 @@ func ParseWeekStart(s string) (store.LocalDate, error) {
 // skills.DraftWeek with the household's harness.Config.
 type Drafter func(ctx context.Context, scope string, in skills.WeekRequest) (skills.Week, error)
 
-// Service drafts, reads and edits weekly plans.
+// Service drafts, reads, edits and pushes weekly plans.
 type Service struct {
 	st       *store.Store
 	draft    Drafter
+	cal      Calendar
 	logger   *slog.Logger
 	draftJob *jobs.Kind[DraftJob]
+	// publicURL is MEALQUEST_PUBLIC_URL, under which a pushed event links
+	// to its dinner.
+	publicURL *url.URL
 }
 
-// NewService returns a service over st that drafts with draft and
-// registers the KindDraftWeek job on runner, which must not have started
-// yet. The kind is service-only: StartDraft, which keeps one draft in
-// flight per week, is the only way to enqueue it.
-func NewService(st *store.Store, draft Drafter, runner *jobs.Runner, logger *slog.Logger) (*Service, error) {
+// NewService returns a service over st that drafts with draft, pushes to
+// cal with links under publicURL, and registers the KindDraftWeek job on
+// runner, which must not have started yet. The kind is service-only:
+// StartDraft, which keeps one draft in flight per week, is the only way to
+// enqueue it.
+func NewService(st *store.Store, draft Drafter, runner *jobs.Runner, cal Calendar, publicURL *url.URL, logger *slog.Logger) (*Service, error) {
 	switch {
 	case st == nil:
 		return nil, errors.New("plan: nil store")
@@ -152,10 +158,14 @@ func NewService(st *store.Store, draft Drafter, runner *jobs.Runner, logger *slo
 		return nil, errors.New("plan: nil drafter")
 	case runner == nil:
 		return nil, errors.New("plan: nil job runner")
+	case cal == nil:
+		return nil, errors.New("plan: nil calendar")
+	case publicURL == nil:
+		return nil, errors.New("plan: nil public URL")
 	case logger == nil:
 		return nil, errors.New("plan: nil logger")
 	}
-	s := &Service{st: st, draft: draft, logger: logger}
+	s := &Service{st: st, draft: draft, cal: cal, logger: logger, publicURL: publicURL}
 	kind, err := jobs.Register(runner, KindDraftWeek, s.runDraft, Reasons...)
 	if err != nil {
 		return nil, err
@@ -344,8 +354,9 @@ func (s *Service) StartDraft(ctx context.Context, weekStart store.LocalDate, con
 }
 
 // Swap plans dinnerID on date of the week starting weekStart, marking the
-// day new when the dinner is in the Quest log. Swapping a synced plan
-// makes it changed. The week must have a plan (else ErrNotFound), date
+// day new when the dinner is in the Quest log and clearing its calendar
+// event id, so the next Push writes it. Swapping a synced plan makes it
+// changed. The week must have a plan (else ErrNotFound), date
 // must be one of its days (else *InvalidDayError), the dinner must be a
 // Regular or in the Quest log (else ErrDinnerNotFound or
 // *DinnerNotPlannableError), and it must not be on another day of the

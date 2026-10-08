@@ -1,0 +1,156 @@
+/* Settings · Google Calendar. */
+.page {
+  box-sizing: border-box;
+  min-height: 100%;
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding-top: 6px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.kicker {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-accent-700);
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 28px;
+  font-weight: 400;
+}
+
+.shared {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 26px;
+  background: var(--color-accent-2-100);
+  color: var(--color-accent-2-900);
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.loading {
+  height: 220px;
+  border-radius: 26px;
+}
+
+.pickerLoading {
+  height: 72px;
+  border-radius: var(--radius-md);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  border: 1px solid var(--color-neutral-300);
+}
+
+.cardTitle {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 22px;
+  font-weight: 400;
+}
+
+.text,
+.hint,
+.status,
+.error,
+.warning {
+  margin: 0;
+  font-family: var(--font-body);
+  line-height: 1.4;
+}
+
+.text {
+  font-size: 15px;
+}
+
+.hint,
+.status {
+  font-size: 13px;
+  color: var(--color-neutral-700);
+}
+
+.status:empty {
+  display: none;
+}
+
+.error,
+.warning {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-accent-700);
+}
+
+/* "Connected · Dinners calendar": teal is the confirmation voice. */
+.connected {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--color-accent-2-800);
+}
+
+/* A grant Google refused: the grape banner with Reconnect. */
+.reconnect {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px;
+  border-radius: 26px;
+  background: var(--color-accent-100);
+  border: 1px solid var(--color-accent-300);
+  color: var(--color-accent-800);
+}
+
+.reconnectTitle {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 20px;
+  font-weight: 400;
+}
+
+.reconnectStatus {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.reconnectText {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+/* The connect endpoint is a page, so Connect and Reconnect are links drawn
+   as the primary button. */
+.connect {
+  align-self: flex-start;
+  text-decoration: none;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-start;
+}

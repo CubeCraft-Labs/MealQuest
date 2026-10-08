@@ -44,6 +44,10 @@ func loadConfig(t *testing.T, keyFile string) config.Config {
 	if err := os.WriteFile(clientSecretPath, []byte("client-secret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	googleSecretPath := filepath.Join(dir, "google_client_secret")
+	if err := os.WriteFile(googleSecretPath, []byte("google-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv(config.EnvHTTPAddr, "127.0.0.1:0")
 	t.Setenv(config.EnvPublicURL, "http://localhost")
 	t.Setenv(config.EnvDataDir, t.TempDir())
@@ -53,6 +57,8 @@ func loadConfig(t *testing.T, keyFile string) config.Config {
 	t.Setenv(config.EnvOIDCClientID, "mealquest")
 	t.Setenv(config.EnvOIDCClientSecretFile, clientSecretPath)
 	t.Setenv(config.EnvOIDCAllowedGroups, "mealquest-admin")
+	t.Setenv(config.EnvGoogleClientID, "mealquest.apps.googleusercontent.com")
+	t.Setenv(config.EnvGoogleClientSecretFile, googleSecretPath)
 	// MEALQUEST_DEFAULT_TZ is left unset; t.Setenv restores any outer value.
 	t.Setenv(config.EnvDefaultTZ, "")
 	if err := os.Unsetenv(config.EnvDefaultTZ); err != nil {

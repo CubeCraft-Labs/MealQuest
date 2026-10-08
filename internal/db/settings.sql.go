@@ -10,6 +10,38 @@ import (
 	"database/sql"
 )
 
+const clearIntegrationsGoogleToken = `-- name: ClearIntegrationsGoogleToken :execrows
+UPDATE integrations_google
+SET refresh_token_ct = NULL, last_sync_error = ?, updated_at = ?
+WHERE id = 1
+`
+
+type ClearIntegrationsGoogleTokenParams struct {
+	LastSyncError sql.NullString
+	UpdatedAt     string
+}
+
+// Records that Google refuses the stored grant: clears the refresh token and
+// sets last_sync_error, keeping the chosen calendar. Affects no row when
+// nothing is connected.
+func (q *Queries) ClearIntegrationsGoogleToken(ctx context.Context, arg ClearIntegrationsGoogleTokenParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, clearIntegrationsGoogleToken, arg.LastSyncError, arg.UpdatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteIntegrationsGoogle = `-- name: DeleteIntegrationsGoogle :exec
+DELETE FROM integrations_google
+WHERE id = 1
+`
+
+func (q *Queries) DeleteIntegrationsGoogle(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteIntegrationsGoogle)
+	return err
+}
+
 const getAISettings = `-- name: GetAISettings :one
 SELECT id, provider, base_url, model, temperature, system_prompt, api_key_ct, api_key_last4, key_verified_at, created_at, updated_at FROM ai_settings
 WHERE id = 1
@@ -127,6 +159,27 @@ func (q *Queries) GetRecipeSearchSettings(ctx context.Context) (RecipeSearchSett
 		&i.ApiKeyLast4,
 	)
 	return i, err
+}
+
+const setIntegrationsGoogleCalendar = `-- name: SetIntegrationsGoogleCalendar :execrows
+UPDATE integrations_google
+SET calendar_id = ?, calendar_name = ?, updated_at = ?
+WHERE id = 1
+`
+
+type SetIntegrationsGoogleCalendarParams struct {
+	CalendarID   sql.NullString
+	CalendarName sql.NullString
+	UpdatedAt    string
+}
+
+// Sets the chosen calendar; affects no row when nothing is connected.
+func (q *Queries) SetIntegrationsGoogleCalendar(ctx context.Context, arg SetIntegrationsGoogleCalendarParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setIntegrationsGoogleCalendar, arg.CalendarID, arg.CalendarName, arg.UpdatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const upsertAISettings = `-- name: UpsertAISettings :one

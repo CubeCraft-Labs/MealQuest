@@ -1,14 +1,15 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +18,8 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal/gcaltest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
@@ -34,6 +37,12 @@ type plansEnv struct {
 	st       *store.Store
 	svc      *plan.Service
 	questLog string
+	// google is the fake Google the plan service pushes to; it starts
+	// unconnected.
+	google *gcaltest.Google
+	gcal   *gcal.Service
+	// logs holds every log line the router writes.
+	logs *bytes.Buffer
 }
 
 func newPlansRouter(t *testing.T) plansEnv {
@@ -43,7 +52,8 @@ func newPlansRouter(t *testing.T) plansEnv {
 	if err := household.SeedSettings(ctx, st, "America/New_York"); err != nil {
 		t.Fatal(err)
 	}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logs := &bytes.Buffer{}
+	logger := slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	runner, err := jobs.NewRunner(st, logger, 1)
 	if err != nil {
 		t.Fatal(err)
@@ -51,12 +61,26 @@ func newPlansRouter(t *testing.T) plansEnv {
 	fail := func(context.Context, string, skills.WeekRequest) (skills.Week, error) {
 		return skills.Week{}, errors.New("no model in this test")
 	}
-	svc, err := plan.NewService(st, fail, runner, logger)
+	pub := &url.URL{Scheme: "https", Host: "mealquest.example"}
+	google := gcaltest.New(t, "https://mealquest.example"+gcal.CallbackPath)
+	googleSvc, err := gcal.NewService(st, newTestBox(t), gcal.Config{
+		ClientID:     gcaltest.ClientID,
+		ClientSecret: gcaltest.ClientSecret,
+		PublicURL:    pub,
+		SecretKey:    []byte("server-secret-key"),
+		Endpoint:     google.Endpoint(),
+		RevokeURL:    google.RevokeURL(),
+		CalendarAPI:  google.CalendarAPI(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := plan.NewService(st, fail, runner, googleSvc, pub, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
 	h, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t),
-		newTestDinners(t), newTestSuggest(t), svc, runner, newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
+		newTestDinners(t), newTestSuggest(t), svc, googleSvc, runner, newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +114,8 @@ func newPlansRouter(t *testing.T) plansEnv {
 			t.Fatal(err)
 		}
 	}
-	return plansEnv{h: h, st: st, svc: svc, questLog: dinner("Pad Thai", "quest_log", "stovetop", 35)}
+	return plansEnv{h: h, st: st, svc: svc, questLog: dinner("Pad Thai", "quest_log", "stovetop", 35),
+		google: google, gcal: googleSvc, logs: logs}
 }
 
 func (e plansEnv) setStatus(t *testing.T, status string) {
@@ -323,4 +348,183 @@ func TestPutPlanDay(t *testing.T) {
 	if rec.Code != http.StatusConflict || errorCode(body) != "dinner_not_plannable" {
 		t.Errorf("PUT archived dinner = %d %v, want 409 dinner_not_plannable", rec.Code, body)
 	}
+}
+
+// pushCalendar is the calendar the push tests choose.
+var pushCalendar = gcaltest.Calendar{ID: "dinners@group.calendar.google.com", Summary: "Dinners", AccessRole: "owner"}
+
+// connectCalendar connects the fake Google and, when choose, chooses
+// pushCalendar.
+func (e plansEnv) connectCalendar(t *testing.T, choose bool) {
+	t.Helper()
+	e.google.SetCalendars(0, pushCalendar)
+	e.google.Connect(t, e.gcal)
+	if !choose {
+		return
+	}
+	if _, err := e.gcal.SelectCalendar(t.Context(), pushCalendar.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// push calls POST /plans/{weekStart}/push-calendar and checks that neither
+// the response nor any log line holds a secret.
+func (e plansEnv) push(t *testing.T, weekStart string) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
+	rec, body := callDinners(t, e.h, http.MethodPost, plansPath+weekStart+"/push-calendar", "")
+	for _, secret := range []string{gcaltest.RefreshToken, gcaltest.AccessToken, gcaltest.ClientSecret} {
+		if strings.Contains(rec.Body.String(), secret) {
+			t.Errorf("response holds a secret: %s", rec.Body)
+		}
+		if strings.Contains(e.logs.String(), secret) {
+			t.Errorf("logs hold a secret: %s", e.logs)
+		}
+	}
+	return rec, body
+}
+
+func TestPushPlanToCalendar(t *testing.T) {
+	t.Parallel()
+	e := newPlansRouter(t)
+	e.connectCalendar(t, true)
+
+	rec, body := e.push(t, "2026-10-12")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("push = %d: %s", rec.Code, rec.Body)
+	}
+	if body["status"] != "synced" || body["calendar_synced_at"] == nil {
+		t.Errorf("pushed plan = %v, want synced", body)
+	}
+	if days, _ := body["days"].([]any); len(days) != 7 {
+		t.Errorf("days = %v, want 7", body["days"])
+	}
+	if n := len(e.google.Events(pushCalendar.ID)); n != 7 {
+		t.Errorf("calendar has %d events, want 7", n)
+	}
+	monday := e.google.Events(pushCalendar.ID)[plan.EventID(mustLocalDate(t, "2026-10-12"), mustLocalDate(t, "2026-10-12"))]
+	if !strings.HasPrefix(monday.Description, "Beef Chili\nStart by 1:30 pm\nhttps://mealquest.example/dinner/") {
+		t.Errorf("Monday's description = %q", monday.Description)
+	}
+}
+
+func TestPushPlanToCalendarErrors(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		week   string
+		setup  func(t *testing.T, e plansEnv)
+		status int
+		code   string
+	}{
+		{"not connected", "2026-10-12", func(*testing.T, plansEnv) {}, http.StatusConflict, "not_connected"},
+		{"no calendar chosen", "2026-10-12", func(t *testing.T, e plansEnv) { e.connectCalendar(t, false) }, http.StatusConflict, "no_calendar"},
+		{"calendar deleted", "2026-10-12", func(t *testing.T, e plansEnv) {
+			e.connectCalendar(t, true)
+			e.google.SetCalendars(0)
+		}, http.StatusConflict, "calendar_unavailable"},
+		{"calendar read-only", "2026-10-12", func(t *testing.T, e plansEnv) {
+			e.connectCalendar(t, true)
+			e.google.SetCalendars(0, gcaltest.Calendar{ID: pushCalendar.ID, Summary: "Dinners", AccessRole: "reader"})
+		}, http.StatusConflict, "calendar_unavailable"},
+		{"grant revoked", "2026-10-12", func(t *testing.T, e plansEnv) {
+			e.connectCalendar(t, true)
+			e.google.RevokeGrant()
+		}, http.StatusConflict, "google_reconnect_required"},
+		{"401 after a refresh", "2026-10-12", func(t *testing.T, e plansEnv) {
+			e.connectCalendar(t, true)
+			e.google.RejectAccessToken()
+		}, http.StatusConflict, "google_reconnect_required"},
+		{"Google unavailable", "2026-10-12", func(t *testing.T, e plansEnv) {
+			e.connectCalendar(t, true)
+			e.google.FailEventWrites(3, 3, http.StatusServiceUnavailable)
+		}, http.StatusServiceUnavailable, "google_unavailable"},
+		{"Google fails part way", "2026-10-12", func(t *testing.T, e plansEnv) {
+			e.connectCalendar(t, true)
+			e.google.FailEventWrite(3, http.StatusBadRequest)
+		}, http.StatusBadGateway, "google_failed"},
+		{"no plan", "2026-10-19", func(t *testing.T, e plansEnv) { e.connectCalendar(t, true) }, http.StatusNotFound, "not_found"},
+		{"not a Monday", "2026-10-13", func(t *testing.T, e plansEnv) { e.connectCalendar(t, true) }, http.StatusBadRequest, "invalid_week"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			e := newPlansRouter(t)
+			tc.setup(t, e)
+			rec, body := e.push(t, tc.week)
+			if rec.Code != tc.status || errorCode(body) != tc.code {
+				t.Errorf("push = %d %s, want %d %s", rec.Code, rec.Body, tc.status, tc.code)
+			}
+			if apiErr, _ := body["error"].(map[string]any); apiErr["retryable"] != (tc.code == "google_unavailable") {
+				t.Errorf("push = %s, want retryable only when Google is unavailable", rec.Body)
+			}
+			if tc.code == "google_reconnect_required" {
+				_, status := callDinners(t, e.h, http.MethodGet, googlePath, "")
+				if status["status"] != "reconnect_required" || status["last_sync_error"] != gcal.ReconnectReason {
+					t.Errorf("GET %s after the push = %v, want reconnect_required with the reason", googlePath, status)
+				}
+			}
+			p, err := e.svc.Get(t.Context(), mustLocalDate(t, "2026-10-12"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.Status != plan.StatusDraft || p.CalendarSyncedAt != nil {
+				t.Errorf("plan = %s synced at %v after a failed push, want draft", p.Status, p.CalendarSyncedAt)
+			}
+		})
+	}
+}
+
+// TestPushPlanAfterRefusalWithNoCalendar pushes after Google refused the
+// grant while listing calendars, before any was chosen: the push is 409
+// google_reconnect_required, not no_calendar, since only connecting again
+// restores it. After connecting again and choosing a calendar it succeeds.
+func TestPushPlanAfterRefusalWithNoCalendar(t *testing.T) {
+	t.Parallel()
+	e := newPlansRouter(t)
+	e.connectCalendar(t, false)
+	e.google.RevokeGrant()
+	if _, err := e.gcal.Calendars(t.Context()); !errors.Is(err, gcal.ErrReconnect) {
+		t.Fatalf("Calendars = %v, want ErrReconnect", err)
+	}
+
+	rec, body := e.push(t, "2026-10-12")
+	if rec.Code != http.StatusConflict || errorCode(body) != "google_reconnect_required" {
+		t.Errorf("push = %d %s, want 409 google_reconnect_required", rec.Code, rec.Body)
+	}
+
+	e.connectCalendar(t, true)
+	if rec, _ := e.push(t, "2026-10-12"); rec.Code != http.StatusOK {
+		t.Errorf("push after connecting again = %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestPushPlanChangedWhilePushing(t *testing.T) {
+	t.Parallel()
+	e := newPlansRouter(t)
+	e.connectCalendar(t, true)
+	arrived, release := e.google.HoldEvents()
+	defer release()
+	pushed := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		e.h.ServeHTTP(rec, signedIn(http.MethodPost, plansPath+"2026-10-12/push-calendar", nil))
+		pushed <- rec
+	}()
+	<-arrived
+	if _, err := e.svc.Swap(t.Context(), mustLocalDate(t, "2026-10-12"), "2026-10-13", e.questLog); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	rec := <-pushed
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"code":"plan_changed"`) {
+		t.Errorf("push = %d %s, want 409 plan_changed", rec.Code, rec.Body)
+	}
+}
+
+func mustLocalDate(t *testing.T, s string) store.LocalDate {
+	t.Helper()
+	d, err := store.ParseLocalDate(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
 }

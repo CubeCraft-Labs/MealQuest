@@ -561,6 +561,33 @@ func TestGenerateRefusesFrozenList(t *testing.T) {
 	wantLines(t, "stored list", e.stored(t), []string{"0 2026-10-12 Beef Chili: 0 ground beef [1 lb] needed"})
 }
 
+// TestGeneratePushedRefusesEditedPlan makes the Supply run of a pushed
+// plan at the revision pushed, then edits the plan: the pushed revision no
+// longer makes one, and the Supply run is left as it was.
+func TestGeneratePushedRefusesEditedPlan(t *testing.T) {
+	e := newEnv(t)
+	e.dinner(t, "Beef Chili", ing{"ground beef", "1", "lb"})
+	e.dinner(t, "Pad Thai", ing{"rice noodles", "8", "oz"})
+	e.plan(t, "Beef Chili")
+	q := db.New(e.st.Writer)
+	pushed, err := q.GetWeekPlan(t.Context(), week.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.GeneratePushed(t.Context(), week, pushed.Revision); err != nil {
+		t.Fatalf("GeneratePushed at the pushed revision: %v", err)
+	}
+	e.swap(t, "2026-10-12", "Pad Thai")
+	if err := q.MarkWeekPlanEdited(t.Context(), db.MarkWeekPlanEditedParams{UpdatedAt: store.Now().String(), ID: e.planID}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := e.svc.GeneratePushed(t.Context(), week, pushed.Revision); !errors.Is(err, shopping.ErrPlanChanged) {
+		t.Fatalf("GeneratePushed after an edit = %v, want ErrPlanChanged", err)
+	}
+	wantLines(t, "stored list", e.stored(t), []string{"0 2026-10-12 Beef Chili: 0 ground beef [1 lb] needed"})
+}
+
 // TestGenerateRefusesUnnamedIngredient: grounding always names a fetched
 // recipe's ingredient, so one without a name is an error, and nothing is
 // stored.

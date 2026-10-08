@@ -106,9 +106,12 @@ type pushedPlan struct {
 // pushedSupplyRun says whether a Push to Calendar made the week's Supply
 // run. status is generated when it did; archived when the week's Supply
 // run is in the Supply archive and was left as it was; or failed when it
-// could not be made, when error says so and POST
-// /shopping/{weekStart}/generate makes it again. error is null when
-// status is generated.
+// was not made. A failed Supply run's error is plan_changed when the plan
+// was edited after it was pushed, so the Supply run was not made from a
+// plan Calendar does not show and pushing again makes it; or
+// supply_run_failed when it could not be made, and POST
+// /shopping/{weekStart}/generate makes it again. error is null when status
+// is generated.
 type pushedSupplyRun struct {
 	Status string    `json:"status"`
 	Error  *apiError `json:"error"`
@@ -122,15 +125,16 @@ type pushedSupplyRun struct {
 // The Supply run is made after the push, never as part of it: Calendar
 // already shows the plan, so a Supply run that cannot be made does not
 // undo or fail the push. The answer is still 200 with supply_run failed,
-// and the failure is logged as an error, so nothing claims a Supply run
-// that was not made.
+// and the failure is logged, so nothing claims a Supply run that was not
+// made. It is made only from the plan as pushed: one edited between the
+// push and the Supply run is not made into a Supply run.
 func postPlanPush(logger *slog.Logger, svc *plan.Service, shop *shopping.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		week, ok := weekStartOrFail(w, r, logger)
 		if !ok {
 			return
 		}
-		p, err := svc.Push(r.Context(), week)
+		p, revision, err := svc.Push(r.Context(), week)
 		if err != nil {
 			writePlanPushError(w, r, logger, err)
 			return
@@ -139,9 +143,16 @@ func postPlanPush(logger *slog.Logger, svc *plan.Service, shop *shopping.Service
 		// gone.
 		ctx := context.WithoutCancel(r.Context())
 		run := pushedSupplyRun{Status: "generated"}
-		if _, err := shop.Generate(ctx, week); errors.Is(err, shopping.ErrFrozen) {
+		if _, err := shop.GeneratePushed(ctx, week, revision); errors.Is(err, shopping.ErrFrozen) {
 			logger.InfoContext(ctx, "Supply run in the Supply archive left as it was after Push to Calendar", "week", week.String())
 			run = pushedSupplyRun{Status: "archived", Error: &apiError{Code: "archived", Message: err.Error()}}
+		} else if errors.Is(err, shopping.ErrPlanChanged) {
+			logger.WarnContext(ctx, "plan edited after Push to Calendar; Supply run not made", "week", week.String())
+			run = pushedSupplyRun{Status: "failed", Error: &apiError{
+				Code:      "plan_changed",
+				Message:   "the plan is on Calendar as pushed, but it was edited before its Supply run was made, so no Supply run was made from it; push again",
+				Retryable: true,
+			}}
 		} else if err != nil {
 			logger.ErrorContext(ctx, "generate Supply run after Push to Calendar", "week", week.String(), "error", err)
 			run = pushedSupplyRun{Status: "failed", Error: &apiError{

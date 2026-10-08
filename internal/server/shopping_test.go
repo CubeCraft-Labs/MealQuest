@@ -437,6 +437,51 @@ func TestPushPlanSupplyRunFails(t *testing.T) {
 	}
 }
 
+// TestPushPlanEditedBeforeSupplyRun: a plan edit landing after the push
+// is recorded but before the Supply run is made does not make the Supply
+// run from the edited plan, which Calendar does not show. The push stands
+// (200, on Calendar) and the answer says the Supply run was not made
+// because the plan changed.
+func TestPushPlanEditedBeforeSupplyRun(t *testing.T) {
+	t.Parallel()
+	e := newPlansRouter(t)
+	e.groundWeek(t)
+	e.connectCalendar(t, true)
+	// Once the push records Sunday's event, the household swaps Tuesday to
+	// Pad Thai, as a swap does: committed before the Supply run is made.
+	if _, err := e.st.Writer.ExecContext(t.Context(), `CREATE TRIGGER edit_after_push
+		AFTER UPDATE OF calendar_event_id ON plan_days
+		WHEN NEW.date = '2026-10-18' AND NEW.calendar_event_id IS NOT NULL
+		BEGIN
+			UPDATE plan_days SET dinner_id = '`+e.questLog+`', is_new = 1, calendar_event_id = NULL WHERE date = '2026-10-13';
+			UPDATE week_plans SET status = CASE WHEN status = 'synced' THEN 'changed' ELSE status END, revision = revision + 1;
+		END`); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, body := e.push(t, "2026-10-12")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("push = %d %s, want 200", rec.Code, rec.Body)
+	}
+	want := map[string]any{"status": "failed", "error": map[string]any{
+		"code":      "plan_changed",
+		"message":   "the plan is on Calendar as pushed, but it was edited before its Supply run was made, so no Supply run was made from it; push again",
+		"retryable": true,
+	}}
+	if !reflect.DeepEqual(body["supply_run"], want) {
+		t.Errorf("supply_run = %v, want %v", body["supply_run"], want)
+	}
+	if n := len(e.google.Events(pushCalendar.ID)); n != 7 {
+		t.Errorf("calendar has %d events, want 7", n)
+	}
+	if status, got := callShopping(t, e, http.MethodGet, shoppingPath+"2026-10-12", "", nil); status != http.StatusNotFound {
+		t.Errorf("GET after the edit = %d %v, want 404: no Supply run from the edited plan", status, got)
+	}
+	if !strings.Contains(e.logs.String(), `"level":"WARN","msg":"plan edited after Push to Calendar; Supply run not made"`) {
+		t.Errorf("logs = %s, want the edit logged as a warning", e.logs)
+	}
+}
+
 // TestPushPlanLeavesArchivedSupplyRun: pushing a week whose Supply run is
 // in the Supply archive leaves it as it was and says so.
 func TestPushPlanLeavesArchivedSupplyRun(t *testing.T) {

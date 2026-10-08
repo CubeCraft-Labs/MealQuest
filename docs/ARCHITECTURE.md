@@ -739,14 +739,18 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
     has no plan, 400 `invalid_week`. The push holds the account lock
     across its Google requests and its record, like listing and choosing.
   - The week's Supply run (Feature 17) is made from a pushed plan: after
-    a successful `Push`, the handler runs `shopping.Generate` for the week
-    and the 200 answer carries `supply_run: {status, error}`. `status` is
-    `generated`; `archived` when the week's Supply run is in the Supply
-    archive and was left as it was; or `failed` (error
-    `supply_run_failed`, retryable, logged as an error) when it could not
-    be made. Generation never fails or undoes the push — Calendar already
-    shows the plan — and `POST /api/v1/shopping/{weekStart}/generate`
-    makes it again.
+    a successful `Push`, the handler runs `shopping.GeneratePushed` for
+    the week at the plan revision `Push` pushed, and the 200 answer
+    carries `supply_run: {status, error}`. `status` is `generated`;
+    `archived` when the week's Supply run is in the Supply archive and was
+    left as it was; or `failed` — error `plan_changed` (retryable, logged
+    as a warning) when the plan was edited between the push and
+    generation, so no Supply run is made from a plan Calendar does not
+    show and pushing again makes it; or error `supply_run_failed`
+    (retryable, logged as an error) when it could not be made, and
+    `POST /api/v1/shopping/{weekStart}/generate` makes it again.
+    Generation checks the revision inside its own transaction, and never
+    fails or undoes the push — Calendar already shows the plan.
 
 ## Supply run API (Feature 17)
 

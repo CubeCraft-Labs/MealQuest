@@ -39,6 +39,11 @@ const (
 // ErrPlanNotFound is a generation for a week with no plan.
 var ErrPlanNotFound = errors.New("the week has no plan")
 
+// ErrPlanChanged is a generation from a pushed plan the household has
+// edited since it was pushed: the Supply run would not match Calendar, so
+// none is made, and pushing the plan again makes it.
+var ErrPlanChanged = errors.New("the plan changed after it was pushed to Calendar; push again")
+
 // ErrFrozen is a generation of, or a change to an item of, a Supply run
 // frozen into the Supply archive, which is read-only.
 var ErrFrozen = errors.New("the week's Supply run is in the Supply archive and can no longer change")
@@ -165,6 +170,26 @@ type Generated struct {
 // archive is ErrFrozen. A fetched recipe's ingredient without a name is an
 // error: grounding always names one.
 func (s *Service) Generate(ctx context.Context, weekStart store.LocalDate) (Generated, error) {
+	return s.generate(ctx, weekStart, func(db.WeekPlan) error { return nil })
+}
+
+// GeneratePushed makes the Supply run of the week starting weekStart as
+// Generate does, from the plan a Push to Calendar pushed at revision. A
+// plan edited since (another revision) is ErrPlanChanged, and the Supply
+// run is left as it was.
+func (s *Service) GeneratePushed(ctx context.Context, weekStart store.LocalDate, revision int64) (Generated, error) {
+	return s.generate(ctx, weekStart, func(plan db.WeekPlan) error {
+		if plan.Revision != revision {
+			return ErrPlanChanged
+		}
+		return nil
+	})
+}
+
+// generate makes the Supply run of the week starting weekStart from the
+// week's plan, as Generate says, once check accepts that plan, in the same
+// transaction.
+func (s *Service) generate(ctx context.Context, weekStart store.LocalDate, check func(db.WeekPlan) error) (Generated, error) {
 	if _, err := household.WeekDays(weekStart); err != nil {
 		return Generated{}, fmt.Errorf("shopping: generate: %w", err)
 	}
@@ -177,6 +202,9 @@ func (s *Service) Generate(ctx context.Context, weekStart store.LocalDate) (Gene
 		}
 		if err != nil {
 			return fmt.Errorf("shopping: read plan: %w", err)
+		}
+		if err := check(plan); err != nil {
+			return err
 		}
 		want, skipped, err := wanted(ctx, q, plan.ID)
 		if err != nil {

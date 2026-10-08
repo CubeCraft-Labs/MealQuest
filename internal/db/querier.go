@@ -15,6 +15,12 @@ type Querier interface {
 	// Marks the oldest queued job running and returns it. Returns sql.ErrNoRows
 	// when no job is queued.
 	ClaimNextJob(ctx context.Context, now sql.NullString) (Job, error)
+	// Clears every day's calendar event id: none is on the chosen calendar.
+	ClearCalendarEvents(ctx context.Context, updatedAt string) error
+	// Records that Google refuses the stored grant: clears the refresh token and
+	// sets last_sync_error, keeping the chosen calendar. Affects no row when
+	// nothing is connected.
+	ClearIntegrationsGoogleToken(ctx context.Context, arg ClearIntegrationsGoogleTokenParams) (int64, error)
 	// Drops references to the runs created before the cutoff, so the purge
 	// can delete them.
 	ClearSuggestionBatchAIRunsBefore(ctx context.Context, cutoff string) (int64, error)
@@ -50,6 +56,7 @@ type Querier interface {
 	// decided is left as it is (0 rows).
 	DecideSuggestion(ctx context.Context, arg DecideSuggestionParams) (int64, error)
 	DeleteAIRunsBefore(ctx context.Context, cutoff string) (int64, error)
+	DeleteIntegrationsGoogle(ctx context.Context) error
 	DeleteRecipeIngredients(ctx context.Context, recipeID string) error
 	DeleteRecipeSteps(ctx context.Context, recipeID string) error
 	FailJob(ctx context.Context, arg FailJobParams) (int64, error)
@@ -169,12 +176,21 @@ type Querier interface {
 	// The ids of the dinners planned in the week starting week_start, Monday
 	// first.
 	ListWeekPlanDinnerIDs(ctx context.Context, weekStart string) ([]sql.NullString, error)
+	// Records that Calendar no longer shows the days with a calendar event id
+	// as planned, since another calendar or none is chosen: every plan with
+	// such a day is edited as MarkWeekPlanEdited does, so a synced plan becomes
+	// changed and a push that read it before is refused.
+	MarkCalendarPlansEdited(ctx context.Context, updatedAt string) error
 	// Moves a dinner still in the Quest log to tried; a dinner with any other
 	// status is left as it is (0 rows).
 	MarkDinnerTried(ctx context.Context, arg MarkDinnerTriedParams) (int64, error)
 	// Records an edit of plan id, raising its revision: a synced plan becomes
 	// changed, any other keeps its status.
 	MarkWeekPlanEdited(ctx context.Context, arg MarkWeekPlanEditedParams) error
+	// Records a Push to Calendar of plan id as it was at revision: the plan
+	// becomes synced. A plan edited since (another revision) is left as it is
+	// (0 rows).
+	MarkWeekPlanSynced(ctx context.Context, arg MarkWeekPlanSyncedParams) (int64, error)
 	// Moves a dinner still suggested to status (quest_log or archived),
 	// recording updated_by; a dinner no longer suggested is left as it is
 	// (0 rows).
@@ -185,20 +201,27 @@ type Querier interface {
 	MoveTriedDinner(ctx context.Context, arg MoveTriedDinnerParams) (int64, error)
 	// Stores a partial result of a running job.
 	PublishJobResult(ctx context.Context, arg PublishJobResultParams) (int64, error)
-	// Plans dinner_id on date of plan_id, keeping the day's calendar event id
-	// when the day exists.
+	// Plans dinner_id on date of plan_id. An existing day keeps its calendar
+	// event id while its dinner stays the same; a new dinner clears it, since
+	// Calendar no longer shows the day as planned.
 	PutPlanDay(ctx context.Context, arg PutPlanDayParams) error
 	// Records a new draft over plan id: its status and note, raising its
 	// revision.
 	RedraftWeekPlan(ctx context.Context, arg RedraftWeekPlanParams) error
 	// An unknown id returns sql.ErrNoRows.
 	SetDinnerFavorite(ctx context.Context, arg SetDinnerFavoriteParams) (Dinner, error)
+	// Sets the chosen calendar; affects no row when nothing is connected.
+	SetIntegrationsGoogleCalendar(ctx context.Context, arg SetIntegrationsGoogleCalendarParams) (int64, error)
+	// Records that the event calendar_event_id on Calendar shows date of
+	// plan_id as planned.
+	SetPlanDayCalendarEvent(ctx context.Context, arg SetPlanDayCalendarEventParams) (int64, error)
 	// Marks a pending batch running; a batch in any other status is left as
 	// it is (0 rows).
 	StartSuggestionBatch(ctx context.Context, arg StartSuggestionBatchParams) (int64, error)
 	SucceedJob(ctx context.Context, arg SucceedJobParams) (int64, error)
-	// Plans dinner_id on an existing day of plan_id; a date the plan does not
-	// have is left as it is (0 rows).
+	// Plans dinner_id on an existing day of plan_id, clearing its calendar
+	// event id since Calendar no longer shows the day as planned; a date the
+	// plan does not have is left as it is (0 rows).
 	SwapPlanDay(ctx context.Context, arg SwapPlanDayParams) (int64, error)
 	// An unknown id returns sql.ErrNoRows.
 	ToggleDinnerFavorite(ctx context.Context, arg ToggleDinnerFavoriteParams) (Dinner, error)

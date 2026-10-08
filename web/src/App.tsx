@@ -11,6 +11,7 @@ import { PlanPage } from './plan/PlanPage.tsx'
 import { OfflinePill } from './pwa/OfflinePill.tsx'
 import { UpdatePrompt, type UpdateContainer } from './pwa/UpdatePrompt.tsx'
 import { AISettingsPage } from './settings/AISettingsPage.tsx'
+import { CalendarSettingsPage } from './settings/CalendarSettingsPage.tsx'
 import { HouseholdSettingsPage } from './settings/HouseholdSettingsPage.tsx'
 import { RegularsSettingsPage } from './settings/RegularsSettingsPage.tsx'
 import { SettingsPage } from './settings/SettingsPage.tsx'
@@ -43,6 +44,7 @@ const screens: Partial<Record<(typeof routes)[number]['path'], ReactNode>> = {
   '/settings/ai': <AISettingsPage />,
   '/settings/household': <HouseholdSettingsPage />,
   '/settings/regulars': <RegularsSettingsPage />,
+  '/settings/calendar': <CalendarSettingsPage />,
 }
 
 // AppRoutes is the shell and its pages, shown once /api/v1/me has loaded.

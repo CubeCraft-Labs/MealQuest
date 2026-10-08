@@ -1060,7 +1060,7 @@ func TestCheckRedirect(t *testing.T) {
 		{"https://auth.example.com/token", "ftp://auth.example.com/token", false},
 	}
 	for _, tc := range tests {
-		err := checkRedirect(request(tc.to), []*http.Request{request(tc.from)})
+		err := CheckRedirect(request(tc.to), []*http.Request{request(tc.from)})
 		if (err == nil) != tc.ok {
 			t.Errorf("redirect %s -> %s: error = %v, want ok=%v", tc.from, tc.to, err, tc.ok)
 		}
@@ -1069,7 +1069,7 @@ func TestCheckRedirect(t *testing.T) {
 	for i := range via {
 		via[i] = request("https://auth.example.com/token")
 	}
-	if err := checkRedirect(request("https://auth.example.com/token"), via); err == nil {
+	if err := CheckRedirect(request("https://auth.example.com/token"), via); err == nil {
 		t.Errorf("redirect after %d hops: error = nil, want limit", maxRedirects)
 	}
 }

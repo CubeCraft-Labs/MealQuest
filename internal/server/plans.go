@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 )
@@ -90,6 +91,52 @@ func putPlanDay(logger *slog.Logger, svc *plan.Service) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, r, logger, http.StatusOK, p)
+	}
+}
+
+// postPlanPush pushes the week's plan to the chosen Google calendar
+// (Push to Calendar) and answers with the plan as synced.
+func postPlanPush(logger *slog.Logger, svc *plan.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		week, ok := weekStartOrFail(w, r, logger)
+		if !ok {
+			return
+		}
+		p, err := svc.Push(r.Context(), week)
+		if err != nil {
+			writePlanPushError(w, r, logger, err)
+			return
+		}
+		writeJSON(w, r, logger, http.StatusOK, p)
+	}
+}
+
+// writePlanPushError maps a Push to Calendar error to its API error: 409
+// not_connected when Google Calendar is not connected, no_calendar when no
+// calendar is chosen, calendar_unavailable when the chosen calendar was
+// deleted or is no longer writable, and plan_changed when the plan was
+// edited during the push; a Google failure as writeGoogleFailure maps it
+// (409 google_reconnect_required, 503 google_unavailable or 502
+// google_failed). A failed push leaves the plan's status as it was. Any other
+// error is the plan's, as writePlanError maps it.
+func writePlanPushError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error) {
+	var calendar *gcal.CalendarError
+	switch {
+	case errors.Is(err, gcal.ErrNotConnected):
+		writeError(w, r, logger, http.StatusConflict, "not_connected", "Google Calendar is not connected")
+	case errors.Is(err, gcal.ErrNoCalendar):
+		writeError(w, r, logger, http.StatusConflict, "no_calendar",
+			"choose the calendar to push dinners to in Settings, then push again")
+	case errors.Is(err, gcal.ErrCalendarUnavailable):
+		logger.WarnContext(r.Context(), "push plan to Calendar", "error", err)
+		writeError(w, r, logger, http.StatusConflict, "calendar_unavailable",
+			"the chosen calendar was deleted or MealQuest can no longer add dinners to it; choose another calendar in Settings")
+	case errors.Is(err, plan.ErrPlanChanged):
+		writeError(w, r, logger, http.StatusConflict, "plan_changed", err.Error())
+	case errors.Is(err, gcal.ErrReconnect), errors.As(err, &calendar):
+		writeGoogleFailure(w, r, logger, "push plan to Calendar", err, "Google Calendar could not be reached; push again")
+	default:
+		writePlanError(w, r, logger, "push plan to Calendar", err)
 	}
 }
 

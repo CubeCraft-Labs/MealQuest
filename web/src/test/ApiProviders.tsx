@@ -51,13 +51,23 @@ export const RECIPE_SEARCH_SETTINGS = {
   updated_at: '2026-10-01T15:00:00.000Z',
 }
 
+// GOOGLE_NOT_CONNECTED is a GET /api/v1/integrations/google body: nothing
+// connected.
+export const GOOGLE_NOT_CONNECTED = {
+  status: 'not_connected',
+  calendar_id: null,
+  calendar_name: null,
+  connected_at: null,
+  last_sync_error: null,
+}
+
 // SETTINGS_API answers the settings home's requests, for stubFetchByPath, as
-// today's server does: the dinners, Google Calendar and notifications status
-// endpoints do not exist yet. The home's sub-tabs stay mounted on mobile, so
+// today's server does: the dinners and notifications status endpoints do not
+// exist yet, and Google Calendar is not connected. The home's sub-tabs stay mounted on mobile, so
 // it also reads the AI models and recipe search settings.
 export const SETTINGS_API = {
   '/api/v1/dinners?status=regular': () => errorResponse(404, 'not_found'),
-  '/api/v1/settings/calendar': () => errorResponse(404, 'not_found'),
+  '/api/v1/integrations/google': () => jsonResponse(200, GOOGLE_NOT_CONNECTED),
   '/api/v1/settings/notifications': () => errorResponse(404, 'not_found'),
   '/api/v1/settings/household': () => jsonResponse(200, HOUSEHOLD_SETTINGS),
   '/api/v1/settings/ai': () => jsonResponse(200, AI_SETTINGS),

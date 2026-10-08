@@ -14,9 +14,6 @@ export const RECIPE_SEARCH_TEST_PATH = '/api/v1/settings/recipe-search/test'
 // dinners read API. Until it lands the server answers 404 and the Regular
 // dinners row says the count is unavailable.
 export const REGULAR_DINNERS_PATH = '/api/v1/dinners?status=regular'
-// TODO(Feature 16): the Google Calendar integration status. Until Feature 16
-// serves it the server answers 404, which is the truth: not connected.
-export const CALENDAR_STATUS_PATH = '/api/v1/settings/calendar'
 // TODO(notifications feature): the Web Push and Google Chat status. Until it
 // is served the server answers 404, which is the truth: push is off and no
 // Google Chat space is connected.
@@ -514,30 +511,6 @@ export function regularDinnersStatus(count: number | null): string {
   if (count === null) return 'Rotation count unavailable'
   if (count === 0) return 'None on rotation yet'
   return `${count} on rotation`
-}
-
-// CalendarStatus is the Google Calendar integration status; calendar_name
-// is the connected calendar's name.
-export type CalendarStatus = { connected: false } | { connected: true; calendar_name: string }
-
-export function useCalendarStatus() {
-  const { apiFetch } = useApi()
-  return useQuery({
-    queryKey: ['settings', 'calendar'],
-    queryFn: () =>
-      fetchUnlessAbsent(apiFetch, CALENDAR_STATUS_PATH, (body): CalendarStatus => {
-        if (isRecord(body) && body.connected === false) return { connected: false }
-        if (isRecord(body) && body.connected === true && typeof body.calendar_name === 'string') {
-          return { connected: true, calendar_name: body.calendar_name }
-        }
-        throw new Error(`GET ${CALENDAR_STATUS_PATH}: response is not a calendar status`)
-      }),
-  })
-}
-
-export function calendarStatus(status: CalendarStatus | null): string {
-  if (status === null || !status.connected) return 'Not connected'
-  return `Connected · ${status.calendar_name}`
 }
 
 // NotificationsStatus is whether Web Push is on and the connected Google

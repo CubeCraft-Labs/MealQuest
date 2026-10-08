@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
-import { AI_MODELS, AI_SETTINGS, HOUSEHOLD_SETTINGS, RECIPE_SEARCH_SETTINGS } from '../test/ApiProviders.tsx'
+import { AI_MODELS, AI_SETTINGS, GOOGLE_NOT_CONNECTED, HOUSEHOLD_SETTINGS, RECIPE_SEARCH_SETTINGS } from '../test/ApiProviders.tsx'
 import { InDataRouter } from '../test/dataRouter.tsx'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
@@ -154,7 +154,7 @@ describe('SettingsPage across the 768 px breakpoint', () => {
   it('shows the mobile list below 768 px and the sub-tabs from 768 px', async () => {
     stubAPI({
       'GET /api/v1/dinners?status=regular': () => errorResponse(404, 'not_found'),
-      'GET /api/v1/settings/calendar': () => errorResponse(404, 'not_found'),
+      'GET /api/v1/integrations/google': () => jsonResponse(200, GOOGLE_NOT_CONNECTED),
       'GET /api/v1/settings/notifications': () => errorResponse(404, 'not_found'),
     })
     const resize = await renderAt(767)
@@ -169,7 +169,7 @@ describe('SettingsPage across the 768 px breakpoint', () => {
   it('keeps an unsaved draft and its leave guard across 1180 px, 390 px and back', async () => {
     stubAPI({
       'GET /api/v1/dinners?status=regular': () => errorResponse(404, 'not_found'),
-      'GET /api/v1/settings/calendar': () => errorResponse(404, 'not_found'),
+      'GET /api/v1/integrations/google': () => jsonResponse(200, GOOGLE_NOT_CONNECTED),
       'GET /api/v1/settings/notifications': () => errorResponse(404, 'not_found'),
     })
     const resize = await renderAt(1180)

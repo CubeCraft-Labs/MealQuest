@@ -1,11 +1,12 @@
 import { QueryClientProvider, type QueryClient } from '@tanstack/react-query'
-import { act, renderHook, waitFor } from '@testing-library/react'
+import { act, render, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
+import { MemoryRouter, Route, Routes, useNavigate, type NavigateFunction } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
-import { planKey, usePlan, useSwapDay, type Plan } from './api.ts'
+import { planKey, usePlan, usePushToCalendar, useSwapDay, type Plan, type PushToCalendar, type SwapDay } from './api.ts'
 
 const WEEK = '2026-10-05'
 const PLAN = `/api/v1/plans/${WEEK}`
@@ -201,5 +202,200 @@ describe('useSwapDay', () => {
     await waitFor(() => expect(result.current.swap.pending).toBe(true))
     expect(() => result.current.swap.dismiss()).toThrow('The week of 2026-10-05 has a swap pending, which cannot be dismissed.')
     await act(async () => friday.send(jsonResponse(200, planBody())))
+  })
+})
+
+describe('week mutations', () => {
+  const NEXT = '2026-10-12'
+  const LATER = '2026-10-19'
+
+  // weekMutations lists the swaps and pushes the mutation cache holds for
+  // the week starting on weekStart, with their status.
+  function weekMutations(queryClient: QueryClient, weekStart: string) {
+    return queryClient
+      .getMutationCache()
+      .findAll({ mutationKey: ['plans', weekStart] })
+      .map((mutation) => `${String(mutation.options.mutationKey![2])} ${mutation.state.status}`)
+  }
+
+  it('keeps settled swaps and pushes while their week is shown, and leaves them behind once it is not, unless one is pending', async () => {
+    const nextPush = deferred()
+    stubServer({
+      [`GET ${PLAN}`]: () => jsonResponse(200, planBody()),
+      [`PUT ${FRIDAY}`]: () => jsonResponse(200, planBody({ 4: { id: 'q1', name: 'Lemon orzo', is_new: true } })),
+      [`POST ${PLAN}/push-calendar`]: () => errorResponse(500, 'internal'),
+      [`GET /api/v1/plans/${NEXT}`]: () => errorResponse(404, 'not_found'),
+      [`POST /api/v1/plans/${NEXT}/push-calendar`]: () => nextPush.reply,
+      [`GET /api/v1/plans/${LATER}`]: () => errorResponse(404, 'not_found'),
+    })
+    const api = createApiClient(fakeLocation('/plan'), createNetworkStatus(window), createVerifiedSession(localStorage))
+    await api.loadMe()
+    const queryClient = createQueryClient()
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <ApiProvider client={api}>
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      </ApiProvider>
+    )
+    const hook = renderHook(
+      ({ week }) => ({ plan: usePlan(week), swap: useSwapDay(week), push: usePushToCalendar(week) }),
+      { wrapper, initialProps: { week: WEEK } },
+    )
+    await waitFor(() => expect(hook.result.current.plan.isSuccess).toBe(true))
+
+    // A swap and a push of the week settle: both stay while it is shown,
+    // the push's failure speaking for the week.
+    act(() => hook.result.current.swap.mutate(ORZO))
+    await waitFor(() => expect(hook.result.current.swap.pending).toBe(false))
+    act(() => hook.result.current.push.mutate())
+    await waitFor(() => expect(hook.result.current.push.error).not.toBeNull())
+    expect(weekMutations(queryClient, WEEK)).toEqual(['swap success', 'push error'])
+
+    // Another week shown leaves them behind; a push sent there stays
+    // pending across showing a third week.
+    hook.rerender({ week: NEXT })
+    await waitFor(() => expect(hook.result.current.plan.isSuccess).toBe(true))
+    expect(weekMutations(queryClient, WEEK)).toEqual([])
+    act(() => hook.result.current.push.mutate())
+    hook.rerender({ week: LATER })
+    await waitFor(() => expect(hook.result.current.plan.isSuccess).toBe(true))
+    expect(weekMutations(queryClient, NEXT)).toEqual(['push pending'])
+    hook.rerender({ week: NEXT })
+    expect(hook.result.current.push.pending).toBe(true)
+
+    // Once it settles, it stays while its week is shown and is left behind
+    // once another is.
+    await act(async () => nextPush.send(errorResponse(500, 'internal')))
+    await waitFor(() => expect(hook.result.current.push.error).not.toBeNull())
+    expect(weekMutations(queryClient, NEXT)).toEqual(['push error'])
+    hook.rerender({ week: LATER })
+    expect(weekMutations(queryClient, NEXT)).toEqual([])
+  })
+
+  it('leaves behind what settles in a week no longer shown, unless that week still has one pending or it is the failure that speaks for it', async () => {
+    const friday = deferred()
+    const monday = deferred()
+    const nextPush = deferred()
+    const laterPush = deferred()
+    stubServer({
+      [`GET ${PLAN}`]: () => jsonResponse(200, planBody()),
+      [`PUT ${FRIDAY}`]: () => friday.reply,
+      [`PUT ${MONDAY}`]: () => monday.reply,
+      [`GET /api/v1/plans/${NEXT}`]: () => errorResponse(404, 'not_found'),
+      [`POST /api/v1/plans/${NEXT}/push-calendar`]: () => nextPush.reply,
+      [`GET /api/v1/plans/${LATER}`]: () => errorResponse(404, 'not_found'),
+      [`POST /api/v1/plans/${LATER}/push-calendar`]: () => laterPush.reply,
+    })
+    const api = createApiClient(fakeLocation('/plan'), createNetworkStatus(window), createVerifiedSession(localStorage))
+    await api.loadMe()
+    const queryClient = createQueryClient()
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <ApiProvider client={api}>
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      </ApiProvider>
+    )
+    const hook = renderHook(
+      ({ week }) => ({ plan: usePlan(week), swap: useSwapDay(week), push: usePushToCalendar(week) }),
+      { wrapper, initialProps: { week: WEEK } },
+    )
+    await waitFor(() => expect(hook.result.current.plan.isSuccess).toBe(true))
+
+    // Two swaps of the week and a push of the next are left pending, and a
+    // third week is shown.
+    act(() => hook.result.current.swap.mutate(ORZO))
+    act(() => hook.result.current.swap.mutate(FISH))
+    await waitFor(() => expect(weekMutations(queryClient, WEEK)).toEqual(['swap pending', 'swap pending']))
+    hook.rerender({ week: NEXT })
+    await waitFor(() => expect(hook.result.current.plan.isSuccess).toBe(true))
+    act(() => hook.result.current.push.mutate())
+    hook.rerender({ week: LATER })
+    await waitFor(() => expect(hook.result.current.plan.isSuccess).toBe(true))
+    expect(weekMutations(queryClient, NEXT)).toEqual(['push pending'])
+
+    // The later swap settles first: the earlier, still pending, must see it,
+    // so both stay.
+    await act(async () => monday.send(jsonResponse(200, planBody({ 0: { id: 'r1', name: 'Fish tacos' } }))))
+    await waitFor(() => expect(weekMutations(queryClient, WEEK)).toEqual(['swap pending', 'swap success']))
+
+    // The push succeeds while the third week is shown: it is left behind,
+    // and the week's pending swap is not.
+    await act(async () => nextPush.send(jsonResponse(200, { ...planBody(), week_start: NEXT })))
+    await waitFor(() => expect(weekMutations(queryClient, NEXT)).toEqual([]))
+    expect(weekMutations(queryClient, WEEK)).toEqual(['swap pending', 'swap success'])
+
+    // Once the earlier swap fails, the week has none pending: both are left
+    // behind, the failure not being the week's latest.
+    await act(async () => friday.send(errorResponse(409, 'dinner_not_plannable')))
+    await waitFor(() => expect(weekMutations(queryClient, WEEK)).toEqual([]))
+
+    // A push of the third week fails once another is shown: it stays, to be
+    // shown on coming back, until yet another week is.
+    act(() => hook.result.current.push.mutate())
+    hook.rerender({ week: NEXT })
+    await waitFor(() => expect(hook.result.current.plan.isSuccess).toBe(true))
+    await act(async () => laterPush.send(errorResponse(500, 'internal')))
+    await waitFor(() => expect(weekMutations(queryClient, LATER)).toEqual(['push error']))
+    hook.rerender({ week: WEEK })
+    expect(weekMutations(queryClient, LATER)).toEqual([])
+  })
+
+  it('leaves behind what settles once Plan is left for another route, and keeps what is pending', async () => {
+    const friday = deferred()
+    const monday = deferred()
+    const push = deferred()
+    stubServer({
+      [`GET ${PLAN}`]: () => jsonResponse(200, planBody()),
+      [`PUT ${FRIDAY}`]: () => friday.reply,
+      [`PUT ${MONDAY}`]: () => monday.reply,
+      [`POST ${PLAN}/push-calendar`]: () => push.reply,
+    })
+    const api = createApiClient(fakeLocation('/plan'), createNetworkStatus(window), createVerifiedSession(localStorage))
+    await api.loadMe()
+    const queryClient = createQueryClient()
+    let week!: { plan: ReturnType<typeof usePlan>; swap: SwapDay; push: PushToCalendar }
+    let navigate!: NavigateFunction
+    function Week() {
+      week = { plan: usePlan(WEEK), swap: useSwapDay(WEEK), push: usePushToCalendar(WEEK) }
+      return null
+    }
+    function Navigator() {
+      navigate = useNavigate()
+      return null
+    }
+    render(
+      <ApiProvider client={api}>
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/plan']}>
+            <Navigator />
+            <Routes>
+              <Route path="/plan" element={<Week />} />
+              <Route path="/settings" element={null} />
+            </Routes>
+          </MemoryRouter>
+        </QueryClientProvider>
+      </ApiProvider>,
+    )
+    await waitFor(() => expect(week.plan.isSuccess).toBe(true))
+
+    // Two swaps and a push of the week are left pending, and Settings is
+    // shown.
+    act(() => week.swap.mutate(ORZO))
+    act(() => week.swap.mutate(FISH))
+    act(() => week.push.mutate())
+    await waitFor(() => expect(weekMutations(queryClient, WEEK)).toEqual(['swap pending', 'swap pending', 'push pending']))
+    act(() => void navigate('/settings'))
+
+    // The swaps settle: once neither is pending they are left behind, and
+    // the push still pending is not.
+    await act(async () => monday.send(jsonResponse(200, planBody({ 0: { id: 'r1', name: 'Fish tacos' } }))))
+    await waitFor(() => expect(weekMutations(queryClient, WEEK)).toEqual(['swap pending', 'swap success', 'push pending']))
+    await act(async () => friday.send(jsonResponse(200, planBody({ 0: { id: 'r1', name: 'Fish tacos' }, 4: { id: 'q1', name: 'Lemon orzo', is_new: true } }))))
+    await waitFor(() => expect(weekMutations(queryClient, WEEK)).toEqual(['push pending']))
+
+    // The push succeeds: the plan as synced is recorded, and the push is
+    // left behind.
+    const synced = { ...planBody(), status: 'synced', calendar_synced_at: '2026-10-08T06:00:00Z' }
+    await act(async () => push.send(jsonResponse(200, synced)))
+    await waitFor(() => expect(weekMutations(queryClient, WEEK)).toEqual([]))
+    expect(queryClient.getQueryData<Plan>(planKey(WEEK))).toMatchObject({ status: 'synced', calendar_synced_at: new Date('2026-10-08T06:00:00Z') })
   })
 })

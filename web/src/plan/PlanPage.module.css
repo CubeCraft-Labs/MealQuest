@@ -258,9 +258,9 @@
   color: var(--color-neutral-700);
 }
 
-/* An action with nothing behind it yet (Push to Calendar until Feature 16,
-   the shopping list until Feature 17): it keeps focus, so hovering, tapping
-   or focusing it shows the tooltip. */
+/* An action with nothing behind it yet (the shopping list until Feature
+   17): it keeps focus, so hovering, tapping or focusing it shows the
+   tooltip. */
 .unavailable {
   position: relative;
   display: flex;
@@ -404,6 +404,21 @@
 
 .synced {
   color: var(--color-accent-2-800);
+}
+
+/* Under the Draft board's push button the line is centred and may wrap. */
+.mobileStatus {
+  flex: none;
+  justify-content: center;
+  white-space: normal;
+  text-align: center;
+}
+
+/* A push failure's way to the Google Calendar settings. */
+.settingsLink {
+  color: inherit;
+  font-weight: 800;
+  text-decoration: underline;
 }
 
 .actions {

@@ -1,0 +1,313 @@
+package gcal
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
+	"time"
+
+	"golang.org/x/oauth2"
+
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
+)
+
+const (
+	// calendarPageSize is the calendarList page size: Google's maximum.
+	calendarPageSize = 250
+	// maxCalendarPages caps how many calendarList pages a listing reads.
+	maxCalendarPages = 20
+	// maxCalendarBody caps how much of one calendarList page is read.
+	maxCalendarBody = 1 << 20
+)
+
+var (
+	// ErrReconnect means Google no longer accepts the stored grant: the
+	// household revoked MealQuest's access in their Google account, or the
+	// refresh token expired. Only connecting again restores it.
+	ErrReconnect = errors.New("gcal: Google no longer accepts MealQuest's access; connect Google Calendar again")
+	// ErrUnknownCalendar means the calendar chosen is not one the connected
+	// account can push to.
+	ErrUnknownCalendar = errors.New("gcal: not a calendar MealQuest can add dinners to")
+)
+
+// Calendar is one calendar the connected account can push to.
+type Calendar struct {
+	ID         string `json:"id"`
+	Summary    string `json:"summary"`
+	Primary    bool   `json:"primary"`
+	AccessRole string `json:"accessRole"`
+}
+
+// Selection is the calendar MealQuest pushes to.
+type Selection struct {
+	CalendarID   string `json:"calendar_id"`
+	CalendarName string `json:"calendar_name"`
+}
+
+// CalendarError is a Calendar API or token refresh request Google refused
+// or that failed in transit. Its text never holds a token or Google's
+// response body.
+type CalendarError struct {
+	msg string
+	// retryable is set when Google answered every try with a transient
+	// failure (HTTP 429 or 5xx).
+	retryable bool
+}
+
+func (e *CalendarError) Error() string { return e.msg }
+
+// Retryable reports whether Google was only briefly unable to answer, so
+// trying again later may succeed. Nothing was disconnected.
+func (e *CalendarError) Retryable() bool { return e.retryable }
+
+// Calendars lists the connected account's calendars it can push to: those
+// it is a writer or owner of, in Google's order. A grant Google refuses is
+// ErrReconnect, recorded as reconnect required (recordRefusal).
+func (s *Service) Calendars(ctx context.Context) ([]Calendar, error) {
+	s.account.Lock()
+	defer s.account.Unlock()
+	cals, err := s.calendars(ctx)
+	if err != nil {
+		return nil, s.recordRefusal(ctx, err)
+	}
+	return cals, nil
+}
+
+// SelectCalendar makes id the calendar MealQuest pushes to, storing its id
+// and name. id must be among Calendars at the time of the call; anything
+// else, including a calendar chosen earlier that has since been deleted or
+// is no longer writable, is ErrUnknownCalendar and leaves the stored
+// choice as it was. Choosing another calendar than the one chosen returns
+// every plan pushed to that one to not synced; see saveSelection. A grant
+// Google refuses is ErrReconnect, recorded as reconnect required
+// (recordRefusal).
+func (s *Service) SelectCalendar(ctx context.Context, id string) (Selection, error) {
+	s.account.Lock()
+	defer s.account.Unlock()
+	cals, err := s.calendars(ctx)
+	if err != nil {
+		return Selection{}, s.recordRefusal(ctx, err)
+	}
+	for _, c := range cals {
+		if c.ID != id {
+			continue
+		}
+		sel := Selection{CalendarID: c.ID, CalendarName: c.Summary}
+		if err := s.saveSelection(ctx, sel); err != nil {
+			return Selection{}, err
+		}
+		return sel, nil
+	}
+	return Selection{}, ErrUnknownCalendar
+}
+
+// saveSelection stores sel as the chosen calendar. Choosing another calendar
+// than the one stored also forgets every plan day's calendar event id, in
+// the same transaction, since those events are on the calendar no longer
+// chosen (forgetEvents): each plan with one is edited, so a synced plan
+// becomes changed and its next push writes every day to sel. The caller
+// holds s.account, which a push also holds from its event writes through
+// recording them, so a push never records events written to another
+// calendar than the chosen one.
+func (s *Service) saveSelection(ctx context.Context, sel Selection) error {
+	return s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		q := db.New(tx)
+		row, err := q.GetIntegrationsGoogle(ctx)
+		if errors.Is(err, sql.ErrNoRows) {
+			// The lock is held since the connection was read, so only a
+			// change outside this service gets here.
+			return ErrNotConnected
+		}
+		if err != nil {
+			return fmt.Errorf("gcal: read Google integration: %w", err)
+		}
+		now := store.Timestamp{Time: s.now().UTC().Truncate(time.Millisecond)}.String()
+		if _, err := q.SetIntegrationsGoogleCalendar(ctx, db.SetIntegrationsGoogleCalendarParams{
+			CalendarID:   sql.NullString{String: sel.CalendarID, Valid: true},
+			CalendarName: sql.NullString{String: sel.CalendarName, Valid: true},
+			UpdatedAt:    now,
+		}); err != nil {
+			return fmt.Errorf("gcal: save calendar: %w", err)
+		}
+		if row.CalendarID.Valid && row.CalendarID.String == sel.CalendarID {
+			return nil
+		}
+		return forgetEvents(ctx, q, now)
+	})
+}
+
+// forgetEvents records, in the caller's transaction q, that no calendar
+// event id stored is on the chosen calendar any more: every plan with one is
+// edited (a synced plan becomes changed, and a push that read it before is
+// refused), then every id is cleared. Every change that ends the chosen
+// calendar — choosing another (saveSelection) or disconnecting
+// (Disconnect) — runs it in the transaction that makes the change.
+func forgetEvents(ctx context.Context, q *db.Queries, now string) error {
+	if err := q.MarkCalendarPlansEdited(ctx, now); err != nil {
+		return fmt.Errorf("gcal: mark plans pushed to the earlier calendar edited: %w", err)
+	}
+	if err := q.ClearCalendarEvents(ctx, now); err != nil {
+		return fmt.Errorf("gcal: forget events on the earlier calendar: %w", err)
+	}
+	return nil
+}
+
+// calendars lists the writable calendars, each once, with the stored refresh
+// token. The caller holds s.account.
+func (s *Service) calendars(ctx context.Context) ([]Calendar, error) {
+	row, err := s.grantedConnection(ctx)
+	if err != nil {
+		return nil, err
+	}
+	access, err := s.accessToken(ctx, row)
+	if err != nil {
+		return nil, err
+	}
+	cals := []Calendar{}
+	// listed holds the ids in cals: pages can overlap, and a calendar is
+	// listed once, as Google first lists it.
+	listed := map[string]bool{}
+	pageToken := ""
+	for range maxCalendarPages {
+		page, err := s.calendarPage(ctx, access, pageToken)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range page.Items {
+			if item.ID == "" {
+				return nil, &CalendarError{msg: "gcal: Google listed a calendar without an id"}
+			}
+			if (item.AccessRole == "writer" || item.AccessRole == "owner") && !listed[item.ID] {
+				listed[item.ID] = true
+				cals = append(cals, Calendar{ID: item.ID, Summary: item.Summary, Primary: item.Primary, AccessRole: item.AccessRole})
+			}
+		}
+		if page.NextPageToken == "" {
+			return cals, nil
+		}
+		pageToken = page.NextPageToken
+	}
+	return nil, &CalendarError{msg: fmt.Sprintf("gcal: Google listed more than %d pages of calendars", maxCalendarPages)}
+}
+
+// connection reads the connected account, or ErrNotConnected.
+func (s *Service) connection(ctx context.Context) (db.IntegrationsGoogle, error) {
+	row, err := db.New(s.st.Reader).GetIntegrationsGoogle(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return db.IntegrationsGoogle{}, ErrNotConnected
+	}
+	if err != nil {
+		return db.IntegrationsGoogle{}, fmt.Errorf("gcal: read Google integration: %w", err)
+	}
+	return row, nil
+}
+
+// grantedConnection reads the connected account for a Calendar call that
+// uses the stored grant: listing, choosing and pushing. It decides the
+// precedence of their preconditions: nothing connected is ErrNotConnected,
+// then a grant already recorded as refused (no refresh token stored) is
+// ErrReconnect, before anything else a call checks, such as whether a
+// calendar is chosen. Only connecting again restores a refused grant, so
+// it is reported whatever the calendar choice, and the refused token is
+// never offered to Google.
+func (s *Service) grantedConnection(ctx context.Context) (db.IntegrationsGoogle, error) {
+	row, err := s.connection(ctx)
+	if err != nil {
+		return db.IntegrationsGoogle{}, err
+	}
+	if row.RefreshTokenCt == nil {
+		return db.IntegrationsGoogle{}, ErrReconnect
+	}
+	return row, nil
+}
+
+// accessToken trades row's refresh token, from grantedConnection, for an
+// access token, retrying a transient failure as send does. A grant Google
+// reports as invalid_grant is ErrReconnect.
+func (s *Service) accessToken(ctx context.Context, row db.IntegrationsGoogle) (string, error) {
+	refresh, err := s.box.Decrypt(row.RefreshTokenCt)
+	if err != nil {
+		return "", fmt.Errorf("gcal: open refresh token: %w", err)
+	}
+	for attempt := 0; ; attempt++ {
+		if attempt > 0 {
+			if err := s.backoff(ctx, attempt); err != nil {
+				return "", err
+			}
+		}
+		token, err := s.oauth.TokenSource(context.WithValue(ctx, oauth2.HTTPClient, s.client),
+			&oauth2.Token{RefreshToken: string(refresh)}).Token()
+		if err == nil {
+			return token.AccessToken, nil
+		}
+		var retrieve *oauth2.RetrieveError
+		var transport *url.Error
+		switch {
+		case errors.As(err, &retrieve) && retrieve.ErrorCode == "invalid_grant":
+			return "", ErrReconnect
+		case errors.As(err, &retrieve) && transient(retrieve.Response.StatusCode) && attempt < maxRetries:
+			continue
+		case errors.As(err, &retrieve) && transient(retrieve.Response.StatusCode):
+			return "", &CalendarError{retryable: true,
+				msg: fmt.Sprintf("gcal: Google could not take the token refresh (HTTP %d) in %d tries", retrieve.Response.StatusCode, maxRetries+1)}
+		case errors.As(err, &retrieve):
+			return "", &CalendarError{msg: fmt.Sprintf("gcal: Google refused the token refresh (HTTP %d)", retrieve.Response.StatusCode)}
+		case errors.As(err, &transport):
+			// The URL is dropped: after a refused redirect it is the
+			// Google-supplied Location.
+			return "", &CalendarError{msg: fmt.Sprintf("gcal: token refresh failed: %s: %v", transport.Op, transport.Err)}
+		default:
+			return "", &CalendarError{msg: "gcal: token refresh returned an unusable response"}
+		}
+	}
+}
+
+// calendarListPage is the part of a calendarList page MealQuest reads.
+type calendarListPage struct {
+	Items []struct {
+		ID         string `json:"id"`
+		Summary    string `json:"summary"`
+		Primary    bool   `json:"primary"`
+		AccessRole string `json:"accessRole"`
+	} `json:"items"`
+	NextPageToken string `json:"nextPageToken"`
+}
+
+// calendarPage fetches the calendarList page at pageToken ("" for the
+// first) with access. HTTP 401 means Google no longer accepts the grant:
+// the access token was just refreshed from it.
+func (s *Service) calendarPage(ctx context.Context, access, pageToken string) (calendarListPage, error) {
+	q := url.Values{"maxResults": {fmt.Sprint(calendarPageSize)}}
+	if pageToken != "" {
+		q.Set("pageToken", pageToken)
+	}
+	status, body, err := s.send(ctx, "calendar list", maxCalendarBody+1, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.calendarAPI+"/users/me/calendarList?"+q.Encode(), nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+access)
+		return req, nil
+	})
+	if err != nil {
+		return calendarListPage{}, err
+	}
+	switch {
+	case status == http.StatusUnauthorized:
+		return calendarListPage{}, ErrReconnect
+	case status != http.StatusOK:
+		return calendarListPage{}, &CalendarError{msg: fmt.Sprintf("gcal: Google refused the calendar list (HTTP %d)", status)}
+	case len(body) > maxCalendarBody:
+		return calendarListPage{}, &CalendarError{msg: fmt.Sprintf("gcal: calendar list page exceeds %d bytes", maxCalendarBody)}
+	}
+	var page calendarListPage
+	if err := json.Unmarshal(body, &page); err != nil {
+		return calendarListPage{}, &CalendarError{msg: "gcal: Google returned an unreadable calendar list"}
+	}
+	return page, nil
+}

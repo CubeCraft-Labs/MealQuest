@@ -577,6 +577,57 @@ describe('PlanPage', () => {
     expect(screen.queryByRole('button', { name: 'Make the shopping list' })).not.toBeInTheDocument()
   })
 
+  it('still says the Supply run could not be made when making the shopping list fails after leaving the week', async () => {
+    const made = deferred()
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      [`GET ${NEXT_WEEK}`]: () => errorResponse(404, 'not_found'),
+      [`POST ${PUSH}`]: () => jsonResponse(200, syncedNow(SUPPLY_RUN_FAILED)),
+      'POST /api/v1/shopping/2026-10-05/generate': () => made.response,
+    })
+    await renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Looks good — push to Calendar' }))
+    fireEvent.click(within(await screen.findByRole('alert')).getByRole('button', { name: 'Make the shopping list' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Making the shopping list…')
+
+    // The week is left while the shopping list is being made, which fails.
+    fireEvent.click(screen.getByRole('button', { name: 'Next week' }))
+    expect(await screen.findByRole('button', { name: 'Draft this week' })).toBeInTheDocument()
+    await act(async () => made.send(errorResponse(500, 'internal')))
+
+    // Coming back, the Supply run is still said to be unmade, and can be
+    // made again.
+    fireEvent.click(screen.getByRole('button', { name: 'Previous week' }))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Pushed to Calendar, but this week's Supply run couldn't be made.")
+    expect(within(alert).getByRole('button', { name: 'Make the shopping list' })).toBeEnabled()
+  })
+
+  it('no longer says the Supply run could not be made once the shopping list is made after leaving the week', async () => {
+    const made = deferred()
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      [`GET ${NEXT_WEEK}`]: () => errorResponse(404, 'not_found'),
+      [`POST ${PUSH}`]: () => jsonResponse(200, syncedNow(SUPPLY_RUN_FAILED)),
+      'POST /api/v1/shopping/2026-10-05/generate': () => made.response,
+    })
+    await renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Looks good — push to Calendar' }))
+    fireEvent.click(within(await screen.findByRole('alert')).getByRole('button', { name: 'Make the shopping list' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Making the shopping list…')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next week' }))
+    expect(await screen.findByRole('button', { name: 'Draft this week' })).toBeInTheDocument()
+    await act(async () => made.send(jsonResponse(200, { ...supplyRun(28), skipped: [] })))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Previous week' }))
+    expect(await screen.findByText('Beef tacos')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Make the shopping list' })).not.toBeInTheDocument()
+  })
+
   it('pushes nothing again until the changed plan is read and shown', async () => {
     let read: () => Response | Promise<Response> = () => jsonResponse(200, planBody('draft'))
     let push = () => errorResponse(409, 'plan_changed')

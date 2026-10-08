@@ -232,7 +232,12 @@ function sameDay(a: PlanDay, b: PlanDay): boolean {
 // failed says whether a swap or push failed: a push whose Supply run was
 // not made failed too, though Calendar has the plan.
 function failed(mutation: Mutation): boolean {
-  if (mutation.state.status === 'error') return true
+  return mutation.state.status === 'error' || unmade(mutation)
+}
+
+// unmade says whether a push succeeded but its Supply run was not made: the
+// week is on Calendar with no shopping list until one is made.
+function unmade(mutation: Mutation): boolean {
   const data = mutation.state.data as PushedPlan | undefined
   return mutation.state.status === 'success' && weekMutation(mutation)?.kind === 'push' && data?.supply_run.status === 'failed'
 }
@@ -262,9 +267,13 @@ const weeksShown = new WeakMap<QueryClient, WeeksShown>()
 // earlier pending one must see, stay across leaving its week and coming
 // back. When one settles, the same is done, except that a week's latest,
 // when it failed, stays until a week is next shown, so that coming straight
-// back to it shows the failure. The cache holds at most the weeks shown's,
-// those of weeks left pending, and one failure of each week whose last
-// pending one settled since a week was last shown.
+// back to it shows the failure. A week's latest push whose Supply run was
+// not made stays whatever is shown: the week has no shopping list until one
+// is made, which settles the push, or a push sent since replaces it, and
+// making it may still be under way when the week is left. The cache holds
+// at most the weeks shown's, those of weeks left pending, one push of each
+// week whose Supply run was not made, and one failure of each week whose
+// last pending one settled since a week was last shown.
 function keepWeekMutations(queryClient: QueryClient): WeeksShown {
   const kept = weeksShown.get(queryClient)
   if (kept !== undefined) return kept
@@ -284,7 +293,7 @@ function keepWeekMutations(queryClient: QueryClient): WeeksShown {
       if (week.some((mutation) => mutation.state.status === 'pending')) continue
       const latest = week.at(-1)
       for (const mutation of week) {
-        if (settled && mutation === latest && failed(mutation)) continue
+        if (mutation === latest && (unmade(mutation) || (settled && failed(mutation)))) continue
         mutations.remove(mutation)
       }
     }
@@ -454,8 +463,8 @@ export type PushToCalendar = {
 // leaves settled pushes behind; it is refused while one is pending. settle
 // leaves behind the push shown, once its failed Supply run has been made
 // another way, so it is not said again to be unmade; a push sent since is
-// kept. Settled pushes of a week no longer shown are left behind too
-// (keepWeekMutations).
+// kept. Settled pushes of a week no longer shown are left behind too, but
+// for the latest when its Supply run was not made (keepWeekMutations).
 export function usePushToCalendar(weekStart: string): PushToCalendar {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()

@@ -7,14 +7,26 @@ import {
   type MutationObserverOptions,
   type QueryClient,
 } from '@tanstack/react-query'
-import { useEffect, useReducer, useRef, useSyncExternalStore } from 'react'
+import { useEffect, useReducer, useSyncExternalStore } from 'react'
 import { ApiError, useApi, type ApiClient } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { meQueryKey } from '../AuthBootstrap.tsx'
 import { oneOf } from '../dinners/api.ts'
 import type { NetworkStatus } from '../pwa/networkStatus.ts'
 import { HOUSEHOLD_SETTINGS_KEY, type HouseholdSettings } from '../settings/api.ts'
-import { dequeue, enqueue, keep, queued, SAVED_KEY, saveRun, savedRun, saveSchedule } from './offline.ts'
+import {
+  dequeue,
+  enqueue,
+  keep,
+  markWillSync,
+  queued,
+  SAVED_KEY,
+  saveRun,
+  savedRun,
+  saveSchedule,
+  synced,
+  willSync,
+} from './offline.ts'
 
 export const SHOPPING_PATH = '/api/v1/shopping'
 
@@ -215,16 +227,42 @@ export type Toggles = {
   toggle: (toggle: Toggle) => void
 }
 
-// reachable resolves once network says the server can be reached: at once
-// when it says so now.
-function reachable(network: NetworkStatus): Promise<void> {
+// TOGGLE_DEADLINE is how long, in milliseconds, one try of a toggle — its
+// GET /api/v1/me and its PATCH — may take before it counts as the server not
+// answering. Only toggles have a deadline: the API client sets none.
+export const TOGGLE_DEADLINE = 10_000
+
+// RETRY_FIRST and RETRY_CEILING bound, in milliseconds, how long a toggle
+// waits while the server cannot be reached before it is tried again anyway:
+// the first wait, doubled after each failed try up to the ceiling.
+export const RETRY_FIRST = 1_000
+export const RETRY_CEILING = 30_000
+
+// reachable resolves once network says the server can be reached — at once
+// when it says so now — or after delay milliseconds, whichever is first. The
+// server coming back says nothing by itself, and the browser sends no online
+// event when it never thought it was offline, so the toggle is tried again
+// after delay whatever network says.
+function reachable(network: NetworkStatus, delay: number): Promise<void> {
   if (!network.offline()) return Promise.resolve()
   return new Promise((resolve) => {
-    const stop = network.subscribe(() => {
-      if (network.offline()) return
+    const done = () => {
+      clearTimeout(timer)
       stop()
       resolve()
+    }
+    const timer = setTimeout(done, delay)
+    const stop = network.subscribe(() => {
+      if (!network.offline()) done()
     })
+  })
+}
+
+// beforeDeadline is promise, rejected with signal's reason once it aborts.
+function beforeDeadline<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    signal.addEventListener('abort', () => reject(signal.reason as Error), { once: true })
+    promise.then(resolve, reject)
   })
 }
 
@@ -237,10 +275,16 @@ function reachable(network: NetworkStatus): Promise<void> {
 // include every toggle before it and none after, and a replayed toggle never
 // overlaps another replayed or made here. While the server cannot be
 // reached — the device is offline, or the toggle's PATCH failed with a
-// network error (fetch rejected with a TypeError) — a toggle waits, pending,
-// and is sent once it can be: those after it wait behind it. Any answer from the server settles
-// it: a refusal (a 400, 404, 409 or any other error response) or a response
-// that is not the item as toggled fails it, and it is not sent again. Before
+// network error (fetch rejected with a TypeError), or a try ran past its
+// deadline (TOGGLE_DEADLINE) — a toggle waits, pending, and is tried again
+// once network says the server can be reached, or after a wait that doubles
+// from RETRY_FIRST up to RETRY_CEILING, whichever is first: those after it
+// wait behind it, in order. A try past its deadline is aborted and marks the
+// network failed, as a network error does, so the item says it will sync; the
+// server may have applied the aborted PATCH, and sending it again is safe for
+// the reason a replay is (see useSupplyRunSync). Any answer from the server
+// settles it: a refusal (a 400, 404, 409 or any other error response) or a
+// response that is not the item as toggled fails it, and it is not sent again. Before
 // a toggle is sent, GET /api/v1/me has answered, so it carries the session's
 // CSRF token even when the app opened offline.
 //
@@ -259,20 +303,30 @@ function toggleOptions(
     networkMode: 'always',
     retry: false,
     gcTime: Infinity,
-    mutationFn: async ({ id, needed }: KeyedToggle): Promise<Counts> => {
+    mutationFn: async ({ key, id, needed }: KeyedToggle): Promise<Counts> => {
       const path = `${SHOPPING_PATH}/items/${encodeURIComponent(id)}`
       const where = `PATCH ${path}`
       let body: unknown
-      for (;;) {
-        await reachable(api.network)
+      for (let failures = 0; ; failures++) {
+        if (api.network.offline()) markWillSync(key)
+        await reachable(api.network, Math.min(RETRY_FIRST * 2 ** failures, RETRY_CEILING))
+        const deadline = new AbortController()
+        const timer = setTimeout(() => deadline.abort(new DOMException(`${where}: no answer in time`, 'TimeoutError')), TOGGLE_DEADLINE)
         try {
-          await queryClient.ensureQueryData({ queryKey: meQueryKey, queryFn: api.loadMe, networkMode: 'always' })
-          body = await api.apiFetch<unknown>(path, { method: 'PATCH', body: { needed } })
+          const me = queryClient.ensureQueryData({ queryKey: meQueryKey, queryFn: api.loadMe, networkMode: 'always' })
+          await beforeDeadline(me, deadline.signal)
+          body = await api.apiFetch<unknown>(path, { method: 'PATCH', body: { needed }, signal: deadline.signal })
           break
         } catch (error) {
+          if (deadline.signal.aborted) {
+            api.network.requestFailed()
+            continue
+          }
           // The API client marks the network offline as fetch rejects; a
           // TypeError it did not mark is not a network failure.
           if (!(error instanceof TypeError) || !api.network.offline()) throw error
+        } finally {
+          clearTimeout(timer)
         }
       }
       if (!isRecord(body) || body.id !== id || body.needed !== needed) throw new Error(`${where}: response is not item ${id} as toggled`)
@@ -307,6 +361,7 @@ function toggleOptions(
         if ((earlier.state.variables as KeyedToggle).id === id) cache.remove(earlier)
       }
       keep(() => dequeue(settled))
+      synced(settled)
     },
   }
 }
@@ -319,7 +374,8 @@ function toggleOptions(
 // once; a refused toggle just stops being pending, which puts both back.
 // An item whose pending toggle was made, or waited, while the server could
 // not be reached will sync: it says so until that toggle settles, even once
-// the server can be reached again.
+// the server can be reached again, and even when the screen is left and
+// opened again meanwhile (markWillSync keeps it with the page, not here).
 //
 // The Supply run and the toggles are read straight from the query and
 // mutation caches as each render begins, never from the caches' batched
@@ -345,9 +401,6 @@ export function useToggles(weekStart: string): Toggles {
   useMutationState({ filters: { mutationKey } })
   const offline = useSyncExternalStore(api.network.subscribe, api.network.offline)
   const [, renderAgain] = useReducer((n: number) => n + 1, 0)
-  // The keys of the pending toggles seen while the server could not be
-  // reached: every change of the network status renders again.
-  const waited = useRef<ReadonlySet<string>>(new Set())
   const run = queryClient.getQueryData<SupplyRun | null>(key)
   if (!run) throw new Error(`The week of ${weekStart} has no Supply run read to toggle items of.`)
   const toggles = queryClient
@@ -355,14 +408,16 @@ export function useToggles(weekStart: string): Toggles {
     .findAll({ mutationKey })
     .map((mutation) => ({ status: mutation.state.status, toggle: mutation.state.variables as KeyedToggle, error: mutation.state.error }))
   const pending = toggles.filter((t) => t.status === 'pending').map((t) => t.toggle)
-  waited.current = new Set(pending.filter((t) => offline || waited.current.has(t.key)).map((t) => t.key))
+  // Every change of the network status renders again, so each pending
+  // toggle seen while the server cannot be reached is marked.
+  if (offline) pending.forEach((t) => markWillSync(t.key))
   const failed = toggles
     .filter((t, i) => t.status === 'error' && !toggles.slice(i + 1).some((later) => later.toggle.id === t.toggle.id))
     .at(-1)
   const { mutate } = useMutation(toggleOptions(weekStart, api, queryClient))
   return {
     shown: shown(run, pending),
-    willSync: new Set(pending.filter((t) => waited.current.has(t.key)).map((t) => t.id)),
+    willSync: new Set(pending.filter((t) => willSync(t.key)).map((t) => t.id)),
     failed: failed === undefined ? null : { toggle: { id: failed.toggle.id, needed: failed.toggle.needed }, error: failed.error! },
     toggle: ({ id, needed }) => {
       const queuedToggle = { key: crypto.randomUUID(), weekStart, id, needed }

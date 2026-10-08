@@ -41,6 +41,9 @@ export type ApiRequest = {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
   // Sent as JSON. A GET must not have one.
   body?: unknown
+  // Aborts the request; fetch then rejects with the signal's reason. No
+  // request has a deadline unless its caller aborts it.
+  signal?: AbortSignal
 }
 
 // ApiRead is a GET's decoded response body, and whether the service worker
@@ -78,7 +81,7 @@ export function createApiClient(location: ApiLocation, network: NetworkStatus, s
   let forbidden = false
   const listeners = new Set<() => void>()
 
-  async function send(method: string, path: string, body: unknown): Promise<Response> {
+  async function send(method: string, path: string, body: unknown, signal: AbortSignal | undefined): Promise<Response> {
     const headers: Record<string, string> = { Accept: 'application/json' }
     if (body !== undefined) headers['Content-Type'] = 'application/json'
     if (method !== 'GET') {
@@ -97,7 +100,7 @@ export function createApiClient(location: ApiLocation, network: NetworkStatus, s
     }
     let response: Response
     try {
-      response = await fetch(path, { method, headers, credentials: 'same-origin', body: json })
+      response = await fetch(path, { method, headers, credentials: 'same-origin', body: json, signal })
     } catch (error) {
       // fetch rejects with a TypeError when the network fails; an abort is a
       // DOMException and says nothing about the network.
@@ -138,14 +141,14 @@ export function createApiClient(location: ApiLocation, network: NetworkStatus, s
     if (method === 'GET' && request.body !== undefined) {
       throw new Error(`GET ${path}: a GET request cannot carry a body`)
     }
-    let response = await send(method, url, request.body)
+    let response = await send(method, url, request.body, request.signal)
     if (response.status === 403) {
       const error = await parseForbidden(method, path, response)
       // Only a non-GET carries the token, so only it can be refused for it.
       if (error.code !== 'csrf' || method === 'GET') throw error
       // The session's token changed: refresh it once and retry once.
       await refreshMe()
-      response = await send(method, url, request.body)
+      response = await send(method, url, request.body, request.signal)
       if (response.status === 403) throw await parseForbidden(method, path, response)
     }
     return { body: await decode<T>(method, path, response), cached: response.headers.has(cacheFallbackHeader) }

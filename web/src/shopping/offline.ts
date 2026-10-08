@@ -106,6 +106,25 @@ export function dequeue(key: string) {
   write((saved) => ({ ...saved, queue: saved.queue.filter((toggle) => toggle.key !== key) }))
 }
 
+// The keys of the toggles that will sync: made, or waiting, while the server
+// could not be reached, and not settled yet. They live here, with the page,
+// as the toggles in the mutation cache do: the Supply run screen is left and
+// opened again while a toggle is still pending, and starts with nothing of
+// its own.
+const syncing = new Set<string>()
+
+export function markWillSync(key: string) {
+  syncing.add(key)
+}
+
+export function willSync(key: string): boolean {
+  return syncing.has(key)
+}
+
+export function synced(key: string) {
+  syncing.delete(key)
+}
+
 // The latest failure to read or write the saved Supply run, which the Supply
 // run screen shows: a toggle that cannot be kept may be lost on a reload.
 let problem: Error | null = null

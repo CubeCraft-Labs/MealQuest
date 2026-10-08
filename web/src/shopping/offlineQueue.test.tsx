@@ -7,7 +7,7 @@ import { createNetworkStatus, type NetworkWindow } from '../pwa/networkStatus.ts
 import { HOUSEHOLD_SETTINGS } from '../test/ApiProviders.tsx'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { mockViewport } from '../test/matchMedia.ts'
-import { SupplyRunSync } from './api.ts'
+import { RETRY_FIRST, SupplyRunSync, TOGGLE_DEADLINE } from './api.ts'
 import { SAVED_KEY } from './offline.ts'
 import { SupplyRunPage } from './SupplyRunPage.tsx'
 
@@ -68,8 +68,8 @@ function goOnline() {
 // stubServer is the server's Supply runs of this week and next: a PATCH
 // marks its item and answers with its week's counts, unless refuse answers
 // it instead; when hold is given, the item is marked at once but the answer
-// waits for the promise hold returns. This week's counts as archived once
-// archive is called.
+// waits for the promise hold returns, or until the request is aborted. This
+// week's counts as archived once archive is called.
 function stubServer(refuse: (id: string) => Response | undefined = () => undefined, hold?: () => Promise<void>) {
   const needed = new Map(Object.values(WEEKS).flatMap((items) => items.map((item) => [item.id, item.needed] as const)))
   let status = 'current'
@@ -111,8 +111,14 @@ function stubServer(refuse: (id: string) => Response | undefined = () => undefin
     const answer = jsonResponse(200, { id, needed: body.needed, ...counts(week) })
     inFlight++
     mostInFlight = Math.max(mostInFlight, inFlight)
-    await hold?.()
-    inFlight--
+    try {
+      await new Promise<void>((resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal!.reason as Error))
+        void (hold?.() ?? Promise.resolve()).then(resolve)
+      })
+    } finally {
+      inFlight--
+    }
     return answer
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -151,20 +157,35 @@ function queue(): string[] {
 
 // openPage opens the Supply run screen in a new window, as the app does:
 // with SupplyRunSync, and with /me loaded unless the server cannot be
-// reached.
+// reached. leave goes to another screen of the same page, and reopen comes
+// back to the Supply run screen.
 async function openPage() {
   const api = createApiClient(fakeLocation('/plan/shopping'), createNetworkStatus(openWindow()), createVerifiedSession(localStorage))
   if (onLine && reachable) await api.loadMe()
-  return render(
+  const queryClient = createQueryClient()
+  const app = (onScreen: boolean) => (
     <ApiProvider client={api}>
-      <QueryClientProvider client={createQueryClient()}>
+      <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/plan/shopping']}>
           <SupplyRunSync />
-          <SupplyRunPage />
+          {onScreen && <SupplyRunPage />}
         </MemoryRouter>
       </QueryClientProvider>
-    </ApiProvider>,
+    </ApiProvider>
   )
+  const view = render(app(true))
+  return { ...view, leave: () => view.rerender(app(false)), reopen: () => view.rerender(app(true)) }
+}
+
+// reload ends the page open and its timers, as a reload does: a toggle it
+// was waiting to try again is never tried, by it, again.
+function reload(page: { unmount: () => void }) {
+  page.unmount()
+  vi.clearAllTimers()
+}
+
+async function advance(ms: number) {
+  await act(() => vi.advanceTimersByTimeAsync(ms))
 }
 
 function checkbox(name: string) {
@@ -179,7 +200,9 @@ beforeEach(() => {
   onLine = true
   reachable = true
   mockViewport(390)
-  vi.useFakeTimers({ toFake: ['Date'] })
+  // setTimeout moves with real time, and a test can jump past a deadline or
+  // a wait (advance).
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'], shouldAdvanceTime: true })
   vi.setSystemTime(new Date('2026-10-07T16:00:00Z'))
 })
 
@@ -259,7 +282,7 @@ describe('offline toggle queue', () => {
     expect(queue()).toEqual(['i3 true', 'i1 false'])
 
     // Reload while offline: the settings, /me and the list cannot be read.
-    first.unmount()
+    reload(first)
     await openPage()
     expect(await screen.findByText('2 / 3')).toBeInTheDocument()
     expect(checkbox('Taco seasoning')).toBeChecked()
@@ -360,7 +383,7 @@ describe('offline toggle queue, replay', () => {
     // The server applied it; the page reloads before its answer arrives.
     await waitFor(() => expect(answers.waiting()).toBe(1))
     expect(queue()).toEqual(['i3 true'])
-    first.unmount()
+    reload(first)
     act(() => answers.release())
 
     await openPage()
@@ -386,6 +409,79 @@ describe('offline toggle queue, replay', () => {
     goOnline()
     await waitFor(() => expect(answers.waiting()).toBe(1))
     expect(within(row('Ground beef')).getByText('will sync')).toBeInTheDocument()
+    expect(queue()).toEqual(['i1 false'])
+
+    act(() => answers.release())
+    await waitFor(() => expect(screen.queryByText('will sync')).not.toBeInTheDocument())
+    expect(queue()).toEqual([])
+    expect(screen.getByText('1 / 3')).toBeInTheDocument()
+  })
+
+  it('aborts a PATCH that never answers at its deadline, keeps it pending and tries it again before the toggles after it', async () => {
+    let tries = 0
+    // The first PATCH never answers; every later one answers at once.
+    const server = stubServer(undefined, () => (++tries === 1 ? new Promise<void>(() => {}) : Promise.resolve()))
+    await openPage()
+    expect(await screen.findByText('2 / 3')).toBeInTheDocument()
+
+    fireEvent.click(checkbox('Taco seasoning'))
+    await waitFor(() => expect(patches(server.fetchMock)).toHaveLength(1))
+    fireEvent.click(checkbox('Ground beef'))
+    expect(queue()).toEqual(['i3 true', 'i1 false'])
+
+    // Past the deadline the hung PATCH is aborted; both still wait, in order.
+    await advance(TOGGLE_DEADLINE)
+    expect(await within(row('Taco seasoning')).findByText('will sync')).toBeInTheDocument()
+    expect(within(row('Ground beef')).getByText('will sync')).toBeInTheDocument()
+    expect(patches(server.fetchMock)).toHaveLength(1)
+    expect(queue()).toEqual(['i3 true', 'i1 false'])
+
+    await advance(RETRY_FIRST)
+    await waitFor(() => expect(queue()).toEqual([]))
+    expect(patches(server.fetchMock)).toEqual([
+      `${ITEM('i3')} {"needed":true}`,
+      `${ITEM('i3')} {"needed":true}`,
+      `${ITEM('i1')} {"needed":false}`,
+    ])
+    expect(server.mostInFlight()).toBe(1)
+    await waitFor(() => expect(screen.queryByText('will sync')).not.toBeInTheDocument())
+    expect(screen.getByText('2 / 3')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('tries a toggle again once the server is back, with no online event from the browser', async () => {
+    const { fetchMock } = stubServer()
+    await openPage()
+    expect(await screen.findByText('2 / 3')).toBeInTheDocument()
+
+    // The browser says online throughout; the server cannot be reached, then can.
+    reachable = false
+    fireEvent.click(checkbox('Corn tortillas'))
+    expect(await within(row('Corn tortillas')).findByText('will sync')).toBeInTheDocument()
+    reachable = true
+
+    await advance(RETRY_FIRST)
+    await waitFor(() => expect(queue()).toEqual([]))
+    // The first try failed at GET /api/v1/me, before its PATCH.
+    expect(patches(fetchMock)).toEqual([`${ITEM('i2')} {"needed":false}`])
+    await waitFor(() => expect(screen.queryByText('will sync')).not.toBeInTheDocument())
+    expect(screen.getByText('1 / 3')).toBeInTheDocument()
+  })
+
+  it('keeps "will sync" when the Supply run screen is left and opened again while the replay is pending', async () => {
+    const answers = held()
+    stubServer(undefined, answers.hold)
+    const page = await openPage()
+    expect(await screen.findByText('2 / 3')).toBeInTheDocument()
+    goOffline()
+    fireEvent.click(checkbox('Ground beef'))
+    expect(within(row('Ground beef')).getByText('will sync')).toBeInTheDocument()
+
+    page.leave()
+    goOnline()
+    await waitFor(() => expect(answers.waiting()).toBe(1))
+    page.reopen()
+    expect(await within(row('Ground beef')).findByText('will sync')).toBeInTheDocument()
     expect(queue()).toEqual(['i1 false'])
 
     act(() => answers.release())

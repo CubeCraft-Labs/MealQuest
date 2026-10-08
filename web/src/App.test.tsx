@@ -35,6 +35,7 @@ const SCREENS = {
   '/plan/shopping': true,
   '/plan/shopping/archive': true,
   '/discover': true,
+  '/dinner/:id': true,
   '/settings': true,
   '/settings/ai': true,
   '/settings/household': true,
@@ -299,7 +300,7 @@ describe('App offline bootstrap', () => {
 
   it.each([
     ['/quick', 'Quick dinners'],
-    ['/dinner/01J9ZK', 'Dinner'],
+    ['/cook-from-pantry', 'Cook from what I have'],
   ])('an offline reload of %s after an online visit opens the saved page', async (path, title) => {
     await visitOnline()
     goOffline()

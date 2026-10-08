@@ -26,6 +26,13 @@ describe('IconButton', () => {
     expect(hitArea(face)).toEqual({ width: 40, height: 40 })
   })
 
+  it('is 52 px at the medium size', () => {
+    render(<IconButton label="Favorite" size={52} />)
+    const button = screen.getByRole('button', { name: 'Favorite' })
+    expectMinHitArea(button)
+    expect(hitArea(button)).toEqual({ width: 52, height: 52 })
+  })
+
   it('is 62 px at the large size', () => {
     render(<IconButton label="Try it" size={62} tone="teal" />)
     const button = screen.getByRole('button', { name: 'Try it' })

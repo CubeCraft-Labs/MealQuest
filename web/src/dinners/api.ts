@@ -12,7 +12,7 @@ export const GROUNDING_POLL_MS = 3000
 // Methods and Difficulties are the values the dinners API allows.
 export const METHODS = ['stovetop', 'oven', 'crockpot', 'grill', 'other'] as const
 export const DIFFICULTIES = ['easy', 'medium', 'hard'] as const
-const GROUNDING_STATUSES = ['pending', 'grounded', 'failed', 'manual'] as const
+export const GROUNDING_STATUSES = ['pending', 'grounded', 'failed', 'manual'] as const
 
 export type Method = (typeof METHODS)[number]
 export type Difficulty = (typeof DIFFICULTIES)[number]

@@ -196,15 +196,15 @@ function DayColumn({ day, timezone, swapping, onSwap }: { day: PlanDay; timezone
 // ShoppingList opens the week's Supply run: an outline action in the plan
 // manager's header, a grape link under the Draft board on mobile. Once the
 // week has a Supply run it says how many items are still to buy, "Shopping
-// list · 28"; until then, or while that is read, it says no count, and the
-// Supply run screen offers to make the list.
-function ShoppingList({ weekStart, layout }: { weekStart: string; layout: Breakpoint }) {
-  const run = useSupplyRun(weekStart)
+// list · 28"; until then, while that is read, or when reading it failed, it
+// says no count, and the Supply run screen offers to make the list or shows
+// the failure.
+function ShoppingList({ weekStart, neededCount, layout }: { weekStart: string; neededCount: number | undefined; layout: Breakpoint }) {
   const className = layout === 'mobile' ? styles.shoppingLink : [buttonStyles.button, buttonStyles.outline, styles.action].join(' ')
   return (
     <Link to={supplyRunScreen(weekStart)} className={className}>
       <Icon icon={ShoppingCart} size="inline" />
-      {run.data ? `Shopping list · ${run.data.needed_count}` : 'Shopping list'}
+      {neededCount !== undefined ? `Shopping list · ${neededCount}` : 'Shopping list'}
     </Link>
   )
 }
@@ -258,6 +258,7 @@ function WeekBoard({
   const [confirming, setConfirming] = useState(false)
   const swap = useSwapDay(weekStart)
   const push = usePushToCalendar(weekStart)
+  const run = useSupplyRun(weekStart)
   const pushing = push.pending
   // The date of the day being swapped, while the swap sheet is open.
   const [swappingDate, setSwappingDate] = useState<string | null>(null)
@@ -375,6 +376,13 @@ function WeekBoard({
   ) : (
     <ErrorBanner onRetry={job.poll}>Couldn't check on the draft. {job.error.message}</ErrorBanner>
   )
+  // A failed read of the week's Supply run is shown, with Retry, after the
+  // Draft board's Shopping list link or under the plan manager's board; the
+  // Shopping list action still opens the Supply run.
+  const shoppingList = <ShoppingList weekStart={weekStart} neededCount={run.data?.needed_count} layout={layout} />
+  const supplyRunFailure = run.isError && (
+    <ErrorBanner onRetry={() => void run.refetch()}>Couldn't load this week's shopping list. {run.error.message}</ErrorBanner>
+  )
 
   // swapIn sends the swap chosen in the sheet and closes it.
   function swapIn(chosen: Swap) {
@@ -477,7 +485,8 @@ function WeekBoard({
             {pushing ? 'Pushing to Calendar…' : 'Looks good — push to Calendar'}
           </Button>
           <SyncStatus plan={plan.data} className={styles.mobileStatus} />
-          <ShoppingList weekStart={weekStart} layout={layout} />
+          {shoppingList}
+          {supplyRunFailure}
           {sheet}
         </>
       )
@@ -509,7 +518,7 @@ function WeekBoard({
         <div className={styles.actionBar}>
           {plan.data ? <SyncStatus plan={plan.data} /> : <span className={styles.status} />}
           <div className={styles.actions}>
-            <ShoppingList weekStart={weekStart} layout={layout} />
+            {shoppingList}
             <Button
               variant="outline"
               className={styles.action}
@@ -550,6 +559,7 @@ function WeekBoard({
       {header}
       {body}
       {failure}
+      {layout !== 'mobile' && supplyRunFailure}
       <Confirm
         open={confirming}
         title="Rebuild this week?"

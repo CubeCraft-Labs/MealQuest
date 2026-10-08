@@ -16,8 +16,8 @@
 # directory are copied as links (-a), never followed.
 #
 # The media directory is created at deploy time (CTXD project mealquest,
-# RUNBOOKS.MD). If it is missing the job fails; it is never treated as
-# "nothing to back up".
+# RUNBOOKS.MD "Media — nightly rsync"). If it is missing the job fails; it
+# is never treated as "nothing to back up".
 #
 # rsync mirrors into .../mealquest-backups/media/ only: the target ends in
 # a slash, so --delete removes files from that directory and nothing

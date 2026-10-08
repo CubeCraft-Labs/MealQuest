@@ -1,0 +1,144 @@
+/* Supply archive · weekly posts (mock 1m, and the right panel of 2f). */
+.archive {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 560px;
+  padding-top: 8px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 24px;
+  font-weight: 400;
+  line-height: 1.1;
+}
+
+.periods {
+  align-self: flex-start;
+}
+
+.period {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.heading {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 18px;
+  font-weight: 400;
+  line-height: 1.2;
+}
+
+.posts {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.post {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px;
+  border-radius: 24px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+.post:focus-visible {
+  outline: 3px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* The current week's post: grape-100 with a grape-300 ring. */
+.current {
+  background: var(--color-accent-100);
+  box-shadow: inset 0 0 0 2px var(--color-accent-300);
+}
+
+/* The week label as the API writes it, capitalised here. */
+.kicker {
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-neutral-700);
+}
+
+.current .kicker {
+  color: var(--color-accent-700);
+}
+
+.postTitle {
+  font-family: var(--font-heading);
+  font-size: 18px;
+  line-height: 1.15;
+}
+
+.meta {
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--color-neutral-800);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--color-bg);
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.older {
+  align-self: center;
+}
+
+.skeletonPost {
+  height: 112px;
+  border-radius: 24px;
+}
+
+/* Desktop (mock 2f): the week's list at the left, the archive in a 340 px
+   panel at the right. */
+.split {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+.list {
+  flex: 1;
+  min-width: 0;
+}
+
+.panel {
+  flex: none;
+  box-sizing: border-box;
+  width: 340px;
+  padding-left: 24px;
+  border-left: 1px solid var(--color-divider);
+}

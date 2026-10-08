@@ -17,6 +17,7 @@ import { RegularsSettingsPage } from './settings/RegularsSettingsPage.tsx'
 import { SettingsPage } from './settings/SettingsPage.tsx'
 import { AppShell } from './shell/AppShell.tsx'
 import { SupplyRunSync } from './shopping/api.ts'
+import { SupplyArchivePage } from './shopping/SupplyArchivePage.tsx'
 import { SupplyRunPage } from './shopping/SupplyRunPage.tsx'
 
 // Every route the app serves, with the heading its placeholder page shows.
@@ -42,6 +43,7 @@ export const routes = [
 const screens: Partial<Record<(typeof routes)[number]['path'], ReactNode>> = {
   '/plan': <PlanPage />,
   '/plan/shopping': <SupplyRunPage />,
+  '/plan/shopping/archive': <SupplyArchivePage />,
   '/discover': <DiscoverPage />,
   '/settings': <SettingsPage />,
   '/settings/ai': <AISettingsPage />,

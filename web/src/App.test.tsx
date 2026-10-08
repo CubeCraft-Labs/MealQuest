@@ -36,6 +36,7 @@ const SCREENS = {
   '/settings/ai': true,
   '/settings/household': true,
   '/settings/regulars': true,
+  '/settings/calendar': true,
 }
 
 // SIGNED_IN answers what every route reads first: the session, then the
@@ -352,5 +353,21 @@ describe('App offline bootstrap', () => {
     )
     await vi.waitFor(() => expect(screen.queryByRole('status')).toBeNull())
     expect(screen.getByRole('heading', { level: 1, name: 'Quick dinners' })).toBeInTheDocument()
+  })
+
+  it('/settings/calendar renders the Google Calendar screen inside the shell', async () => {
+    mockViewport(390)
+    stubFetchByPath({
+      ...SIGNED_IN,
+      '/api/v1/integrations/google': () =>
+        jsonResponse(200, { status: 'not_connected', calendar_id: null, calendar_name: null, connected_at: null, last_sync_error: null }),
+    })
+    renderAt('/settings/calendar')
+    const heading = await screen.findByRole('heading', { level: 1, name: 'Google Calendar' })
+    expect(screen.getByRole('main')).toContainElement(heading)
+    expect(await screen.findByRole('link', { name: 'Connect Google Calendar' })).toHaveAttribute(
+      'href',
+      '/api/v1/integrations/google/connect',
+    )
   })
 })

@@ -1,7 +1,7 @@
 import { Archive, Check, MessageSquare } from 'lucide-react'
 import { Link, useSearchParams } from 'react-router'
 import { Unavailable } from '../plan/PlanPage.tsx'
-import { defaultWeek, localNow, weekdayKicker, weekStart as weekOf } from '../plan/week.ts'
+import { defaultWeek, localNow, weekdayKicker, weekLabel, weekStart as weekOf } from '../plan/week.ts'
 import { formatClockTime, useHouseholdSettings } from '../settings/api.ts'
 import { useBreakpoint, type Breakpoint } from '../shell/useBreakpoint.ts'
 import buttonStyles from '../ui/Button.module.css'
@@ -11,15 +11,19 @@ import { ErrorBanner } from '../ui/ErrorBanner.tsx'
 import { Icon } from '../ui/Icon.tsx'
 import { Skeleton } from '../ui/Skeleton.tsx'
 import { Tag } from '../ui/Tag.tsx'
-import { useGenerateSupplyRun, useSupplyRun, useToggles, type SupplyRunGroup, type SupplyRunItem, type Toggles } from './api.ts'
+import {
+  useGenerateSupplyRun,
+  useSupplyRun,
+  useToggles,
+  WEEK_PARAM,
+  type SupplyRunGroup,
+  type SupplyRunItem,
+  type Toggles,
+} from './api.ts'
 import styles from './SupplyRunPage.module.css'
 
 // SUPPLY_ARCHIVE is the Supply archive screen.
 export const SUPPLY_ARCHIVE = '/plan/shopping/archive'
-
-// WEEK_PARAM names the search parameter choosing the week shown, its Monday
-// as YYYY-MM-DD: /plan/shopping?week=2026-09-28.
-export const WEEK_PARAM = 'week'
 
 // CHAT_HINT is why Send to Google Chat is unavailable.
 // TODO(Feature 19): send the Supply run to Google Chat once it is built.
@@ -100,12 +104,12 @@ function ArchiveLink({ layout }: { layout: Breakpoint }) {
 }
 
 // SupplyRunList is a week's Supply run (mocks 1l, 2b, 2f): the kicker with
-// the week label, the title with the count still to buy of all items, and
+// the week's dates, the title with the count still to buy of all items, and
 // one card per dinner, stacked on mobile and in three masonry columns from
 // tablet up, where Archive and Send to Google Chat are actions in the
 // header. On a current Supply run each item toggles at once (useToggles); a
 // toggle refused puts the item back and says why. An archived one is
-// read-only.
+// read-only, and a toggle it refused is not offered again.
 function SupplyRunList({ weekStart, timezone, layout }: { weekStart: string; timezone: string; layout: Breakpoint }) {
   const toggles = useToggles(weekStart)
   const run = toggles.shown
@@ -118,7 +122,7 @@ function SupplyRunList({ weekStart, timezone, layout }: { weekStart: string; tim
     <div className={`${styles.page} ${styles[layout]}`}>
       <header className={styles.header}>
         <div className={styles.heading}>
-          <p className={styles.kicker}>Supply run · {run.label}</p>
+          <p className={styles.kicker}>Supply run · {weekLabel(weekStart).dates}</p>
           <div className={styles.titleRow}>
             <h1 className={styles.title}>Shopping list</h1>
             {archived && <Tag tone="grape">Archived</Tag>}
@@ -145,7 +149,7 @@ function SupplyRunList({ weekStart, timezone, layout }: { weekStart: string; tim
         )}
       </header>
       {failed !== null && (
-        <ErrorBanner onRetry={() => toggles.toggle(failed.toggle)}>
+        <ErrorBanner onRetry={archived ? undefined : () => toggles.toggle(failed.toggle)}>
           Couldn't mark {failedItem ? failedItem.name : 'an item'} {failed.toggle.needed ? 'to buy' : '“have it”'}.{' '}
           {failed.error.message}
         </ErrorBanner>

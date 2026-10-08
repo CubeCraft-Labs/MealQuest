@@ -6,6 +6,16 @@ import { oneOf } from '../dinners/api.ts'
 
 export const SHOPPING_PATH = '/api/v1/shopping'
 
+// WEEK_PARAM names the search parameter choosing the week the Supply run
+// screen shows, its Monday as YYYY-MM-DD: /plan/shopping?week=2026-09-28.
+export const WEEK_PARAM = 'week'
+
+// supplyRunScreen is the Supply run screen on the week starting on Monday
+// weekStart.
+export function supplyRunScreen(weekStart: string): string {
+  return `/plan/shopping?${new URLSearchParams({ [WEEK_PARAM]: weekStart })}`
+}
+
 // supplyRunPath is the Supply run of the week starting on Monday weekStart.
 export function supplyRunPath(weekStart: string): string {
   return `${SHOPPING_PATH}/${encodeURIComponent(weekStart)}`
@@ -165,8 +175,8 @@ function toggleKey(weekStart: string) {
 }
 
 // Toggles is the toggles of one week's Supply run: shown, the Supply run
-// with those still pending laid over it, the latest toggle if it failed,
-// and toggle to make another.
+// with those still pending laid over it, the latest failed toggle no later
+// toggle of its item has superseded, and toggle to make another.
 export type Toggles = {
   shown: SupplyRun
   failed: { toggle: Toggle; error: Error } | null
@@ -193,6 +203,14 @@ export type Toggles = {
 // before it and none after. Each is sent once, and not held back while the
 // device is offline (networkMode always): an item never shows a state for
 // longer than it takes the server to refuse it.
+//
+// A failed toggle stays failed, and shown, until a later toggle of its item
+// supersedes it, such as its Retry: a toggle of another item succeeding
+// does not hide it. So that a failure is never collected unseen, toggles are
+// kept (gcTime Infinity), and a settled toggle removes the earlier toggles
+// of its item it supersedes. A toggle refused because the week was frozen
+// into the Supply archive (409 archived) reads the Supply run again, which
+// then renders read-only.
 export function useToggles(weekStart: string): Toggles {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
@@ -207,12 +225,15 @@ export function useToggles(weekStart: string): Toggles {
     .getMutationCache()
     .findAll({ mutationKey })
     .map((mutation) => ({ status: mutation.state.status, toggle: mutation.state.variables as Toggle, error: mutation.state.error }))
-  const latest = toggles.at(-1)
+  const failed = toggles
+    .filter((t, i) => t.status === 'error' && !toggles.slice(i + 1).some((later) => later.toggle.id === t.toggle.id))
+    .at(-1)
   const { mutate } = useMutation({
     mutationKey,
     scope: { id: mutationKey.join(' ') },
     networkMode: 'always',
     retry: false,
+    gcTime: Infinity,
     mutationFn: async ({ id, needed }: Toggle): Promise<Counts> => {
       const path = `${SHOPPING_PATH}/items/${encodeURIComponent(id)}`
       const where = `PATCH ${path}`
@@ -237,10 +258,21 @@ export function useToggles(weekStart: string): Toggles {
           },
       )
     },
+    onError: (error) => {
+      if (error instanceof ApiError && error.code === 'archived') void queryClient.invalidateQueries({ queryKey: key })
+    },
+    // This toggle is still pending as it settles, and those after it wait
+    // for it: the settled toggles of its item are the earlier ones.
+    onSettled: (_counts, _error, { id }) => {
+      const cache = queryClient.getMutationCache()
+      for (const earlier of cache.findAll({ mutationKey, predicate: (m) => m.state.status !== 'pending' })) {
+        if ((earlier.state.variables as Toggle).id === id) cache.remove(earlier)
+      }
+    },
   })
   return {
     shown: shown(run, toggles.filter((t) => t.status === 'pending').map((t) => t.toggle)),
-    failed: latest?.status === 'error' ? { toggle: latest.toggle, error: latest.error! } : null,
+    failed: failed === undefined ? null : { toggle: failed.toggle, error: failed.error! },
     toggle: (toggle) => {
       mutate(toggle)
       renderAgain()

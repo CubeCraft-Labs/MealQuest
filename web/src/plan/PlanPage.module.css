@@ -258,8 +258,8 @@
   color: var(--color-neutral-700);
 }
 
-/* An action with nothing behind it yet (the shopping list until Feature
-   17): it keeps focus, so hovering, tapping or focusing it shows the
+/* An action with nothing behind it yet (Send to Google Chat until Feature
+   19): it keeps focus, so hovering, tapping or focusing it shows the
    tooltip. */
 .unavailable {
   position: relative;
@@ -412,6 +412,21 @@
   justify-content: center;
   white-space: normal;
   text-align: center;
+}
+
+/* The way to the week's Supply run under the Draft board on mobile. */
+.shoppingLink {
+  display: inline-flex;
+  align-self: center;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-accent-700);
+  text-decoration: none;
 }
 
 /* A push failure's way to the Google Calendar settings. */

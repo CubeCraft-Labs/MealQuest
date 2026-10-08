@@ -140,8 +140,8 @@ describe('SupplyRunPage', () => {
 
     const title = await screen.findByRole('heading', { level: 1, name: 'Shopping list' })
     expect(declaredStyle(title).fontFamily).toBe('var(--font-heading)')
-    // The kicker is the API's week label, set in capitals by the stylesheet.
-    const kicker = screen.getByText('Supply run · Week 41 · Oct 5 – 11')
+    // The kicker is the week's dates, set in capitals by the stylesheet.
+    const kicker = screen.getByText('Supply run · Oct 5 – 11')
     expect(declaredStyle(kicker).textTransform).toBe('uppercase')
     expect(declaredStyle(kicker).color).toBe('var(--color-accent-700)')
     expect(screen.getByText('4 / 6')).toBeInTheDocument()
@@ -268,6 +268,63 @@ describe('SupplyRunPage', () => {
     expect(checkbox('Basmati rice')).toBeChecked()
   })
 
+  it('keeps a refused toggle shown when a later toggle of another item succeeds, until it is retried', async () => {
+    let patches = 0
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, supplyRun()),
+      [`PATCH ${ITEM('i3')}`]: () => {
+        patches++
+        return patches === 1 ? errorResponse(500, 'internal') : jsonResponse(200, { id: 'i3', needed: true, needed_count: 6, total_count: 6 })
+      },
+      [`PATCH ${ITEM('i6')}`]: () => jsonResponse(200, { id: 'i6', needed: true, needed_count: 5, total_count: 6 }),
+    })
+    await renderPage()
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Taco seasoning' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't mark Taco seasoning to buy. internal message")
+    expect(checkbox('Taco seasoning')).not.toBeChecked()
+
+    fireEvent.click(checkbox('Basmati rice'))
+    await waitFor(() => expect(screen.getByText('5 / 6')).toBeInTheDocument())
+    expect(checkbox('Basmati rice')).toBeChecked()
+    // The refusal is still shown: nothing has superseded it.
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't mark Taco seasoning to buy. internal message")
+    expect(checkbox('Taco seasoning')).not.toBeChecked()
+
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(screen.getByText('6 / 6')).toBeInTheDocument())
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(checkbox('Taco seasoning')).toBeChecked()
+  })
+
+  it('reads the list again when a toggle is refused because the week was archived, and shows it read-only', async () => {
+    let reads = 0
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => {
+        reads++
+        return jsonResponse(200, supplyRun(reads === 1 ? {} : { status: 'archived' }))
+      },
+      [`PATCH ${ITEM('i3')}`]: () => errorResponse(409, 'archived'),
+    })
+    await renderPage()
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Taco seasoning' }))
+    expect(await screen.findByText('Archived')).toBeInTheDocument()
+    expect(reads).toBe(2)
+    expect(screen.queryAllByRole('checkbox')).toEqual([])
+    expect(within(row('Taco seasoning')).getByText('have it')).toBeInTheDocument()
+    expect(screen.getByText('4 / 6')).toBeInTheDocument()
+    expect(screen.getByText('This list is in the Supply archive, as it was when the week ended.')).toBeInTheDocument()
+    // It says why, with nothing to retry.
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't mark Taco seasoning to buy. archived message")
+    expect(within(alert).queryByRole('button')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Taco seasoning'))
+    expect(writes(fetchMock)).toEqual([`PATCH ${ITEM('i3')} {"needed":true}`])
+  })
+
   it('shows the status line once the list was sent to Google Chat', async () => {
     // Saturday Oct 10, 8:00 am in New York.
     stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, supplyRun({ sent_to_chat_at: '2026-10-10T12:00:00Z' })) })
@@ -335,7 +392,7 @@ describe('SupplyRunPage', () => {
     })
     await renderPage('/plan/shopping?week=2026-09-28')
 
-    expect(await screen.findByText('Supply run · Week 40 · Sep 28 – Oct 4')).toBeInTheDocument()
+    expect(await screen.findByText('Supply run · Sep 28 – Oct 4')).toBeInTheDocument()
     expect(screen.getByText('Archived')).toBeInTheDocument()
     expect(screen.getByText('This list is in the Supply archive, as it was when the week ended.')).toBeInTheDocument()
     expect(screen.queryAllByRole('checkbox')).toEqual([])

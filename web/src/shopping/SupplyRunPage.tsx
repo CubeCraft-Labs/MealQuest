@@ -1,4 +1,4 @@
-import { Archive, Check, MessageSquare } from 'lucide-react'
+import { Archive, Check, CloudUpload, MessageSquare } from 'lucide-react'
 import { Link, useSearchParams } from 'react-router'
 import { Unavailable } from '../plan/PlanPage.tsx'
 import { defaultWeek, localNow, weekdayKicker, weekLabel, weekStart as weekOf } from '../plan/week.ts'
@@ -20,6 +20,7 @@ import {
   type SupplyRunItem,
   type Toggles,
 } from './api.ts'
+import { keep, savedSchedule, useSavedProblem } from './offline.ts'
 import styles from './SupplyRunPage.module.css'
 
 // SUPPLY_ARCHIVE is the Supply archive screen.
@@ -39,9 +40,20 @@ export function sentAt(at: Date, timezone: string): string {
 // ItemRow is one ingredient: on a current Supply run a checkbox, checked
 // (grape) while it is to buy; unchecked, the name is struck through and
 // "have it" stands in for the quantity. An archived Supply run shows the
-// same marks, read-only.
+// same marks, read-only. An item toggled while the server cannot be reached
+// says it will sync.
 function ItemRow({ item, toggles }: { item: SupplyRunItem; toggles: Toggles | null }) {
-  const name = <span className={styles.name}>{item.name}</span>
+  const name = (
+    <>
+      <span className={styles.name}>{item.name}</span>
+      {toggles?.willSync.has(item.id) && (
+        <span className={styles.willSync}>
+          <Icon icon={CloudUpload} size="inline" />
+          will sync
+        </span>
+      )}
+    </>
+  )
   return (
     <li className={[styles.item, !item.needed && styles.have].filter(Boolean).join(' ')}>
       {toggles === null ? (
@@ -194,7 +206,9 @@ function WeekSupplyRun({ weekStart, timezone, layout }: { weekStart: string; tim
   const run = useSupplyRun(weekStart)
   const generate = useGenerateSupplyRun(weekStart)
 
-  if (run.isError) {
+  // Offline, the Supply run saved on this device stays shown; the offline
+  // pill says it is saved data.
+  if (run.isError && !(run.data !== undefined && run.error instanceof TypeError)) {
     return <ErrorBanner onRetry={() => void run.refetch()}>Couldn't load the shopping list. {run.error.message}</ErrorBanner>
   }
   if (run.isPending || generate.isPending) return <SkeletonGroups layout={layout} />
@@ -216,8 +230,21 @@ function WeekSupplyRun({ weekStart, timezone, layout }: { weekStart: string; tim
 // SupplyRunPage is the Supply run (mock 1l on mobile, 2b on tablet, 2f on
 // desktop) of the week the Plan opens on — next week once this week's
 // plan_draft time has come, otherwise this week — or of the week chosen by
-// ?week=, such as a week in the Supply archive.
+// ?week=, such as a week in the Supply archive. Offline, where the settings
+// cannot be read, it chooses the week by the schedule saved on this device.
 export function SupplyRunPage() {
+  const problem = useSavedProblem()
+  return (
+    <>
+      {problem !== null && (
+        <ErrorBanner>Changes to the shopping list can't be kept on this device while offline. {problem.message}</ErrorBanner>
+      )}
+      <ChosenSupplyRun />
+    </>
+  )
+}
+
+function ChosenSupplyRun() {
   const layout = useBreakpoint()
   const settings = useHouseholdSettings()
   const [params] = useSearchParams()
@@ -226,12 +253,14 @@ export function SupplyRunPage() {
   if (chosen !== null && !isMonday(chosen)) {
     return <ErrorBanner>{`“${chosen}” is not the Monday of a week, as YYYY-MM-DD.`}</ErrorBanner>
   }
-  if (settings.isError) {
+  // fetch rejects with a TypeError only when the network fails.
+  const schedule = settings.data ?? (settings.error instanceof TypeError ? keep(savedSchedule) : null)
+  if (settings.isError && !schedule) {
     return <ErrorBanner onRetry={() => void settings.refetch()}>Couldn't load the household settings. {settings.error.message}</ErrorBanner>
   }
-  if (!settings.data) return <SkeletonGroups layout={layout} />
-  const week = chosen ?? defaultWeek(settings.data, new Date())
-  return <WeekSupplyRun key={week} weekStart={week} timezone={settings.data.timezone} layout={layout} />
+  if (!schedule) return <SkeletonGroups layout={layout} />
+  const week = chosen ?? defaultWeek(schedule, new Date())
+  return <WeekSupplyRun key={week} weekStart={week} timezone={schedule.timezone} layout={layout} />
 }
 
 // isMonday says whether date is a real YYYY-MM-DD Monday.

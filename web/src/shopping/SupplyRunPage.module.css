@@ -200,6 +200,21 @@
   color: var(--color-neutral-700);
 }
 
+/* Toggled while the server cannot be reached: the change is saved here and
+   sent once it can be. */
+.willSync {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-neutral-700);
+  text-decoration: none;
+  vertical-align: middle;
+}
+
 .qty {
   flex: none;
   font-family: var(--font-body);

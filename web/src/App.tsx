@@ -16,6 +16,7 @@ import { HouseholdSettingsPage } from './settings/HouseholdSettingsPage.tsx'
 import { RegularsSettingsPage } from './settings/RegularsSettingsPage.tsx'
 import { SettingsPage } from './settings/SettingsPage.tsx'
 import { AppShell } from './shell/AppShell.tsx'
+import { SupplyRunSync } from './shopping/api.ts'
 import { SupplyRunPage } from './shopping/SupplyRunPage.tsx'
 
 // Every route the app serves, with the heading its placeholder page shows.
@@ -88,6 +89,7 @@ export default function App({ api, serviceWorker }: AppProps) {
     <ApiProvider client={api}>
       <QueryClientProvider client={queryClient}>
         <AuthBootstrap>
+          <SupplyRunSync />
           <AppRoutes />
         </AuthBootstrap>
         <OfflinePill />

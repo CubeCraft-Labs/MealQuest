@@ -114,11 +114,6 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	planSvc, err := plan.NewService(db, weekDrafter(ai, guard), runner, logger)
-	if err != nil {
-		return err
-	}
-
 	googleSvc, err := gcal.NewService(db, box, gcal.Config{
 		ClientID:     cfg.GoogleClientID,
 		ClientSecret: cfg.GoogleClientSecret.Reveal(),
@@ -128,6 +123,11 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		RevokeURL:    gcal.GoogleRevokeURL,
 		CalendarAPI:  gcal.GoogleCalendarAPI,
 	})
+	if err != nil {
+		return err
+	}
+
+	planSvc, err := plan.NewService(db, weekDrafter(ai, guard), runner, googleSvc, cfg.PublicURL, logger)
 	if err != nil {
 		return err
 	}

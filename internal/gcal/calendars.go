@@ -105,7 +105,11 @@ func (s *Service) SelectCalendar(ctx context.Context, id string) (Selection, err
 // calendars lists the writable calendars, each once, with the stored refresh
 // token. The caller holds s.account.
 func (s *Service) calendars(ctx context.Context) ([]Calendar, error) {
-	access, err := s.accessToken(ctx)
+	row, err := s.connection(ctx)
+	if err != nil {
+		return nil, err
+	}
+	access, err := s.accessToken(ctx, row)
 	if err != nil {
 		return nil, err
 	}
@@ -136,16 +140,21 @@ func (s *Service) calendars(ctx context.Context) ([]Calendar, error) {
 	return nil, &CalendarError{msg: fmt.Sprintf("gcal: Google listed more than %d pages of calendars", maxCalendarPages)}
 }
 
-// accessToken trades the stored refresh token for an access token. A grant
-// Google reports as invalid_grant is ErrReconnect.
-func (s *Service) accessToken(ctx context.Context) (string, error) {
+// connection reads the connected account, or ErrNotConnected.
+func (s *Service) connection(ctx context.Context) (db.IntegrationsGoogle, error) {
 	row, err := db.New(s.st.Reader).GetIntegrationsGoogle(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", ErrNotConnected
+		return db.IntegrationsGoogle{}, ErrNotConnected
 	}
 	if err != nil {
-		return "", fmt.Errorf("gcal: read Google integration: %w", err)
+		return db.IntegrationsGoogle{}, fmt.Errorf("gcal: read Google integration: %w", err)
 	}
+	return row, nil
+}
+
+// accessToken trades row's refresh token for an access token. A grant
+// Google reports as invalid_grant is ErrReconnect.
+func (s *Service) accessToken(ctx context.Context, row db.IntegrationsGoogle) (string, error) {
 	refresh, err := s.box.Decrypt(row.RefreshTokenCt)
 	if err != nil {
 		return "", fmt.Errorf("gcal: open refresh token: %w", err)

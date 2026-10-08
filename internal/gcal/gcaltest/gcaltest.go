@@ -3,8 +3,12 @@
 // client, the redirect URI and PKCE, issues a distinct refresh token per
 // exchange and trades a live refresh token for an access token; a revoke
 // endpoint that, like Google's, revokes the whole grant: every token issued
-// so far; and a calendarList endpoint that requires a live grant's access
-// token. It never touches the network beyond its own httptest server.
+// so far; a calendarList endpoint that requires a live grant's access
+// token; and events insert and update endpoints that, like Google's, keep
+// each calendar's events by id, answer an insert of an id the calendar
+// already has (even a cancelled event's) with HTTP 409, and refuse a
+// calendar not listed (404) or not writable (403 requiredAccessLevel). It
+// never touches the network beyond its own httptest server.
 package gcaltest
 
 import (
@@ -23,6 +27,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/auth"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal"
 )
 
@@ -74,6 +79,32 @@ type Google struct {
 	// body that quotes the access token.
 	calendarStatus int
 	calendarCalls  int
+	// events holds each calendar's events by id.
+	events map[string]map[string]Event
+	// inserts and updates count the events created and updated.
+	inserts, updates int
+	// eventWrites counts the requests that reached the events endpoints;
+	// failWrite, when not 0, fails the request that makes it that count
+	// with failStatus and a body that quotes the access token.
+	eventWrites, failWrite, failStatus int
+	// eventHold, when set, stops the next events request.
+	eventHold *hold
+}
+
+// Event is an event as the fake keeps it: what MealQuest sent.
+type Event struct {
+	ID          string    `json:"id"`
+	Status      string    `json:"status"`
+	Summary     string    `json:"summary"`
+	Description string    `json:"description"`
+	Start       EventTime `json:"start"`
+	End         EventTime `json:"end"`
+}
+
+// EventTime is an event's start or end.
+type EventTime struct {
+	DateTime string `json:"dateTime"`
+	TimeZone string `json:"timeZone"`
 }
 
 // Calendar is one calendarList entry. The fake answers each with Google's
@@ -106,11 +137,14 @@ func New(t *testing.T, redirectURL string) *Google {
 		calendarStatus: http.StatusOK,
 		codes:          map[string]string{},
 		dead:           map[string]bool{},
+		events:         map[string]map[string]Event{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /token", g.token)
 	mux.HandleFunc("POST /revoke", g.revoke)
 	mux.HandleFunc("GET /calendar/v3/users/me/calendarList", g.calendarList)
+	mux.HandleFunc("POST /calendar/v3/calendars/{calendar}/events", g.insertEvent)
+	mux.HandleFunc("PUT /calendar/v3/calendars/{calendar}/events/{event}", g.updateEvent)
 	g.Server = httptest.NewServer(mux)
 	t.Cleanup(g.Server.Close)
 	return g
@@ -140,6 +174,33 @@ func (g *Google) Authorize(challenge string) string {
 	code := fmt.Sprintf("code-%d", len(g.codes)+1)
 	g.codes[code] = challenge
 	return code
+}
+
+// Connect connects svc to the fake as a household completing the consent
+// screen does. svc must use the fake's endpoints and redirect URL.
+func (g *Google) Connect(t *testing.T, svc *gcal.Service) {
+	t.Helper()
+	session := auth.Session{Subject: "gcaltest", CSRFToken: "gcaltest-session"}
+	started := httptest.NewRecorder()
+	raw, err := svc.Connect(started, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consent, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := url.Values{
+		"state": {consent.Query().Get("state")},
+		"code":  {g.Authorize(consent.Query().Get("code_challenge"))},
+	}
+	req := httptest.NewRequest(http.MethodGet, gcal.CallbackPath+"?"+q.Encode(), nil)
+	for _, c := range started.Result().Cookies() {
+		req.AddCookie(c)
+	}
+	if err := svc.Complete(httptest.NewRecorder(), req, session); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
 }
 
 // OmitRefreshToken makes the token endpoint answer without a refresh token,
@@ -214,6 +275,59 @@ func (g *Google) HoldCalendarList() (arrived <-chan struct{}, release func()) {
 	defer g.mu.Unlock()
 	g.calendarHold = newHold()
 	return g.calendarHold.arrived, g.calendarHold.releaseFunc()
+}
+
+// Events returns the events of calendar, by id.
+func (g *Google) Events(calendar string) map[string]Event {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := map[string]Event{}
+	for id, e := range g.events[calendar] {
+		out[id] = e
+	}
+	return out
+}
+
+// EventWrites returns how many events were inserted and how many updated.
+func (g *Google) EventWrites() (inserts, updates int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.inserts, g.updates
+}
+
+// ResetEventWrites zeroes the insert and update counts.
+func (g *Google) ResetEventWrites() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.inserts, g.updates = 0, 0
+}
+
+// CancelEvent marks event id of calendar cancelled, as deleting it in
+// Google Calendar does: Google keeps the id.
+func (g *Google) CancelEvent(calendar, id string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	e := g.events[calendar][id]
+	e.Status = "cancelled"
+	g.events[calendar][id] = e
+}
+
+// FailEventWrite makes the nth request to the events endpoints from now
+// (1 for the next) answer status with a body that quotes the access token.
+func (g *Google) FailEventWrite(n, status int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.failWrite, g.failStatus = g.eventWrites+n, status
+}
+
+// HoldEvents stops the next request to the events endpoints before it is
+// answered. It returns a channel closed when the request arrives and the
+// function that lets it go on.
+func (g *Google) HoldEvents() (arrived <-chan struct{}, release func()) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.eventHold = newHold()
+	return g.eventHold.arrived, g.eventHold.releaseFunc()
 }
 
 // TokenCalls is how many requests, exchanges and refreshes, reached the
@@ -422,6 +536,110 @@ func (g *Google) calendarList(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(page); err != nil {
+		panic(err)
+	}
+}
+
+// insertEvent answers like Google's events.insert with a client-chosen id.
+func (g *Google) insertEvent(w http.ResponseWriter, r *http.Request) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	cal, ok := g.eventCalendar(w, r)
+	if !ok {
+		return
+	}
+	var e Event
+	if err := json.NewDecoder(r.Body).Decode(&e); err != nil || e.ID == "" {
+		http.Error(w, "bad event", http.StatusBadRequest)
+		return
+	}
+	if _, exists := g.events[cal][e.ID]; exists {
+		apiError(w, http.StatusConflict, "duplicate", "The requested identifier already exists.")
+		return
+	}
+	if g.events[cal] == nil {
+		g.events[cal] = map[string]Event{}
+	}
+	g.events[cal][e.ID] = e
+	g.inserts++
+	writeEvent(w, e)
+}
+
+// updateEvent answers like Google's events.update.
+func (g *Google) updateEvent(w http.ResponseWriter, r *http.Request) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	cal, ok := g.eventCalendar(w, r)
+	if !ok {
+		return
+	}
+	id := r.PathValue("event")
+	if _, exists := g.events[cal][id]; !exists {
+		apiError(w, http.StatusNotFound, "notFound", "Not Found")
+		return
+	}
+	var e Event
+	if err := json.NewDecoder(r.Body).Decode(&e); err != nil || e.ID != id {
+		http.Error(w, "bad event", http.StatusBadRequest)
+		return
+	}
+	g.events[cal][id] = e
+	g.updates++
+	writeEvent(w, e)
+}
+
+// eventCalendar runs the checks every events request shares: the hold, a
+// live grant's access token, a scripted failure, and a listed, writable
+// calendar, which it returns. When a check fails it answers and returns
+// false. The caller holds g.mu.
+func (g *Google) eventCalendar(w http.ResponseWriter, r *http.Request) (string, bool) {
+	g.eventWrites++
+	h := g.eventHold
+	g.eventHold = nil
+	g.wait(h)
+	auth := r.Header.Get("Authorization")
+	if auth != "Bearer "+AccessToken || !g.grantLive() {
+		apiError(w, http.StatusUnauthorized, "authError", "Invalid Credentials: "+auth)
+		return "", false
+	}
+	if g.failWrite != 0 && g.eventWrites == g.failWrite {
+		apiError(w, g.failStatus, "backendError", "echo "+auth)
+		return "", false
+	}
+	cal := r.PathValue("calendar")
+	i := slices.IndexFunc(g.calendars, func(c Calendar) bool { return c.ID == cal })
+	switch {
+	case i < 0:
+		apiError(w, http.StatusNotFound, "notFound", "Not Found")
+		return "", false
+	case g.calendars[i].AccessRole != "writer" && g.calendars[i].AccessRole != "owner":
+		apiError(w, http.StatusForbidden, "requiredAccessLevel", "You need to have writer access to this calendar.")
+		return "", false
+	}
+	return cal, true
+}
+
+// writeEvent answers with e as Google does, with fields of its own.
+func writeEvent(w http.ResponseWriter, e Event) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(map[string]any{
+		"kind": "calendar#event", "etag": `"3300000000000000"`, "id": e.ID, "status": e.Status,
+		"htmlLink": "https://www.google.com/calendar/event?eid=" + e.ID,
+		"summary":  e.Summary, "description": e.Description, "start": e.Start, "end": e.End,
+		"iCalUID": e.ID + "@google.com", "sequence": 0,
+	}); err != nil {
+		panic(err)
+	}
+}
+
+// apiError answers a Calendar API error with reason and message.
+func apiError(w http.ResponseWriter, status int, reason, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
+		"code": status, "message": message,
+		"errors": []map[string]any{{"domain": "global", "reason": reason, "message": message}},
+	}}); err != nil {
 		panic(err)
 	}
 }

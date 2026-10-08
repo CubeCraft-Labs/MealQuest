@@ -109,8 +109,8 @@ type Config struct {
 	CalendarAPI string
 }
 
-// Service connects and disconnects the household's Google account and
-// chooses the calendar MealQuest pushes to.
+// Service connects and disconnects the household's Google account,
+// chooses the calendar MealQuest pushes to and writes events to it.
 // MealQuest runs as one process, so the service's in-memory lock and pending
 // states see every request.
 type Service struct {
@@ -128,8 +128,8 @@ type Service struct {
 	// account serializes every use of and change to the connected account —
 	// a connect's exchange and store, a disconnect's read, revoke and delete,
 	// a calendar listing's read and Calendar API calls, a calendar choice's
-	// listing and store — across the requests to Google and the database
-	// write. Google revokes the whole grant, so a revoke overlapping a
+	// listing and store, an event push's read and event writes — across the
+	// requests to Google and the database write. Google revokes the whole grant, so a revoke overlapping a
 	// connect would also kill the token the connect stores.
 	account sync.Mutex
 

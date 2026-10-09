@@ -203,6 +203,22 @@ describe('CookFromPantryPage', () => {
       expect(chips()).toHaveLength(4)
     })
 
+    it('enables Find ideas for text typed and not yet added, and searches it', async () => {
+      const { fetchMock } = stubServer({ [FIND]: () => jsonResponse(202, { jobId: 'j1' }) })
+      await renderPage()
+
+      fireEvent.change(input(), { target: { value: '   ' } })
+      expect(findButton()).toBeDisabled()
+      fireEvent.change(input(), { target: { value: 'Chicken thighs' } })
+      expect(chips()).toEqual([])
+      expect(findButton()).toBeEnabled()
+
+      fireEvent.click(findButton())
+      await waitFor(() => expect(calls(fetchMock, FIND)).toHaveLength(1))
+      expect(bodyOf(calls(fetchMock, FIND)[0]!)).toEqual({ ingredients: ['Chicken thighs'], quick_only: false })
+      expect(chips()).toEqual(['Chicken thighs'])
+    })
+
     it('removes a chip with its cross, or the last one with Backspace in the empty input', async () => {
       stubServer({})
       await renderPage()
@@ -346,6 +362,39 @@ describe('CookFromPantryPage', () => {
       expect(calls(fetchMock, 'POST /api/v1/ideas/j1/items/1/quest-log')).toHaveLength(1)
       // The other card is untouched.
       expect(within(card(CURRY.name)).getByRole('button', { name: 'Add to Quest log' })).toBeEnabled()
+    })
+
+    it('says an idea that came back as an existing Regular is already a Regular, not in the Quest log', async () => {
+      const { fetchMock, jobs } = stubServer({
+        [FIND]: () => jsonResponse(202, { jobId: 'j1' }),
+        'POST /api/v1/ideas/j1/items/0/quest-log': () =>
+          jsonResponse(200, dinnerBody('dn-reg', 'Coconut Chicken Curry', { status: 'regular' })),
+      })
+      jobs.j1 = state('succeeded', 'done', [CURRY])
+      await renderPage()
+      await searched(fetchMock)
+      const curry = within(await screen.findByRole('article', { name: CURRY.name }))
+
+      fireEvent.click(curry.getByRole('button', { name: 'Add to Quest log' }))
+      expect(await curry.findByRole('status')).toHaveTextContent('Already a Regular')
+      expect(curry.queryByText('In the Quest log')).toBeNull()
+    })
+
+    it('fails on a dinner whose status is neither quest_log nor regular', async () => {
+      const { fetchMock, jobs } = stubServer({
+        [FIND]: () => jsonResponse(202, { jobId: 'j1' }),
+        'POST /api/v1/ideas/j1/items/0/quest-log': () => jsonResponse(200, dinnerBody('dn-1', CURRY.name, { status: 'suggested' })),
+      })
+      jobs.j1 = state('succeeded', 'done', [CURRY])
+      await renderPage()
+      await searched(fetchMock)
+      const curry = within(await screen.findByRole('article', { name: CURRY.name }))
+
+      fireEvent.click(curry.getByRole('button', { name: 'Add to Quest log' }))
+      expect(await curry.findByRole('alert')).toHaveTextContent(
+        'POST /api/v1/ideas/j1/items/0/quest-log: status "suggested" is not one of quest_log, regular',
+      )
+      expect(curry.queryByRole('status')).toBeNull()
     })
 
     it('shows its failure on its card and lets it be pressed again', async () => {

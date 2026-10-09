@@ -363,6 +363,34 @@ automatic** (D-021).
   idea is kept, fails with the same reasons, and a failed job shows no
   ideas through the same `FailedResult` view. "↻ Show me more" posts
   again with every name the tab has shown so far in `exclude`.
+- Idea actions (Feature 18). Both act on idea `{i}` (0, 1, …; anything
+  else is 400 `invalid_request`) of a **succeeded** `ideas_from_ingredients`
+  or `quick_ideas` job, read from its stored result
+  (`ideas.Service.Idea`): its name and `recipe_id`, never grounded again.
+  A job still queued or running is 409 `ideas_not_ready` (its ideas may
+  still move); an unknown job, another kind, a failed job or an index past
+  its ideas is 404 `not_found`. `POST
+  /api/v1/ideas/{jobId}/items/{i}/quest-log` (no body) runs
+  `dinners.Service.AddToQuestLog`: in one transaction, an unarchived
+  dinner the idea repeats — the same rule that refuses a duplicate Regular
+  (`harness.Similar` name, or the recipe's link) — is answered 200 as it
+  is (a Regular stays a Regular); one awaiting the household's choice
+  (`suggested`, `tried`) is 409 `duplicate_dinner` and changes nothing;
+  otherwise it creates a dinner with status `quest_log`, origin
+  `ingredients` or `quick`, grounded in the idea's recipe (its method,
+  minutes, difficulty and photo), answered 201. Repeating the call
+  answers the same dinner. `POST /api/v1/ideas/{jobId}/items/{i}/cook-tonight`
+  (no body) takes today as the household-local date in the household
+  timezone and its Monday (`plan.Service.Tonight`); when that week has no
+  plan it answers 409 `no_plan` and changes nothing — no dinner, no plan
+  (a plan holds all seven days; the household plans the week first).
+  Otherwise it adds or finds the dinner as `quest-log` does and puts it
+  on today through `plan.Service.Swap`, exactly like a Draft board swap
+  (plan marked edited, revision raised, a synced plan becomes `changed`,
+  the day's calendar event id cleared, `is_new` for a Quest log dinner),
+  answering 200 `{dinner, plan}`. The week is always today's own, so no
+  other day is written; a dinner already on another day of the week is
+  409 `dinner_already_planned`.
   `GET /api/v1/suggestions/deck` returns `{suggestions: [{id, dinner_id,
   name, photo_url, difficulty, method, minutes_total, cuisine, reason,
   cited_regular_ids, status, dinner_status, decided_at, created_at}],

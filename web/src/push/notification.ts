@@ -31,7 +31,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 // appPath returns raw as a path on origin (path, query and fragment), or null
 // when raw is not a path-absolute URL that stays on origin. A payload never
-// sends the household to another site.
+// sends the household to another site. The path is checked after the parser
+// has resolved it: dot segments (also as %2e), backslashes and stripped tabs
+// and newlines can all turn an innocent-looking path into one starting with
+// //, which a browser would read as another host.
 export function appPath(raw: string, origin: string): string | null {
   if (!raw.startsWith('/') || raw.startsWith('//')) return null
   let url: URL
@@ -40,7 +43,7 @@ export function appPath(raw: string, origin: string): string | null {
   } catch {
     return null
   }
-  if (url.origin !== origin) return null
+  if (url.origin !== origin || url.pathname.startsWith('//')) return null
   return url.pathname + url.search + url.hash
 }
 
@@ -130,9 +133,14 @@ export type ClickPlan<W> = { action: 'focus'; window: W; url: string; navigate: 
 
 // planClick decides a tap on a notification that opens path: the focused
 // MealQuest window if there is one, else the first open one, navigated to
-// path unless it is already there; with none open, a new window.
+// path unless it is already there; with none open, a new window. A path that
+// resolves off origin is an error: a tap never leaves MealQuest.
 export function planClick<W extends AppWindow>(windows: readonly W[], path: string, origin: string): ClickPlan<W> {
-  const url = new URL(path, origin).href
+  const resolved = new URL(path, origin)
+  if (resolved.origin !== origin) {
+    throw new Error(`MealQuest: notification path ${JSON.stringify(path)} resolves off origin to ${resolved.origin}`)
+  }
+  const url = resolved.href
   const ours = windows.filter((w) => URL.canParse(w.url) && new URL(w.url).origin === origin)
   const target = ours.find((w) => w.focused) ?? ours[0]
   if (target === undefined) return { action: 'open', url }

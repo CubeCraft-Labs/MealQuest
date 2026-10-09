@@ -5,6 +5,7 @@ import {
   VAPID_PUBLIC_KEY_PATH,
   decodeVapidKey,
   encodeBase64url,
+  PermissionGestureError,
   subscribePush,
   subscriptionBody,
   unsubscribePush,
@@ -36,7 +37,7 @@ function subscription(key: ArrayBuffer | null = vapidKey.buffer, at = endpoint) 
 type Setup = {
   permission?: NotificationPermission
   answer?: NotificationPermission
-  active?: boolean | undefined
+  active?: boolean
   current?: BrowserPushSubscription | null
   registered?: boolean
   subscribeError?: unknown
@@ -63,7 +64,7 @@ function setup({
     serviceWorker: { getRegistration: vi.fn(async () => (registered ? { pushManager } : undefined)) },
     pushManager: true,
     notification,
-    userActivation: active === undefined ? undefined : { isActive: active },
+    userActivation: { isActive: active },
     userAgent: 'Mozilla/5.0 Test',
   }
   const calls: { path: string; request?: ApiRequest }[] = []
@@ -155,14 +156,26 @@ describe('subscribePush', () => {
 
   it('refuses to ask for permission outside a tap', async () => {
     const { env, api, notification } = setup({ active: false })
-    await expect(subscribePush(api, env)).rejects.toThrow(/only be asked for from a tap/)
+    const error = await subscribePush(api, env).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(PermissionGestureError)
+    expect(error).toMatchObject({ reason: 'inactive', message: expect.stringMatching(/only be asked for from a tap/) })
     expect(notification.requestPermission).not.toHaveBeenCalled()
+    expect(api.apiFetch).not.toHaveBeenCalled()
   })
 
-  it('asks where the browser cannot say whether a tap is active', async () => {
-    const { env, api, notification } = setup({ active: undefined })
-    expect(await subscribePush(api, env)).toBe('subscribed')
-    expect(notification.requestPermission).toHaveBeenCalled()
+  it('refuses to ask for permission where the browser cannot say whether a tap is active', async () => {
+    const { env, api, notification } = setup()
+    const error = await subscribePush(api, { ...env, userActivation: undefined }).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(PermissionGestureError)
+    expect(error).toMatchObject({ reason: 'unobservable', message: expect.stringMatching(/no navigator.userActivation/) })
+    expect(notification.requestPermission).not.toHaveBeenCalled()
+    expect(api.apiFetch).not.toHaveBeenCalled()
+  })
+
+  it('does not need to observe a tap once permission is granted', async () => {
+    const { env, api, notification } = setup({ permission: 'granted' })
+    expect(await subscribePush(api, { ...env, userActivation: undefined })).toBe('subscribed')
+    expect(notification.requestPermission).not.toHaveBeenCalled()
   })
 
   it('does not ask again once permission is granted, even outside a tap', async () => {

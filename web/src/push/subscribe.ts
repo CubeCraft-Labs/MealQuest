@@ -58,6 +58,23 @@ export function browserPushEnvironment(): PushEnvironment {
 
 type PushApi = Pick<ApiClient, 'apiFetch'>
 
+// PermissionGestureError is why subscribePush refused to ask for notification
+// permission: no tap is active right now ('inactive'), or the browser cannot
+// say whether one is ('unobservable', no navigator.userActivation).
+export class PermissionGestureError extends Error {
+  readonly reason: 'inactive' | 'unobservable'
+
+  constructor(reason: 'inactive' | 'unobservable') {
+    super(
+      reason === 'inactive'
+        ? 'subscribePush: notification permission can only be asked for from a tap on a button'
+        : 'subscribePush: this browser cannot report whether a tap is active (no navigator.userActivation), so notification permission is not asked for',
+    )
+    this.name = 'PermissionGestureError'
+    this.reason = reason
+  }
+}
+
 // encodeBase64url encodes bytes as unpadded base64url, as the server wants
 // subscription keys.
 export function encodeBase64url(bytes: ArrayBuffer): string {
@@ -133,7 +150,9 @@ function errorName(error: unknown): string | undefined {
 // subscribePush turns on Web Push on this device. Call it only from the
 // household's tap on a button: when the browser has not yet been asked, it
 // asks for notification permission, which browsers allow only during a user
-// gesture, and it refuses to ask outside one. Permission is asked before
+// gesture, and it refuses to ask outside one — or where the browser cannot
+// say whether a gesture is active — with a PermissionGestureError. Permission
+// is asked before
 // anything is awaited so the gesture still counts. With permission, it
 // subscribes the browser with the server's VAPID public key — replacing a
 // subscription made with an older key — and stores the subscription on the
@@ -144,11 +163,8 @@ export async function subscribePush(api: PushApi, env: PushEnvironment): Promise
 
   let permission = notification.permission
   if (permission === 'default') {
-    // Where the browser cannot say whether a gesture is active, it enforces
-    // the rule itself.
-    if (env.userActivation !== undefined && !env.userActivation.isActive) {
-      throw new Error('subscribePush: notification permission can only be asked for from a tap on a button')
-    }
+    if (env.userActivation === undefined) throw new PermissionGestureError('unobservable')
+    if (!env.userActivation.isActive) throw new PermissionGestureError('inactive')
     permission = await notification.requestPermission()
   }
   if (permission === 'denied') return 'denied'

@@ -33,6 +33,21 @@ describe('appPath', () => {
   it('resolves dot segments and keeps the result on origin', () => {
     expect(appPath('/plan/../discover', origin)).toBe('/discover')
   })
+
+  // Each of these starts with a single / but resolves to a path starting with
+  // //, which a browser reads as another host.
+  it.each([
+    '/..//evil.example/path',
+    '/plan/..//evil.example/path',
+    '/..\\\\evil.example/path',
+    '/./\\evil.example',
+    '/.\\/evil.example',
+    '/%2e%2e//evil.example/path',
+    '/.\t.//evil.example/path',
+    '/..\n//evil.example',
+  ])('refuses %j, which resolves to a protocol-relative path', (raw) => {
+    expect(appPath(raw, origin)).toBeNull()
+  })
 })
 
 describe('parsePushPayload', () => {
@@ -120,6 +135,10 @@ describe('clickPath', () => {
 })
 
 describe('planClick', () => {
+  it('refuses a path that resolves off origin', () => {
+    expect(() => planClick([], '//evil.example/path', origin)).toThrow(/resolves off origin/)
+  })
+
   const at = (path: string, focused = false) => ({ url: origin + path, focused })
 
   it('opens a new window when no MealQuest window is open', () => {
@@ -187,5 +206,26 @@ describe('openNotification', () => {
     const all = clients([])
     await openNotification({ url: 'https://evil.example/' }, all, origin)
     expect(all.openWindow).toHaveBeenCalledWith(`${origin}/`)
+  })
+
+  it.each(['/..//evil.example/path', '/..\\\\evil.example/path', '/%2e%2e//evil.example/path', '/.\t.//evil.example/path'])(
+    'never leaves origin for %j, which resolves to a protocol-relative path',
+    async (url) => {
+      const win = window('/plan', true)
+      const all = clients([win])
+      await openNotification({ url }, all, origin)
+      expect(win.navigate).toHaveBeenCalledWith(`${origin}/`)
+      expect(all.openWindow).not.toHaveBeenCalled()
+
+      const none = clients([])
+      await openNotification({ url }, none, origin)
+      expect(none.openWindow).toHaveBeenCalledWith(`${origin}/`)
+    },
+  )
+
+  it('still opens an internal path that uses dot segments', async () => {
+    const all = clients([])
+    await openNotification({ url: '/plan/../discover' }, all, origin)
+    expect(all.openWindow).toHaveBeenCalledWith(`${origin}/discover`)
   })
 })

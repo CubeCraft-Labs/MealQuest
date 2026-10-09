@@ -2,7 +2,7 @@ import { useCallback } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
-import { DIFFICULTIES, METHODS, parseDinner, photoId, type Difficulty, type Method } from '../dinners/api.ts'
+import { DIFFICULTIES, METHODS, parseDinner, photoId, type Difficulty, type Method, type Regular } from '../dinners/api.ts'
 import { QUEST_LOG_KEY } from '../discover/api.ts'
 import { parsePlan, planKey } from '../plan/api.ts'
 
@@ -221,11 +221,17 @@ export type QuickPage = { jobId: string; ideas: QuickIdea[] }
 // QuickTab is what one tab of Quick dinners has found this session: the
 // pages found, the job finding the next one, whether the server has said
 // there are no more, why the last page asked for could not start, kept
-// until Retry asks again, and the ideas added to the Quest log, as
-// "jobId:index".
-export type QuickTab = { pages: QuickPage[]; jobId: string | null; ended: boolean; startError: Error | null; added: string[] }
+// until Retry asks again, and the status of the dinner each idea added
+// came back as, by "jobId:index".
+export type QuickTab = {
+  pages: QuickPage[]
+  jobId: string | null
+  ended: boolean
+  startError: Error | null
+  added: Record<string, AddedStatus>
+}
 
-const NEW_TAB: QuickTab = { pages: [], jobId: null, ended: false, startError: null, added: [] }
+const NEW_TAB: QuickTab = { pages: [], jobId: null, ended: false, startError: null, added: {} }
 
 export function quickTabKey(kind: QuickKind) {
   return ['ideas', 'quick', kind] as const
@@ -286,21 +292,46 @@ function ideaPath({ jobId, index }: IdeaRef, action: 'quest-log' | 'cook-tonight
   return `${IDEAS_PATH}/${encodeURIComponent(jobId)}/items/${index}/${action}`
 }
 
+// ADDED_STATUSES are the statuses a dinner an idea is added as may have:
+// quest_log for a dinner made or already in the Quest log, regular for a
+// Regular the idea repeats, which the server answers as it is.
+export const ADDED_STATUSES = ['quest_log', 'regular'] as const
+export type AddedStatus = (typeof ADDED_STATUSES)[number]
+
+// ADDED_LABEL says where an idea added went, by its dinner's status.
+export const ADDED_LABEL: Record<AddedStatus, string> = {
+  quest_log: 'In the Quest log',
+  regular: 'Already a Regular',
+}
+
+// AddedDinner is the dinner an idea was added as, with its status.
+export type AddedDinner = Regular & { status: AddedStatus }
+
+function parseAddedDinner(where: string, body: unknown): AddedDinner {
+  const dinner = parseDinner(where, body)
+  const status = isRecord(body) ? body.status : undefined
+  if (!(ADDED_STATUSES as readonly unknown[]).includes(status)) {
+    throw new Error(`${where}: status ${JSON.stringify(status)} is not one of ${ADDED_STATUSES.join(', ')}`)
+  }
+  return { ...dinner, status: status as AddedStatus }
+}
+
 // useAddIdeaToQuestLog adds an idea to the Quest log (POST
-// /api/v1/ideas/{jobId}/items/{i}/quest-log) and resolves with the
-// dinner's name. Asking again answers the same dinner. The Quest log is
-// read again after it, and onAdded told, also if the caller has unmounted
-// meanwhile.
-export function useAddIdeaToQuestLog(onAdded?: (idea: IdeaRef) => void) {
+// /api/v1/ideas/{jobId}/items/{i}/quest-log) and resolves with the dinner
+// it came back as: a dinner the idea repeats is answered as it is, so a
+// Regular stays a Regular, and its status says which. Asking again answers
+// the same dinner. The Quest log is read again after it, and onAdded told
+// with the dinner, also if the caller has unmounted meanwhile.
+export function useAddIdeaToQuestLog(onAdded?: (idea: IdeaRef, dinner: AddedDinner) => void) {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: async (idea: IdeaRef): Promise<string> => {
+    mutationFn: async (idea: IdeaRef): Promise<AddedDinner> => {
       const path = ideaPath(idea, 'quest-log')
-      return parseDinner(`POST ${path}`, await apiFetch<unknown>(path, { method: 'POST' })).name
+      return parseAddedDinner(`POST ${path}`, await apiFetch<unknown>(path, { method: 'POST' }))
     },
-    onSuccess: (_name, idea) => {
-      onAdded?.(idea)
+    onSuccess: (dinner, idea) => {
+      onAdded?.(idea, dinner)
       return queryClient.invalidateQueries({ queryKey: QUEST_LOG_KEY })
     },
   })

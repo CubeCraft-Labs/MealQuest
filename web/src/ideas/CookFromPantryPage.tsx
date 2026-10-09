@@ -13,6 +13,7 @@ import { Segmented } from '../ui/Segmented.tsx'
 import { Skeleton } from '../ui/Skeleton.tsx'
 import { TextInput } from '../ui/TextInput.tsx'
 import {
+  ADDED_LABEL,
   FROM_INGREDIENTS_JOB_KIND,
   IDEAS_KEPT,
   ideasJobFailure,
@@ -50,9 +51,10 @@ function fold(ingredient: string): string {
 
 // IdeaCard is one idea (mock 1i): its name and time, the server's line on
 // what it uses and what is missing, and its two actions, each showing its
-// own progress and failure. ref is the idea in its job, null while the job
-// runs: the server takes an idea only once the job has succeeded, as the
-// ideas may still be reordered until then.
+// own progress and failure; an idea added says whether its dinner is in
+// the Quest log or is already a Regular. ref is the idea in its job, null
+// while the job runs: the server takes an idea only once the job has
+// succeeded, as the ideas may still be reordered until then.
 function IdeaCard({ idea, ideaRef }: { idea: Idea; ideaRef: IdeaRef | null }) {
   const questLog = useAddIdeaToQuestLog()
   const tonight = useCookIdeaTonight()
@@ -80,7 +82,7 @@ function IdeaCard({ idea, ideaRef }: { idea: Idea; ideaRef: IdeaRef | null }) {
         )}
         {questLog.isSuccess ? (
           <span className={styles.done} role="status">
-            <Icon icon={Check} /> In the Quest log
+            <Icon icon={Check} /> {ADDED_LABEL[questLog.data.status]}
           </span>
         ) : (
           <Button
@@ -123,10 +125,12 @@ function Skeletons({ count }: { count: number }) {
 
 // CookFromPantryPage is mock 1i, Cook from what I have: the ingredients on
 // hand as chips (Enter or a comma adds one), Any time | Quick only, and
-// Find ideas, which starts an ideas_from_ingredients job and shows its
-// ideas as the server grounds them, skeleton cards holding the places of
-// those still to come. Changing Any time | Quick only after a search asks
-// again: the server, not the screen, says what is quick.
+// Find ideas, which lists what is still typed, so it is enabled by a chip
+// or by text typed and not yet added, and starts an ideas_from_ingredients
+// job and shows its ideas as the server grounds them, skeleton cards
+// holding the places of those still to come. Changing Any time | Quick
+// only after a search asks again: the server, not the screen, says what is
+// quick.
 export function CookFromPantryPage() {
   const navigate = useNavigate()
   const inputRef = useRef<HTMLInputElement>(null)
@@ -302,7 +306,12 @@ export function CookFromPantryPage() {
       )}
       <div className={styles.controls}>
         <Segmented label="Which dinners" options={WHEN} value={when} onValueChange={onWhenChange} className={styles.when} />
-        <Button variant="dark" className={styles.find} disabled={ingredients.length < 1 || findIdeas.isPending} onClick={find}>
+        <Button
+          variant="dark"
+          className={styles.find}
+          disabled={(ingredients.length < 1 && draft.trim() === '') || findIdeas.isPending}
+          onClick={find}
+        >
           Find ideas
         </Button>
       </div>

@@ -12,6 +12,7 @@ import { Photo } from '../ui/Photo.tsx'
 import { Segmented } from '../ui/Segmented.tsx'
 import { Skeleton } from '../ui/Skeleton.tsx'
 import {
+  ADDED_LABEL,
   ideasJobFailure,
   ideasJobLost,
   MAX_EXCLUDE,
@@ -23,6 +24,8 @@ import {
   useAddIdeaToQuestLog,
   useFindQuickIdeas,
   useQuickTab,
+  type AddedDinner,
+  type AddedStatus,
   type IdeaRef,
   type QuickIdea,
   type QuickKind,
@@ -57,7 +60,8 @@ function meta(idea: QuickIdea): string {
 }
 
 // QuickRow is one idea (mock 1j): its washed photo, name and meta line, and
-// the teal "+" that adds it to the Quest log, a check once it is there.
+// the teal "+" that adds it to the Quest log, then a check labelled with
+// where it went: added is the status of the dinner it came back as.
 // ideaRef is null while its job runs: the server takes an idea only once
 // the job has succeeded. onAdded marks the idea added, also if the row has
 // unmounted before the add settles.
@@ -69,8 +73,8 @@ function QuickRow({
 }: {
   idea: QuickIdea
   ideaRef: IdeaRef | null
-  added: boolean
-  onAdded: (idea: IdeaRef) => void
+  added: AddedStatus | undefined
+  onAdded: (idea: IdeaRef, dinner: AddedDinner) => void
 }) {
   const questLog = useAddIdeaToQuestLog(onAdded)
   return (
@@ -85,9 +89,9 @@ function QuickRow({
           </p>
         )}
       </div>
-      {added ? (
+      {added !== undefined ? (
         <span className={styles.added} role="status">
-          <Icon icon={Check} size="nav" label="In the Quest log" />
+          <Icon icon={Check} size="nav" label={ADDED_LABEL[added]} />
         </span>
       ) : (
         <IconButton
@@ -163,7 +167,8 @@ function QuickTabPanel({ kind }: { kind: QuickKind }) {
     else if (exhausted) update((t) => (t.jobId === jobId ? { ...t, jobId: null, ended: true } : t))
   }, [jobId, ideas, exhausted, update])
 
-  const markAdded = ({ jobId, index }: IdeaRef) => update((t) => ({ ...t, added: [...t.added, `${jobId}:${index}`] }))
+  const markAdded = ({ jobId, index }: IdeaRef, { status }: AddedDinner) =>
+    update((t) => ({ ...t, added: { ...t.added, [`${jobId}:${index}`]: status } }))
 
   // The rows of every page found, then of the page being found, in one
   // keyed list: a page kept with the tab's pages keeps its rows, and with
@@ -223,7 +228,7 @@ function QuickTabPanel({ kind }: { kind: QuickKind }) {
       <p className={styles.helper}>{helpers[kind]}</p>
       <ul aria-busy={busy} aria-label="Quick dinners" className={styles.rows}>
         {rows.map(({ idea, ref, key }) => (
-          <QuickRow key={key} idea={idea} ideaRef={ref} added={tab.added.includes(key)} onAdded={markAdded} />
+          <QuickRow key={key} idea={idea} ideaRef={ref} added={tab.added[key]} onAdded={markAdded} />
         ))}
         {next}
       </ul>

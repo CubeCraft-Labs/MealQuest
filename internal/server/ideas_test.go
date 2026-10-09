@@ -18,6 +18,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/llm"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ideas"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
@@ -28,13 +29,16 @@ import (
 const ideasPath = "/api/v1/ideas/from-ingredients"
 
 // newIdeasRouter returns a router whose ideas service runs
-// ideas_from_ingredients through the real harness with the scripted model
-// and grounds with fake search, pages and images and the scripted
-// normalize, with its job runner and store. The runner is started when
-// start is set.
+// ideas_from_ingredients and quick_ideas through the real harness with the
+// scripted model and grounds with fake search, pages and images and the
+// scripted normalize, with its job runner and store, whose household
+// settings are seeded. The runner is started when start is set.
 func newIdeasRouter(t *testing.T, model, normalize *llm.Fake, search *recipestest.Search, pages *recipestest.Pages, images *recipestest.Images, start bool) (http.Handler, *jobs.Runner, *store.Store) {
 	t.Helper()
 	st := newTestStore(t)
+	if err := household.SeedSettings(t.Context(), st, "America/New_York"); err != nil {
+		t.Fatal(err)
+	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	runner, err := jobs.NewRunner(st, logger, 1)
 	if err != nil {
@@ -54,7 +58,10 @@ func newIdeasRouter(t *testing.T, model, normalize *llm.Fake, search *recipestes
 	generate := func(ctx context.Context, scope string, in skills.IdeasRequest) (skills.Ideas, error) {
 		return skills.IdeasFromIngredients(ctx, cfg, scope, in)
 	}
-	svc, err := ideas.NewService(g, generate, runner, logger)
+	quick := func(ctx context.Context, scope string, in skills.QuickIdeasRequest) (skills.QuickIdeaList, error) {
+		return skills.QuickIdeas(ctx, cfg, scope, in)
+	}
+	svc, err := ideas.NewService(st, g, generate, quick, runner, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

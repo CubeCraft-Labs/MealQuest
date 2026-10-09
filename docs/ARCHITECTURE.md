@@ -338,6 +338,31 @@ automatic** (D-021).
   read, however it failed (including `interrupted by restart` and an
   `internal_error` whose clearing write failed). Before it fails it also
   publishes its result again with no ideas, to tidy what is stored.
+- Quick dinners (`ideas.Service`, Feature 18). `POST /api/v1/ideas/quick
+  {kind, exclude[]}` (both required; `exclude` is `[]` on a first page)
+  checks `kind` with `skills.CheckQuickKind` — `crockpot` or `under30`,
+  no default — and `exclude` with `skills.CleanExclude` — at most 60
+  names, each non-blank, at most 120 characters, with a non-empty
+  `harness.Normalize` form no earlier name shares — answering 400
+  `invalid_request` otherwise, then enqueues a `quick_ideas` job
+  (service-only) and answers 202 `{jobId}` without waiting. The job reads
+  the household context (`harness.BuildContext`, budget 16000), runs
+  `quick_ideas` (scope: `skills.QuickIdeasScope`, the kind and the
+  normalized excluded names in order), then grounds its ideas exactly as
+  the ingredients job does (the same `Grounder.GroundEach` rounds, model
+  order and failure codes) until 6 are kept or none are left. The kind is
+  enforced on the grounded recipe, never the model's estimate
+  (`ideas.OfQuickKind`): `crockpot` keeps method `crockpot`
+  (`normalize_recipe` writes a slow cooker as `crockpot`), `under30`
+  keeps a known `minutes_total` ≤ 30; every other idea is dropped. The
+  model is asked for 12, more than a page, so dropped ideas can be
+  replaced; when fewer than 6 survive the page shows only those, never
+  padded with an idea not of the kind. The job publishes `{stage, kind,
+  exclude, ideas: [{name, method, minutes_total, difficulty, recipe_id,
+  photo_url, source_url, site_name}], dropped}` at each stage and as each
+  idea is kept, fails with the same reasons, and a failed job shows no
+  ideas through the same `FailedResult` view. "↻ Show me more" posts
+  again with every name the tab has shown so far in `exclude`.
   `GET /api/v1/suggestions/deck` returns `{suggestions: [{id, dinner_id,
   name, photo_url, difficulty, method, minutes_total, cuisine, reason,
   cited_regular_ids, status, dinner_status, decided_at, created_at}],
@@ -516,6 +541,16 @@ automatic** (D-021).
   all 5 · missing: 1 lime" when every ingredient is used, "Uses 3 of 5 ·
   missing: …" otherwise, with "nothing missing" in place of the list when
   nothing is.
+- **Quick ideas** (`skills.QuickIdeas`, skill `quick_ideas` v1): from the
+  household context, a kind (`crockpot` or `under30`, which picks the
+  prompt's rule) and the names already shown (the "Already shown" context
+  section), asks for 12 ideas `{name, est_minutes, method, difficulty,
+  search_query}` at the household temperature. Malformed replies (a
+  missing field, a bad enum, an empty name, more than 12 ideas) get the
+  one repair turn. An idea repeating an excluded name or an earlier idea
+  (`harness.Similar`, on the normalized names) is dropped into `Dropped`,
+  so an excluded name is never returned. Whether an idea is of the kind
+  is left to the grounded recipe (see Quick dinners above).
 - **Supply run titles** (`skills.TitleArchive`, skill `archive_title`
   v1): from the names of the week's planned dinners in day order, writes
   `{title}`, the Supply run's post title in the Supply archive, at the

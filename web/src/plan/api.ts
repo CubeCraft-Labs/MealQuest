@@ -331,9 +331,11 @@ function swapKey(weekStart: string) {
 }
 
 // SwapDay is the swaps of one week, as the mutation cache holds them:
-// whether one is pending, and the failure of the latest, if it failed.
+// whether one is pending, the latest if it succeeded, and the failure of the
+// latest, if it failed.
 export type SwapDay = {
   pending: boolean
+  succeeded: Swap | null
   failed: { swap: Swap; error: Error } | null
   mutate: (chosen: Swap) => void
   dismiss: () => void
@@ -420,6 +422,7 @@ export function useSwapDay(weekStart: string): SwapDay {
 
   return {
     pending: swaps.some((swap) => swap.status === 'pending'),
+    succeeded: latest?.status === 'success' ? latest.swap : null,
     failed: latest?.status === 'error' ? { swap: latest.swap, error: latest.error! } : null,
     mutate,
     dismiss,
@@ -529,6 +532,37 @@ export function usePushToCalendar(weekStart: string): PushToCalendar {
     mutate,
     reset,
   }
+}
+
+// WeekSwap is the one way a day of a week is swapped, wherever the swap is
+// chosen: the week's swaps and pushes, whether a swap is refused now, and
+// swapIn to send one.
+export type WeekSwap = {
+  swap: SwapDay
+  push: PushToCalendar
+  refused: boolean
+  swapIn: (chosen: Swap) => void
+}
+
+// useWeekSwap swaps a day of the week starting on weekStart, from the Draft
+// board or a dinner's Add to this week. One swap of the week is sent at a
+// time, even across leaving the week and coming back: the plan the server
+// answers it with must not overwrite another still pending. Nor is one sent
+// while the week is being pushed to Calendar: refused says so, and swapIn
+// then throws. A swap leaves the week's settled swaps behind, and its
+// pushes: what a push said of Calendar and the Supply run was said of the
+// plan before the swap, not the one swapped.
+export function useWeekSwap(weekStart: string): WeekSwap {
+  const swap = useSwapDay(weekStart)
+  const push = usePushToCalendar(weekStart)
+  const refused = swap.pending || push.pending
+  function swapIn(chosen: Swap) {
+    if (refused) throw new Error(`The week of ${weekStart} has a swap or push pending, so ${chosen.date} cannot be swapped.`)
+    swap.dismiss()
+    push.reset()
+    swap.mutate(chosen)
+  }
+  return { swap, push, refused, swapIn }
 }
 
 // settleUnmadePushes is called as the Supply run of the week starting on

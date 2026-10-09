@@ -3,6 +3,7 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { Route, Routes } from 'react-router'
 import { ApiProvider, createQueryClient, type ApiClient } from './api/index.ts'
 import { AuthBootstrap } from './AuthBootstrap.tsx'
+import { DinnerDetailPage } from './dinners/DinnerDetailPage.tsx'
 import { DiscoverPage } from './discover/DiscoverPage.tsx'
 import { CookFromPantryPage } from './ideas/CookFromPantryPage.tsx'
 import { QuickDinnersPage } from './ideas/QuickDinnersPage.tsx'
@@ -49,6 +50,7 @@ const screens: Partial<Record<(typeof routes)[number]['path'], ReactNode>> = {
   '/discover': <DiscoverPage />,
   '/quick': <QuickDinnersPage />,
   '/cook-from-pantry': <CookFromPantryPage />,
+  '/dinner/:id': <DinnerDetailPage />,
   '/settings': <SettingsPage />,
   '/settings/ai': <AISettingsPage />,
   '/settings/household': <HouseholdSettingsPage />,

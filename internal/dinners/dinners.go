@@ -669,7 +669,12 @@ func findRepeat(ctx context.Context, q *db.Queries, self, name string, recipeURL
 
 // PhotoURL is where the API serves a list-sized copy of photo id.
 func PhotoURL(id string) string {
-	return fmt.Sprintf("/media/photos/%s-%d.jpg", id, photoListWidth)
+	return photoURL(id, photoListWidth)
+}
+
+// photoURL is where the API serves photo id at stored width size.
+func photoURL(id string, size int) string {
+	return fmt.Sprintf("/media/photos/%s-%d.jpg", id, size)
 }
 
 func fromRow(r db.Dinner) Dinner {

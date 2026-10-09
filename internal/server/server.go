@@ -40,7 +40,7 @@ type RouteMounter interface {
 // /media; settings serves /api/v1/settings/household; search serves
 // /api/v1/settings/recipe-search and its /test; ai serves
 // /api/v1/settings/ai, its /api-key, /verify, /models and /reset-prompt;
-// dinnerSvc serves GET and POST /api/v1/dinners, PATCH and DELETE
+// dinnerSvc serves GET and POST /api/v1/dinners, GET, PATCH and DELETE
 // /api/v1/dinners/{id}, POST /api/v1/dinners/{id}/favorite, GET
 // /api/v1/dinners/{id}/recipe-candidates and POST /api/v1/dinners/{id}/ground;
 // suggestSvc serves POST /api/v1/suggestions/batches, GET
@@ -137,6 +137,7 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Post("/settings/ai/reset-prompt", postAIResetPrompt(logger, ai))
 	apiV1.Get("/dinners", getDinners(logger, dinnerSvc))
 	apiV1.Post("/dinners", postDinner(logger, dinnerSvc))
+	apiV1.Get("/dinners/{id}", getDinner(logger, dinnerSvc))
 	apiV1.Patch("/dinners/{id}", patchDinner(logger, dinnerSvc))
 	apiV1.Delete("/dinners/{id}", deleteDinner(logger, dinnerSvc))
 	apiV1.Post("/dinners/{id}/favorite", postDinnerFavorite(logger, dinnerSvc))

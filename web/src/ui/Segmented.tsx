@@ -4,6 +4,9 @@ import styles from './Segmented.module.css'
 export type SegmentedOption<T extends string> = {
   value: T
   label: string
+  // Accessible name, when the visible label alone does not say what the
+  // option is (the A / A / A of a text size).
+  ariaLabel?: string
 }
 
 export type SegmentedProps<T extends string> = {
@@ -63,6 +66,7 @@ export function Segmented<T extends string>({ label, options, value, onValueChan
             type="button"
             role="radio"
             aria-checked={checked}
+            aria-label={option.ariaLabel}
             tabIndex={checked ? 0 : -1}
             className={checked ? `${styles.option} ${styles.selected}` : styles.option}
             onClick={() => select(index)}

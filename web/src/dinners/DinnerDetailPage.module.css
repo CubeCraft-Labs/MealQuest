@@ -1,8 +1,9 @@
-/* Mock 1k. On mobile the photo and the sheet run full-bleed past the
-   shell's 20 px side padding; from tablet up they sit in one column. The
-   page is at least as tall as the shell's scroll area (a stretched flex
-   item, so its height resolves the percentage) and the sheet grows into
-   any room left, so the action bar rests at the bottom of a short recipe. */
+/* Mock 1k on mobile: the photo and the sheet run full-bleed past the
+   shell's 20 px side padding. From tablet up the page is Kitchen reading
+   mode (mock 2a, below). The page is at least as tall as the shell's scroll
+   area (a stretched flex item, so its height resolves the percentage) and
+   the sheet, or the reading view, grows into any room left, so the action
+   bar rests at the bottom of a short recipe. */
 .page {
   display: flex;
   flex-direction: column;
@@ -11,9 +12,11 @@
   color: var(--color-text);
 }
 
+/* Kitchen reading mode is no wider than the handoff's tablet frame. */
 .tablet,
 .desktop {
-  max-width: 720px;
+  width: 100%;
+  max-width: 1180px;
   margin: 0 auto;
 }
 
@@ -25,12 +28,6 @@
 .mobile .hero,
 .mobile .skeletonHero {
   margin: 0 -20px;
-}
-
-.tablet .hero,
-.desktop .hero {
-  border-radius: var(--radius-card) var(--radius-card) 0 0;
-  overflow: hidden;
 }
 
 /* Without a dinner to show, the back button sits alone above the message. */
@@ -248,4 +245,296 @@
 .skeletonTitle {
   height: 32px;
   width: 70%;
+}
+
+/* Mock 2a, Kitchen reading mode: the header over two columns, the
+   ingredients card (400 px) and the steps. Ingredient and step text scale
+   with the text size chosen: the handoff's sizes are medium. */
+.reading {
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.small {
+  --reading-scale: 0.85;
+}
+
+.medium {
+  --reading-scale: 1;
+}
+
+.large {
+  --reading-scale: 1.25;
+}
+
+.readingHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 18px;
+}
+
+.readingHeader .back {
+  position: static;
+  flex: none;
+}
+
+.heading {
+  flex: 1 1 240px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.kicker {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-neutral-700);
+}
+
+.readingTitle {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 36px;
+  font-weight: 400;
+  line-height: 1.05;
+}
+
+.keepOn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* The A / A / A control: an outlined pill, the size chosen in grape, each
+   A drawn at the size it stands for. */
+.readingHeader .textSize {
+  gap: 0;
+  padding: 0;
+  border: 1px solid var(--color-divider);
+  background: transparent;
+  overflow: hidden;
+}
+
+.readingHeader .textSize > * {
+  padding: 0 14px;
+  border-radius: 0;
+  color: var(--color-text);
+}
+
+.readingHeader .textSize > [aria-checked="true"] {
+  background: var(--color-accent);
+  color: var(--on-accent);
+  box-shadow: none;
+}
+
+.readingHeader .textSize > :nth-child(1) {
+  font-size: 13px;
+}
+
+.readingHeader .textSize > :nth-child(2) {
+  font-size: 17px;
+}
+
+.readingHeader .textSize > :nth-child(3) {
+  font-size: 21px;
+}
+
+.columns {
+  flex-grow: 1;
+  display: grid;
+  grid-template-columns: 400px minmax(0, 1fr);
+  gap: 28px;
+}
+
+/* Below a 1024 px viewport the shell leaves too little beside a 400 px
+   card for the steps, so the columns share the width instead. */
+@media (max-width: 1023px) {
+  .columns {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  }
+}
+
+.oneColumn {
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.columns .ingredientsCard {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 22px;
+  border-radius: 30px;
+}
+
+.cardHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.readingSectionTitle {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 22px;
+  font-weight: 400;
+  line-height: 1.15;
+}
+
+.setOutCount {
+  flex: none;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-neutral-700);
+}
+
+.checklist {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.checkRow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.checkRow .check {
+  flex: 1;
+  min-width: 0;
+  gap: 14px;
+}
+
+.checkName {
+  font-size: calc(18px * var(--reading-scale));
+  font-weight: 400;
+  line-height: 1.3;
+}
+
+.setOut {
+  color: var(--color-neutral-600);
+  text-decoration: line-through;
+}
+
+.checkQty {
+  flex: none;
+  text-align: right;
+  font-size: calc(15px * var(--reading-scale));
+  color: var(--color-neutral-700);
+}
+
+.method {
+  flex-grow: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.intro {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.introPhoto {
+  flex: 1;
+  min-width: 0;
+  height: 96px;
+}
+
+.introWhy {
+  flex: 1.6;
+  padding: 14px 18px;
+  border-radius: 22px;
+  font-size: 14px;
+}
+
+.readingSteps {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 4px;
+}
+
+.stepList {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.readingStep {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 6px 18px;
+  border-radius: 26px;
+  font-size: calc(18px * var(--reading-scale));
+  line-height: 1.45;
+}
+
+.stepCircle {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  font-family: var(--font-heading);
+  font-size: 18px;
+}
+
+.stepText {
+  padding-top: 6px;
+}
+
+.stepDone {
+  color: var(--color-neutral-600);
+}
+
+.stepCurrent {
+  padding: 18px;
+  background: var(--color-accent-100);
+  box-shadow: inset 0 0 0 2px var(--color-accent-300);
+  font-size: calc(22px * var(--reading-scale));
+}
+
+.stepCurrent .stepCircle {
+  background: var(--color-accent);
+  color: var(--on-accent);
+}
+
+/* The action bar rests at the bottom of the steps column, with Previous
+   and Next step at its right. */
+.reading .bar {
+  margin-top: auto;
+}
+
+.reading .add {
+  flex: none;
+}
+
+.stepButtons {
+  display: flex;
+  gap: 10px;
+  margin-left: auto;
 }

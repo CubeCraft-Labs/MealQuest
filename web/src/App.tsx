@@ -4,6 +4,7 @@ import { Route, Routes } from 'react-router'
 import { ApiProvider, createQueryClient, type ApiClient } from './api/index.ts'
 import { AuthBootstrap } from './AuthBootstrap.tsx'
 import { DiscoverPage } from './discover/DiscoverPage.tsx'
+import { CookFromPantryPage } from './ideas/CookFromPantryPage.tsx'
 import { ONBOARDING_PATH, OnboardingGate } from './onboarding/OnboardingGate.tsx'
 import { OnboardingPage } from './onboarding/OnboardingPage.tsx'
 import { PlaceholderPage } from './pages/PlaceholderPage.tsx'
@@ -45,6 +46,7 @@ const screens: Partial<Record<(typeof routes)[number]['path'], ReactNode>> = {
   '/plan/shopping': <SupplyRunPage />,
   '/plan/shopping/archive': <SupplyArchivePage />,
   '/discover': <DiscoverPage />,
+  '/cook-from-pantry': <CookFromPantryPage />,
   '/settings': <SettingsPage />,
   '/settings/ai': <AISettingsPage />,
   '/settings/household': <HouseholdSettingsPage />,

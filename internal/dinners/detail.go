@@ -58,15 +58,16 @@ type Ingredient struct {
 	RawText string  `json:"raw_text"`
 }
 
-// Source is the site a recipe was fetched from. It has no url: the page's
-// link, pasted or offered as a candidate, may carry a personal token, and
-// no stored link can be shown to be free of one, so like a dinner's
-// recipe_url and a candidate's page it never leaves the server. SiteName
-// is the name the page itself gives its site, and null when it gives none
-// or the stored name could have come from a link (see pageSiteName), so a
-// client shows "Recipe from {site}" only when SiteName is not null.
+// Source is the site a recipe was fetched from. SiteName is the name the
+// page itself gives its site, and null when it gives none or the stored
+// name could have come from a link (see pageSiteName), so a client shows
+// "Recipe from {site}" only when SiteName is not null. URL is the page's
+// link only when it is verifiably free of secrets (see safeSourceURL), and
+// null otherwise: a link pasted or offered as a candidate may carry a
+// personal token, so a client links the credit only when URL is not null.
 type Source struct {
 	SiteName *string `json:"site_name"`
+	URL      *string `json:"url"`
 }
 
 // Get returns dinner id with its recipe and the reason it was suggested,
@@ -149,7 +150,7 @@ func readRecipe(ctx context.Context, q *db.Queries, recipeID string, d *Detail) 
 		if err != nil {
 			return err
 		}
-		d.Source = &Source{SiteName: site}
+		d.Source = &Source{SiteName: site, URL: safeSourceURL(rec.SourceUrl)}
 	}
 	ings, err := q.ListRecipeIngredients(ctx, recipeID)
 	if err != nil {
@@ -207,6 +208,28 @@ func pageSiteName(stored sql.NullString, sourceURL string) (*string, error) {
 		return nil, nil
 	}
 	return &name, nil
+}
+
+// safeSourceURL is sourceURL when it is verifiably free of secrets — an
+// https link to a host, with no user or password, no query (not even a
+// bare "?") and no fragment (not even a bare "#") — else nil. Those are
+// the places a link carries a token; a link failing any check, or not
+// parsing, is withheld rather than trimmed, since a trimmed link is not the
+// page the recipe came from. The client (sourceUrl in
+// web/src/dinners/detail.ts) refuses any other link, so the port must also
+// be one it parses.
+func safeSourceURL(sourceURL string) *string {
+	u, err := url.Parse(sourceURL)
+	if err != nil || u.Scheme != "https" || u.Opaque != "" || u.Host == "" || u.User != nil ||
+		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(sourceURL, "#") {
+		return nil
+	}
+	if port := u.Port(); port != "" {
+		if n, err := strconv.ParseUint(port, 10, 16); err != nil || n == 0 {
+			return nil
+		}
+	}
+	return &sourceURL
 }
 
 // duplicatePosition is the error for two recipe items of kind at position.

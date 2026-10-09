@@ -112,6 +112,45 @@ func TestPageSiteNameWithholdsHosts(t *testing.T) {
 	}
 }
 
+// TestSafeSourceURLOnlyWithoutSecrets: a recipe link is shown only when it
+// is https to a host with no user, password, query or fragment, each of
+// which can carry a token; any other link, or one that does not parse, is
+// withheld whole.
+func TestSafeSourceURLOnlyWithoutSecrets(t *testing.T) {
+	t.Parallel()
+	for _, link := range []string{
+		"https://www.example.com/recipes/chicken-curry",
+		"https://example.com",
+		"https://example.com:8443/stew/",
+	} {
+		if got := dinners.SafeSourceURL(link); got == nil || *got != link {
+			t.Errorf("SafeSourceURL(%q) = %v, want the link", link, deref(got))
+		}
+	}
+	for _, link := range []string{
+		"https://example.com/curry?access_token=query-token",
+		"https://example.com/curry?",
+		"https://user:password@example.com/curry",
+		"https://token@example.com/curry",
+		"https://@example.com/curry",
+		"http://example.com/curry",
+		"https://example.com/curry#token=fragment-token",
+		"https://example.com/curry#",
+		"ftp://example.com/curry",
+		"https:example.com/curry",
+		"https:///curry",
+		"https://example.com:99999/curry",
+		"https://example.com:0/curry",
+		"//example.com/curry",
+		"https://secret-token\x7f.example/%zz",
+		"",
+	} {
+		if got := dinners.SafeSourceURL(link); got != nil {
+			t.Errorf("SafeSourceURL(%q) = %q, want nil", link, *got)
+		}
+	}
+}
+
 func deref(s *string) any {
 	if s == nil {
 		return nil

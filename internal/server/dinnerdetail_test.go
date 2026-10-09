@@ -111,7 +111,7 @@ func TestGetDinnerGroundedSideQuest(t *testing.T) {
 			{Name: str("onion"), Qty: str("1"), RawText: "1 onion"},
 		},
 		Steps:           []string{"Fry with the garlic.", "Chop the onion."},
-		Source:          &dinners.Source{SiteName: str("Curry House")},
+		Source:          &dinners.Source{SiteName: str("Curry House"), URL: str(curryPage)},
 		GroundingStatus: "grounded",
 		WhyPicked:       str(reason),
 	}
@@ -216,52 +216,83 @@ func TestGetDinnerNotFound(t *testing.T) {
 	}
 }
 
-// TestGetDinnerSourceHidesTokenURL: a recipe grounded in a pasted link that
-// carries a token in its path or query shows its site name, but never the
-// link or any part of it.
-func TestGetDinnerSourceHidesTokenURL(t *testing.T) {
+// TestGetDinnerSourceURLOnlyWhenSafe: a recipe grounded in a clean https
+// link shows it as source.url; one whose stored link carries a token in its
+// query or userinfo, is http, or has a fragment shows its site name but
+// source.url null and nothing of the link.
+func TestGetDinnerSourceURLOnlyWhenSafe(t *testing.T) {
 	t.Parallel()
 	e := newDinnersEnv(t)
 	const (
-		pathToken  = "path-token-abc123"
+		clean      = "https://kitchen.example/recipes/chicken-curry"
 		queryToken = "query-token-def456"
-		pathPage   = "https://secret-path.example/u/" + pathToken + "/chicken-curry"
 		queryPage  = "https://secret-query.example/curry?access_token=" + queryToken
 	)
-	e.pages.Bodies[pathPage] = recipestest.RecipePage("Chicken Curry", "Curry House", "https://a.example/curry.jpg", 40)
+	e.pages.Bodies[clean] = recipestest.RecipePage("Chicken Curry", "Curry House", "https://a.example/curry.jpg", 40)
 	e.pages.Bodies[queryPage] = recipestest.RecipePage("Weeknight Curry", "B Kitchen", "https://b.example/curry.jpg", 25)
 	e.images.JPEGs["https://a.example/curry.jpg"] = recipestest.JPEG(t, 400, 320, 1)
 	e.images.JPEGs["https://b.example/curry.jpg"] = recipestest.JPEG(t, 400, 320, 2)
-	for _, tc := range []struct{ dish, page, site string }{
-		{"Chicken curry", pathPage, "Curry House"},
-		{"Weeknight curry", queryPage, "B Kitchen"},
-	} {
-		id := createDinner(t, e.h, `{"name":"`+tc.dish+`"}`) // runner not started: stays pending
+	ground := func(dish, page string) (id string) {
+		t.Helper()
+		id = createDinner(t, e.h, `{"name":"`+dish+`"}`) // runner not started: stays pending
 		e.model.QueueGenerate(recipestest.NormalizedReply("stovetop", 25))
-		if rec, _ := callDinners(t, e.h, http.MethodPost, dinnersPath+"/"+id+"/ground", `{"recipe_url":"`+tc.page+`"}`); rec.Code != http.StatusOK {
-			t.Fatalf("POST ground %s = %d: %s", tc.page, rec.Code, rec.Body)
+		if rec, _ := callDinners(t, e.h, http.MethodPost, dinnersPath+"/"+id+"/ground", `{"recipe_url":"`+page+`"}`); rec.Code != http.StatusOK {
+			t.Fatalf("POST ground %s = %d: %s", page, rec.Code, rec.Body)
 		}
 		var stored string
 		if err := e.st.Reader.QueryRow(`SELECT source_url FROM recipes WHERE id = (SELECT recipe_id FROM dinners WHERE id = ?)`, id).Scan(&stored); err != nil {
 			t.Fatal(err)
 		}
-		if stored != tc.page {
-			t.Fatalf("stored source_url = %q, want %q", stored, tc.page)
+		if stored != page {
+			t.Fatalf("stored source_url = %q, want %q", stored, page)
 		}
+		return id
+	}
+	source := func(what, id string) map[string]any {
+		t.Helper()
+		raw, _ := getDetail(t, e.h, id)
+		src, ok := raw["source"].(map[string]any)
+		if !ok {
+			t.Fatalf("source of %s = %v, want an object", what, raw["source"])
+		}
+		return src
+	}
 
+	cleanID := ground("Chicken curry", clean)
+	if src := source("a clean link", cleanID); !reflect.DeepEqual(src, map[string]any{"site_name": "Curry House", "url": clean}) {
+		t.Errorf("source of a clean link = %v, want site_name Curry House and url %s", src, clean)
+	}
+
+	queryID := ground("Weeknight curry", queryPage)
+	withheld := func(what, id, site string, secrets ...string) {
+		t.Helper()
 		rec, _ := callDinners(t, e.h, http.MethodGet, dinnersPath+"/"+id, "")
 		if rec.Code != http.StatusOK {
-			t.Fatalf("GET dinner = %d: %s", rec.Code, rec.Body)
+			t.Fatalf("GET %s = %d: %s", what, rec.Code, rec.Body)
 		}
-		for _, secret := range []string{tc.page, "secret-path.example", "secret-query.example", pathToken, queryToken, "access_token", `"url"`} {
+		for _, secret := range secrets {
 			if strings.Contains(rec.Body.String(), secret) {
-				t.Errorf("detail of %s contains %q: %s", tc.dish, secret, rec.Body)
+				t.Errorf("detail of %s contains %q: %s", what, secret, rec.Body)
 			}
 		}
-		raw, _ := getDetail(t, e.h, id)
-		if src, _ := raw["source"].(map[string]any); !reflect.DeepEqual(src, map[string]any{"site_name": tc.site}) {
-			t.Errorf("source of %s = %v, want only site_name %q", tc.dish, raw["source"], tc.site)
+		if src := source(what, id); !reflect.DeepEqual(src, map[string]any{"site_name": site, "url": nil}) {
+			t.Errorf("source of %s = %v, want site_name %q and url null", what, src, site)
 		}
+	}
+	withheld("a link with a query token", queryID, "B Kitchen", queryPage, "secret-query.example", queryToken, "access_token")
+
+	// The other unsafe shapes, stored as a link grounded elsewhere would
+	// leave them.
+	for _, tc := range []struct{ what, link string }{
+		{"a link with a userinfo token", "https://user-token-ghi789@kitchen.example/recipes/chicken-curry"},
+		{"a link with a userinfo password", "https://cook:password-jkl012@kitchen.example/recipes/chicken-curry"},
+		{"an http link", "http://kitchen.example/recipes/chicken-curry"},
+		{"a link with a fragment", "https://kitchen.example/recipes/chicken-curry#token=fragment-mno345"},
+	} {
+		if _, err := e.st.Writer.Exec(`UPDATE recipes SET source_url = ? WHERE id = (SELECT recipe_id FROM dinners WHERE id = ?)`, tc.link, cleanID); err != nil {
+			t.Fatal(err)
+		}
+		withheld(tc.what, cleanID, "Curry House", tc.link, "kitchen.example", "-token-", "password", "fragment")
 	}
 }
 
@@ -270,14 +301,16 @@ func TestGetDinnerSourceHidesTokenURL(t *testing.T) {
 // token has site_name null and nothing from the link in its detail; a page
 // that names its site keeps that name, even on a token-bearing host; and a
 // stored name shaped like another host, as a redirect leaves, is withheld.
+// The links carry a query, so source.url is withheld too and nothing of the
+// link may appear.
 func TestGetDinnerSiteNameNeverFromLink(t *testing.T) {
 	t.Parallel()
 	e := newDinnersEnv(t)
 	const (
 		bareToken  = "private-token-abc123"
 		namedToken = "named-token-def456"
-		bare       = "https://" + bareToken + ".example.com/recipe"
-		named      = "https://www." + namedToken + ".example.com/recipe"
+		bare       = "https://" + bareToken + ".example.com/recipe?print=1"
+		named      = "https://www." + namedToken + ".example.com/recipe?print=1"
 	)
 	e.pages.Bodies[bare] = recipestest.RecipePage("Chicken Curry", "", "https://a.example/curry.jpg", 40)
 	e.pages.Bodies[named] = recipestest.RecipePage("Weeknight Curry", "Curry House", "https://b.example/curry.jpg", 25)
@@ -315,8 +348,8 @@ func TestGetDinnerSiteNameNeverFromLink(t *testing.T) {
 			}
 		}
 		raw, _ := getDetail(t, e.h, id)
-		if src, _ := raw["source"].(map[string]any); !reflect.DeepEqual(src, map[string]any{"site_name": want}) {
-			t.Errorf("source of %s = %v, want only site_name %v", what, raw["source"], want)
+		if src, _ := raw["source"].(map[string]any); !reflect.DeepEqual(src, map[string]any{"site_name": want, "url": nil}) {
+			t.Errorf("source of %s = %v, want site_name %v and url null", what, raw["source"], want)
 		}
 	}
 
@@ -324,13 +357,13 @@ func TestGetDinnerSiteNameNeverFromLink(t *testing.T) {
 	if got := storedSite(bareRecipe); got != bareToken+".example.com" {
 		t.Fatalf("stored site_name = %q, want the link's host", got)
 	}
-	check("a page naming no site", bareID, []string{bare, bareToken, "example.com", `"url"`}, nil)
+	check("a page naming no site", bareID, []string{bare, bareToken, "example.com"}, nil)
 
 	namedID, namedRecipe := ground("Weeknight curry", named)
 	if got := storedSite(namedRecipe); got != "Curry House" {
 		t.Fatalf("stored site_name = %q, want the page's", got)
 	}
-	check("a page naming its site", namedID, []string{named, namedToken, "example.com", `"url"`}, "Curry House")
+	check("a page naming its site", namedID, []string{named, namedToken, "example.com"}, "Curry House")
 
 	const redirectHost = "redirect-token-ghi789.example.net"
 	if _, err := e.st.Writer.Exec(`UPDATE recipes SET site_name = ? WHERE id = ?`, redirectHost, namedRecipe); err != nil {

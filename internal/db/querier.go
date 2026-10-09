@@ -12,6 +12,11 @@ import (
 type Querier interface {
 	// An unknown id returns sql.ErrNoRows.
 	ArchiveDinner(ctx context.Context, arg ArchiveDinnerParams) (Dinner, error)
+	// Leases the pending notification due longest ago by moving its
+	// next_attempt_at to lease_until, and returns it. A claimed row is not due
+	// again until the lease ends, so no other claim takes it while it is being
+	// delivered. Returns sql.ErrNoRows when none is due.
+	ClaimDueNotification(ctx context.Context, arg ClaimDueNotificationParams) (NotificationOutbox, error)
 	// Marks the oldest queued job running and returns it. Returns sql.ErrNoRows
 	// when no job is queued.
 	ClaimNextJob(ctx context.Context, now sql.NullString) (Job, error)
@@ -68,6 +73,9 @@ type Querier interface {
 	DeleteShoppingGroup(ctx context.Context, id string) error
 	DeleteShoppingItem(ctx context.Context, id string) error
 	FailJob(ctx context.Context, arg FailJobParams) (int64, error)
+	// Gives up on a notification. attempts counts the delivery attempt that
+	// failed, if one was made. The lease must still be the claim's.
+	FailNotification(ctx context.Context, arg FailNotificationParams) (int64, error)
 	// Fails every unarchived dinner still pending whose grounding job for its
 	// current grounding_revision is no longer queued or running: the process
 	// stopped before the job, or before its handler recorded a result. An
@@ -112,6 +120,7 @@ type Querier interface {
 	// The newest batch, whatever its status. Returns sql.ErrNoRows when there
 	// is none.
 	GetLatestSuggestionBatch(ctx context.Context) (SuggestionBatch, error)
+	GetNotificationPref(ctx context.Context, event string) (NotificationPref, error)
 	// The pending Rotation check of dinner_id. MarkTried makes one only for a
 	// dinner in the Quest log, which it moves to tried, so a dinner has at
 	// most one. Returns sql.ErrNoRows when there is none.
@@ -153,6 +162,10 @@ type Querier interface {
 	// them only when a member edited them while it was grounding. Like
 	// GroundDinner it clears the pasted recipe_url: the recipe replaces the link.
 	GroundPendingDinner(ctx context.Context, arg GroundPendingDinnerParams) (int64, error)
+	// Stores a pending notification for one channel, due at once. A row already
+	// stored for the event key and channel, in any status, is left unchanged and
+	// no row is inserted.
+	InsertNotification(ctx context.Context, arg InsertNotificationParams) (int64, error)
 	// The pending suggestions whose dinner is still suggested, oldest first,
 	// with their dinners.
 	ListDeck(ctx context.Context) ([]ListDeckRow, error)
@@ -211,6 +224,9 @@ type Querier interface {
 	// Moves a dinner still in the Quest log to tried; a dinner with any other
 	// status is left as it is (0 rows).
 	MarkDinnerTried(ctx context.Context, arg MarkDinnerTriedParams) (int64, error)
+	// Records a delivered notification; updated_at is when it was sent. The
+	// lease must still be the claim's.
+	MarkNotificationSent(ctx context.Context, arg MarkNotificationSentParams) (int64, error)
 	// Records an edit of plan id, raising its revision: a synced plan becomes
 	// changed, any other keeps its status.
 	MarkWeekPlanEdited(ctx context.Context, arg MarkWeekPlanEditedParams) error
@@ -230,6 +246,9 @@ type Querier interface {
 	// by a Rotation check decision, recording updated_by; its origin is kept.
 	// A dinner no longer tried is left as it is (0 rows).
 	MoveTriedDinner(ctx context.Context, arg MoveTriedDinnerParams) (int64, error)
+	// Returns when the next pending notification is due. Returns sql.ErrNoRows
+	// when none is pending.
+	NextNotificationDue(ctx context.Context) (sql.NullString, error)
 	// Stores a partial result of a running job.
 	PublishJobResult(ctx context.Context, arg PublishJobResultParams) (int64, error)
 	// Plans dinner_id on date of plan_id. An existing day keeps its calendar
@@ -241,6 +260,9 @@ type Querier interface {
 	RedraftWeekPlan(ctx context.Context, arg RedraftWeekPlanParams) error
 	// Records a generation of list id from plan plan_id.
 	RegenerateShoppingList(ctx context.Context, arg RegenerateShoppingListParams) error
+	// Records a failed delivery and when to try again. The lease must still be
+	// the claim's.
+	RetryNotification(ctx context.Context, arg RetryNotificationParams) (int64, error)
 	// An unknown id returns sql.ErrNoRows.
 	SetDinnerFavorite(ctx context.Context, arg SetDinnerFavoriteParams) (Dinner, error)
 	// Sets the chosen calendar; affects no row when nothing is connected.

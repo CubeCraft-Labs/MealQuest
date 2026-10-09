@@ -16,7 +16,6 @@ func TestParseWebhookAccepts(t *testing.T) {
 	t.Parallel()
 	for _, raw := range []string{
 		testHook,
-		"https://chat.googleapis.com/v1/spaces/" + testSpace + "/messages?token=" + testToken + "&key=" + testKey,
 		"https://chat.googleapis.com/v1/spaces/AAAA_x-y/messages?key=" + testKey + "&token=" + testToken,
 	} {
 		hook, err := ParseWebhook(raw)
@@ -55,6 +54,14 @@ func TestParseWebhookRejects(t *testing.T) {
 		"no token":            "https://chat.googleapis.com/v1/spaces/" + testSpace + "/messages?key=" + testKey,
 		"empty token":         "https://chat.googleapis.com/v1/spaces/" + testSpace + "/messages?key=" + testKey + "&token=",
 		"short key":           "https://chat.googleapis.com/v1/spaces/" + testSpace + "/messages?key=abc&token=" + testToken,
+		"token first":         "https://chat.googleapis.com/v1/spaces/" + testSpace + "/messages?token=" + testToken + "&key=" + testKey,
+		"empty segment":       "https://chat.googleapis.com/v1/spaces/" + testSpace + "/messages?key=" + testKey + "&&token=" + testToken,
+		"leading ampersand":   "https://chat.googleapis.com/v1/spaces/" + testSpace + "/messages?&" + q[1:],
+		"trailing ampersand":  "https://chat.googleapis.com/v1/spaces/" + testSpace + "/messages" + q + "&",
+		"second question":     "https://chat.googleapis.com/v1/spaces/" + testSpace + "/messages" + q + "?x",
+		"multi-byte token":    "https://chat.googleapis.com/v1/spaces/" + testSpace + "/messages?key=" + testKey + "&token=" + strings.Repeat("%F0%9F%98%80", 4),
+		"multi-byte key":      "https://chat.googleapis.com/v1/spaces/" + testSpace + "/messages?key=" + strings.Repeat("%F0%9F%98%80", 4) + "&token=" + testToken,
+		"plus in token":       "https://chat.googleapis.com/v1/spaces/" + testSpace + "/messages?key=" + testKey + "&token=" + testToken + "+",
 		"repeated key":        "https://chat.googleapis.com/v1/spaces/" + testSpace + "/messages" + q + "&key=" + testKey,
 		"extra parameter":     "https://chat.googleapis.com/v1/spaces/" + testSpace + "/messages" + q + "&threadKey=x",
 		"bad escape in query": "https://chat.googleapis.com/v1/spaces/" + testSpace + "/messages" + q + "%zz",

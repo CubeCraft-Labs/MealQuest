@@ -59,9 +59,8 @@ var (
 )
 
 // Settings is the stored webhook as the API shows it: never the URL, only
-// its masked form.
+// its masked form. URLMasked is nil when no webhook is stored.
 type Settings struct {
-	Configured bool    `json:"configured"`
 	SpaceLabel *string `json:"space_label"`
 	// URLMasked is the webhook URL without its key and with only the last
 	// few characters of its token.
@@ -70,7 +69,6 @@ type Settings struct {
 	// test message is sent to this webhook.
 	LastTestAt     *string `json:"last_test_at"`
 	LastTestStatus *string `json:"last_test_status"`
-	UpdatedAt      *string `json:"updated_at"`
 }
 
 // TestResult is the outcome of a test message.
@@ -143,8 +141,8 @@ func NewService(st *store.Store, box *secretbox.Box, publicURL *url.URL, transpo
 	}, nil
 }
 
-// Get returns the stored webhook's settings; Configured is false and every
-// other field nil before one is saved.
+// Get returns the stored webhook's settings; every field is nil before one
+// is saved.
 func (s *Service) Get(ctx context.Context) (Settings, error) {
 	row, err := db.New(s.st.Reader).GetChatSettings(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -440,14 +438,12 @@ func (s *Service) timestamp() string {
 }
 
 func settingsFrom(row db.ChatSetting, hook Webhook) Settings {
-	masked, updated := hook.Masked(), row.UpdatedAt
+	masked := hook.Masked()
 	return Settings{
-		Configured:     true,
 		SpaceLabel:     nullString(row.SpaceLabel),
 		URLMasked:      &masked,
 		LastTestAt:     nullString(row.LastTestAt),
 		LastTestStatus: nullString(row.LastTestStatus),
-		UpdatedAt:      &updated,
 	}
 }
 

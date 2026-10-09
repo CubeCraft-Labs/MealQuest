@@ -172,7 +172,7 @@ func TestPutGetStoresSealedWebhook(t *testing.T) {
 	svc, st := newTestService(t, newFakeChat(t))
 
 	got, err := svc.Get(ctx)
-	if err != nil || got.Configured || got.SpaceLabel != nil || got.URLMasked != nil || got.LastTestAt != nil {
+	if err != nil || got.SpaceLabel != nil || got.URLMasked != nil || got.LastTestAt != nil {
 		t.Fatalf("Get unconfigured = %+v, %v", got, err)
 	}
 
@@ -180,7 +180,7 @@ func TestPutGetStoresSealedWebhook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !put.Configured || *put.SpaceLabel != "Family dinner" || *put.URLMasked != "https://chat.googleapis.com/v1/spaces/"+testSpace+"/messages?key=…&token=…ZxQ=" || put.LastTestAt != nil || put.LastTestStatus != nil {
+	if *put.SpaceLabel != "Family dinner" || *put.URLMasked != "https://chat.googleapis.com/v1/spaces/"+testSpace+"/messages?key=…&token=…ZxQ=" || put.LastTestAt != nil || put.LastTestStatus != nil {
 		t.Errorf("Put = %+v", put)
 	}
 	got, err = svc.Get(ctx)

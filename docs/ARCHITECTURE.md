@@ -693,13 +693,16 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
     `{"url", "space_label"}`, both required. The URL must be exactly
     `https://chat.googleapis.com/v1/spaces/{space}/messages?key=…&token=…`:
     that scheme and host spelled so, no port or user info, the space id
-    letters, digits, `-` or `_`, and only the query parameters `key` and
-    `token`, each once and at least 16 characters. The space label is 1–100
+    letters, digits, `-` or `_`, and the raw query exactly
+    `key=…&token=…` (in that order, no empty segment, no second `?`, no
+    other parameter), each decoding to at least 16 characters of letters,
+    digits, `-`, `_`, `.`, `~` or `=`. The space label is 1–100
     characters. A refused body is 400 `invalid_request` (not a JSON object
     of the two fields) or `invalid_webhook`. Saving replaces any stored
     webhook and clears its test outcome.
-  - `GET /api/v1/settings/chat-webhook` answers `{configured, space_label,
-    url_masked, last_test_at, last_test_status, updated_at}`; `url_masked`
+  - `GET /api/v1/settings/chat-webhook` answers `{space_label, url_masked,
+    last_test_at, last_test_status}`, so `url_masked` is `null` exactly when
+    no webhook is stored; `url_masked`
     shows the space id and only the last four characters of the decoded
     token (`…/spaces/AAQA…/messages?key=…&token=…ZxQ=`). Absent values are
     `null`.

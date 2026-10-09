@@ -28,6 +28,10 @@ const (
 // space id.
 var webhookPath = regexp.MustCompile(`^/v1/spaces/([A-Za-z0-9_-]{1,128})/messages$`)
 
+// credentialChars is the alphabet of a decoded key or token: URL-safe
+// ASCII, so its length in bytes is its length in characters.
+var credentialChars = regexp.MustCompile(`^[A-Za-z0-9_.~=-]*$`)
+
 // Webhook is a validated Google Chat incoming webhook URL. Its String is
 // the full URL, a secret: it is only ever sealed for storage or sent to
 // Google Chat, never logged, shown or put in an error.
@@ -39,8 +43,9 @@ type Webhook struct {
 
 // ParseWebhook validates raw as
 // https://chat.googleapis.com/v1/spaces/{space}/messages?key=…&token=…,
-// with exactly the query parameters key and token, each once and at least
-// MinCredentialLength characters. Its error never quotes raw.
+// whose raw query is exactly key=…&token=…, in that order, each decoding to
+// at least MinCredentialLength characters of credentialChars. Its error
+// never quotes raw.
 func ParseWebhook(raw string) (Webhook, error) {
 	switch {
 	case raw == "":
@@ -65,28 +70,34 @@ func ParseWebhook(raw string) (Webhook, error) {
 	if m == nil {
 		return Webhook{}, errors.New("path must be /v1/spaces/{space}/messages")
 	}
-	q, err := url.ParseQuery(u.RawQuery)
-	if err != nil {
-		return Webhook{}, errors.New("query is not valid")
+	// The raw query is exactly key=…&token=…: no empty segment, no second
+	// "?", no other or repeated parameter.
+	if strings.Contains(u.RawQuery, "?") {
+		return Webhook{}, errors.New("query must not contain ?")
 	}
-	for name, values := range q {
-		if name != "key" && name != "token" {
-			return Webhook{}, errors.New("query must hold only key and token")
-		}
-		if len(values) != 1 {
-			return Webhook{}, fmt.Errorf("query must hold %s once", name)
-		}
+	segments := strings.Split(u.RawQuery, "&")
+	if len(segments) != 2 {
+		return Webhook{}, errors.New("query must be exactly key=…&token=…")
 	}
-	for _, name := range []string{"key", "token"} {
-		v := q.Get(name)
-		if v == "" {
-			return Webhook{}, fmt.Errorf("query must hold a %s", name)
+	creds := make([]string, 2)
+	for i, name := range []string{"key", "token"} {
+		escaped, ok := strings.CutPrefix(segments[i], name+"=")
+		if !ok {
+			return Webhook{}, errors.New("query must be exactly key=…&token=…")
+		}
+		v, err := url.QueryUnescape(escaped)
+		if err != nil {
+			return Webhook{}, errors.New("query is not valid")
+		}
+		if !credentialChars.MatchString(v) {
+			return Webhook{}, fmt.Errorf("%s must be letters, digits, -, _, ., ~ or =", name)
 		}
 		if len(v) < MinCredentialLength {
 			return Webhook{}, fmt.Errorf("%s must be at least %d characters", name, MinCredentialLength)
 		}
+		creds[i] = v
 	}
-	return Webhook{raw: raw, space: m[1], token: q.Get("token")}, nil
+	return Webhook{raw: raw, space: m[1], token: creds[1]}, nil
 }
 
 // String returns the full webhook URL, a secret.
@@ -98,7 +109,7 @@ func (w Webhook) String() string {
 // characters of its token, such as
 // "https://chat.googleapis.com/v1/spaces/AAQA1234/messages?key=…&token=…x3Dk".
 func (w Webhook) Masked() string {
-	// MinCredentialLength bytes are at least maskedTail runes.
-	token := []rune(w.token)
-	return webhookPrefix + w.space + "/messages?key=…&token=…" + string(token[len(token)-maskedTail:])
+	// The token is ASCII of at least MinCredentialLength bytes, so the
+	// tail is maskedTail of its many characters.
+	return webhookPrefix + w.space + "/messages?key=…&token=…" + w.token[len(w.token)-maskedTail:]
 }

@@ -131,7 +131,7 @@ func TestChatWebhookAPI(t *testing.T) {
 	}
 
 	rec, body := call(http.MethodGet, chatWebhookPath, "")
-	if rec.Code != http.StatusOK || body["configured"] != false || body["url_masked"] != nil || body["space_label"] != nil {
+	if rec.Code != http.StatusOK || body["url_masked"] != nil || body["space_label"] != nil || body["last_test_at"] != nil || body["last_test_status"] != nil || len(body) != 4 {
 		t.Errorf("GET unconfigured = %d %v", rec.Code, body)
 	}
 	rec, body = call(http.MethodPost, chatWebhookTestPath, "")
@@ -160,8 +160,8 @@ func TestChatWebhookAPI(t *testing.T) {
 
 	rec, body = call(http.MethodPut, chatWebhookPath, `{"url":"`+testChatHook+`","space_label":"Family dinner"}`)
 	wantMasked := "https://chat.googleapis.com/v1/spaces/AAQA1b2C3d4/messages?key=…&token=…ZxQ="
-	if rec.Code != http.StatusOK || body["configured"] != true || body["space_label"] != "Family dinner" || body["url_masked"] != wantMasked ||
-		body["last_test_at"] != nil || body["last_test_status"] != nil {
+	if rec.Code != http.StatusOK || body["space_label"] != "Family dinner" || body["url_masked"] != wantMasked ||
+		body["last_test_at"] != nil || body["last_test_status"] != nil || len(body) != 4 {
 		t.Errorf("PUT = %d %v", rec.Code, body)
 	}
 	if _, ok := body["url"]; ok {

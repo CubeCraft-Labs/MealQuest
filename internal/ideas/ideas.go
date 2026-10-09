@@ -92,6 +92,7 @@ type QuickGenerator func(ctx context.Context, scope string, in skills.QuickIdeas
 type Service struct {
 	st       *store.Store
 	grounder *recipes.Grounder
+	runner   *jobs.Runner
 	generate Generator
 	quick    QuickGenerator
 	logger   *slog.Logger
@@ -120,7 +121,7 @@ func NewService(st *store.Store, grounder *recipes.Grounder, generate Generator,
 	case logger == nil:
 		return nil, errors.New("ideas: nil logger")
 	}
-	s := &Service{st: st, grounder: grounder, generate: generate, quick: quick, logger: logger}
+	s := &Service{st: st, grounder: grounder, runner: runner, generate: generate, quick: quick, logger: logger}
 	var err error
 	if s.job, err = register(runner, KindFromIngredients, s.run, withoutIdeas[Result]); err != nil {
 		return nil, err
@@ -588,4 +589,74 @@ func quickIdeaOf(idea skills.QuickIdea, gr recipes.Grounded) QuickIdea {
 		SourceURL:    gr.SourceURL,
 		SiteName:     gr.SiteName,
 	}
+}
+
+// Origins of a dinner made from an idea (the dinners.origin column).
+const (
+	// OriginIngredients is an idea from Cook from what I have.
+	OriginIngredients = "ingredients"
+	// OriginQuick is an idea from Quick dinners.
+	OriginQuick = "quick"
+)
+
+// ErrIdeaNotFound is an idea the household cannot act on: an unknown job,
+// a job that does not find ideas, a failed job (which shows no ideas), or
+// an index past the job's ideas.
+var ErrIdeaNotFound = errors.New("idea not found")
+
+// ErrIdeasNotReady is an idea of a job still queued or running. Its ideas
+// may still move: an idea that grounds later is put back in its place
+// before those shown already, so an index names an idea only once the job
+// has succeeded.
+var ErrIdeasNotReady = errors.New("the ideas are still being found; act on one when the job has succeeded")
+
+// Chosen is the idea the household acts on: its name, the recipe it was
+// grounded in, and the origin of a dinner made from it.
+type Chosen struct {
+	Name     string
+	RecipeID string
+	Origin   string
+}
+
+// Idea returns idea i, counted from 0, of the succeeded job jobID, as its
+// stored result shows it: a dinner made from it uses the recipe it was
+// grounded in, never grounding it again. A job still queued or running is
+// ErrIdeasNotReady; any idea not shown by a succeeded KindFromIngredients
+// or KindQuick job is ErrIdeaNotFound.
+func (s *Service) Idea(ctx context.Context, jobID string, i int) (Chosen, error) {
+	job, err := s.runner.Get(ctx, jobID)
+	if errors.Is(err, jobs.ErrNotFound) {
+		return Chosen{}, ErrIdeaNotFound
+	}
+	if err != nil {
+		return Chosen{}, fmt.Errorf("ideas: read job: %w", err)
+	}
+	if job.Kind != KindFromIngredients && job.Kind != KindQuick {
+		return Chosen{}, ErrIdeaNotFound
+	}
+	switch job.Status {
+	case jobs.StatusQueued, jobs.StatusRunning:
+		return Chosen{}, ErrIdeasNotReady
+	case jobs.StatusSucceeded:
+	default:
+		return Chosen{}, ErrIdeaNotFound
+	}
+	if job.Kind == KindQuick {
+		var res QuickResult
+		if err := json.Unmarshal(job.Result, &res); err != nil {
+			return Chosen{}, fmt.Errorf("ideas: decode %s result: %w", job.Kind, err)
+		}
+		if i < 0 || i >= len(res.Ideas) {
+			return Chosen{}, ErrIdeaNotFound
+		}
+		return Chosen{Name: res.Ideas[i].Name, RecipeID: res.Ideas[i].RecipeID, Origin: OriginQuick}, nil
+	}
+	var res Result
+	if err := json.Unmarshal(job.Result, &res); err != nil {
+		return Chosen{}, fmt.Errorf("ideas: decode %s result: %w", job.Kind, err)
+	}
+	if i < 0 || i >= len(res.Ideas) {
+		return Chosen{}, ErrIdeaNotFound
+	}
+	return Chosen{Name: res.Ideas[i].Name, RecipeID: res.Ideas[i].RecipeID, Origin: OriginIngredients}, nil
 }

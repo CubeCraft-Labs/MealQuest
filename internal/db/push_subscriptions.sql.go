@@ -23,6 +23,89 @@ func (q *Queries) DeletePushSubscription(ctx context.Context, endpoint string) (
 	return result.RowsAffected()
 }
 
+const deletePushSubscriptionByID = `-- name: DeletePushSubscriptionByID :exec
+DELETE FROM push_subscriptions
+WHERE id = ?
+`
+
+// Removes a subscription the push service reports gone (404 or 410).
+func (q *Queries) DeletePushSubscriptionByID(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, deletePushSubscriptionByID, id)
+	return err
+}
+
+const listPushSubscriptions = `-- name: ListPushSubscriptions :many
+SELECT id, endpoint, p256dh, auth
+FROM push_subscriptions
+ORDER BY created_at, id
+`
+
+type ListPushSubscriptionsRow struct {
+	ID       string
+	Endpoint string
+	P256dh   string
+	Auth     string
+}
+
+// Every stored subscription with its keys, for the push sender, oldest
+// first.
+func (q *Queries) ListPushSubscriptions(ctx context.Context) ([]ListPushSubscriptionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPushSubscriptions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPushSubscriptionsRow
+	for rows.Next() {
+		var i ListPushSubscriptionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Endpoint,
+			&i.P256dh,
+			&i.Auth,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const recordPushFailure = `-- name: RecordPushFailure :exec
+UPDATE push_subscriptions
+SET failure_count = failure_count + 1
+WHERE id = ?
+`
+
+// Counts a delivery to a subscription that the push service did not accept.
+func (q *Queries) RecordPushFailure(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, recordPushFailure, id)
+	return err
+}
+
+const recordPushSuccess = `-- name: RecordPushSuccess :exec
+UPDATE push_subscriptions
+SET last_success_at = ?
+WHERE id = ?
+`
+
+type RecordPushSuccessParams struct {
+	LastSuccessAt sql.NullString
+	ID            string
+}
+
+// Records that the push service accepted a notification for a subscription.
+func (q *Queries) RecordPushSuccess(ctx context.Context, arg RecordPushSuccessParams) error {
+	_, err := q.db.ExecContext(ctx, recordPushSuccess, arg.LastSuccessAt, arg.ID)
+	return err
+}
+
 const upsertPushSubscription = `-- name: UpsertPushSubscription :one
 INSERT INTO push_subscriptions (
 	id, endpoint, p256dh, auth, user_agent, failure_count, created_at, updated_at

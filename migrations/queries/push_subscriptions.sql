@@ -18,3 +18,27 @@ RETURNING *;
 -- name: DeletePushSubscription :execrows
 DELETE FROM push_subscriptions
 WHERE endpoint = ?;
+
+-- name: ListPushSubscriptions :many
+-- Every stored subscription with its keys, for the push sender, oldest
+-- first.
+SELECT id, endpoint, p256dh, auth
+FROM push_subscriptions
+ORDER BY created_at, id;
+
+-- name: RecordPushSuccess :exec
+-- Records that the push service accepted a notification for a subscription.
+UPDATE push_subscriptions
+SET last_success_at = ?
+WHERE id = ?;
+
+-- name: RecordPushFailure :exec
+-- Counts a delivery to a subscription that the push service did not accept.
+UPDATE push_subscriptions
+SET failure_count = failure_count + 1
+WHERE id = ?;
+
+-- name: DeletePushSubscriptionByID :exec
+-- Removes a subscription the push service reports gone (404 or 410).
+DELETE FROM push_subscriptions
+WHERE id = ?;

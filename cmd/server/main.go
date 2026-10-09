@@ -149,6 +149,13 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	pushSender, err := push.NewSender(db, logger, cfg.VAPID.PublicKey, cfg.VAPID.PrivateKey.Reveal(), cfg.VAPID.Subject)
+	if err != nil {
+		return err
+	}
+	if err := notifier.Register(notify.ChannelPush, pushSender); err != nil {
+		return err
+	}
 
 	sessions, err := auth.NewSessionManager(db, cfg.SessionIdle, cfg.SessionMax)
 	if err != nil {

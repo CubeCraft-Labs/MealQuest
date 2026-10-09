@@ -68,6 +68,8 @@ type Querier interface {
 	DeleteAIRunsBefore(ctx context.Context, cutoff string) (int64, error)
 	DeleteIntegrationsGoogle(ctx context.Context) error
 	DeletePushSubscription(ctx context.Context, endpoint string) (int64, error)
+	// Removes a subscription the push service reports gone (404 or 410).
+	DeletePushSubscriptionByID(ctx context.Context, id string) error
 	DeleteRecipeIngredients(ctx context.Context, recipeID string) error
 	DeleteRecipeSteps(ctx context.Context, recipeID string) error
 	DeleteShoppingGroup(ctx context.Context, id string) error
@@ -188,6 +190,9 @@ type Querier interface {
 	// The planned dinners dated from from_date up to but not including
 	// to_date, oldest first. Days with no dinner are left out.
 	ListPlannedDinners(ctx context.Context, arg ListPlannedDinnersParams) ([]ListPlannedDinnersRow, error)
+	// Every stored subscription with its keys, for the push sender, oldest
+	// first.
+	ListPushSubscriptions(ctx context.Context) ([]ListPushSubscriptionsRow, error)
 	// Reads for the AI household context block (internal/ai/harness).
 	// The most recent names the household turned down, newest first, as
 	// ListPassedNames has them.
@@ -255,6 +260,10 @@ type Querier interface {
 	// event id while its dinner stays the same; a new dinner clears it, since
 	// Calendar no longer shows the day as planned.
 	PutPlanDay(ctx context.Context, arg PutPlanDayParams) error
+	// Counts a delivery to a subscription that the push service did not accept.
+	RecordPushFailure(ctx context.Context, id string) error
+	// Records that the push service accepted a notification for a subscription.
+	RecordPushSuccess(ctx context.Context, arg RecordPushSuccessParams) error
 	// Records a new draft over plan id: its status and note, raising its
 	// revision.
 	RedraftWeekPlan(ctx context.Context, arg RedraftWeekPlanParams) error

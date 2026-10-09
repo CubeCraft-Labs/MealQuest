@@ -133,6 +133,39 @@ func (q *Queries) InsertNotification(ctx context.Context, arg InsertNotification
 	return result.RowsAffected()
 }
 
+const listNotificationPrefs = `-- name: ListNotificationPrefs :many
+SELECT event, push, chat, created_at, updated_at FROM notification_prefs
+`
+
+func (q *Queries) ListNotificationPrefs(ctx context.Context) ([]NotificationPref, error) {
+	rows, err := q.db.QueryContext(ctx, listNotificationPrefs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []NotificationPref
+	for rows.Next() {
+		var i NotificationPref
+		if err := rows.Scan(
+			&i.Event,
+			&i.Push,
+			&i.Chat,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markNotificationSent = `-- name: MarkNotificationSent :execrows
 UPDATE notification_outbox
 SET status = 'sent', attempts = attempts + 1, next_attempt_at = NULL, updated_at = ?1
@@ -194,6 +227,34 @@ func (q *Queries) RetryNotification(ctx context.Context, arg RetryNotificationPa
 		arg.Now,
 		arg.ID,
 		arg.LeaseUntil,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const updateNotificationPref = `-- name: UpdateNotificationPref :execrows
+UPDATE notification_prefs
+SET push = ?, chat = ?, updated_at = ?
+WHERE event = ?
+`
+
+type UpdateNotificationPrefParams struct {
+	Push      int64
+	Chat      int64
+	UpdatedAt string
+	Event     string
+}
+
+// Sets which channels an event goes to; affects no row when the event has
+// no preference row.
+func (q *Queries) UpdateNotificationPref(ctx context.Context, arg UpdateNotificationPrefParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateNotificationPref,
+		arg.Push,
+		arg.Chat,
+		arg.UpdatedAt,
+		arg.Event,
 	)
 	if err != nil {
 		return 0, err

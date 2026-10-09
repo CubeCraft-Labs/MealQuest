@@ -12,14 +12,13 @@ import { useBreakpoint } from '../shell/useBreakpoint.ts'
 import {
   aiStatus,
   formatClockTime,
-  notificationsStatus,
   regularDinnersStatus,
   useAISettings,
   useHouseholdSettings,
-  useNotificationsStatus,
   useRegularDinnersCount,
 } from './api.ts'
 import { calendarStatus, useGoogleConnection } from './calendarApi.ts'
+import { notificationsStatus, useChatWebhook, usePushStatus } from './notificationsApi.ts'
 import styles from './SettingsPage.module.css'
 import { SettingsTabs } from './SettingsTabs.tsx'
 
@@ -38,16 +37,17 @@ export function SettingsPage() {
 }
 
 // The mobile settings list (handoff mock 1p). Each row opens its settings
-// page and shows a live status line. Regular dinners and Notifications &
-// Google Chat read endpoints their features have not served yet; until then
-// each shows its not-yet-available state (see api.ts).
+// page and shows a live status line. Regular dinners reads an endpoint its
+// feature has not served yet; until then it shows its not-yet-available
+// state (see api.ts).
 function SettingsList() {
   const household = useHouseholdSettings()
   const ai = useAISettings()
   const regulars = useRegularDinnersCount()
   const calendar = useGoogleConnection()
-  const notifications = useNotificationsStatus()
-  const failed = [regulars, calendar, household, notifications, ai].filter((query) => query.isError)
+  const push = usePushStatus()
+  const chat = useChatWebhook()
+  const failed = [regulars, calendar, household, push, chat, ai].filter((query) => query.isError)
 
   return (
     <div className={styles.page}>
@@ -93,7 +93,11 @@ function SettingsList() {
           to="/settings/notifications"
           icon={Bell}
           title="Notifications & Google Chat"
-          status={status(notifications, notificationsStatus)}
+          status={
+            push.isSuccess
+              ? status(chat, (webhook) => notificationsStatus(push.data, webhook))
+              : status(push, () => '')
+          }
         />
       </Group>
       <Group label="Admin" admin>

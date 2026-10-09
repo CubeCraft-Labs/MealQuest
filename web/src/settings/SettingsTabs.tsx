@@ -3,6 +3,7 @@ import { Card } from '../ui/Card.tsx'
 import { AIAssistantCard } from './AISettingsPage.tsx'
 import { HouseholdSettingsSections } from './HouseholdSettingsPage.tsx'
 import { LeaveGuard } from './LeaveGuard.tsx'
+import { ChatWebhookCard, NotificationsCard } from './NotificationsPage.tsx'
 import { RecipeSearchCard } from './RecipeSearchCard.tsx'
 import styles from './SettingsTabs.module.css'
 
@@ -25,6 +26,7 @@ export function SettingsTabs({ hidden = false }: { hidden?: boolean }) {
   const [householdDirty, setHouseholdDirty] = useState(false)
   const [aiDirty, setAIDirty] = useState(false)
   const [recipeSearchDirty, setRecipeSearchDirty] = useState(false)
+  const [chatDirty, setChatDirty] = useState(false)
   const refs = useRef<(HTMLButtonElement | null)[]>([])
   const id = useId()
   const tabId = (value: Tab) => `${id}-tab-${value}`
@@ -105,11 +107,8 @@ export function SettingsTabs({ hidden = false }: { hidden?: boolean }) {
         styles.columns,
         <>
           <div className={styles.column}>
-            {/* TODO(Feature 19): the Notifications matrix and Google Chat
-                webhook cards replace this placeholder. */}
-            <Placeholder title="Notifications & Google Chat">
-              Notification and Google Chat webhook settings arrive in a later update.
-            </Placeholder>
+            <NotificationsCard />
+            <ChatWebhookCard onDirtyChange={setChatDirty} />
           </div>
           <div className={styles.column}>
             <AIAssistantCard onDirtyChange={setAIDirty} />
@@ -118,7 +117,7 @@ export function SettingsTabs({ hidden = false }: { hidden?: boolean }) {
         </>,
       )}
 
-      <LeaveGuard dirty={householdDirty || aiDirty || recipeSearchDirty} />
+      <LeaveGuard dirty={householdDirty || aiDirty || recipeSearchDirty || chatDirty} />
     </div>
   )
 }

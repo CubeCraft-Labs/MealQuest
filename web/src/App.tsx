@@ -13,6 +13,7 @@ import { UpdatePrompt, type UpdateContainer } from './pwa/UpdatePrompt.tsx'
 import { AISettingsPage } from './settings/AISettingsPage.tsx'
 import { CalendarSettingsPage } from './settings/CalendarSettingsPage.tsx'
 import { HouseholdSettingsPage } from './settings/HouseholdSettingsPage.tsx'
+import { NotificationsPage } from './settings/NotificationsPage.tsx'
 import { RegularsSettingsPage } from './settings/RegularsSettingsPage.tsx'
 import { SettingsPage } from './settings/SettingsPage.tsx'
 import { AppShell } from './shell/AppShell.tsx'
@@ -46,6 +47,7 @@ const screens: Partial<Record<(typeof routes)[number]['path'], ReactNode>> = {
   '/plan/shopping/archive': <SupplyArchivePage />,
   '/discover': <DiscoverPage />,
   '/settings': <SettingsPage />,
+  '/settings/notifications': <NotificationsPage />,
   '/settings/ai': <AISettingsPage />,
   '/settings/household': <HouseholdSettingsPage />,
   '/settings/regulars': <RegularsSettingsPage />,

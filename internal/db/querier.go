@@ -176,6 +176,7 @@ type Querier interface {
 	// Regular, and every Quest log dinner no other plan for the week starting
 	// from_week_start or later has on any day.
 	ListDraftPool(ctx context.Context, arg ListDraftPoolParams) ([]Dinner, error)
+	ListNotificationPrefs(ctx context.Context) ([]NotificationPref, error)
 	// Every name the household turned down, oldest decision first: the name
 	// each declined suggestion was suggested under, which renaming its dinner
 	// does not change, and the name each dinner a Rotation check dropped
@@ -300,6 +301,9 @@ type Querier interface {
 	ToggleDinnerFavorite(ctx context.Context, arg ToggleDinnerFavoriteParams) (Dinner, error)
 	// An unknown id returns sql.ErrNoRows.
 	UpdateDinner(ctx context.Context, arg UpdateDinnerParams) (Dinner, error)
+	// Sets which channels an event goes to; affects no row when the event has
+	// no preference row.
+	UpdateNotificationPref(ctx context.Context, arg UpdateNotificationPrefParams) (int64, error)
 	// Creates the single row (id 1) or replaces every column except id and
 	// created_at.
 	UpsertAISettings(ctx context.Context, arg UpsertAISettingsParams) (AiSetting, error)

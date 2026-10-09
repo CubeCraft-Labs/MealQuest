@@ -187,56 +187,9 @@ func (s *SettingsService) Update(ctx context.Context, patch SettingsPatch, updat
 
 	var row db.HouseholdSetting
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
-		q := db.New(tx)
-		cur, err := q.GetHouseholdSettings(ctx)
-		if err != nil {
-			return fmt.Errorf("household: read settings: %w", err)
-		}
-		p := db.UpsertHouseholdSettingsParams{
-			Timezone:              cur.Timezone,
-			DinnerTime:            cur.DinnerTime,
-			ReminderTime:          cur.ReminderTime,
-			ReviewTime:            cur.ReviewTime,
-			PlanDraftDow:          cur.PlanDraftDow,
-			PlanDraftTime:         cur.PlanDraftTime,
-			SuggestionsDow:        cur.SuggestionsDow,
-			SuggestionsTime:       cur.SuggestionsTime,
-			ChatAutosendDow:       cur.ChatAutosendDow,
-			ChatAutosendTime:      cur.ChatAutosendTime,
-			OnboardingCompletedAt: cur.OnboardingCompletedAt,
-			UpdatesSeenAt:         cur.UpdatesSeenAt,
-			UpdatedBy:             sql.NullString{String: updatedBy, Valid: true},
-			CreatedAt:             cur.CreatedAt,
-			UpdatedAt:             store.Now().String(),
-		}
-		setString(&p.Timezone, patch.Timezone)
-		setString(&p.DinnerTime, patch.DinnerTime)
-		setString(&p.ReminderTime, patch.ReminderTime)
-		setString(&p.ReviewTime, patch.ReviewTime)
-		setDow(&p.PlanDraftDow, patch.PlanDraftDow)
-		setString(&p.PlanDraftTime, patch.PlanDraftTime)
-		setDow(&p.SuggestionsDow, patch.SuggestionsDow)
-		setString(&p.SuggestionsTime, patch.SuggestionsTime)
-		setDow(&p.ChatAutosendDow, patch.ChatAutosendDow)
-		setString(&p.ChatAutosendTime, patch.ChatAutosendTime)
-		if patch.OnboardingCompleted != nil && !p.OnboardingCompletedAt.Valid {
-			n, err := q.CountRegularDinners(ctx)
-			if err != nil {
-				return fmt.Errorf("household: count Regulars: %w", err)
-			}
-			if n < MinRegulars {
-				return &ValidationError{Problems: []Problem{{
-					Field:  "onboarding_completed",
-					Reason: fmt.Sprintf("add at least %d Regulars first (have %d)", MinRegulars, n),
-				}}}
-			}
-			p.OnboardingCompletedAt = sql.NullString{String: p.UpdatedAt, Valid: true}
-		}
-		row, err = q.UpsertHouseholdSettings(ctx, p)
-		if err != nil {
-			return fmt.Errorf("household: update settings: %w", err)
-		}
-		return nil
+		var err error
+		row, err = applyPatch(ctx, db.New(tx), patch, updatedBy)
+		return err
 	})
 	if err != nil {
 		return Settings{}, err
@@ -247,8 +200,62 @@ func (s *SettingsService) Update(ctx context.Context, patch SettingsPatch, updat
 	return settings, nil
 }
 
+// applyPatch applies a validated patch to the household settings row in q's
+// transaction, recording updatedBy, and returns the new row.
+func applyPatch(ctx context.Context, q *db.Queries, patch SettingsPatch, updatedBy string) (db.HouseholdSetting, error) {
+	cur, err := q.GetHouseholdSettings(ctx)
+	if err != nil {
+		return db.HouseholdSetting{}, fmt.Errorf("household: read settings: %w", err)
+	}
+	p := db.UpsertHouseholdSettingsParams{
+		Timezone:              cur.Timezone,
+		DinnerTime:            cur.DinnerTime,
+		ReminderTime:          cur.ReminderTime,
+		ReviewTime:            cur.ReviewTime,
+		PlanDraftDow:          cur.PlanDraftDow,
+		PlanDraftTime:         cur.PlanDraftTime,
+		SuggestionsDow:        cur.SuggestionsDow,
+		SuggestionsTime:       cur.SuggestionsTime,
+		ChatAutosendDow:       cur.ChatAutosendDow,
+		ChatAutosendTime:      cur.ChatAutosendTime,
+		OnboardingCompletedAt: cur.OnboardingCompletedAt,
+		UpdatesSeenAt:         cur.UpdatesSeenAt,
+		UpdatedBy:             sql.NullString{String: updatedBy, Valid: true},
+		CreatedAt:             cur.CreatedAt,
+		UpdatedAt:             store.Now().String(),
+	}
+	setString(&p.Timezone, patch.Timezone)
+	setString(&p.DinnerTime, patch.DinnerTime)
+	setString(&p.ReminderTime, patch.ReminderTime)
+	setString(&p.ReviewTime, patch.ReviewTime)
+	setDow(&p.PlanDraftDow, patch.PlanDraftDow)
+	setString(&p.PlanDraftTime, patch.PlanDraftTime)
+	setDow(&p.SuggestionsDow, patch.SuggestionsDow)
+	setString(&p.SuggestionsTime, patch.SuggestionsTime)
+	setDow(&p.ChatAutosendDow, patch.ChatAutosendDow)
+	setString(&p.ChatAutosendTime, patch.ChatAutosendTime)
+	if patch.OnboardingCompleted != nil && !p.OnboardingCompletedAt.Valid {
+		n, err := q.CountRegularDinners(ctx)
+		if err != nil {
+			return db.HouseholdSetting{}, fmt.Errorf("household: count Regulars: %w", err)
+		}
+		if n < MinRegulars {
+			return db.HouseholdSetting{}, &ValidationError{Problems: []Problem{{
+				Field:  "onboarding_completed",
+				Reason: fmt.Sprintf("add at least %d Regulars first (have %d)", MinRegulars, n),
+			}}}
+		}
+		p.OnboardingCompletedAt = sql.NullString{String: p.UpdatedAt, Valid: true}
+	}
+	row, err := q.UpsertHouseholdSettings(ctx, p)
+	if err != nil {
+		return db.HouseholdSetting{}, fmt.Errorf("household: update settings: %w", err)
+	}
+	return row, nil
+}
+
 // Subscribe registers fn to receive the new settings after every successful
-// Update. fn runs synchronously on the updating goroutine, so it must return
+// Update and UpdateNotifications. fn runs synchronously on the updating goroutine, so it must return
 // promptly and must not call Update. The returned function unsubscribes fn.
 func (s *SettingsService) Subscribe(fn func(Settings)) (unsubscribe func()) {
 	s.subsMu.Lock()

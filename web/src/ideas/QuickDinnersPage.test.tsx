@@ -279,6 +279,28 @@ describe('QuickDinnersPage', () => {
       expect(within(row(QUESADILLAS.name)).getByRole('img', { name: 'In the Quest log' })).toBeInTheDocument()
     })
 
+    it('labels the check Already a Regular when the idea came back as an existing Regular', async () => {
+      const { fetchMock, jobs } = quickServer(['j1', 'j2'], {
+        'POST /api/v1/ideas/j1/items/0/quest-log': () => jsonResponse(200, dinnerBody('dn-reg', ORZO.name, { status: 'regular' })),
+      })
+      jobs.j1 = state('succeeded', 'done', 'under30', [ORZO, QUESADILLAS])
+      jobs.j2 = state('succeeded', 'done', 'crockpot', [CHILI])
+      await renderPage()
+      await screen.findByRole('listitem', { name: ORZO.name })
+
+      fireEvent.click(addButton(ORZO.name))
+      const orzo = within(row(ORZO.name))
+      expect(await orzo.findByRole('status')).toContainElement(orzo.getByRole('img', { name: 'Already a Regular' }))
+      expect(orzo.queryByRole('img', { name: 'In the Quest log' })).toBeNull()
+      expect(calls(fetchMock, 'POST /api/v1/ideas/j1/items/0/quest-log')).toHaveLength(1)
+
+      // Kept across tabs as what it is.
+      fireEvent.click(tab('Crock pot'))
+      await screen.findByRole('listitem', { name: CHILI.name })
+      fireEvent.click(tab('30 min or less'))
+      expect(within(row(ORZO.name)).getByRole('img', { name: 'Already a Regular' })).toBeInTheDocument()
+    })
+
     it('marks an add that settles while another tab is shown', async () => {
       const added = Promise.withResolvers<Response>()
       const { fetchMock, jobs } = quickServer(['j1', 'j2'], { 'POST /api/v1/ideas/j1/items/0/quest-log': () => added.promise })

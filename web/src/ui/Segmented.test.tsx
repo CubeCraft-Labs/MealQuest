@@ -83,6 +83,16 @@ describe('Segmented', () => {
     for (const option of screen.getAllByRole('radio')) expectMinHitArea(option)
   })
 
+  it('names an option by its ariaLabel when it has one', () => {
+    const sizes = [
+      { value: 'small', label: 'A', ariaLabel: 'Small text' },
+      { value: 'large', label: 'A', ariaLabel: 'Large text' },
+    ] as const
+    render(<Segmented label="Text size" options={sizes} value="large" onValueChange={() => {}} />)
+    expect(radio('Small text')).toHaveTextContent('A')
+    expect(radio('Large text')).toHaveAttribute('aria-checked', 'true')
+  })
+
   it('fails fast when the value is not one of the options', () => {
     expect(() =>
       render(<Segmented label="Archive period" options={options} value={'decade' as Period} onValueChange={() => {}} />),

@@ -120,6 +120,13 @@ type Querier interface {
 	// Returns sql.ErrNoRows until the row exists.
 	GetChatSettings(ctx context.Context) (ChatSetting, error)
 	GetDinner(ctx context.Context, id string) (Dinner, error)
+	// The reason of each suggestion of dinner_id that can have created it,
+	// none for a dinner no suggestion created. A suggestion is only ever
+	// created with a new dinner, and declining one archives its dinner, so a
+	// live dinner's creating suggestion is pending (the dinner still
+	// suggested) or accepted; a declined one did not create it. More than one
+	// row means nothing records which did.
+	GetDinnerSuggestionReasons(ctx context.Context, dinnerID string) ([]string, error)
 	// Returns sql.ErrNoRows until the row exists.
 	GetHouseholdSettings(ctx context.Context) (HouseholdSetting, error)
 	// Returns sql.ErrNoRows until the row exists.

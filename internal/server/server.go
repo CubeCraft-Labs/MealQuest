@@ -17,6 +17,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ideas"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/push"
@@ -43,7 +44,7 @@ type RouteMounter interface {
 // /api/v1/settings/recipe-search and its /test; ai serves
 // /api/v1/settings/ai, its /api-key, /verify, /models and /reset-prompt;
 // chatSvc serves GET and PUT /api/v1/settings/chat-webhook and its /test;
-// dinnerSvc serves GET and POST /api/v1/dinners, PATCH and DELETE
+// dinnerSvc serves GET and POST /api/v1/dinners, GET, PATCH and DELETE
 // /api/v1/dinners/{id}, POST /api/v1/dinners/{id}/favorite, GET
 // /api/v1/dinners/{id}/recipe-candidates and POST /api/v1/dinners/{id}/ground;
 // suggestSvc serves POST /api/v1/suggestions/batches, GET
@@ -62,12 +63,15 @@ type RouteMounter interface {
 // /api/v1/integrations/google; pushSvc serves GET
 // /api/v1/push/vapid-public-key, POST and DELETE
 // /api/v1/push/subscriptions and POST
-// /api/v1/settings/notifications/test-push; runner serves
+// /api/v1/settings/notifications/test-push; ideasSvc serves POST
+// /api/v1/ideas/from-ingredients and POST /api/v1/ideas/quick, and with
+// dinnerSvc POST /api/v1/ideas/{jobId}/items/{i}/quest-log and, with
+// planSvc too, /cook-tonight; runner serves
 // POST /api/v1/jobs and GET /api/v1/jobs/{id}; photos serves
 // GET /media/photos/{id}-{size}.jpg; assets is the web build
 // served for every other GET. /health, /auth and the web build are public.
 // Requests to /api/v1 other than GET also need the session's CSRF token in CSRFHeader.
-func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, settings *household.SettingsService, search *recipes.SearchSettingsService, ai *aisettings.Service, chatSvc *chat.Service, dinnerSvc *dinners.Service, suggestSvc *suggest.Service, planSvc *plan.Service, shopSvc *shopping.Service, googleSvc *gcal.Service, pushSvc *push.Service, runner *jobs.Runner, photos PhotoFiles, assets fs.FS) (http.Handler, error) {
+func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, settings *household.SettingsService, search *recipes.SearchSettingsService, ai *aisettings.Service, chatSvc *chat.Service, dinnerSvc *dinners.Service, suggestSvc *suggest.Service, planSvc *plan.Service, shopSvc *shopping.Service, googleSvc *gcal.Service, pushSvc *push.Service, ideasSvc *ideas.Service, runner *jobs.Runner, photos PhotoFiles, assets fs.FS) (http.Handler, error) {
 	if settings == nil {
 		return nil, errors.New("server: nil household settings service")
 	}
@@ -97,6 +101,9 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	}
 	if pushSvc == nil {
 		return nil, errors.New("server: nil push service")
+	}
+	if ideasSvc == nil {
+		return nil, errors.New("server: nil ideas service")
 	}
 	if runner == nil {
 		return nil, errors.New("server: nil job runner")
@@ -149,6 +156,7 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Post("/settings/chat-webhook/test", postChatWebhookTest(logger, chatSvc))
 	apiV1.Get("/dinners", getDinners(logger, dinnerSvc))
 	apiV1.Post("/dinners", postDinner(logger, dinnerSvc))
+	apiV1.Get("/dinners/{id}", getDinner(logger, dinnerSvc))
 	apiV1.Patch("/dinners/{id}", patchDinner(logger, dinnerSvc))
 	apiV1.Delete("/dinners/{id}", deleteDinner(logger, dinnerSvc))
 	apiV1.Post("/dinners/{id}/favorite", postDinnerFavorite(logger, dinnerSvc))
@@ -181,6 +189,10 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Get("/push/vapid-public-key", getVAPIDPublicKey(logger, pushSvc))
 	apiV1.Post("/push/subscriptions", postPushSubscription(logger, pushSvc))
 	apiV1.Delete("/push/subscriptions", deletePushSubscription(logger, pushSvc))
+	apiV1.Post("/ideas/from-ingredients", postIdeasFromIngredients(logger, ideasSvc))
+	apiV1.Post("/ideas/quick", postIdeasQuick(logger, ideasSvc))
+	apiV1.Post("/ideas/{jobId}/items/{i}/quest-log", postIdeaQuestLog(logger, ideasSvc, dinnerSvc))
+	apiV1.Post("/ideas/{jobId}/items/{i}/cook-tonight", postIdeaCookTonight(logger, ideasSvc, dinnerSvc, planSvc))
 	apiV1.Post("/jobs", postJob(logger, runner))
 	apiV1.Get("/jobs/{id}", getJob(logger, runner))
 	media.Get("/photos/{name}", getPhoto(logger, photos))

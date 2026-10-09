@@ -1,0 +1,52 @@
+{
+  "cases": [
+    {
+      "stored": "https://kitchen.example/recipes/chicken-curry",
+      "source": { "site_name": "Curry House", "url": "https://kitchen.example/recipes/chicken-curry" }
+    },
+    {
+      "stored": "https://Kitchen-2.Example.com.:8443/recipes/chicken-curry",
+      "source": { "site_name": "Curry House", "url": "https://Kitchen-2.Example.com.:8443/recipes/chicken-curry" }
+    },
+    {
+      "stored": "https://[2001:db8::1]/recipes/chicken-curry",
+      "source": { "site_name": "Curry House", "url": "https://[2001:db8::1]/recipes/chicken-curry" }
+    },
+    {
+      "stored": "https://192.0.2.7/recipes/chicken-curry",
+      "source": { "site_name": "Curry House", "url": "https://192.0.2.7/recipes/chicken-curry" }
+    },
+    {
+      "stored": "https://[bad]/recipes/chicken-curry",
+      "source": { "site_name": "Curry House", "url": null }
+    },
+    {
+      "stored": "https://[fe80::1%25en0]/recipes/chicken-curry",
+      "source": { "site_name": "Curry House", "url": null }
+    },
+    {
+      "stored": "https://192.0.2.999/recipes/chicken-curry",
+      "source": { "site_name": "Curry House", "url": null }
+    },
+    {
+      "stored": "https://xn--a.example/recipes/chicken-curry",
+      "source": { "site_name": "Curry House", "url": null }
+    },
+    {
+      "stored": "https://kitchen.example/recipes/chicken-curry?access_token=query-token",
+      "source": { "site_name": "Curry House", "url": null }
+    },
+    {
+      "stored": "https://user-token@kitchen.example/recipes/chicken-curry",
+      "source": { "site_name": "Curry House", "url": null }
+    },
+    {
+      "stored": "http://kitchen.example/recipes/chicken-curry",
+      "source": { "site_name": "Curry House", "url": null }
+    },
+    {
+      "stored": "https://kitchen.example/recipes/chicken-curry#token=fragment-token",
+      "source": { "site_name": "Curry House", "url": null }
+    }
+  ]
+}

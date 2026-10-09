@@ -23,9 +23,8 @@ import {
   parseDraftResult,
   planKey,
   usePlan,
-  usePushToCalendar,
   useStartDraft,
-  useSwapDay,
+  useWeekSwap,
   type DraftResult,
   type Plan,
   type PlanDay,
@@ -266,8 +265,7 @@ function WeekBoard({
   const [jobId, setJobId] = useState<string | null>(null)
   const job = useJob<unknown>(DRAFT_JOB_KIND, jobId)
   const [confirming, setConfirming] = useState(false)
-  const swap = useSwapDay(weekStart)
-  const push = usePushToCalendar(weekStart)
+  const { swap, push, refused, swapIn: sendSwap } = useWeekSwap(weekStart)
   const run = useSupplyRun(weekStart)
   // Makes the week's Supply run again after a push could not make it.
   const generate = useGenerateSupplyRun(weekStart)
@@ -431,25 +429,18 @@ function WeekBoard({
     <ErrorBanner onRetry={() => void run.refetch()}>Couldn't load this week's shopping list. {run.error.message}</ErrorBanner>
   )
 
-  // swapIn sends the swap chosen in the sheet and closes it.
+  // swapIn sends the swap chosen in the sheet, dropped on a day or retried
+  // (useWeekSwap) and closes the sheet. The Supply run made again on the
+  // Plan after a push is left behind with the push.
   function swapIn(chosen: Swap) {
     setSwappingDate(null)
-    push.reset()
     generate.reset()
-    swap.mutate(chosen)
+    sendSwap(chosen)
   }
-  // dropIn swaps in a dinner dragged onto a day. A drag is not picked up,
-  // nor dropped, while a swap of the week is pending.
-  function dropIn(chosen: Swap) {
-    swap.dismiss()
-    swapIn(chosen)
-  }
-  // openSwap opens the swap sheet on a day. One swap of the week is sent at
-  // a time, even across leaving the week and coming back: the plan the
-  // server answers it with must not overwrite another still pending. Nor is
-  // one sent while the week is being pushed to Calendar.
+  // openSwap opens the swap sheet on a day, unless a swap is refused now
+  // (useWeekSwap). A drag is not picked up, nor dropped, then either.
   function openSwap(date: string) {
-    if (swap.pending || pushing) return
+    if (refused) return
     swap.dismiss()
     setSwappingDate(date)
   }
@@ -488,7 +479,7 @@ function WeekBoard({
     body =
       layout !== 'mobile' ? (
         <>
-          <DropBoard days={days} pending={swap.pending || pushing} drop={dropIn} />
+          <DropBoard days={days} pending={refused} drop={swapIn} />
           <ul className={`${styles.week} ${styles[layout]}`} aria-label="Dinners this week">
             {days.map((day) => (
               <DayColumn

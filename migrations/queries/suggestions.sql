@@ -121,3 +121,14 @@ WHERE id = sqlc.arg(id) AND status = 'pending';
 UPDATE dinners
 SET status = sqlc.arg(status), updated_by = sqlc.arg(updated_by), updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id) AND status = 'suggested';
+
+-- name: GetDinnerSuggestionReasons :many
+-- The reason of each suggestion of dinner_id that can have created it,
+-- none for a dinner no suggestion created. A suggestion is only ever
+-- created with a new dinner, and declining one archives its dinner, so a
+-- live dinner's creating suggestion is pending (the dinner still
+-- suggested) or accepted; a declined one did not create it. More than one
+-- row means nothing records which did.
+SELECT reason FROM suggestions
+WHERE dinner_id = ? AND status IN ('pending', 'accepted')
+ORDER BY id;

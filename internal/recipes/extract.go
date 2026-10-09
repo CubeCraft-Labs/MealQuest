@@ -29,7 +29,7 @@ type Recipe struct {
 	// Title is the recipe's name.
 	Title string
 	// SiteName is the publisher's name, else the page's og:site_name, else
-	// its host without a leading "www.".
+	// HostSiteName of the page's URL.
 	SiteName string
 	// ImageURL is the largest image, absolute; empty when the recipe has
 	// none.
@@ -232,7 +232,13 @@ func siteName(publisher any, g graph, ogSiteName string, base *url.URL) (string,
 	if ogSiteName != "" {
 		return ogSiteName, nil
 	}
-	return strings.TrimPrefix(base.Hostname(), "www."), nil
+	return HostSiteName(base), nil
+}
+
+// HostSiteName is the site name of a page that names none: its host
+// without a leading "www.".
+func HostSiteName(u *url.URL) string {
+	return strings.TrimPrefix(u.Hostname(), "www.")
 }
 
 // imageURL picks the largest of the recipe's images by width × height;

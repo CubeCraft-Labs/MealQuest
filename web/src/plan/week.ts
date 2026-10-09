@@ -52,6 +52,13 @@ export function weekdayName(date: string): string {
   return weekday.format(midnightUTC(date))
 }
 
+const longDay = new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC' })
+
+// dayAndDate is date's day in full with its month and day: "Saturday, Oct 10".
+export function dayAndDate(date: string): string {
+  return longDay.format(midnightUTC(date))
+}
+
 // monday reads start as midnight UTC, or throws when it is not a Monday.
 function monday(start: string): Date {
   const t = midnightUTC(start)

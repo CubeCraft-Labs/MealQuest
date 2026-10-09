@@ -24,6 +24,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ideas"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
@@ -165,6 +166,11 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
+	ideasSvc, err := ideas.NewService(db, grounder, ideaFinder(ai, guard), quickIdeaFinder(ai, guard), runner, logger)
+	if err != nil {
+		return err
+	}
+
 	sessions, err := auth.NewSessionManager(db, cfg.SessionIdle, cfg.SessionMax)
 	if err != nil {
 		return err
@@ -181,7 +187,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, search, ai, chatSvc, dinnerSvc, suggestSvc, planSvc, shopSvc, googleSvc, pushSvc, runner, photos, frontend.Assets())
+	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, search, ai, chatSvc, dinnerSvc, suggestSvc, planSvc, shopSvc, googleSvc, pushSvc, ideasSvc, runner, photos, frontend.Assets())
 	if err != nil {
 		return err
 	}
@@ -311,7 +317,8 @@ func newJobRunner(db *store.Store, logger *slog.Logger) (*jobs.Runner, *jobKinds
 // service registers its own kinds when it is built, before the runner
 // starts (dinners.NewService registers dinners.KindGroundDinner and
 // suggest.NewService suggest.KindSuggestionBatch, plan.NewService
-// plan.KindDraftWeek, shopping.NewService shopping.KindTitleSupplyRun).
+// plan.KindDraftWeek, shopping.NewService shopping.KindTitleSupplyRun,
+// ideas.NewService ideas.KindFromIngredients and ideas.KindQuick).
 func registerJobKinds(runner *jobs.Runner) (*jobKinds, error) {
 	builtins, err := jobs.RegisterBuiltins(runner)
 	if err != nil {
@@ -365,6 +372,30 @@ func archiveTitler(ai *aisettings.Service, guard *harness.Guard) shopping.Titler
 			return skills.ArchiveTitle{}, err
 		}
 		return skills.TitleArchive(ctx, cfg, scope, in)
+	}
+}
+
+// ideaFinder runs ideas_from_ingredients with the AI settings current at
+// each run, sharing guard.
+func ideaFinder(ai *aisettings.Service, guard *harness.Guard) ideas.Generator {
+	return func(ctx context.Context, scope string, in skills.IdeasRequest) (skills.Ideas, error) {
+		cfg, err := ai.HarnessConfig(ctx, guard)
+		if err != nil {
+			return skills.Ideas{}, err
+		}
+		return skills.IdeasFromIngredients(ctx, cfg, scope, in)
+	}
+}
+
+// quickIdeaFinder runs quick_ideas with the AI settings current at each
+// run, sharing guard.
+func quickIdeaFinder(ai *aisettings.Service, guard *harness.Guard) ideas.QuickGenerator {
+	return func(ctx context.Context, scope string, in skills.QuickIdeasRequest) (skills.QuickIdeaList, error) {
+		cfg, err := ai.HarnessConfig(ctx, guard)
+		if err != nil {
+			return skills.QuickIdeaList{}, err
+		}
+		return skills.QuickIdeas(ctx, cfg, scope, in)
 	}
 }
 

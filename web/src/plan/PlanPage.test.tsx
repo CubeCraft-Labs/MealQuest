@@ -215,6 +215,7 @@ function supplyRun(needed: number) {
     title: null,
     status: 'current',
     sent_to_chat_at: null,
+    chat_send_unconfirmed_at: null,
     needed_count: needed,
     total_count: 32,
     groups: [],

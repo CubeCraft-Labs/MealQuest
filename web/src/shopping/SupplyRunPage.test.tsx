@@ -53,6 +53,7 @@ function supplyRun(overrides: Record<string, unknown> = {}, weekStart = '2026-10
     title: null,
     status: 'current',
     sent_to_chat_at: null,
+    chat_send_unconfirmed_at: null,
     needed_count: items.filter((item) => item.needed).length,
     total_count: items.length,
     groups: GROUPS,
@@ -444,6 +445,49 @@ describe('SupplyRunPage', () => {
     expect(await screen.findByText('Sent to Google Chat · Sat 8:00 am')).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(writes(fetchMock)).toEqual([`POST ${SEND_CHAT} {"resend":false}`, `POST ${SEND_CHAT} {"resend":false}`])
+  })
+
+  it('says a send whose outcome is not known was not confirmed, offers no retry, and sends again only with resend', async () => {
+    mockViewport(1180)
+    let run = supplyRun()
+    const answers = [
+      () => {
+        // Saturday Oct 10, 8:00 am in New York.
+        run = supplyRun({ chat_send_unconfirmed_at: '2026-10-10T12:00:00Z' })
+        return errorResponse(502, 'chat_unconfirmed')
+      },
+      () => jsonResponse(200, supplyRun({ sent_to_chat_at: '2026-10-10T12:05:00Z' })),
+    ]
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, run),
+      [`POST ${SEND_CHAT}`]: () => answers.shift()!(),
+    })
+    await renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Send to Google Chat' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't send the shopping list to Google Chat. chat_unconfirmed message")
+    expect(within(alert).queryByRole('button')).not.toBeInTheDocument()
+    // The Supply run is read again, and says the send is unconfirmed.
+    expect(
+      await screen.findByText('Send to Google Chat not confirmed · Sat 8:00 am — check the space before sending again'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/Sent to Google Chat ·/)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send again' }))
+    expect(await screen.findByText('Sent to Google Chat · Sat 8:05 am')).toBeInTheDocument()
+    expect(screen.queryByText(/not confirmed/)).not.toBeInTheDocument()
+    expect(writes(fetchMock)).toEqual([`POST ${SEND_CHAT} {"resend":false}`, `POST ${SEND_CHAT} {"resend":true}`])
+  })
+
+  it('shows an unconfirmed send on mobile', async () => {
+    stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, supplyRun({ chat_send_unconfirmed_at: '2026-10-10T12:00:00Z' })) })
+    await renderPage()
+
+    expect(
+      await screen.findByText('Send to Google Chat not confirmed · Sat 8:00 am — check the space before sending again'),
+    ).toBeInTheDocument()
   })
 
   it('renders an archived list read-only, tagged Archived', async () => {

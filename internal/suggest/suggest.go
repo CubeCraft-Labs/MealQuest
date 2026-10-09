@@ -257,38 +257,26 @@ func (s *Service) startBatch(ctx context.Context, tx *sql.Tx, trigger string) (B
 	return Batch{ID: row.ID, JobID: jobID, Trigger: row.Trigger, Status: row.Status, Created: true}, nil
 }
 
-// finishBatch records running batch id as status, and emits ev with it
-// when ev is not nil, with jobs.FinalWriteContext: the write is made even
-// when ctx has been cancelled, but a writer that stays busy cannot hold its
-// worker past jobs.FinalWriteTimeout. Its job's handler returns any error, so the job
+// finishBatch records running batch id as status, with
+// jobs.FinalWriteContext: the write is made even when ctx has been
+// cancelled, but a writer that stays busy cannot hold its worker past
+// jobs.FinalWriteTimeout. Its job's handler returns any error, so the job
 // never ends succeeded with the batch still running; the runner keeps only
 // a code, so the error is logged too.
-func (s *Service) finishBatch(ctx context.Context, id, status string, ev *notify.Event) error {
+func (s *Service) finishBatch(ctx context.Context, id, status string) error {
 	write, cancel := jobs.FinalWriteContext(ctx)
 	defer cancel()
-	err := s.st.WithTx(write, func(tx *sql.Tx) error {
-		n, err := db.New(tx).FinishSuggestionBatch(write, db.FinishSuggestionBatchParams{
-			Status:    status,
-			UpdatedAt: store.Now().String(),
-			ID:        id,
-		})
-		if err != nil {
-			return err
-		}
-		if n != 1 {
-			return errors.New("batch is not running")
-		}
-		if ev == nil {
-			return nil
-		}
-		return s.notifier.EmitTx(write, tx, *ev)
+	n, err := db.New(s.st.Writer).FinishSuggestionBatch(write, db.FinishSuggestionBatchParams{
+		Status:    status,
+		UpdatedAt: store.Now().String(),
+		ID:        id,
 	})
+	if err == nil && n != 1 {
+		err = errors.New("batch is not running")
+	}
 	if err != nil {
 		s.logger.ErrorContext(ctx, "record suggestion batch status", "batch_id", id, "status", status, "error", err)
 		return fmt.Errorf("suggest: record batch %s %s: %w", id, status, err)
-	}
-	if ev != nil {
-		s.notifier.Wake()
 	}
 	return nil
 }

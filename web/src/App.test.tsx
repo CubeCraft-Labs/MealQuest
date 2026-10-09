@@ -120,6 +120,7 @@ describe('App routes', () => {
           title: null,
           status: 'current',
           sent_to_chat_at: null,
+          chat_send_unconfirmed_at: null,
           needed_count: 1,
           total_count: 1,
           groups: [{ dinner: { id: 'd1', name: 'Beef tacos' }, date: week, day: 'Monday', items: [{ id: 'i1', name: 'Ground beef', qty: '1 lb', needed: true }] }],

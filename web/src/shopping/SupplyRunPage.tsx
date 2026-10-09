@@ -2,6 +2,7 @@ import { Archive, Check, CloudUpload, MessageSquare } from 'lucide-react'
 import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { defaultWeek, localNow, weekdayKicker, weekLabel, weekStart as weekOf } from '../plan/week.ts'
+import { ApiError } from '../api/errors.ts'
 import { formatClockTime, useHouseholdSettings } from '../settings/api.ts'
 import { useBreakpoint, type Breakpoint } from '../shell/useBreakpoint.ts'
 import { Button } from '../ui/Button.tsx'
@@ -101,8 +102,20 @@ function SentStatus({ at, timezone }: { at: Date; timezone: string }) {
   )
 }
 
+// UnconfirmedStatus is the status line while a send to Google Chat whose
+// outcome is not known is recorded: it may or may not have been posted.
+function UnconfirmedStatus({ at, timezone }: { at: Date; timezone: string }) {
+  return (
+    <p className={`${styles.sent} ${styles.unconfirmed}`}>
+      <Icon icon={MessageSquare} size="inline" />
+      Send to Google Chat not confirmed · {sentAt(at, timezone)} — check the space before sending again
+    </p>
+  )
+}
+
 // SendToChat posts the Supply run to Google Chat: "Send to Google Chat"
-// until it is sent, then "Send again", which posts it once more.
+// until it is sent, or a send is unconfirmed, then "Send again", which
+// posts it once more.
 function SendToChat({ sent, pending, onSend }: { sent: boolean; pending: boolean; onSend: () => void }) {
   return (
     <Button className={styles.action} disabled={pending} onClick={onSend}>
@@ -128,7 +141,8 @@ function ArchiveLink({ layout }: { layout: Breakpoint }) {
 // the week's dates, the title with the count still to buy of all items, and
 // one card per dinner, stacked on mobile and in three masonry columns from
 // tablet up, where Archive and Send to Google Chat are actions in the
-// header; a send that fails says why. On a current Supply run each item toggles at once (useToggles); a
+// header; a send that fails says why, and one whose outcome is not known
+// offers no retry and leaves the status line saying so. On a current Supply run each item toggles at once (useToggles); a
 // toggle refused puts the item back and says why. An archived one, or any
 // opened from the Supply archive (readOnly), is read-only and tagged
 // Archived, and a toggle it refused is not offered again.
@@ -137,6 +151,12 @@ function SupplyRunList({ weekStart, timezone, layout, readOnly }: WeekProps) {
   const send = useSendToChat(weekStart)
   const run = toggles.shown
   const sent = run.sent_to_chat_at !== null
+  // A send whose outcome is not known is posted again only on request.
+  const resend = sent || run.chat_send_unconfirmed_at !== null
+  const unconfirmed = !send.isPending && run.chat_send_unconfirmed_at !== null && (
+    <UnconfirmedStatus at={run.chat_send_unconfirmed_at} timezone={timezone} />
+  )
+  const sendUnconfirmed = send.error instanceof ApiError && send.error.code === 'chat_unconfirmed'
   const viewOnly = readOnly || run.status === 'archived'
   const wide = layout !== 'mobile'
   const failed = toggles.failed
@@ -165,7 +185,7 @@ function SupplyRunList({ weekStart, timezone, layout, readOnly }: WeekProps) {
         {wide && (
           <div className={styles.actions}>
             <ArchiveLink layout={layout} />
-            {!viewOnly && <SendToChat sent={sent} pending={send.isPending} onSend={() => send.mutate(sent)} />}
+            {!viewOnly && <SendToChat sent={resend} pending={send.isPending} onSend={() => send.mutate(resend)} />}
           </div>
         )}
       </header>
@@ -176,9 +196,12 @@ function SupplyRunList({ weekStart, timezone, layout, readOnly }: WeekProps) {
         </ErrorBanner>
       )}
       {send.isError && !viewOnly && (
-        <ErrorBanner onRetry={() => send.mutate(sent)}>Couldn't send the shopping list to Google Chat. {send.error.message}</ErrorBanner>
+        <ErrorBanner onRetry={sendUnconfirmed ? undefined : () => send.mutate(resend)}>
+          Couldn't send the shopping list to Google Chat. {send.error.message}
+        </ErrorBanner>
       )}
       {wide && run.sent_to_chat_at !== null && <SentStatus at={run.sent_to_chat_at} timezone={timezone} />}
+      {wide && unconfirmed}
       {run.groups.length === 0 ? (
         <EmptyState title="Nothing to buy">None of this week's dinners has a recipe with ingredients yet.</EmptyState>
       ) : (
@@ -191,6 +214,7 @@ function SupplyRunList({ weekStart, timezone, layout, readOnly }: WeekProps) {
       {!wide && (
         <footer className={styles.footer}>
           {run.sent_to_chat_at !== null && <SentStatus at={run.sent_to_chat_at} timezone={timezone} />}
+          {unconfirmed}
           <ArchiveLink layout={layout} />
         </footer>
       )}

@@ -12,6 +12,10 @@ import (
 type Querier interface {
 	// An unknown id returns sql.ErrNoRows.
 	ArchiveDinner(ctx context.Context, arg ArchiveDinnerParams) (Dinner, error)
+	// Records a send of list id to Google Chat begun at
+	// chat_send_unconfirmed_at, before it is posted, unless the list is frozen
+	// into the Supply archive.
+	BeginShoppingListChatSend(ctx context.Context, arg BeginShoppingListChatSendParams) (int64, error)
 	// Leases the pending notification due longest ago by moving its
 	// next_attempt_at to lease_until, and returns it. A claimed row is not due
 	// again until the lease ends, so no other claim takes it while it is being
@@ -26,6 +30,8 @@ type Querier interface {
 	// sets last_sync_error, keeping the chosen calendar. Affects no row when
 	// nothing is connected.
 	ClearIntegrationsGoogleToken(ctx context.Context, arg ClearIntegrationsGoogleTokenParams) (int64, error)
+	// Clears the send of list id begun, once Google Chat refused it.
+	ClearShoppingListChatSend(ctx context.Context, arg ClearShoppingListChatSendParams) (int64, error)
 	// Drops references to the runs created before the cutoff, so the purge
 	// can delete them.
 	ClearSuggestionBatchAIRunsBefore(ctx context.Context, cutoff string) (int64, error)
@@ -235,8 +241,8 @@ type Querier interface {
 	// Records a delivered notification; updated_at is when it was sent. The
 	// lease must still be the claim's.
 	MarkNotificationSent(ctx context.Context, arg MarkNotificationSentParams) (int64, error)
-	// Records list id sent to Google Chat at sent_to_chat_at, unless it is
-	// frozen into the Supply archive.
+	// Records list id sent to Google Chat at sent_to_chat_at, its send
+	// confirmed, unless it is frozen into the Supply archive.
 	MarkShoppingListSentToChat(ctx context.Context, arg MarkShoppingListSentToChatParams) (int64, error)
 	// Records an edit of plan id, raising its revision: a synced plan becomes
 	// changed, any other keeps its status.

@@ -104,7 +104,7 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 | `week_plans` | week_start (unique), status (`draft` / `synced` / `changed`), ai_note, ai_run_id, calendar_synced_at, revision (raised by every swap and stored draft). |
 | `plan_days` | plan_id, date (unique per plan), dinner_id, is_new, calendar_event_id (set while the chosen calendar shows the day as planned; cleared when its dinner changes, another calendar is chosen or Google Calendar is disconnected). |
 | `rotation_reviews` | dinner_id + plan_date (unique), status, decision (`keep` / `drop` / `not_made`), name (set only by a drop: the dinner's name when dropped, kept whatever it is later renamed, so a drop stays among the passed names), decided_at, updated_by. |
-| `shopping_lists` | week_start (unique), plan_id, title (the AI-written post title; NULL until written or when the AI fails, when the week label is shown instead; never empty), status (`current` / `archived`), sent_to_chat_at, frozen_at. |
+| `shopping_lists` | week_start (unique), plan_id, title (the AI-written post title; NULL until written or when the AI fails, when the week label is shown instead; never empty), status (`current` / `archived`), sent_to_chat_at, chat_send_unconfirmed_at (a send to Google Chat recorded as begun before posting and cleared once its outcome is known; left set when it may or may not have posted), frozen_at. |
 | `shopping_groups` / `shopping_items` | One group per plan day with ingredients: dinner_id, date, position (by date). Item name, qty (the display quantity, NULL when the recipe gives none), needed (bool), position. Made by `shopping.Generate` from the plan, with no model call: an item is a grounded recipe ingredient's normalized name with qty and unit joined ("2 cups"), or a manual recipe's line as typed with no qty. Regenerating keeps the id and needed flag of an item whose (dinner_id, name) is unchanged. |
 | `ai_settings` | One row: provider, base_url, model, temperature, system_prompt, api_key_ct, api_key_last4, key_verified_at. |
 | `recipe_search_settings` | One row: provider (`searxng` / `brave`), base_url (the SearXNG instance), api_key_ct and api_key_last4 (Brave). |
@@ -669,8 +669,11 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
     run is first created, by `POST /shopping/{weekStart}/generate` or
     after Push to Calendar; remaking it does not notify.
   - `new_suggestions:{batchId}` (URL `/discover`) when a `scheduled` or
-    `manual` suggestion batch ends done having added Side quests, in the
-    transaction recording it done. A `replenish` batch never notifies.
+    `manual` suggestion batch first adds Side quests to the deck, in the
+    transaction storing them, so they are announced even when a later
+    round or recording the batch's end fails; it names that round's Side
+    quests, and a later round's emit stores nothing. A `replenish` batch
+    never notifies.
   - `day_of_reminder:{date}` (URL `/dinner/{id}`) through
     `plan.Service.EmitDayOfReminder(date)`, which names the dinner planned
     on the date and emits nothing for a week with no plan. The scheduler
@@ -889,7 +892,8 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
 ## Supply run API (Feature 17)
 
 - `GET /api/v1/shopping/{weekStart}` returns `{weekStart, label, title,
-  status, sent_to_chat_at, needed_count, total_count, groups: [{dinner:
+  status, sent_to_chat_at, chat_send_unconfirmed_at, needed_count,
+  total_count, groups: [{dinner:
   {id, name}, date, day, items: [{id, name, qty, needed}]}]}`: `label` is
   the week label (shown while `title` is null), `day` the plan day's
   weekday ("Monday"), `qty` null when the recipe gives none,
@@ -905,13 +909,18 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
   its title (or week label), each dinner with items still needed and those
   items, and a card whose "Open" button links to
   `/plan/shopping?week={weekStart}` under `MEALQUEST_PUBLIC_URL`. It
-  records `sent_to_chat_at` and answers with the Supply run as `GET` gives
-  it. A week already sent is answered as it is, with no second post,
-  unless `resend` is true. No webhook stored is 409 `not_configured`;
-  Google Chat not answering is 502 `chat_unreachable` (retryable) and
-  answering with a status other than 2xx 502 `chat_refused` (retryable
-  only for 429 or 5xx), and neither
-  records `sent_to_chat_at`. 404 when the week has no Supply run, 409
+  records `chat_send_unconfirmed_at` before posting, then
+  `sent_to_chat_at` (clearing it) once Google Chat accepts, and answers
+  with the Supply run as `GET` gives it. A week already sent, or with a
+  send unconfirmed, is answered as it is, with no second post, unless
+  `resend` is true. No webhook stored is 409 `not_configured`; Google Chat
+  answering with a status other than 2xx is 502 `chat_refused` (retryable
+  only for 429 or 5xx), clearing the send begun; Google Chat not
+  answering, or accepting a post that cannot then be recorded, is 502
+  `chat_unconfirmed` (not retryable: the post may have been made), which
+  leaves `chat_send_unconfirmed_at` set, as does the process stopping
+  mid-send. The screen shows an unconfirmed send and sends again only on
+  request. 404 when the week has no Supply run, 409
   `archived` when it is in the Supply archive, 400 `invalid_request` for a
   bad body. `shopping.SendToChat(weekStart, resend)` is what
   `shopping_chat_autosend` calls (Feature 20).

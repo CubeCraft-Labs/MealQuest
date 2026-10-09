@@ -454,6 +454,100 @@ func TestBatchEmitsNewSuggestions(t *testing.T) {
 	}
 }
 
+// TestBatchNotifiesAsSideQuestsAreStored: new_suggestions is stored with
+// the first round to add Side quests, so a batch whose later round fails
+// still tells the household of those in the deck, once; a later round that
+// succeeds adds no second notification; a replenish batch notifies nothing.
+func TestBatchNotifiesAsSideQuestsAreStored(t *testing.T) {
+	for _, tc := range []struct {
+		trigger   string
+		lastFails bool
+		notify    bool
+	}{
+		{suggest.TriggerScheduled, true, true},
+		{suggest.TriggerManual, true, true},
+		{suggest.TriggerManual, false, true},
+		{suggest.TriggerReplenish, true, false},
+	} {
+		t.Run(fmt.Sprintf("%s last round fails %v", tc.trigger, tc.lastFails), func(t *testing.T) {
+			e := newEnv(t)
+			e.start(t)
+			// The first round grounds BatchSize Side quests but B; the
+			// second round grounds F.
+			var quests []string
+			for i := range suggest.BatchSize + 1 {
+				name := fmt.Sprintf("Fajita Dish %c", 'A'+i)
+				e.search.Results[name] = nil
+				if i != 1 {
+					e.recipe(t, name)
+				}
+				quests = append(quests, sideQuest(name, "Like your Chicken Fajitas.", "Chicken Fajitas"))
+			}
+			e.reply(quests...)
+			if tc.lastFails {
+				if _, err := e.st.Writer.ExecContext(t.Context(), `CREATE TRIGGER refuse_f BEFORE INSERT ON dinners WHEN NEW.name = 'Fajita Dish F' BEGIN SELECT RAISE(ABORT, 'F refused'); END`); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			b, err := e.svc.StartBatch(t.Context(), tc.trigger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			job := e.waitJob(t, b.JobID)
+			want, deck := jobs.StatusSucceeded, suggest.BatchSize
+			if tc.lastFails {
+				want, deck = jobs.StatusFailed, suggest.BatchSize-1
+			}
+			if job.Status != want {
+				t.Fatalf("batch job %s, want %s", job.Status, want)
+			}
+			if got := e.deckNames(t); len(got) != deck {
+				t.Fatalf("deck = %v, want %d Side quests", got, deck)
+			}
+			rows := notifytest.Rows(t, e.st, notify.NewSuggestions)
+			if !tc.notify {
+				if len(rows) != 0 {
+					t.Errorf("new_suggestions rows = %+v, want none", rows)
+				}
+				return
+			}
+			if len(rows) != 1 || rows[0].Key != "new_suggestions:"+b.ID ||
+				rows[0].Payload.Body != "Fajita Dish A, Fajita Dish C, Fajita Dish D + 1 more" {
+				t.Errorf("new_suggestions rows = %+v, want one keyed by batch %s naming the first round", rows, b.ID)
+			}
+		})
+	}
+}
+
+// TestBatchFailsWhenItsNotificationCannotBeStored: Side quests are stored
+// only with their notification, so a notification that cannot be stored
+// fails the batch with an empty deck rather than leaving Side quests the
+// household is never told of.
+func TestBatchFailsWhenItsNotificationCannotBeStored(t *testing.T) {
+	e := newEnv(t)
+	e.start(t)
+	e.recipe(t, "Chili Verde")
+	e.reply(sideQuest("Chili Verde", "Your Beef Chili gone green.", "Beef Chili"))
+	if _, err := e.st.Writer.ExecContext(t.Context(), `CREATE TRIGGER refuse_outbox BEFORE INSERT ON notification_outbox BEGIN SELECT RAISE(ABORT, 'outbox refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	b, err := e.svc.StartBatch(t.Context(), suggest.TriggerManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job := e.waitJob(t, b.JobID); job.Status != jobs.StatusFailed {
+		t.Fatalf("batch job %s, want failed", job.Status)
+	}
+	if got := e.batchStatus(t, b.ID); got != suggest.BatchFailed {
+		t.Errorf("batch status = %s, want failed", got)
+	}
+	if got := e.deckNames(t); len(got) != 0 {
+		t.Errorf("deck = %v with no notification stored, want empty", got)
+	}
+}
+
 func TestBatchKeepsAtMostBatchSize(t *testing.T) {
 	e := newEnv(t)
 	e.start(t)
@@ -1204,8 +1298,9 @@ func TestBatchJobFailsWhenRecordingItsEndFails(t *testing.T) {
 	if got := e.batchStatus(t, b.ID); got != suggest.BatchFailed {
 		t.Errorf("batch status = %s with its job failed, want failed", got)
 	}
-	if rows := notifytest.Rows(t, e.st, notify.NewSuggestions); len(rows) != 0 {
-		t.Errorf("new_suggestions rows of a batch whose end was not recorded = %+v, want none", rows)
+	// Its Side quests stay in the deck, and the household was told of them.
+	if rows := notifytest.Rows(t, e.st, notify.NewSuggestions); len(rows) != 1 || rows[0].Key != "new_suggestions:"+b.ID || rows[0].Payload.Body != "Chili Verde" {
+		t.Errorf("new_suggestions rows of a batch whose end was not recorded = %+v, want one naming Chili Verde", rows)
 	}
 }
 

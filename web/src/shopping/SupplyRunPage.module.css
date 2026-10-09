@@ -238,6 +238,10 @@
   color: var(--color-accent-2-800);
 }
 
+.unconfirmed {
+  color: var(--color-accent-700);
+}
+
 .footer {
   display: flex;
   flex-direction: column;

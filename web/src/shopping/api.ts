@@ -72,14 +72,17 @@ export type SupplyRunGroup = { dinner: { id: string; name: string }; date: strin
 export type Counts = { needed_count: number; total_count: number }
 
 // SupplyRun is GET /api/v1/shopping/{weekStart}: label is the week label,
-// "Week 41 · Oct 5 – 11", title the AI's title once written, and
-// sent_to_chat_at when it was sent to Google Chat, if it was.
+// "Week 41 · Oct 5 – 11", title the AI's title once written,
+// sent_to_chat_at when it was sent to Google Chat, if it was, and
+// chat_send_unconfirmed_at when a send whose outcome is not known began,
+// if one did: it may or may not have reached Google Chat.
 export type SupplyRun = Counts & {
   weekStart: string
   label: string
   title: string | null
   status: SupplyRunStatus
   sent_to_chat_at: Date | null
+  chat_send_unconfirmed_at: Date | null
   groups: SupplyRunGroup[]
 }
 
@@ -125,12 +128,12 @@ function parseGroup(where: string, body: unknown): SupplyRunGroup {
   }
 }
 
-// sentAt reads sent_to_chat_at, an RFC 3339 instant or null.
-function sentAt(where: string, value: unknown): Date | null {
+// instant reads field, an RFC 3339 instant or null.
+function instant(where: string, field: string, value: unknown): Date | null {
   if (value === null) return null
   const at = typeof value === 'string' ? new Date(value) : null
   if (at === null || Number.isNaN(at.getTime())) {
-    throw new Error(`${where}: sent_to_chat_at ${JSON.stringify(value)} is not an instant`)
+    throw new Error(`${where}: ${field} ${JSON.stringify(value)} is not an instant`)
   }
   return at
 }
@@ -150,7 +153,8 @@ export function parseSupplyRun(where: string, weekStart: string, body: unknown):
     label: body.label,
     title: body.title,
     status: oneOf(where, 'status', SUPPLY_RUN_STATUSES, body.status),
-    sent_to_chat_at: sentAt(where, body.sent_to_chat_at),
+    sent_to_chat_at: instant(where, 'sent_to_chat_at', body.sent_to_chat_at),
+    chat_send_unconfirmed_at: instant(where, 'chat_send_unconfirmed_at', body.chat_send_unconfirmed_at),
     ...parseCounts(where, body),
     groups: body.groups.map((group) => parseGroup(where, group)),
   }
@@ -208,9 +212,10 @@ export function useGenerateSupplyRun(weekStart: string) {
 
 // useSendToChat posts the week's Supply run to Google Chat (POST
 // /api/v1/shopping/{weekStart}/send-chat); the Supply run it answers with,
-// sent_to_chat_at recorded, is the one shown. A week already sent is posted
-// again only with resend: without it the server answers with the Supply
-// run as it is.
+// sent_to_chat_at recorded, is the one shown. A week already sent, or with
+// a send unconfirmed, is posted again only with resend: without it the
+// server answers with the Supply run as it is. A send that fails re-reads
+// the Supply run, so a send left unconfirmed shows as such.
 export function useSendToChat(weekStart: string) {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
@@ -222,6 +227,7 @@ export function useSendToChat(weekStart: string) {
     onSuccess: (run) => {
       queryClient.setQueryData<SupplyRun | null>(supplyRunKey(weekStart), run)
     },
+    onError: () => queryClient.invalidateQueries({ queryKey: supplyRunKey(weekStart) }),
   })
 }
 

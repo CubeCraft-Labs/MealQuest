@@ -29,6 +29,9 @@ type supplyRun struct {
 	Title        *string `json:"title"`
 	Status       string  `json:"status"`
 	SentToChatAt *string `json:"sent_to_chat_at"`
+	// ChatSendUnconfirmedAt is when a send to Google Chat whose outcome is
+	// not known began.
+	ChatSendUnconfirmedAt *string `json:"chat_send_unconfirmed_at"`
 	shopping.Counts
 	Groups []supplyRunGroup `json:"groups"`
 }
@@ -132,11 +135,13 @@ func postSupplyRunGenerate(logger *slog.Logger, svc *shopping.Service) http.Hand
 
 // postSupplyRunSendChat posts the week's Supply run to Google Chat and
 // answers with it, sent_to_chat_at recorded. Its body is a JSON object,
-// {} or {"resend": true}: a week already sent is answered as it is,
-// without a second post, unless resend is true. No webhook stored is 409
-// not_configured; Google Chat not answering is 502 chat_unreachable,
-// retryable, and refusing the message 502 chat_refused, retryable only for
-// 429 or 5xx.
+// {} or {"resend": true}: a week already sent, or with a send
+// unconfirmed, is answered as it is, without a second post, unless resend
+// is true. No webhook stored is 409 not_configured; a send whose outcome is
+// not known (Google Chat did not answer, or its acceptance could not be
+// recorded) 502 chat_unconfirmed, not retryable, since retrying could post
+// twice; and Google Chat refusing the message 502 chat_refused, retryable
+// only for 429 or 5xx.
 func postSupplyRunSendChat(logger *slog.Logger, svc *shopping.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		week, ok := weekStartOrFail(w, r, logger)
@@ -154,9 +159,9 @@ func postSupplyRunSendChat(logger *slog.Logger, svc *shopping.Service) http.Hand
 		case errors.Is(err, chat.ErrNotConfigured):
 			writeError(w, r, logger, http.StatusConflict, "not_configured", "no Google Chat webhook is configured; add one in Settings")
 			return
-		case errors.Is(err, chat.ErrUnreachable):
+		case errors.Is(err, shopping.ErrSendUnconfirmed):
 			logger.WarnContext(r.Context(), "send Supply run to Google Chat", "error", err)
-			writeAPIError(w, r, logger, http.StatusBadGateway, apiError{Code: "chat_unreachable", Message: "Google Chat did not answer", Retryable: true})
+			writeAPIError(w, r, logger, http.StatusBadGateway, apiError{Code: "chat_unconfirmed", Message: shopping.ErrSendUnconfirmed.Error()})
 			return
 		case errors.As(err, &refused):
 			logger.WarnContext(r.Context(), "send Supply run to Google Chat", "error", err)
@@ -287,13 +292,14 @@ func supplyRunOf(week store.LocalDate, l shopping.List) (supplyRun, error) {
 		}
 	}
 	return supplyRun{
-		WeekStart:    l.WeekStart,
-		Label:        label,
-		Title:        l.Title,
-		Status:       l.Status,
-		SentToChatAt: l.SentToChatAt,
-		Counts:       l.Counts(),
-		Groups:       groups,
+		WeekStart:             l.WeekStart,
+		Label:                 label,
+		Title:                 l.Title,
+		Status:                l.Status,
+		SentToChatAt:          l.SentToChatAt,
+		ChatSendUnconfirmedAt: l.ChatSendUnconfirmedAt,
+		Counts:                l.Counts(),
+		Groups:                groups,
 	}, nil
 }
 

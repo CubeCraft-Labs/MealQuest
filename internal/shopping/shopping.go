@@ -82,6 +82,12 @@ var ErrItemNotFound = errors.New("no Supply run has that item")
 // the household's time zone.
 var ErrWeekNotEnded = errors.New("the week has not ended")
 
+// ErrSendUnconfirmed is a send to Google Chat whose outcome is not known:
+// Google Chat did not answer, or accepted the post but recording it failed.
+// The post may have been made, so the Supply run keeps the send as
+// unconfirmed and is posted again only with resend.
+var ErrSendUnconfirmed = errors.New("the shopping list may have reached Google Chat, but that could not be confirmed; check the space before sending again")
+
 // ErrInvalidPeriod is an Archive grouping other than ByWeek, ByMonth and
 // ByYear.
 var ErrInvalidPeriod = errors.New("by must be week, month or year")
@@ -158,7 +164,11 @@ type List struct {
 	// SentToChatAt is when the list was sent to Google Chat; nil until it
 	// is.
 	SentToChatAt *string `json:"sent_to_chat_at"`
-	Groups       []Group `json:"groups"`
+	// ChatSendUnconfirmedAt is when a send to Google Chat whose outcome is
+	// not known began: one under way, or one that may or may not have been
+	// posted. nil when there is none.
+	ChatSendUnconfirmedAt *string `json:"chat_send_unconfirmed_at"`
+	Groups                []Group `json:"groups"`
 }
 
 // Counts are how many items of a Supply run are still needed and how many
@@ -563,13 +573,14 @@ func frozen(list db.ShoppingList) bool {
 // listOf is list with groups.
 func listOf(list db.ShoppingList, groups []Group) List {
 	return List{
-		ID:           list.ID,
-		WeekStart:    list.WeekStart,
-		PlanID:       list.PlanID,
-		Title:        nullString(list.Title),
-		Status:       list.Status,
-		SentToChatAt: nullString(list.SentToChatAt),
-		Groups:       groups,
+		ID:                    list.ID,
+		WeekStart:             list.WeekStart,
+		PlanID:                list.PlanID,
+		Title:                 nullString(list.Title),
+		Status:                list.Status,
+		SentToChatAt:          nullString(list.SentToChatAt),
+		ChatSendUnconfirmedAt: nullString(list.ChatSendUnconfirmedAt),
+		Groups:                groups,
 	}
 }
 

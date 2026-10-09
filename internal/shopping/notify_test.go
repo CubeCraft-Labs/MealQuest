@@ -127,8 +127,8 @@ func TestSendToChat(t *testing.T) {
 }
 
 // TestSendToChatFailuresRecordNothing: a send with no webhook, or one
-// Google Chat refuses or does not answer, leaves sent_to_chat_at unset; a
-// week with no list, or a frozen one, is refused without posting.
+// Google Chat refuses, leaves sent_to_chat_at and chat_send_unconfirmed_at
+// unset; a week with no list, or a frozen one, is refused without posting.
 func TestSendToChatFailuresRecordNothing(t *testing.T) {
 	e := newEnv(t)
 	e.dinner(t, "Beef Chili", ing{"ground beef", "1", "lb"})
@@ -148,12 +148,8 @@ func TestSendToChatFailuresRecordNothing(t *testing.T) {
 	if _, err := e.svc.SendToChat(t.Context(), week, false); !errors.Is(err, chat.ErrRefused) {
 		t.Errorf("SendToChat answered 500 = %v, want chat.ErrRefused", err)
 	}
-	e.chat.Close()
-	if _, err := e.svc.SendToChat(t.Context(), week, false); !errors.Is(err, chat.ErrUnreachable) {
-		t.Errorf("SendToChat unanswered = %v, want chat.ErrUnreachable", err)
-	}
-	if l, err := e.svc.Get(t.Context(), week); err != nil || l.SentToChatAt != nil {
-		t.Errorf("sent_to_chat_at after failed sends = %v, %v, want unset", l.SentToChatAt, err)
+	if l, err := e.svc.Get(t.Context(), week); err != nil || l.SentToChatAt != nil || l.ChatSendUnconfirmedAt != nil {
+		t.Errorf("after failed sends sent_to_chat_at = %v, chat_send_unconfirmed_at = %v, %v, want both unset", l.SentToChatAt, l.ChatSendUnconfirmedAt, err)
 	}
 
 	if _, err := e.st.Writer.Exec(`UPDATE shopping_lists SET status = 'archived', frozen_at = '2026-10-19T04:05:00Z'`); err != nil {
@@ -165,5 +161,82 @@ func TestSendToChatFailuresRecordNothing(t *testing.T) {
 	}
 	if n := len(e.chat.Posts()); n != posts {
 		t.Errorf("a frozen list was posted")
+	}
+}
+
+// TestSendToChatUnconfirmed: a send whose outcome is not known, because
+// Google Chat accepted the post but recording it failed, or did not answer,
+// is ErrSendUnconfirmed and leaves the send unconfirmed rather than unsent:
+// a send without resend does not post again, and one with resend does,
+// confirming it.
+func TestSendToChatUnconfirmed(t *testing.T) {
+	e := newEnv(t)
+	e.dinner(t, "Beef Chili", ing{"ground beef", "1", "lb"})
+	e.plan(t, "Beef Chili")
+	e.generate(t)
+	if _, err := e.chatSvc.Put(t.Context(), chattest.Webhook, "Family"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.st.Writer.Exec(`CREATE TRIGGER refuse_sent BEFORE UPDATE OF sent_to_chat_at ON shopping_lists BEGIN SELECT RAISE(ABORT, 'sent refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := e.svc.SendToChat(t.Context(), week, false); !errors.Is(err, shopping.ErrSendUnconfirmed) {
+		t.Fatalf("SendToChat accepted but not recorded = %v, want ErrSendUnconfirmed", err)
+	}
+	if n := len(e.chat.Posts()); n != 1 {
+		t.Fatalf("Google Chat got %d posts, want 1", n)
+	}
+	l, err := e.svc.Get(t.Context(), week)
+	if err != nil || l.SentToChatAt != nil || l.ChatSendUnconfirmedAt == nil {
+		t.Fatalf("after an unrecorded send sent_to_chat_at = %v, chat_send_unconfirmed_at = %v, %v, want unset and set", l.SentToChatAt, l.ChatSendUnconfirmedAt, err)
+	}
+	if _, err := e.st.Writer.Exec(`DROP TRIGGER refuse_sent`); err != nil {
+		t.Fatal(err)
+	}
+
+	again, err := e.svc.SendToChat(t.Context(), week, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(e.chat.Posts()); n != 1 || again.ChatSendUnconfirmedAt == nil || *again.ChatSendUnconfirmedAt != *l.ChatSendUnconfirmedAt {
+		t.Errorf("send again without resend: %d posts, chat_send_unconfirmed_at %v, want 1 post and %s", n, again.ChatSendUnconfirmedAt, *l.ChatSendUnconfirmedAt)
+	}
+
+	resent, err := e.svc.SendToChat(t.Context(), week, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(e.chat.Posts()); n != 2 || resent.SentToChatAt == nil || resent.ChatSendUnconfirmedAt != nil {
+		t.Errorf("resend: %d posts, sent_to_chat_at %v, chat_send_unconfirmed_at %v, want 2 posts, set and unset", n, resent.SentToChatAt, resent.ChatSendUnconfirmedAt)
+	}
+
+	e.chat.Close()
+	if _, err := e.svc.SendToChat(t.Context(), week, true); !errors.Is(err, shopping.ErrSendUnconfirmed) || !errors.Is(err, chat.ErrUnreachable) {
+		t.Errorf("SendToChat unanswered = %v, want ErrSendUnconfirmed and chat.ErrUnreachable", err)
+	}
+	if l, err := e.svc.Get(t.Context(), week); err != nil || l.SentToChatAt == nil || *l.SentToChatAt != *resent.SentToChatAt || l.ChatSendUnconfirmedAt == nil {
+		t.Errorf("after an unanswered resend sent_to_chat_at = %v, chat_send_unconfirmed_at = %v, %v, want %s and set", l.SentToChatAt, l.ChatSendUnconfirmedAt, err, *resent.SentToChatAt)
+	}
+}
+
+// TestSendToChatPostsOnlyOnceBegun: a send that cannot be recorded as
+// begun is not posted.
+func TestSendToChatPostsOnlyOnceBegun(t *testing.T) {
+	e := newEnv(t)
+	e.dinner(t, "Beef Chili", ing{"ground beef", "1", "lb"})
+	e.plan(t, "Beef Chili")
+	e.generate(t)
+	if _, err := e.chatSvc.Put(t.Context(), chattest.Webhook, "Family"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.st.Writer.Exec(`CREATE TRIGGER refuse_begin BEFORE UPDATE OF chat_send_unconfirmed_at ON shopping_lists WHEN NEW.chat_send_unconfirmed_at IS NOT NULL BEGIN SELECT RAISE(ABORT, 'begin refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.SendToChat(t.Context(), week, false); err == nil {
+		t.Fatal("SendToChat not recorded as begun succeeded, want an error")
+	}
+	if n := len(e.chat.Posts()); n != 0 {
+		t.Errorf("Google Chat got %d posts of a send not recorded as begun, want 0", n)
 	}
 }

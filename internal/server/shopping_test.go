@@ -83,14 +83,15 @@ func (e plansEnv) archive(t *testing.T) {
 // supplyRunJSON is a Supply run answer decoded with every field the API
 // promises.
 type supplyRunJSON struct {
-	WeekStart    string  `json:"weekStart"`
-	Label        string  `json:"label"`
-	Title        *string `json:"title"`
-	Status       string  `json:"status"`
-	SentToChatAt *string `json:"sent_to_chat_at"`
-	NeededCount  int     `json:"needed_count"`
-	TotalCount   int     `json:"total_count"`
-	Groups       []struct {
+	WeekStart             string  `json:"weekStart"`
+	Label                 string  `json:"label"`
+	Title                 *string `json:"title"`
+	Status                string  `json:"status"`
+	SentToChatAt          *string `json:"sent_to_chat_at"`
+	ChatSendUnconfirmedAt *string `json:"chat_send_unconfirmed_at"`
+	NeededCount           int     `json:"needed_count"`
+	TotalCount            int     `json:"total_count"`
+	Groups                []struct {
 		Dinner struct {
 			ID   string `json:"id"`
 			Name string `json:"name"`
@@ -185,7 +186,7 @@ func TestSupplyRunShape(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("generate = %d %v", status, raw)
 	}
-	wantTop := []string{"groups", "label", "needed_count", "sent_to_chat_at", "skipped", "status", "title", "total_count", "weekStart"}
+	wantTop := []string{"chat_send_unconfirmed_at", "groups", "label", "needed_count", "sent_to_chat_at", "skipped", "status", "title", "total_count", "weekStart"}
 	if got := keys(raw); !reflect.DeepEqual(got, wantTop) {
 		t.Errorf("generate fields = %v, want %v", got, wantTop)
 	}
@@ -888,15 +889,19 @@ func TestSupplyRunSendChatErrors(t *testing.T) {
 	if status != http.StatusBadGateway || errorCode(body) != "chat_refused" || body["error"].(map[string]any)["retryable"] != false {
 		t.Errorf("send Google Chat answers 404 = %d %v, want 502 chat_refused, not retryable", status, body)
 	}
-	e.chat.Close()
-	status, body = callShopping(t, e, http.MethodPost, shoppingPath+"2026-10-12/send-chat", `{}`, nil)
-	if status != http.StatusBadGateway || errorCode(body) != "chat_unreachable" {
-		t.Errorf("send Google Chat does not answer = %d %v, want 502 chat_unreachable", status, body)
-	}
 	var l supplyRunJSON
 	callShopping(t, e, http.MethodGet, shoppingPath+"2026-10-12", "", &l)
-	if l.SentToChatAt != nil {
-		t.Errorf("sent_to_chat_at after failed sends = %s, want null", *l.SentToChatAt)
+	if l.SentToChatAt != nil || l.ChatSendUnconfirmedAt != nil {
+		t.Errorf("after refused sends sent_to_chat_at = %v, chat_send_unconfirmed_at = %v, want both null", l.SentToChatAt, l.ChatSendUnconfirmedAt)
+	}
+	e.chat.Close()
+	status, body = callShopping(t, e, http.MethodPost, shoppingPath+"2026-10-12/send-chat", `{}`, nil)
+	if status != http.StatusBadGateway || errorCode(body) != "chat_unconfirmed" || body["error"].(map[string]any)["retryable"] != false {
+		t.Errorf("send Google Chat does not answer = %d %v, want 502 chat_unconfirmed, not retryable", status, body)
+	}
+	callShopping(t, e, http.MethodGet, shoppingPath+"2026-10-12", "", &l)
+	if l.SentToChatAt != nil || l.ChatSendUnconfirmedAt == nil {
+		t.Errorf("after an unanswered send sent_to_chat_at = %v, chat_send_unconfirmed_at = %v, want null and set", l.SentToChatAt, l.ChatSendUnconfirmedAt)
 	}
 
 	e.archive(t)

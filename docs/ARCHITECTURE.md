@@ -793,7 +793,11 @@ key (`Rule.PeriodKey`): the local date for a daily rule, the ISO week of the
 fire date for a weekly one, or of the week after for `WeeklyForNextWeek`
 (`plan_draft`). Inserting `schedule_runs(schedule, period_key)` is the claim;
 a period already claimed is skipped, so a period runs at most once and a
-failed run is not retried. At boot only each schedule's most recent fire
+failed run is not retried. A claim that fails is not skipped: the pass is
+repeated every `scheduler.ClaimRetry` until the claim succeeds. A settings
+change is recorded with the instant it was saved, and fire times up to that
+instant follow the old rule and later ones the new, however late the
+scheduler applies it. At boot only each schedule's most recent fire
 time is considered: it runs if it passed within 24 hours, and is otherwise
 claimed without running (logged as missed) so it never runs later. DST
 follows `household.LocalTime`: a skipped time fires later by the gap, a

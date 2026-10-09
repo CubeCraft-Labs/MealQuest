@@ -23,6 +23,13 @@
 // settings change moves the fire time. Fire times before the most recent
 // one are never looked at.
 //
+// # Claim failures
+//
+// A claim that fails (the database refused the insert) is never skipped:
+// the scheduler logs it and does not advance past it, but repeats the
+// whole pass every ClaimRetry until the claim succeeds. Periods the pass
+// already claimed are claimed again and skipped, so each still runs once.
+//
 // # Time zone and DST
 //
 // Fire times are wall-clock times in the household zone, never the process
@@ -35,10 +42,12 @@
 //
 // # Settings changes
 //
-// The scheduler subscribes to the household settings. A change takes effect
-// at once without a restart: fire times up to the change follow the old
-// settings and later ones the new, so moving a fire time to earlier the
-// same day does not fire the passed time.
+// The scheduler subscribes to the household settings and records each change
+// with the instant it was saved. A change takes effect at once without a
+// restart: fire times up to that instant follow the old settings and later
+// ones the new, even when the scheduler gets to the change late. So moving
+// a fire time to earlier the same day does not fire the passed time, and a
+// new fire time that was still ahead when the change was saved fires.
 package scheduler
 
 import (
@@ -79,6 +88,10 @@ var names = map[string]bool{
 // CatchUpWindow is how long after its fire time a period that has not run
 // still runs. A period found later than that is recorded as missed.
 const CatchUpWindow = 24 * time.Hour
+
+// ClaimRetry is how long the scheduler waits before repeating a pass in
+// which a claim failed.
+const ClaimRetry = time.Minute
 
 // maxWait bounds one sleep, so the scheduler checks the wall clock at least
 // this often even if the host was suspended or its clock stepped.
@@ -183,10 +196,10 @@ type Scheduler struct {
 	after func(d time.Duration) <-chan time.Time
 
 	// wake holds one token when the settings changed since the loop last
-	// looked; latest is the settings to apply.
-	wake     chan struct{}
-	latestMu sync.Mutex
-	latest   household.Settings
+	// looked; pending is the changes to apply, oldest first.
+	wake      chan struct{}
+	pendingMu sync.Mutex
+	pending   []change
 
 	mu        sync.Mutex
 	schedules []Schedule
@@ -281,16 +294,31 @@ func (s *Scheduler) Wait() {
 	s.wg.Wait()
 }
 
+// change is a settings change and the instant it was saved.
+type change struct {
+	at       time.Time
+	settings household.Settings
+}
+
 // changed is the settings subscriber. It runs on the updating goroutine, so
-// it only records the settings and wakes the loop.
+// it only records the change and wakes the loop.
 func (s *Scheduler) changed(settings household.Settings) {
-	s.latestMu.Lock()
-	s.latest = settings
-	s.latestMu.Unlock()
+	s.pendingMu.Lock()
+	s.pending = append(s.pending, change{at: s.now(), settings: settings})
+	s.pendingMu.Unlock()
 	select {
 	case s.wake <- struct{}{}:
-	default: // the loop already has a token and reads latest then
+	default: // the loop already has a token and reads pending then
 	}
+}
+
+// takeChanges returns and clears the pending changes.
+func (s *Scheduler) takeChanges() []change {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	out := s.pending
+	s.pending = nil
+	return out
 }
 
 // plan is the schedules compiled against one version of the settings.
@@ -323,21 +351,46 @@ func compile(schedules []Schedule, settings household.Settings) (*plan, error) {
 
 // loop fires schedules until ctx is cancelled. done is the instant up to
 // which fire times have been handled; it starts at the zero time so the
-// first pass catches up.
+// first pass catches up. Each pass first applies the pending settings
+// changes in order, handling fire times up to a change under the plan it
+// replaces, then handles fire times up to now under the current plan. A
+// pass with a failed claim keeps done and its unapplied changes where they
+// were and is repeated after ClaimRetry.
 func (s *Scheduler) loop(ctx context.Context, p *plan) {
 	var done time.Time
+	var pending []change
 	for {
 		now := s.now()
-		if p != nil {
-			s.fire(ctx, p, done, now)
+		pending = append(pending, s.takeChanges()...)
+		failed := false
+		for len(pending) > 0 {
+			c := pending[0]
+			if c.at.After(done) {
+				if p != nil && !s.fire(ctx, p, done, c.at, now) {
+					failed = true
+					break
+				}
+				done = c.at
+			}
+			p = s.compileChange(ctx, c.settings)
+			pending = pending[1:]
 		}
-		done = now
+		if !failed {
+			if p == nil || s.fire(ctx, p, done, now, now) {
+				done = now
+			} else {
+				failed = true
+			}
+		}
 		if ctx.Err() != nil {
 			return
 		}
 
 		var timeout <-chan time.Time
-		if p != nil {
+		switch {
+		case failed:
+			timeout = s.after(ClaimRetry)
+		case p != nil:
 			if next, ok := p.next(now); ok {
 				timeout = s.after(min(next.Sub(now), maxWait))
 			}
@@ -347,45 +400,48 @@ func (s *Scheduler) loop(ctx context.Context, p *plan) {
 			return
 		case <-timeout:
 		case <-s.wake:
-			// Fire times up to the change follow the old settings.
-			now := s.now()
-			if p != nil {
-				s.fire(ctx, p, done, now)
-			}
-			done = now
-			s.latestMu.Lock()
-			settings := s.latest
-			s.latestMu.Unlock()
-			np, err := compile(s.schedules, settings)
-			if err != nil {
-				// Settings are validated before they are saved, so this
-				// is a bug; firing at a guessed time would be worse than
-				// not firing until the settings are fixed.
-				s.logger.ErrorContext(ctx, "scheduler: settings unusable; no schedule fires until they change", "error", err)
-			}
-			p = np
 		}
 	}
+}
+
+// compileChange returns the plan for changed settings, or nil when they
+// are unusable.
+func (s *Scheduler) compileChange(ctx context.Context, settings household.Settings) *plan {
+	p, err := compile(s.schedules, settings)
+	if err != nil {
+		// Settings are validated before they are saved, so this is a
+		// bug; firing at a guessed time would be worse than not firing
+		// until the settings are fixed.
+		s.logger.ErrorContext(ctx, "scheduler: settings unusable; no schedule fires until they change", "error", err)
+		return nil
+	}
+	return p
 }
 
 // fire handles, for every schedule, its most recent fire time at or before
-// now if it is after done.
-func (s *Scheduler) fire(ctx context.Context, p *plan, done, now time.Time) {
+// until if it is after done; now is the current instant. It reports false
+// when a claim failed, so the fire times it covered must be handled again.
+func (s *Scheduler) fire(ctx context.Context, p *plan, done, until, now time.Time) bool {
+	ok := true
 	for _, it := range p.items {
 		if ctx.Err() != nil {
-			return
+			return ok
 		}
-		at, ok := fireBefore(it.rule, p.loc, now)
-		if !ok || !at.After(done) {
+		at, due := fireBefore(it.rule, p.loc, until)
+		if !due || !at.After(done) {
 			continue
 		}
-		s.handle(ctx, it, p.loc, at, now)
+		if !s.handle(ctx, it, p.loc, at, now) {
+			ok = false
+		}
 	}
+	return ok
 }
 
 // handle claims the period of it fired at at and runs it, or records it as
-// missed when at is more than CatchUpWindow before now.
-func (s *Scheduler) handle(ctx context.Context, it item, loc *time.Location, at, now time.Time) {
+// missed when at is more than CatchUpWindow before now. It reports false
+// when the claim failed and the period is still unclaimed.
+func (s *Scheduler) handle(ctx context.Context, it item, loc *time.Location, at, now time.Time) bool {
 	date := household.Today(at, loc)
 	period := Period{Key: it.rule.PeriodKey(date), FireAt: at, Date: date}
 	if it.rule.NextWeek {
@@ -397,21 +453,22 @@ func (s *Scheduler) handle(ctx context.Context, it item, loc *time.Location, at,
 
 	claimed, err := s.claim(ctx, it.sch.Name, period.Key, now)
 	if err != nil {
-		log.ErrorContext(ctx, "scheduler: claim period failed; period not run", "error", err)
-		return
+		log.ErrorContext(ctx, "scheduler: claim period failed; retrying", "error", err, "retry_in", ClaimRetry.String())
+		return false
 	}
 	if !claimed {
-		return
+		return true
 	}
 	if late := now.Sub(at); late > CatchUpWindow {
 		log.WarnContext(ctx, "scheduler: period missed; recorded without running", "late", late.String())
-		return
+		return true
 	}
 	if err := it.sch.Run(ctx, period); err != nil {
 		log.ErrorContext(ctx, "scheduler: run failed", "error", err)
-		return
+		return true
 	}
 	log.InfoContext(ctx, "scheduler: ran")
+	return true
 }
 
 // claim inserts schedule_runs(name, key) and reports whether this call

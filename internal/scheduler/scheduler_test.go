@@ -565,6 +565,76 @@ func TestSettingsChangeMovesNextFire(t *testing.T) {
 	wantKeys(t, "the new time", rec.keys(), []string{"2026-10-06", "2026-10-07", "2026-10-09"})
 }
 
+// A change saved at 12:00 moving the 16:30 reminder to 12:01 must fire it
+// even when the scheduler only gets to the change at 12:02, after the new
+// fire time has passed.
+func TestSettingsChangeAppliedLateStillFires(t *testing.T) {
+	e := newEnv(t)
+	var rec recorder
+	// blocker holds the scheduler in a Run at 12:00 on 2026-10-07 while
+	// the settings change and the clock moves on.
+	started := make(chan struct{})
+	release := make(chan struct{})
+	blocker := scheduler.Schedule{
+		Name: scheduler.RotationCheck,
+		Rule: func(household.Settings) scheduler.Rule { return scheduler.Daily("12:00") },
+		Run: func(_ context.Context, p scheduler.Period) error {
+			if p.Key == "2026-10-07" {
+				close(started)
+				<-release
+			}
+			return nil
+		},
+	}
+	r := e.start(at(2026, 10, 7, 11, 0), reminder(&rec), blocker)
+	wantKeys(t, "boot", rec.keys(), []string{"2026-10-06"})
+
+	r.clock.set(at(2026, 10, 7, 12, 0))
+	<-started
+	e.update(household.SettingsPatch{ReminderTime: ptr("12:01")})
+	r.clock.set(at(2026, 10, 7, 12, 2))
+	close(release)
+	r.idle() // the pass the blocker held
+	r.idle() // the pass that applies the change
+	wantKeys(t, "after the late change", rec.keys(), []string{"2026-10-06", "2026-10-07"})
+
+	r.runUntil(at(2026, 10, 7, 23, 0))
+	wantKeys(t, "end of day", rec.keys(), []string{"2026-10-06", "2026-10-07"})
+	wantKeys(t, "claims", e.claimed(scheduler.DayOfReminder), []string{"2026-10-06", "2026-10-07"})
+}
+
+// A claim that fails is retried, not skipped, and the period then runs once.
+func TestClaimFailureIsRetried(t *testing.T) {
+	e := newEnv(t)
+	for _, q := range []string{
+		`CREATE TABLE fail_claims (on_ INTEGER NOT NULL)`,
+		`INSERT INTO fail_claims VALUES (1)`,
+		`CREATE TRIGGER fail_claim BEFORE INSERT ON schedule_runs
+			WHEN (SELECT on_ FROM fail_claims) = 1
+			BEGIN SELECT RAISE(ABORT, 'injected claim failure'); END`,
+	} {
+		if _, err := e.st.Writer.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var rec recorder
+	r := e.start(at(2026, 10, 7, 12, 0), reminder(&rec))
+	wantKeys(t, "boot with failing claims", rec.keys(), nil)
+	wantKeys(t, "claims while failing", e.claimed(scheduler.DayOfReminder), nil)
+	if next, _ := r.clock.nextDeadline(); !next.Equal(at(2026, 10, 7, 12, 0).Add(scheduler.ClaimRetry)) {
+		t.Errorf("next wake %s, want a retry after %s", next, scheduler.ClaimRetry)
+	}
+
+	if _, err := e.st.Writer.Exec(`UPDATE fail_claims SET on_ = 0`); err != nil {
+		t.Fatal(err)
+	}
+	r.runUntil(at(2026, 10, 7, 12, 0).Add(scheduler.ClaimRetry))
+	wantKeys(t, "after the retry", rec.keys(), []string{"2026-10-06"})
+	r.runUntil(at(2026, 10, 7, 23, 0))
+	wantKeys(t, "end of day", rec.keys(), []string{"2026-10-06", "2026-10-07"})
+	wantKeys(t, "claims", e.claimed(scheduler.DayOfReminder), []string{"2026-10-06", "2026-10-07"})
+}
+
 func TestSettingsChangeTimezone(t *testing.T) {
 	e := newEnv(t)
 	var rec recorder

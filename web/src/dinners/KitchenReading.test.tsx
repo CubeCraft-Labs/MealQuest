@@ -46,8 +46,8 @@ function detail(overrides: Record<string, unknown> = {}) {
 }
 
 // planBody is a week's plan as GET /api/v1/plans/{weekStart} sends it: p0 to
-// p6, except the bowls (d1) on day bowlsOn, counting from Monday = 0.
-function planBody(weekStart: string, bowlsOn?: number) {
+// p6, except the bowls (d1) on each day of bowlsOn, counting from Monday = 0.
+function planBody(weekStart: string, ...bowlsOn: number[]) {
   const start = new Date(`${weekStart}T00:00:00Z`).getTime()
   return {
     id: `plan-${weekStart}`,
@@ -58,10 +58,10 @@ function planBody(weekStart: string, bowlsOn?: number) {
     days: Array.from({ length: 7 }, (_, i) => ({
       date: new Date(start + i * 86_400_000).toISOString().slice(0, 10),
       dinner:
-        i === bowlsOn
+        bowlsOn.includes(i)
           ? { id: 'd1', name: 'Korean beef bowls', photo: null, minutes: 30, method: 'stovetop' }
           : { id: `p${i}`, name: `Dinner ${i}`, photo: null, minutes: 30, method: 'stovetop' },
-      is_new: i === bowlsOn,
+      is_new: bowlsOn.includes(i),
       start_by: null,
     })),
   }
@@ -176,13 +176,34 @@ describe('Kitchen reading mode', () => {
       expect(await screen.findByText('Monday, Oct 12 · Regular')).toBeInTheDocument()
     })
 
-    it('is absent when no plan has the dinner from today on', async () => {
-      // On Monday, already past, and on no day of next week.
-      const fetchMock = serve({
+    it("names a day of this week's plan already past when that is the only day", async () => {
+      // Today is Wednesday; the bowls were on Monday, and are on no day of next week.
+      serve({
         [THIS_WEEK]: () => jsonResponse(200, planBody('2026-10-05', 0)),
         [NEXT_WEEK]: () => jsonResponse(200, planBody('2026-10-12')),
       })
       await renderPage()
+      expect(await screen.findByText('Monday, Oct 5 · Side quest')).toBeInTheDocument()
+    })
+
+    it('names the first day from today on over a day already past', async () => {
+      serve({ [THIS_WEEK]: () => jsonResponse(200, planBody('2026-10-05', 0, 1, 4, 6)) })
+      await renderPage()
+      expect(await screen.findByText('Friday, Oct 9 · Side quest')).toBeInTheDocument()
+      expect(screen.queryByText(/Monday|Tuesday|Sunday/)).not.toBeInTheDocument()
+    })
+
+    it('names the latest day already past when every day is past', async () => {
+      serve({ [THIS_WEEK]: () => jsonResponse(200, planBody('2026-10-05', 0, 1)) })
+      await renderPage()
+      expect(await screen.findByText('Tuesday, Oct 6 · Side quest')).toBeInTheDocument()
+      expect(screen.queryByText(/Monday/)).not.toBeInTheDocument()
+    })
+
+    it('is absent when neither week has a plan', async () => {
+      const fetchMock = serve({ [THIS_WEEK]: () => errorResponse(404, 'not_found') })
+      await renderPage()
+      await waitFor(() => expect(reads(fetchMock, THIS_WEEK)).toBe(1))
       await waitFor(() => expect(reads(fetchMock, NEXT_WEEK)).toBe(1))
       await act(async () => {})
       expect(screen.queryByText(/· Side quest/)).not.toBeInTheDocument()

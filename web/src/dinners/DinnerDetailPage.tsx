@@ -276,9 +276,10 @@ function statusName(dinner: DinnerDetail): string {
 }
 
 // PlannedDay is the kicker of a dinner on a plan, "Saturday, Oct 10 · Side
-// quest": the first day, from today on in the household's timezone, that
-// this week's or next week's plan has it. There is none while the plans are
-// read, nor when neither has the dinner from today on.
+// quest", whenever this week's or next week's plan has it. Of the days that
+// do, it is the first from today on in the household's timezone; when every
+// one is already past, it is the latest of them. There is none while the
+// plans are read, nor when neither plan has the dinner.
 function PlannedDay({ dinner, timezone }: { dinner: DinnerDetail; timezone: string }) {
   const today = localNow(timezone, new Date()).date
   const thisWeek = weekStart(today)
@@ -291,9 +292,8 @@ function PlannedDay({ dinner, timezone }: { dinner: DinnerDetail; timezone: stri
       </ErrorBanner>
     )
   }
-  const day = plans
-    .flatMap((plan) => plan.data?.days ?? [])
-    .find((day) => day.dinner.id === dinner.id && day.date >= today)
+  const planned = plans.flatMap((plan) => plan.data?.days ?? []).filter((day) => day.dinner.id === dinner.id)
+  const day = planned.find((day) => day.date >= today) ?? planned.at(-1)
   if (day === undefined) return null
   return (
     <p className={styles.kicker}>

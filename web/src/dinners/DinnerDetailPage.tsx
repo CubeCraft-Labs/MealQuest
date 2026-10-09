@@ -67,10 +67,14 @@ function IngredientRow({ ingredient }: { ingredient: Ingredient }) {
   )
 }
 
-// SourceCredit is "Recipe from {site}": a link opening the recipe's page in
-// a new tab when the server sends a url safe to open, else plain text.
-function SourceCredit({ siteName, url }: RecipeSource & { siteName: string }) {
-  const credit = `Recipe from ${siteName}`
+// SourceCredit is "Recipe from {site}" for a recipe fetched from the web: a
+// link opening the recipe's page in a new tab when the server sends a url
+// safe to open, else plain text. The site is the name the page gave, else
+// the url's host — already in the link, so naming it shows nothing more —
+// else, with neither to show, just "the web": a fetched recipe always
+// credits where it came from, without a name the server withheld.
+function SourceCredit({ siteName, url }: RecipeSource) {
+  const credit = `Recipe from ${siteName ?? (url === null ? 'the web' : new URL(url).host)}`
   return (
     <p className={styles.source}>
       {url === null ? (
@@ -136,9 +140,7 @@ function Recipe({ dinner }: { dinner: DinnerDetail }) {
           </ol>
         </section>
       )}
-      {dinner.source !== null && dinner.source.siteName !== null && (
-        <SourceCredit siteName={dinner.source.siteName} url={dinner.source.url} />
-      )}
+      {dinner.source !== null && <SourceCredit siteName={dinner.source.siteName} url={dinner.source.url} />}
     </>
   )
 }
@@ -506,7 +508,7 @@ function KitchenReading({ dinner }: { dinner: DinnerDetail }) {
           </div>
           {!recipe && <RecipeMissing dinner={dinner} />}
           {recipe && dinner.steps.length > 0 && <Steps steps={dinner.steps} current={current} />}
-          {recipe && dinner.source !== null && dinner.source.siteName !== null && (
+          {recipe && dinner.source !== null && (
             <SourceCredit siteName={dinner.source.siteName} url={dinner.source.url} />
           )}
           <ActionBar dinner={dinner}>

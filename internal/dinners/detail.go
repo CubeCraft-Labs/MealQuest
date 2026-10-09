@@ -60,11 +60,12 @@ type Ingredient struct {
 
 // Source is the site a recipe was fetched from. SiteName is the name the
 // page itself gives its site, and null when it gives none or the stored
-// name could have come from a link (see pageSiteName), so a client shows
-// "Recipe from {site}" only when SiteName is not null. URL is the page's
+// name could have come from a link (see pageSiteName). URL is the page's
 // link only when it is verifiably free of secrets (see safeSourceURL), and
 // null otherwise: a link pasted or offered as a candidate may carry a
 // personal token, so a client links the credit only when URL is not null.
+// Source is set for every fetched recipe, so a client always credits it:
+// by SiteName, else by URL's host, else without naming the site.
 type Source struct {
 	SiteName *string `json:"site_name"`
 	URL      *string `json:"url"`
@@ -189,8 +190,8 @@ func readRecipe(ctx context.Context, q *db.Queries, recipeID string, d *Detail) 
 // stored. Nothing records which a stored name is, so any name that could
 // be a host — the link's own host, an IP address, or a dotted host name —
 // is treated as one and withheld. A site that names itself as a domain,
-// such as "Food.com", loses its attribution with them: a recipe with no
-// attribution is better than one that leaks a link.
+// such as "Food.com", loses its name with them: a credit that does not
+// name the site is better than one that leaks a link.
 func pageSiteName(stored sql.NullString, sourceURL string) (*string, error) {
 	if !stored.Valid {
 		return nil, nil

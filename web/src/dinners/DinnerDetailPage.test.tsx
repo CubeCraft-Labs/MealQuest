@@ -204,12 +204,25 @@ describe('DinnerDetailPage', () => {
       }
     })
 
-    it('leaves the credit out when the server names no site', async () => {
-      serve(detail({ source: { site_name: null } }))
+    it("links the credit by the url's host when the server names no site", async () => {
+      serve(detail({ source: { site_name: null, url: 'https://Kitchen.Example:8443/korean-beef-bowls' } }))
       renderAt(['/dinner/d1'])
 
-      await screen.findByRole('heading', { level: 1, name: 'Korean beef bowls' })
-      expect(screen.queryByText(/Recipe from/)).not.toBeInTheDocument()
+      const credit = await screen.findByRole('link', { name: 'Recipe from kitchen.example:8443' })
+      expect(credit).toHaveAttribute('href', 'https://kitchen.example:8443/korean-beef-bowls')
+      expect(credit).toHaveAttribute('target', '_blank')
+      expect(credit).toHaveAttribute('rel', 'noopener noreferrer')
+    })
+
+    // The server withholds both when the stored name could be the link's
+    // host and the link could carry a token: the credit names neither.
+    it('credits the web in plain text when the server sends neither site nor url', async () => {
+      serve(detail({ source: { site_name: null, url: null } }))
+      renderAt(['/dinner/d1'])
+
+      const credit = await screen.findByText('Recipe from the web')
+      expect(credit.closest('a')).toBeNull()
+      expect(screen.queryByRole('link', { name: /Recipe from/ })).not.toBeInTheDocument()
     })
 
     it('holds Add to this week and the heart at the bottom', async () => {

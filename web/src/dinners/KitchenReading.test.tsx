@@ -410,6 +410,36 @@ describe('Kitchen reading mode', () => {
     })
   })
 
+  describe('source credit', () => {
+    it.each([
+      ['a site and a url', { site_name: 'Serious Eats', url: 'https://www.seriouseats.com/bowls' }, 'Recipe from Serious Eats'],
+      ['only a url', { site_name: null, url: 'https://www.seriouseats.com/bowls' }, 'Recipe from www.seriouseats.com'],
+    ])('links the recipe page in a new tab for %s', async (_, source, name) => {
+      serve({ [DINNER]: () => jsonResponse(200, detail({ source })) })
+      await renderPage()
+      const credit = screen.getByRole('link', { name })
+      expect(credit).toHaveAttribute('href', 'https://www.seriouseats.com/bowls')
+      expect(credit).toHaveAttribute('target', '_blank')
+      expect(credit).toHaveAttribute('rel', 'noopener noreferrer')
+    })
+
+    it.each([
+      ['only a site', { site_name: 'Serious Eats', url: null }, 'Recipe from Serious Eats'],
+      ['neither site nor url', { site_name: null, url: null }, 'Recipe from the web'],
+    ])('is plain text for %s', async (_, source, text) => {
+      serve({ [DINNER]: () => jsonResponse(200, detail({ source })) })
+      await renderPage()
+      expect(screen.getByText(text).closest('a')).toBeNull()
+      expect(screen.queryByRole('link', { name: /Recipe from/ })).not.toBeInTheDocument()
+    })
+
+    it('is absent for a recipe typed in', async () => {
+      serve({ [DINNER]: () => jsonResponse(200, detail({ source: null, grounding_status: 'manual' })) })
+      await renderPage()
+      expect(screen.queryByText(/Recipe from/)).not.toBeInTheDocument()
+    })
+  })
+
   it('shows what stands in for a recipe not found, with no step buttons', async () => {
     serve({
       [DINNER]: () =>

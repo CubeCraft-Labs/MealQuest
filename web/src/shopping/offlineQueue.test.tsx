@@ -201,10 +201,15 @@ async function openPage() {
 }
 
 // reload ends the page open and its timers, as a reload does: a toggle it
-// was waiting to try again is never tried, by it, again.
+// was waiting to try again is never tried, by it, again. The clock reads on
+// as it did: clearAllTimers also puts it back to the real time the fake
+// timers were installed at, which would open the new page on whatever week
+// the real date falls in.
 function reload(page: { unmount: () => void }) {
   page.unmount()
+  const now = Date.now()
   vi.clearAllTimers()
+  vi.setSystemTime(now)
 }
 
 async function advance(ms: number) {

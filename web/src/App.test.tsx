@@ -35,6 +35,7 @@ const SCREENS = {
   '/plan/shopping': true,
   '/plan/shopping/archive': true,
   '/discover': true,
+  '/cook-from-pantry': true,
   '/settings': true,
   '/settings/ai': true,
   '/settings/household': true,

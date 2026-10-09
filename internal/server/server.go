@@ -38,7 +38,8 @@ type RouteMounter interface {
 // has its client address and scheme resolved, honouring forwarded headers
 // only from a peer in trusted (see resolveOrigin). version is reported by
 // GET /health; auth mounts the /auth routes; sessions guards /api/v1 and
-// /media; settings serves /api/v1/settings/household; search serves
+// /media; settings serves /api/v1/settings/household and
+// /api/v1/settings/notifications; search serves
 // /api/v1/settings/recipe-search and its /test; ai serves
 // /api/v1/settings/ai, its /api-key, /verify, /models and /reset-prompt;
 // chatSvc serves GET and PUT /api/v1/settings/chat-webhook and its /test;
@@ -130,6 +131,8 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Get("/me", me(logger))
 	apiV1.Get("/settings/household", getHouseholdSettings(logger, settings))
 	apiV1.Patch("/settings/household", patchHouseholdSettings(logger, settings))
+	apiV1.Get("/settings/notifications", getNotificationSettings(logger, settings))
+	apiV1.Put("/settings/notifications", putNotificationSettings(logger, settings))
 	apiV1.Get("/settings/recipe-search", getRecipeSearchSettings(logger, search))
 	apiV1.Patch("/settings/recipe-search", patchRecipeSearchSettings(logger, search))
 	apiV1.Post("/settings/recipe-search/test", postRecipeSearchTest(logger, search))

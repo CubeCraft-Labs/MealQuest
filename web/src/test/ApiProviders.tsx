@@ -61,14 +61,41 @@ export const GOOGLE_NOT_CONNECTED = {
   last_sync_error: null,
 }
 
+// NOTIFICATION_SETTINGS is a GET /api/v1/settings/notifications body: the
+// seed channels and reminder time.
+export const NOTIFICATION_SETTINGS = {
+  prefs: [
+    { event: 'plan_ready', push: true, chat: true },
+    { event: 'list_ready', push: true, chat: true },
+    { event: 'day_of_reminder', push: true, chat: false },
+    { event: 'new_suggestions', push: true, chat: false },
+    { event: 'rotation_review', push: true, chat: false },
+  ],
+  reminder_time: '16:30',
+}
+
+// CHAT_WEBHOOK_NONE is a GET /api/v1/settings/chat-webhook body: no webhook
+// stored.
+export const CHAT_WEBHOOK_NONE = { space_label: null, url_masked: null, last_test_at: null, last_test_status: null }
+
+// CHAT_WEBHOOK is a GET /api/v1/settings/chat-webhook body: a webhook
+// stored and never tested.
+export const CHAT_WEBHOOK = {
+  space_label: 'Dinner Crew space',
+  url_masked: 'https://chat.googleapis.com/v1/spaces/AAQA1b2C3d4/messages?token=…qQ%3D',
+  last_test_at: null,
+  last_test_status: null,
+}
+
 // SETTINGS_API answers the settings home's requests, for stubFetchByPath, as
-// today's server does: the dinners and notifications status endpoints do not
-// exist yet, and Google Calendar is not connected. The home's sub-tabs stay mounted on mobile, so
+// today's server does: the dinners endpoint does not exist yet, and neither
+// Google Calendar nor Google Chat is connected. The home's sub-tabs stay mounted on mobile, so
 // it also reads the AI models and recipe search settings.
 export const SETTINGS_API = {
   '/api/v1/dinners?status=regular': () => errorResponse(404, 'not_found'),
   '/api/v1/integrations/google': () => jsonResponse(200, GOOGLE_NOT_CONNECTED),
-  '/api/v1/settings/notifications': () => errorResponse(404, 'not_found'),
+  '/api/v1/settings/notifications': () => jsonResponse(200, NOTIFICATION_SETTINGS),
+  '/api/v1/settings/chat-webhook': () => jsonResponse(200, CHAT_WEBHOOK_NONE),
   '/api/v1/settings/household': () => jsonResponse(200, HOUSEHOLD_SETTINGS),
   '/api/v1/settings/ai': () => jsonResponse(200, AI_SETTINGS),
   '/api/v1/settings/ai/models': () => jsonResponse(200, AI_MODELS),

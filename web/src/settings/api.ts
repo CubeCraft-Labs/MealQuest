@@ -14,10 +14,6 @@ export const RECIPE_SEARCH_TEST_PATH = '/api/v1/settings/recipe-search/test'
 // dinners read API. Until it lands the server answers 404 and the Regular
 // dinners row says the count is unavailable.
 export const REGULAR_DINNERS_PATH = '/api/v1/dinners?status=regular'
-// TODO(notifications feature): the Web Push and Google Chat status. Until it
-// is served the server answers 404, which is the truth: push is off and no
-// Google Chat space is connected.
-export const NOTIFICATIONS_STATUS_PATH = '/api/v1/settings/notifications'
 
 // HouseholdSettings is the part of GET /api/v1/settings/household the
 // settings pages read. Times are zero-padded 24-hour HH:MM in timezone; days
@@ -332,7 +328,8 @@ export function useTestRecipeSearch() {
   })
 }
 
-const clockTime = /^([01][0-9]|2[0-3]):([0-5][0-9])$/
+// clockTime matches a zero-padded 24-hour HH:MM time.
+export const clockTime = /^([01][0-9]|2[0-3]):([0-5][0-9])$/
 
 // parseHouseholdSettings refuses a body that is not the household settings,
 // or has a time that is not HH:MM, so formatClockTime never sees one.
@@ -377,6 +374,12 @@ export function useHouseholdSettings() {
   })
 }
 
+// NOTIFICATIONS_KEY is the notification settings (notificationsApi.ts),
+// whose reminder_time is the household settings'.
+export const NOTIFICATIONS_KEY = ['settings', 'notifications'] as const
+
+// useSaveHouseholdSettings saves a change and reads the notification
+// settings again, which show reminder_time.
 export function useSaveHouseholdSettings() {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
@@ -386,7 +389,10 @@ export function useSaveHouseholdSettings() {
         `PATCH ${HOUSEHOLD_SETTINGS_PATH}`,
         await apiFetch<unknown>(HOUSEHOLD_SETTINGS_PATH, { method: 'PATCH', body: patch }),
       ),
-    onSuccess: (settings) => queryClient.setQueryData(HOUSEHOLD_SETTINGS_KEY, settings),
+    onSuccess: (settings) => {
+      queryClient.setQueryData(HOUSEHOLD_SETTINGS_KEY, settings)
+      void queryClient.invalidateQueries({ queryKey: NOTIFICATIONS_KEY })
+    },
   })
 }
 
@@ -511,34 +517,6 @@ export function regularDinnersStatus(count: number | null): string {
   if (count === null) return 'Rotation count unavailable'
   if (count === 0) return 'None on rotation yet'
   return `${count} on rotation`
-}
-
-// NotificationsStatus is whether Web Push is on and the connected Google
-// Chat space's name, null when none is.
-export type NotificationsStatus = { push: boolean; chat_space: string | null }
-
-export function useNotificationsStatus() {
-  const { apiFetch } = useApi()
-  return useQuery({
-    queryKey: ['settings', 'notifications'],
-    queryFn: () =>
-      fetchUnlessAbsent(apiFetch, NOTIFICATIONS_STATUS_PATH, (body): NotificationsStatus => {
-        if (
-          !isRecord(body) ||
-          typeof body.push !== 'boolean' ||
-          (body.chat_space !== null && typeof body.chat_space !== 'string')
-        ) {
-          throw new Error(`GET ${NOTIFICATIONS_STATUS_PATH}: response is not a notifications status`)
-        }
-        return { push: body.push, chat_space: body.chat_space }
-      }),
-  })
-}
-
-// notificationsStatus is the handoff's "Push on · Dinner Crew space".
-export function notificationsStatus(status: NotificationsStatus | null): string {
-  const push = status?.push === true ? 'Push on' : 'Push off'
-  return `${push} · ${status?.chat_space ?? 'Google Chat not connected'}`
 }
 
 // maskedKey shows a stored key as dots and its last four characters, all

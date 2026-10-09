@@ -19,6 +19,11 @@ export type SubscribePushResult = 'subscribed' | 'denied' | 'dismissed' | 'unsup
 // to remove, or a browser without Web Push. Any other failure rejects.
 export type UnsubscribePushResult = 'unsubscribed' | 'not-subscribed' | 'unsupported'
 
+// PushStatus is whether Web Push is on for this device: subscribed with
+// permission granted, off (not subscribed, or permission not yet given),
+// blocked by the browser's permission, or a browser without Web Push.
+export type PushStatus = 'on' | 'off' | 'denied' | 'unsupported'
+
 // The parts of the browser's Push API this module uses.
 export type BrowserPushSubscription = {
   readonly endpoint: string
@@ -206,4 +211,17 @@ export async function unsubscribePush(api: PushApi, env: PushEnvironment): Promi
   if (subscription === null) return 'not-subscribed'
   await removeSubscription(api, subscription)
   return 'unsubscribed'
+}
+
+// pushStatus reads whether Web Push is on for this device, without asking for
+// permission or calling the server. A page with no service worker registered
+// is off: subscribePush then says why it cannot turn on.
+export async function pushStatus(env: PushEnvironment): Promise<PushStatus> {
+  const { serviceWorker, notification } = env
+  if (serviceWorker === undefined || !env.pushManager || notification === undefined) return 'unsupported'
+  if (notification.permission === 'denied') return 'denied'
+  const found = await serviceWorker.getRegistration()
+  if (found === undefined) return 'off'
+  const subscription = await found.pushManager.getSubscription()
+  return subscription !== null && notification.permission === 'granted' ? 'on' : 'off'
 }

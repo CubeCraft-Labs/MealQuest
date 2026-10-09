@@ -3,7 +3,15 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
-import { AI_MODELS, AI_SETTINGS, GOOGLE_NOT_CONNECTED, HOUSEHOLD_SETTINGS, RECIPE_SEARCH_SETTINGS } from '../test/ApiProviders.tsx'
+import {
+  AI_MODELS,
+  AI_SETTINGS,
+  CHAT_WEBHOOK,
+  GOOGLE_NOT_CONNECTED,
+  HOUSEHOLD_SETTINGS,
+  NOTIFICATION_SETTINGS,
+  RECIPE_SEARCH_SETTINGS,
+} from '../test/ApiProviders.tsx'
 import { InDataRouter } from '../test/dataRouter.tsx'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
@@ -22,6 +30,8 @@ function stubAPI(responders: Record<string, Responder> = {}): Mock<typeof fetch>
     'GET /api/v1/settings/ai': () => jsonResponse(200, AI_SETTINGS),
     'GET /api/v1/settings/ai/models': () => jsonResponse(200, AI_MODELS),
     'GET /api/v1/settings/recipe-search': () => jsonResponse(200, RECIPE_SEARCH_SETTINGS),
+    'GET /api/v1/settings/notifications': () => jsonResponse(200, NOTIFICATION_SETTINGS),
+    'GET /api/v1/settings/chat-webhook': () => jsonResponse(200, CHAT_WEBHOOK),
     ...responders,
   }
   const fetchMock = vi.fn<typeof fetch>((input, init) => {
@@ -84,7 +94,12 @@ describe.each([1440, 1180])('SettingsPage at %i px (mock 2e)', (width) => {
     const columns = panel('Notifications & AI')
     expect(columns).toBeVisible()
     const [left, right] = Array.from(columns.children)
-    expect(within(left as HTMLElement).getByRole('region', { name: 'Notifications & Google Chat' })).toBeInTheDocument()
+    const notifications = within(left as HTMLElement).getByRole('region', { name: 'Notifications' })
+    expect(await within(notifications).findAllByRole('switch')).toHaveLength(10)
+    expect(within(notifications).getByRole('button', { name: 'Reminder time, 4:30 pm. Change' })).toBeInTheDocument()
+    const chat = within(left as HTMLElement).getByRole('region', { name: 'Google Chat webhook' })
+    expect(await within(chat).findByText('Connected · Dinner Crew space')).toBeInTheDocument()
+    expect(within(chat).getByRole('button', { name: 'Send test' })).toBeInTheDocument()
     const ai = within(right as HTMLElement).getByRole('region', { name: 'AI assistant' })
     expect(within(ai).getByText('Admin')).toBeInTheDocument()
     expect(await within(ai).findByRole('combobox', { name: 'Provider' })).toHaveValue('anthropic')
@@ -150,12 +165,39 @@ describe.each([1440, 1180])('SettingsPage at %i px (mock 2e)', (width) => {
   })
 })
 
+describe('SettingsPage reminder time across tabs', () => {
+  it('shows a reminder time saved on Notifications in the Household tab, keeping its draft', async () => {
+    const saved = { ...HOUSEHOLD_SETTINGS }
+    stubAPI({
+      'GET /api/v1/settings/household': () => jsonResponse(200, saved),
+      'PUT /api/v1/settings/notifications': (body) => {
+        saved.reminder_time = (body as { reminder_time: string }).reminder_time
+        return jsonResponse(200, body)
+      },
+    })
+    await renderAt(1440)
+    fireEvent.click(tab('Household'))
+    const household = panel('Household')
+    fireEvent.change(await within(household).findByLabelText('Dinner time'), { target: { value: '18:15' } })
+
+    fireEvent.click(tab('Notifications & AI'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Reminder time, 4:30 pm. Change' }))
+    const sheet = screen.getByRole('dialog', { name: 'Day-of dinner reminder' })
+    fireEvent.change(within(sheet).getByLabelText('Reminder time'), { target: { value: '15:00' } })
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    fireEvent.click(tab('Household'))
+    await waitFor(() => expect(within(household).getByLabelText('Day-of reminder')).toHaveValue('15:00'))
+    expect(within(household).getByLabelText('Dinner time')).toHaveValue('18:15')
+  })
+})
+
 describe('SettingsPage across the 768 px breakpoint', () => {
   it('shows the mobile list below 768 px and the sub-tabs from 768 px', async () => {
     stubAPI({
       'GET /api/v1/dinners?status=regular': () => errorResponse(404, 'not_found'),
       'GET /api/v1/integrations/google': () => jsonResponse(200, GOOGLE_NOT_CONNECTED),
-      'GET /api/v1/settings/notifications': () => errorResponse(404, 'not_found'),
     })
     const resize = await renderAt(767)
     expect(screen.getByRole('link', { name: /^AI assistant/ })).toHaveAttribute('href', '/settings/ai')
@@ -170,7 +212,6 @@ describe('SettingsPage across the 768 px breakpoint', () => {
     stubAPI({
       'GET /api/v1/dinners?status=regular': () => errorResponse(404, 'not_found'),
       'GET /api/v1/integrations/google': () => jsonResponse(200, GOOGLE_NOT_CONNECTED),
-      'GET /api/v1/settings/notifications': () => errorResponse(404, 'not_found'),
     })
     const resize = await renderAt(1180)
     fireEvent.change(await screen.findByRole('textbox', { name: 'System prompt' }), {

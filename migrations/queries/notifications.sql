@@ -56,3 +56,13 @@ SELECT next_attempt_at FROM notification_outbox
 WHERE status = 'pending'
 ORDER BY next_attempt_at
 LIMIT 1;
+
+-- name: ListNotificationPrefs :many
+SELECT * FROM notification_prefs;
+
+-- name: UpdateNotificationPref :execrows
+-- Sets which channels an event goes to; affects no row when the event has
+-- no preference row.
+UPDATE notification_prefs
+SET push = ?, chat = ?, updated_at = ?
+WHERE event = ?;

@@ -6,6 +6,7 @@ import {
   decodeVapidKey,
   encodeBase64url,
   PermissionGestureError,
+  pushStatus,
   subscribePush,
   subscriptionBody,
   unsubscribePush,
@@ -304,5 +305,33 @@ describe('unsubscribePush', () => {
     current.unsubscribe.mockResolvedValue(false)
     const { env, api } = setup({ current })
     await expect(unsubscribePush(api, env)).rejects.toThrow(/did not remove its push subscription/)
+  })
+})
+
+describe('pushStatus', () => {
+  it('is on with permission granted and a subscription', async () => {
+    const { env } = setup({ permission: 'granted', current: subscription() })
+    expect(await pushStatus(env)).toBe('on')
+  })
+
+  it.each([
+    ['not subscribed', { permission: 'granted' as const }],
+    ['permission not yet asked', { permission: 'default' as const }],
+    ['no service worker registered', { permission: 'granted' as const, registered: false }],
+  ])('is off when %s', async (_, options) => {
+    const { env, notification } = setup(options)
+    expect(await pushStatus(env)).toBe('off')
+    expect(notification.requestPermission).not.toHaveBeenCalled()
+  })
+
+  it('is denied when the browser blocks notifications', async () => {
+    const { env } = setup({ permission: 'denied', current: subscription() })
+    expect(await pushStatus(env)).toBe('denied')
+  })
+
+  it('is unsupported without Web Push', async () => {
+    const { env } = setup()
+    expect(await pushStatus({ ...env, pushManager: false })).toBe('unsupported')
+    expect(await pushStatus({ ...env, notification: undefined })).toBe('unsupported')
   })
 })

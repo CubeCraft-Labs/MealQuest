@@ -107,11 +107,14 @@ func newTestStore(t *testing.T) *store.Store {
 }
 
 // newTestSettings returns a settings service over a migrated temp database
-// seeded with zone America/New_York.
+// seeded with zone America/New_York and the seed notification preferences.
 func newTestSettings(t *testing.T) *household.SettingsService {
 	t.Helper()
 	st := newTestStore(t)
 	if err := household.SeedSettings(context.Background(), st, "America/New_York"); err != nil {
+		t.Fatal(err)
+	}
+	if err := household.SeedNotificationPrefs(context.Background(), st); err != nil {
 		t.Fatal(err)
 	}
 	return household.NewSettingsService(st)

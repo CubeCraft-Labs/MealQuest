@@ -91,8 +91,24 @@ type HouseholdSettingsFormProps = HouseholdSettingsProps & {
   saved: HouseholdSettings
 }
 
+// rebase moves draft from before to saved, the settings now stored: a field
+// the household has not edited takes its stored value, so a change saved
+// elsewhere (the Notifications screen's reminder time) is shown, not undone.
+function rebase(before: HouseholdSettings, saved: HouseholdSettings, draft: HouseholdSettings): HouseholdSettings {
+  const next: Record<string, unknown> = { ...draft }
+  for (const field of Object.keys(saved) as (keyof HouseholdSettings)[]) {
+    if (draft[field] === before[field]) next[field] = saved[field]
+  }
+  return next as HouseholdSettings
+}
+
 function HouseholdSettingsForm({ saved, onDirtyChange }: HouseholdSettingsFormProps) {
   const [draft, setDraft] = useState(saved)
+  const [base, setBase] = useState(saved)
+  if (base !== saved) {
+    setBase(saved)
+    setDraft(rebase(base, saved, draft))
+  }
   const save = useSaveHouseholdSettings()
   const patch = patchOf(saved, draft)
   const dirty = Object.keys(patch).length > 0

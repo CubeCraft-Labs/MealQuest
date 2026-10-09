@@ -11,6 +11,7 @@ package ideas
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -197,11 +198,13 @@ type Idea struct {
 	// Difficulty is easy, medium or hard.
 	Difficulty string `json:"difficulty"`
 	// Quick says whether the idea is a Quick dinner (see IsQuick).
-	Quick     bool   `json:"quick"`
-	RecipeID  string `json:"recipe_id"`
-	PhotoURL  string `json:"photo_url"`
-	SourceURL string `json:"source_url"`
-	SiteName  string `json:"site_name"`
+	Quick    bool   `json:"quick"`
+	RecipeID string `json:"recipe_id"`
+	PhotoURL string `json:"photo_url"`
+	// SourceURL and SiteName are the grounded recipe's source as
+	// dinners.SourceOf gives it: each null when it could leak a secret.
+	SourceURL *string `json:"source_url"`
+	SiteName  *string `json:"site_name"`
 }
 
 // Result is the KindFromIngredients result, published as the job goes:
@@ -312,9 +315,9 @@ func (s *Service) fill(ctx context.Context, p FromIngredientsJob, publish func(R
 	for i, idea := range out.Ideas {
 		reqs[i] = recipes.GroundRequest{DishName: idea.Name, Query: idea.SearchQuery}
 	}
-	err = keepGrounded(ctx, s.grounder, reqs, skills.IdeasKept, &res.Ideas, &res.Dropped, func(i int, gr recipes.Grounded) (Idea, bool) {
-		idea := ideaOf(out.Ideas[i], gr)
-		return idea, !p.QuickOnly || idea.Quick
+	err = keepGrounded(ctx, s.grounder, reqs, skills.IdeasKept, &res.Ideas, &res.Dropped, func(i int, gr recipes.Grounded) (Idea, bool, error) {
+		idea, err := ideaOf(out.Ideas[i], gr)
+		return idea, !p.QuickOnly || idea.Quick, err
 	}, func() error { return publish(res) })
 	if err != nil {
 		return res, err
@@ -333,9 +336,9 @@ func (s *Service) fill(ctx context.Context, p FromIngredientsJob, publish func(R
 // order (an idea that grounds sooner than one before it is shown first,
 // and the earlier one is put back in its place when it grounds) and
 // publish is called. An idea no recipe grounds, or that keep refuses,
-// counts in *dropped. Any other grounding failure, or publish failing, is
-// returned (see ground).
-func keepGrounded[T any](ctx context.Context, g *recipes.Grounder, reqs []recipes.GroundRequest, want int, shown *[]T, dropped *int, keep func(i int, gr recipes.Grounded) (T, bool), publish func() error) error {
+// counts in *dropped. Any other grounding failure, or keep or publish
+// failing, is returned (see ground).
+func keepGrounded[T any](ctx context.Context, g *recipes.Grounder, reqs []recipes.GroundRequest, want int, shown *[]T, dropped *int, keep func(i int, gr recipes.Grounded) (T, bool, error), publish func() error) error {
 	// order[k] is the index in reqs of (*shown)[k], so each idea is put in
 	// its place in reqs' order as it grounds.
 	var order []int
@@ -348,7 +351,10 @@ func keepGrounded[T any](ctx context.Context, g *recipes.Grounder, reqs []recipe
 				*dropped++
 				return nil
 			}
-			idea, ok := keep(first+i, *gr)
+			idea, ok, err := keep(first+i, *gr)
+			if err != nil {
+				return err
+			}
 			if !ok {
 				*dropped++
 				return nil
@@ -418,7 +424,11 @@ func withoutIdeas[R shownResult[R]](stored json.RawMessage) (json.RawMessage, er
 }
 
 // ideaOf is idea as grounded by gr.
-func ideaOf(idea skills.Idea, gr recipes.Grounded) Idea {
+func ideaOf(idea skills.Idea, gr recipes.Grounded) (Idea, error) {
+	src, err := sourceOf(gr)
+	if err != nil {
+		return Idea{}, err
+	}
 	return Idea{
 		Name:         idea.Name,
 		Uses:         idea.Uses,
@@ -430,9 +440,20 @@ func ideaOf(idea skills.Idea, gr recipes.Grounded) Idea {
 		Quick:        IsQuick(gr.Method, gr.MinutesTotal),
 		RecipeID:     gr.RecipeID,
 		PhotoURL:     dinners.PhotoURL(gr.PhotoID),
-		SourceURL:    gr.SourceURL,
-		SiteName:     gr.SiteName,
+		SourceURL:    src.URL,
+		SiteName:     src.SiteName,
+	}, nil
+}
+
+// sourceOf is gr's recipe source as a client may see it (see
+// dinners.SourceOf): a grounded recipe's site name is stored only when
+// not empty.
+func sourceOf(gr recipes.Grounded) (dinners.Source, error) {
+	src, err := dinners.SourceOf(sql.NullString{String: gr.SiteName, Valid: gr.SiteName != ""}, gr.SourceURL)
+	if err != nil {
+		return dinners.Source{}, fmt.Errorf("ideas: recipe %s: %w", gr.RecipeID, err)
 	}
+	return src, nil
 }
 
 // QuickJob is the KindQuick payload: the kind of Quick dinner wanted,
@@ -478,8 +499,9 @@ type QuickIdea struct {
 	Difficulty string `json:"difficulty"`
 	RecipeID   string `json:"recipe_id"`
 	PhotoURL   string `json:"photo_url"`
-	SourceURL  string `json:"source_url"`
-	SiteName   string `json:"site_name"`
+	// SourceURL and SiteName are as in Idea.
+	SourceURL *string `json:"source_url"`
+	SiteName  *string `json:"site_name"`
 }
 
 // QuickResult is the KindQuick result, published as the job goes: its
@@ -564,8 +586,9 @@ func (s *Service) fillQuick(ctx context.Context, p QuickJob, publish func(QuickR
 	for i, idea := range out.Ideas {
 		reqs[i] = recipes.GroundRequest{DishName: idea.Name, Query: idea.SearchQuery}
 	}
-	err = keepGrounded(ctx, s.grounder, reqs, skills.QuickIdeasKept, &res.Ideas, &res.Dropped, func(i int, gr recipes.Grounded) (QuickIdea, bool) {
-		return quickIdeaOf(out.Ideas[i], gr), OfQuickKind(p.Kind, gr.Method, gr.MinutesTotal)
+	err = keepGrounded(ctx, s.grounder, reqs, skills.QuickIdeasKept, &res.Ideas, &res.Dropped, func(i int, gr recipes.Grounded) (QuickIdea, bool, error) {
+		idea, err := quickIdeaOf(out.Ideas[i], gr)
+		return idea, OfQuickKind(p.Kind, gr.Method, gr.MinutesTotal), err
 	}, func() error { return publish(res) })
 	if err != nil {
 		return res, err
@@ -578,7 +601,11 @@ func (s *Service) fillQuick(ctx context.Context, p QuickJob, publish func(QuickR
 }
 
 // quickIdeaOf is idea as grounded by gr.
-func quickIdeaOf(idea skills.QuickIdea, gr recipes.Grounded) QuickIdea {
+func quickIdeaOf(idea skills.QuickIdea, gr recipes.Grounded) (QuickIdea, error) {
+	src, err := sourceOf(gr)
+	if err != nil {
+		return QuickIdea{}, err
+	}
 	return QuickIdea{
 		Name:         idea.Name,
 		Method:       gr.Method,
@@ -586,9 +613,9 @@ func quickIdeaOf(idea skills.QuickIdea, gr recipes.Grounded) QuickIdea {
 		Difficulty:   gr.Difficulty,
 		RecipeID:     gr.RecipeID,
 		PhotoURL:     dinners.PhotoURL(gr.PhotoID),
-		SourceURL:    gr.SourceURL,
-		SiteName:     gr.SiteName,
-	}
+		SourceURL:    src.URL,
+		SiteName:     src.SiteName,
+	}, nil
 }
 
 // Origins of a dinner made from an idea (the dinners.origin column).

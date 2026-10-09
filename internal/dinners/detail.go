@@ -147,11 +147,11 @@ func readRecipe(ctx context.Context, q *db.Queries, recipeID string, d *Detail) 
 		return fmt.Errorf("recipe %s: %w", recipeID, err)
 	}
 	if !IsManualRecipe(rec.SourceUrl) {
-		site, err := pageSiteName(rec.SiteName, rec.SourceUrl)
+		src, err := SourceOf(rec.SiteName, rec.SourceUrl)
 		if err != nil {
 			return err
 		}
-		d.Source = &Source{SiteName: site, URL: safeSourceURL(rec.SourceUrl)}
+		d.Source = &src
 	}
 	ings, err := q.ListRecipeIngredients(ctx, recipeID)
 	if err != nil {
@@ -180,6 +180,19 @@ func readRecipe(ctx context.Context, q *db.Queries, recipeID string, d *Detail) 
 		d.Steps = append(d.Steps, step.Text)
 	}
 	return nil
+}
+
+// SourceOf is the Source of a recipe fetched from sourceURL whose stored
+// site name is siteName: the name only when the page gave it (see
+// pageSiteName) and the link only when it is free of secrets (see
+// safeSourceURL). It is the one way a fetched recipe's source reaches a
+// client.
+func SourceOf(siteName sql.NullString, sourceURL string) (Source, error) {
+	site, err := pageSiteName(siteName, sourceURL)
+	if err != nil {
+		return Source{}, err
+	}
+	return Source{SiteName: site, URL: safeSourceURL(sourceURL)}, nil
 }
 
 // pageSiteName is the stored site name of a recipe fetched from sourceURL

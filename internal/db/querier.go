@@ -24,6 +24,9 @@ type Querier interface {
 	// Marks the oldest queued job running and returns it. Returns sql.ErrNoRows
 	// when no job is queued.
 	ClaimNextJob(ctx context.Context, now sql.NullString) (Job, error)
+	// Claims one period of a schedule. The insert is the claim: 1 row means
+	// this caller owns the period, 0 rows means it was already claimed.
+	ClaimScheduleRun(ctx context.Context, arg ClaimScheduleRunParams) (int64, error)
 	// Clears every day's calendar event id: none is on the chosen calendar.
 	ClearCalendarEvents(ctx context.Context, updatedAt string) error
 	// Records that Google refuses the stored grant: clears the refresh token and

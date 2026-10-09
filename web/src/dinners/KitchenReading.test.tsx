@@ -116,6 +116,45 @@ function currentStep() {
   return current[0]!.textContent
 }
 
+// FakeSentinel is a WakeLockSentinel as far as the screen uses one.
+type FakeSentinel = EventTarget & { released: boolean; release: Mock<() => Promise<void>> }
+
+// letGo releases a lock as the browser does, telling its listeners so.
+function letGo(sentinel: FakeSentinel) {
+  if (sentinel.released) return
+  sentinel.released = true
+  sentinel.dispatchEvent(new Event('release'))
+}
+
+// stubWakeLock gives jsdom, which has none, a Screen Wake Lock. Each request
+// is granted at once, or, given hold, only when the test calls grant.
+function stubWakeLock({ hold = false } = {}) {
+  const sentinels: FakeSentinel[] = []
+  const pending: (() => void)[] = []
+  const request = vi.fn((type: string) => {
+    expect(type).toBe('screen')
+    const sentinel: FakeSentinel = Object.assign(new EventTarget(), {
+      released: false,
+      release: vi.fn(() => {
+        letGo(sentinel)
+        return Promise.resolve()
+      }),
+    })
+    sentinels.push(sentinel)
+    if (!hold) return Promise.resolve(sentinel)
+    return new Promise<FakeSentinel>((resolve) => pending.push(() => resolve(sentinel)))
+  })
+  Object.defineProperty(navigator, 'wakeLock', { configurable: true, value: { request } })
+  return { request, sentinels, grant: () => pending.shift()!() }
+}
+
+// setVisibility shows or hides the page as the browser would, telling the
+// page so.
+function setVisibility(state: DocumentVisibilityState) {
+  Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state })
+  document.dispatchEvent(new Event('visibilitychange'))
+}
+
 beforeEach(() => {
   mockViewport(1180)
   // Wednesday Oct 7, noon in New York.
@@ -126,11 +165,14 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers()
   Reflect.deleteProperty(window, 'matchMedia')
+  Reflect.deleteProperty(navigator, 'wakeLock')
+  Reflect.deleteProperty(document, 'visibilityState')
   vi.unstubAllGlobals()
 })
 
 describe('Kitchen reading mode', () => {
   it('is the tablet layout of the same route: header with back, title, Keep screen on and text size', async () => {
+    stubWakeLock()
     serve()
     await renderPage()
 
@@ -378,5 +420,155 @@ describe('Kitchen reading mode', () => {
     expect(screen.queryByRole('region', { name: 'Ingredients' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Next step' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Add to this week' })).toBeInTheDocument()
+  })
+
+  describe('Keep screen on', () => {
+    it('holds a screen wake lock while on and releases it when turned off', async () => {
+      const wakeLock = stubWakeLock()
+      serve()
+      await renderPage()
+      const keepOn = screen.getByRole('switch', { name: 'Keep screen on' })
+      expect(keepOn).toBeEnabled()
+      expect(wakeLock.request).not.toHaveBeenCalled()
+
+      fireEvent.click(keepOn)
+      expect(keepOn).toHaveAttribute('aria-checked', 'true')
+      await waitFor(() => expect(wakeLock.request).toHaveBeenCalledTimes(1))
+      expect(wakeLock.sentinels[0]!.release).not.toHaveBeenCalled()
+
+      fireEvent.click(keepOn)
+      expect(keepOn).toHaveAttribute('aria-checked', 'false')
+      expect(wakeLock.sentinels[0]!.release).toHaveBeenCalledTimes(1)
+
+      // On again: a fresh lock.
+      fireEvent.click(keepOn)
+      await waitFor(() => expect(wakeLock.request).toHaveBeenCalledTimes(2))
+      expect(wakeLock.sentinels[1]!.released).toBe(false)
+    })
+
+    it('releases the lock when the screen is left', async () => {
+      const wakeLock = stubWakeLock()
+      serve()
+      const view = await renderPage()
+      fireEvent.click(screen.getByRole('switch', { name: 'Keep screen on' }))
+      await waitFor(() => expect(wakeLock.request).toHaveBeenCalledTimes(1))
+
+      view.unmount()
+      expect(wakeLock.sentinels[0]!.release).toHaveBeenCalledTimes(1)
+    })
+
+    it('releases a lock granted only after the screen was left', async () => {
+      const wakeLock = stubWakeLock({ hold: true })
+      serve()
+      const view = await renderPage()
+      fireEvent.click(screen.getByRole('switch', { name: 'Keep screen on' }))
+      expect(wakeLock.request).toHaveBeenCalledTimes(1)
+
+      view.unmount()
+      await act(async () => wakeLock.grant())
+      expect(wakeLock.sentinels[0]!.release).toHaveBeenCalledTimes(1)
+    })
+
+    it('asks for the lock again when the page is visible again while on, and not while off', async () => {
+      const wakeLock = stubWakeLock()
+      serve()
+      await renderPage()
+      const keepOn = screen.getByRole('switch', { name: 'Keep screen on' })
+      fireEvent.click(keepOn)
+      await waitFor(() => expect(wakeLock.request).toHaveBeenCalledTimes(1))
+
+      // Hidden, the browser lets the lock go; nothing is asked while hidden.
+      act(() => setVisibility('hidden'))
+      act(() => letGo(wakeLock.sentinels[0]!))
+      expect(wakeLock.request).toHaveBeenCalledTimes(1)
+
+      act(() => setVisibility('visible'))
+      await waitFor(() => expect(wakeLock.request).toHaveBeenCalledTimes(2))
+      expect(keepOn).toHaveAttribute('aria-checked', 'true')
+
+      // Visible again with the lock still held: no second lock.
+      act(() => setVisibility('visible'))
+      expect(wakeLock.request).toHaveBeenCalledTimes(2)
+
+      fireEvent.click(keepOn)
+      act(() => setVisibility('hidden'))
+      act(() => setVisibility('visible'))
+      expect(wakeLock.request).toHaveBeenCalledTimes(2)
+    })
+
+    it('asks for the lock again when the browser lets it go while the page is visible', async () => {
+      const wakeLock = stubWakeLock()
+      serve()
+      await renderPage()
+      const keepOn = screen.getByRole('switch', { name: 'Keep screen on' })
+      fireEvent.click(keepOn)
+      await waitFor(() => expect(wakeLock.request).toHaveBeenCalledTimes(1))
+
+      act(() => letGo(wakeLock.sentinels[0]!))
+      await waitFor(() => expect(wakeLock.request).toHaveBeenCalledTimes(2))
+      await act(async () => {})
+      expect(keepOn).toHaveAttribute('aria-checked', 'true')
+
+      // The fresh lock is watched too.
+      act(() => letGo(wakeLock.sentinels[1]!))
+      await waitFor(() => expect(wakeLock.request).toHaveBeenCalledTimes(3))
+      expect(wakeLock.sentinels[2]!.released).toBe(false)
+      expect(keepOn).toHaveAttribute('aria-checked', 'true')
+    })
+
+    it('asks for the lock again when the page was hidden and shown while a request was pending', async () => {
+      const wakeLock = stubWakeLock({ hold: true })
+      serve()
+      await renderPage()
+      const keepOn = screen.getByRole('switch', { name: 'Keep screen on' })
+      fireEvent.click(keepOn)
+      expect(wakeLock.request).toHaveBeenCalledTimes(1)
+
+      // Hidden and shown again before the first lock is granted, which the
+      // browser has let go by the time it is.
+      act(() => setVisibility('hidden'))
+      act(() => setVisibility('visible'))
+      expect(wakeLock.request).toHaveBeenCalledTimes(1)
+      letGo(wakeLock.sentinels[0]!)
+      await act(async () => wakeLock.grant())
+      expect(wakeLock.request).toHaveBeenCalledTimes(2)
+
+      await act(async () => wakeLock.grant())
+      expect(wakeLock.sentinels[1]!.released).toBe(false)
+      expect(wakeLock.request).toHaveBeenCalledTimes(2)
+      expect(keepOn).toHaveAttribute('aria-checked', 'true')
+    })
+
+    it('reports a lock the browser refuses and turns the switch back off', async () => {
+      const wakeLock = stubWakeLock()
+      wakeLock.request.mockRejectedValueOnce(new DOMException('Blocked by permissions policy', 'NotAllowedError'))
+      serve()
+      await renderPage()
+      const keepOn = screen.getByRole('switch', { name: 'Keep screen on' })
+      fireEvent.click(keepOn)
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        "Couldn't keep the screen on: NotAllowedError: Blocked by permissions policy",
+      )
+      expect(keepOn).toHaveAttribute('aria-checked', 'false')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+      expect(keepOn).toHaveAttribute('aria-checked', 'true')
+      await waitFor(() => expect(wakeLock.request).toHaveBeenCalledTimes(2))
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+
+    it('is disabled, and says why, in a browser that cannot keep the screen on', async () => {
+      serve()
+      await renderPage()
+      const keepOn = screen.getByRole('switch', { name: 'Keep screen on' })
+      expect(keepOn).toBeDisabled()
+      expect(keepOn).toHaveAttribute('aria-checked', 'false')
+      expect(keepOn).toHaveAccessibleDescription(
+        "This browser can't keep the screen on, so it may dim while you cook.",
+      )
+      fireEvent.click(keepOn)
+      expect(keepOn).toHaveAttribute('aria-checked', 'false')
+    })
   })
 })

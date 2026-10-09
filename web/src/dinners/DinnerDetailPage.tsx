@@ -326,7 +326,8 @@ const textSizes: SegmentedOption<TextSize>[] = [
 // is planned for, its title, Keep screen on and the text size.
 function ReadingHeader({ dinner, textSize }: { dinner: DinnerDetail; textSize: ReturnType<typeof useTextSize> }) {
   const keepOnId = useId()
-  const [keepScreenOn, setKeepScreenOn] = useKeepScreenOn()
+  const keepOnHintId = useId()
+  const keepScreenOn = useKeepScreenOn()
   const { failure } = textSize
   return (
     <>
@@ -338,7 +339,13 @@ function ReadingHeader({ dinner, textSize }: { dinner: DinnerDetail; textSize: R
         </div>
         <div className={styles.keepOn}>
           <span id={keepOnId}>Keep screen on</span>
-          <Toggle checked={keepScreenOn} onCheckedChange={setKeepScreenOn} aria-labelledby={keepOnId} />
+          <Toggle
+            checked={keepScreenOn.on}
+            onCheckedChange={keepScreenOn.setOn}
+            aria-labelledby={keepOnId}
+            disabled={!keepScreenOn.supported}
+            aria-describedby={keepScreenOn.supported ? undefined : keepOnHintId}
+          />
         </div>
         <Segmented
           label="Text size"
@@ -348,6 +355,16 @@ function ReadingHeader({ dinner, textSize }: { dinner: DinnerDetail; textSize: R
           className={styles.textSize}
         />
       </header>
+      {!keepScreenOn.supported && (
+        <p id={keepOnHintId} className={styles.keepOnHint}>
+          This browser can't keep the screen on, so it may dim while you cook.
+        </p>
+      )}
+      {keepScreenOn.failure !== null && (
+        <ErrorBanner onRetry={() => keepScreenOn.setOn(true)}>
+          Couldn't keep the screen on: {keepScreenOn.failure}
+        </ErrorBanner>
+      )}
       {failure !== null && (
         <ErrorBanner onRetry={textSize.retry}>
           {textSizeFailureText[failure.action]}: {failure.message}

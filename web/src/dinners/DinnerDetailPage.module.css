@@ -312,6 +312,13 @@
   font-weight: 700;
 }
 
+.keepOnHint {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--color-neutral-700);
+}
+
 /* The A / A / A control: an outlined pill, the size chosen in grape, each
    A drawn at the size it stands for. */
 .readingHeader .textSize {

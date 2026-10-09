@@ -1,0 +1,240 @@
+/* Mock 1k. On mobile the photo and the sheet run full-bleed past the
+   shell's 20 px side padding; from tablet up they sit in one column. The
+   page is at least as tall as the shell's scroll area (a stretched flex
+   item, so its height resolves the percentage) and the sheet grows into
+   any room left, so the action bar rests at the bottom of a short recipe. */
+.page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  font-family: var(--font-body);
+  color: var(--color-text);
+}
+
+.tablet,
+.desktop {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.hero {
+  position: relative;
+  height: 250px;
+}
+
+.mobile .hero,
+.mobile .skeletonHero {
+  margin: 0 -20px;
+}
+
+.tablet .hero,
+.desktop .hero {
+  border-radius: var(--radius-card) var(--radius-card) 0 0;
+  overflow: hidden;
+}
+
+/* Without a dinner to show, the back button sits alone above the message. */
+.backRow {
+  padding-top: calc(16px + env(safe-area-inset-top));
+}
+
+.backRow .back {
+  position: static;
+}
+
+.photo {
+  width: 100%;
+  height: 100%;
+}
+
+.back {
+  position: absolute;
+  top: calc(16px + env(safe-area-inset-top));
+  left: 20px;
+}
+
+/* The sheet overlaps the photo by 28 px. */
+.sheet {
+  position: relative;
+  flex-grow: 1;
+  margin-top: -28px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 22px 20px 0;
+  border-radius: 32px 32px 0 0;
+  background: var(--color-bg);
+}
+
+.mobile .sheet {
+  margin-left: -20px;
+  margin-right: -20px;
+}
+
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 28px;
+  font-weight: 400;
+  line-height: 1.05;
+}
+
+.why {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: var(--color-accent-2-100);
+  color: var(--color-accent-2-900);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  margin-top: 6px;
+}
+
+.sectionTitle {
+  margin: 0 0 4px;
+  font-family: var(--font-heading);
+  font-size: 18px;
+  font-weight: 400;
+  line-height: 1.15;
+}
+
+.ingredients,
+.steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.ingredient {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.ingredient:last-child {
+  border-bottom: 0;
+}
+
+.note,
+.qty {
+  color: var(--color-neutral-700);
+}
+
+.qty {
+  flex: none;
+  text-align: right;
+}
+
+.step {
+  display: flex;
+  gap: 12px;
+  padding: 8px 0;
+}
+
+.number {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent-100);
+  color: var(--color-accent-800);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.source {
+  margin: 4px 0 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-neutral-700);
+}
+
+.source a {
+  color: inherit;
+}
+
+.missing {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 6px 0 0;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: var(--color-neutral-100);
+  color: var(--color-neutral-800);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.missing p {
+  margin: 0;
+}
+
+/* A 44 px tall tap target for the link. */
+.fix {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--color-accent-700);
+  font-weight: 700;
+}
+
+/* At the bottom of the page, which fills the scroll area, and held at the
+   bottom of the screen over a long recipe. Sticky offsets count from inside
+   the scroll area's padding, which on mobile already keeps clear of the nav
+   bar. */
+.bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 24px;
+  padding: 10px 0;
+  background: var(--color-bg);
+}
+
+.bar > :first-child {
+  flex: 1;
+}
+
+.add {
+  width: 100%;
+  min-height: 52px;
+  font-size: 16px;
+}
+
+.filled {
+  color: var(--color-accent);
+  fill: currentColor;
+}
+
+.skeletonHero {
+  height: 250px;
+  border-radius: 0;
+}
+
+.skeletonTitle {
+  height: 32px;
+  width: 70%;
+}

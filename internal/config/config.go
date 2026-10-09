@@ -3,9 +3,11 @@
 package config
 
 import (
+	"crypto/ecdh"
 	"errors"
 	"fmt"
 	"net"
+	"net/mail"
 	"net/url"
 	"os"
 	"strconv"
@@ -14,6 +16,7 @@ import (
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secureurl"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/vapid"
 )
 
 // Environment variable names.
@@ -31,6 +34,10 @@ const (
 
 	EnvGoogleClientID         = "MEALQUEST_GOOGLE_CLIENT_ID"
 	EnvGoogleClientSecretFile = "MEALQUEST_GOOGLE_CLIENT_SECRET_FILE"
+
+	EnvVAPIDPublicKey      = "MEALQUEST_VAPID_PUBLIC_KEY"
+	EnvVAPIDPrivateKeyFile = "MEALQUEST_VAPID_PRIVATE_KEY_FILE"
+	EnvVAPIDSubject        = "MEALQUEST_VAPID_SUBJECT"
 
 	EnvSessionIdle = "MEALQUEST_SESSION_IDLE"
 	EnvSessionMax  = "MEALQUEST_SESSION_MAX"
@@ -70,6 +77,9 @@ type Config struct {
 	GoogleClientID     string
 	GoogleClientSecret Secret
 
+	// VAPID is the key pair and contact subject Web Push signs with.
+	VAPID VAPID
+
 	// SessionIdle ends a session left unused this long.
 	SessionIdle time.Duration
 	// SessionMax ends every session this long after sign-in, used or not.
@@ -91,6 +101,20 @@ type Config struct {
 	// network's http://searxng:8080 is neither https nor loopback, so the
 	// secure-URL rule does not apply. Empty when unset.
 	SearXNGURL string
+}
+
+// VAPID is the Web Push signing identity (RFC 8292). All three variables
+// are required together, and the private key must belong to the public key.
+type VAPID struct {
+	// PublicKey is the unpadded base64url uncompressed P-256 point, as
+	// browsers take it for applicationServerKey.
+	PublicKey string
+	// PrivateKey is the unpadded base64url 32-byte P-256 scalar, read from
+	// the file MEALQUEST_VAPID_PRIVATE_KEY_FILE names.
+	PrivateKey Secret
+	// Subject is the push services' contact for this sender: a mailto: URI
+	// or an https:// URL.
+	Subject string
 }
 
 // PublicOrigin returns the scheme and host of PublicURL, the only parts of it
@@ -121,6 +145,8 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 
 		GoogleClientID:     r.str(EnvGoogleClientID),
 		GoogleClientSecret: r.secretFile(EnvGoogleClientSecretFile),
+
+		VAPID: r.vapid(),
 
 		SessionIdle: r.sessionDuration(EnvSessionIdle, DefaultSessionIdle),
 		SessionMax:  r.sessionDuration(EnvSessionMax, DefaultSessionMax),
@@ -385,6 +411,61 @@ func (r *reader) secretFile(name string) Secret {
 		return Secret{}
 	}
 	return Secret{value: value}
+}
+
+// vapid reads the VAPID public key, private key file and subject, each
+// required, and checks the private key against the public key by deriving
+// its public point. A missing variable is reported by name; the private key
+// is never echoed.
+func (r *reader) vapid() VAPID {
+	cfg := VAPID{
+		PublicKey:  r.str(EnvVAPIDPublicKey),
+		PrivateKey: r.secretFile(EnvVAPIDPrivateKeyFile),
+		Subject:    r.vapidSubject(EnvVAPIDSubject),
+	}
+	var public *ecdh.PublicKey
+	if cfg.PublicKey != "" {
+		k, err := vapid.ParsePublicKey(cfg.PublicKey)
+		if err != nil {
+			r.fail(EnvVAPIDPublicKey, "invalid VAPID public key: %v", err)
+		}
+		public = k
+	}
+	var private *ecdh.PrivateKey
+	if cfg.PrivateKey.Reveal() != "" {
+		k, err := vapid.ParsePrivateKey(cfg.PrivateKey.Reveal())
+		if err != nil {
+			r.fail(EnvVAPIDPrivateKeyFile, "invalid VAPID private key in secret file: %v", err)
+		}
+		private = k
+	}
+	if public != nil && private != nil && vapid.CheckPair(public, private) != nil {
+		r.fail(EnvVAPIDPrivateKeyFile, "VAPID private key does not match %s", EnvVAPIDPublicKey)
+	}
+	return cfg
+}
+
+// vapidSubject reads a VAPID subject: mailto: followed by one email
+// address, or an absolute https:// URL.
+func (r *reader) vapidSubject(name string) string {
+	v, ok := r.required(name)
+	if !ok {
+		return ""
+	}
+	if addr, found := strings.CutPrefix(v, "mailto:"); found {
+		parsed, err := mail.ParseAddress(addr)
+		if err != nil || parsed.Address != addr {
+			r.fail(name, "invalid mailto: subject (want mailto:<email address>)")
+			return ""
+		}
+		return v
+	}
+	u, err := url.Parse(v)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+		r.fail(name, "invalid subject (want mailto:<email address> or an https:// URL)")
+		return ""
+	}
+	return v
 }
 
 func unwrapPathError(err error) error {

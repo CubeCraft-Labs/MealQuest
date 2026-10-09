@@ -1,7 +1,8 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useCallback } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
-import { parseDinner } from '../dinners/api.ts'
+import { DIFFICULTIES, METHODS, parseDinner, photoId, type Difficulty, type Method } from '../dinners/api.ts'
 import { QUEST_LOG_KEY } from '../discover/api.ts'
 import { parsePlan, planKey } from '../plan/api.ts'
 
@@ -141,6 +142,143 @@ export function useFindIdeas() {
   })
 }
 
+// QUICK_PATH starts finding a page of Quick dinner ideas, and
+// QUICK_JOB_KIND is the kind of the job that finds it.
+export const QUICK_PATH = `${IDEAS_PATH}/quick`
+export const QUICK_JOB_KIND = 'quick_ideas'
+
+// QUICK_KINDS are the kinds of Quick dinner, the tabs of Quick dinners in
+// order (skills.QuickKinds): cooked in a crock pot, or 30 minutes or less
+// from prep to table.
+export const QUICK_KINDS = ['crockpot', 'under30'] as const
+export type QuickKind = (typeof QUICK_KINDS)[number]
+
+// QUICK_IDEAS_KEPT is the most ideas one page of Quick dinners shows
+// (skills.QuickIdeasKept), and MAX_EXCLUDE the most names a request may
+// exclude (skills.MaxExclude).
+export const QUICK_IDEAS_KEPT = 6
+export const MAX_EXCLUDE = 60
+
+// QuickIdea is a grounded Quick dinner idea as a row shows it. method,
+// minutes_total and difficulty are the grounded recipe's; minutes_total is
+// null when the recipe does not say, which only a crock-pot idea may be.
+// photo_id is the stored photo's, from photo_url.
+export type QuickIdea = {
+  name: string
+  method: Method
+  minutes_total: number | null
+  difficulty: Difficulty
+  photo_id: string | undefined
+}
+
+// QuickResult is a quick_ideas job's result, published as it goes: the
+// ideas grounded so far, in the order the server shows them.
+export type QuickResult = {
+  stage: IdeaStage
+  kind: QuickKind
+  ideas: QuickIdea[]
+}
+
+function parseQuickIdea(where: string, body: unknown): QuickIdea {
+  if (
+    !isRecord(body) ||
+    typeof body.name !== 'string' ||
+    !(METHODS as readonly unknown[]).includes(body.method) ||
+    (body.minutes_total !== null && !Number.isInteger(body.minutes_total)) ||
+    !(DIFFICULTIES as readonly unknown[]).includes(body.difficulty)
+  ) {
+    throw new Error(`${where}: result has an idea that is not a grounded Quick dinner`)
+  }
+  return {
+    name: body.name,
+    method: body.method as Method,
+    minutes_total: body.minutes_total as number | null,
+    difficulty: body.difficulty as Difficulty,
+    photo_id: photoId(where, body.photo_url),
+  }
+}
+
+// parseQuickResult checks a quick_ideas job's result, which useJob passes
+// on unread, is a page of the kind asked for.
+export function parseQuickResult(where: string, kind: QuickKind, body: unknown): QuickResult {
+  if (
+    !isRecord(body) ||
+    typeof body.stage !== 'string' ||
+    !(IDEA_STAGES as readonly string[]).includes(body.stage) ||
+    body.kind !== kind ||
+    !isStrings(body.exclude) ||
+    !Array.isArray(body.ideas) ||
+    typeof body.dropped !== 'number'
+  ) {
+    throw new Error(`${where}: result is not Quick dinner ideas of kind ${kind}`)
+  }
+  return { stage: body.stage as IdeaStage, kind, ideas: body.ideas.map((idea) => parseQuickIdea(where, idea)) }
+}
+
+// QuickPage is a page of Quick dinner ideas its job found.
+export type QuickPage = { jobId: string; ideas: QuickIdea[] }
+
+// QuickTab is what one tab of Quick dinners has found this session: the
+// pages found, the job finding the next one, whether the server has said
+// there are no more, why the last page asked for could not start, kept
+// until Retry asks again, and the ideas added to the Quest log, as
+// "jobId:index".
+export type QuickTab = { pages: QuickPage[]; jobId: string | null; ended: boolean; startError: Error | null; added: string[] }
+
+const NEW_TAB: QuickTab = { pages: [], jobId: null, ended: false, startError: null, added: [] }
+
+export function quickTabKey(kind: QuickKind) {
+  return ['ideas', 'quick', kind] as const
+}
+
+// shownNames are the names of every idea a tab shows, which its next page
+// excludes so that nothing repeats.
+export function shownNames(tab: QuickTab): string[] {
+  return tab.pages.flatMap((page) => page.ideas.map((idea) => idea.name))
+}
+
+// useQuickTab is a tab's QuickTab, held in the query cache for the session
+// (never stale, never collected) so that leaving the tab or the screen
+// keeps it, and update, which changes it. Nothing is fetched: a refetch
+// reads back what the tab holds.
+export function useQuickTab(kind: QuickKind) {
+  const queryClient = useQueryClient()
+  const { data } = useQuery({
+    queryKey: quickTabKey(kind),
+    queryFn: () => queryClient.getQueryData<QuickTab>(quickTabKey(kind)) ?? NEW_TAB,
+    initialData: NEW_TAB,
+    staleTime: Infinity,
+    gcTime: Infinity,
+  })
+  const update = useCallback(
+    (change: (tab: QuickTab) => QuickTab) => queryClient.setQueryData<QuickTab>(quickTabKey(kind), (tab) => change(tab ?? NEW_TAB)),
+    [queryClient, kind],
+  )
+  return [data, update] as const
+}
+
+// useFindQuickIdeas starts finding a page of Quick dinner ideas of kind,
+// none named in exclude (POST /api/v1/ideas/quick), and makes its job the
+// tab's job, or its failure the tab's startError, also if the screen has
+// been left meanwhile. Its mutationKey is the tab's, so a tab shown again
+// knows a page is still being asked for.
+export function useFindQuickIdeas(kind: QuickKind) {
+  const { apiFetch } = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationKey: quickTabKey(kind),
+    mutationFn: async (exclude: string[]): Promise<string> => {
+      queryClient.setQueryData<QuickTab>(quickTabKey(kind), (tab) => ({ ...(tab ?? NEW_TAB), startError: null }))
+      const body = await apiFetch<unknown>(QUICK_PATH, { method: 'POST', body: { kind, exclude } })
+      if (!isRecord(body) || typeof body.jobId !== 'string') throw new Error(`POST ${QUICK_PATH}: response has no jobId`)
+      const jobId = body.jobId
+      queryClient.setQueryData<QuickTab>(quickTabKey(kind), (tab) => ({ ...(tab ?? NEW_TAB), jobId }))
+      return jobId
+    },
+    onError: (startError: Error) => queryClient.setQueryData<QuickTab>(quickTabKey(kind), (tab) => ({ ...(tab ?? NEW_TAB), startError })),
+  })
+}
+
 // IdeaRef is idea index of the succeeded ideas job jobId.
 export type IdeaRef = { jobId: string; index: number }
 
@@ -151,8 +289,9 @@ function ideaPath({ jobId, index }: IdeaRef, action: 'quest-log' | 'cook-tonight
 // useAddIdeaToQuestLog adds an idea to the Quest log (POST
 // /api/v1/ideas/{jobId}/items/{i}/quest-log) and resolves with the
 // dinner's name. Asking again answers the same dinner. The Quest log is
-// read again after it.
-export function useAddIdeaToQuestLog() {
+// read again after it, and onAdded told, also if the caller has unmounted
+// meanwhile.
+export function useAddIdeaToQuestLog(onAdded?: (idea: IdeaRef) => void) {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
   return useMutation({
@@ -160,7 +299,10 @@ export function useAddIdeaToQuestLog() {
       const path = ideaPath(idea, 'quest-log')
       return parseDinner(`POST ${path}`, await apiFetch<unknown>(path, { method: 'POST' })).name
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: QUEST_LOG_KEY }),
+    onSuccess: (_name, idea) => {
+      onAdded?.(idea)
+      return queryClient.invalidateQueries({ queryKey: QUEST_LOG_KEY })
+    },
   })
 }
 

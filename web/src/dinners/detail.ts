@@ -4,6 +4,7 @@ import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import {
   DIFFICULTIES,
+  dinnerDetailKey,
   dinnerPath,
   DINNERS_PATH,
   GROUNDING_POLL_MS,
@@ -158,7 +159,7 @@ export function useDinnerDetail(id: string) {
   const { apiRead, network } = useApi()
   const offline = useSyncExternalStore(network.subscribe, network.offline)
   const query = useQuery({
-    queryKey: ['dinners', 'detail', id],
+    queryKey: dinnerDetailKey(id),
     queryFn: async () => {
       const read = await apiRead<unknown>(dinnerPath(id))
       return parseDinnerDetail(`GET ${DINNERS_PATH}/{id}`, read.body, read.cached)

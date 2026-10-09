@@ -194,15 +194,14 @@ describe('DinnerDetailPage', () => {
       expect(screen.queryByText(/Recipe from/)).not.toBeInTheDocument()
     })
 
-    it('holds Add to this week and the heart at the bottom, at rest until the next update', async () => {
+    it('holds Add to this week and the heart at the bottom', async () => {
       serve(detail({ is_favorite: true }))
       renderAt(['/dinner/d1'])
 
       const add = await screen.findByRole('button', { name: 'Add to this week' })
-      expect(add).toHaveAttribute('aria-disabled', 'true')
-      expect(add).toHaveAccessibleDescription('Adding to this week and the favorite heart arrive in the next update.')
+      expect(add).toBeEnabled()
       const heart = screen.getByRole('button', { name: 'Favorite' })
-      expect(heart).toBeDisabled()
+      expect(heart).toBeEnabled()
       expect(heart).toHaveAttribute('aria-pressed', 'true')
       const bar = heart.parentElement!
       expect(bar).toContainElement(add)

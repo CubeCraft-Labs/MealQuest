@@ -207,6 +207,7 @@
   bottom: 0;
   z-index: 1;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   margin-top: 24px;
@@ -214,14 +215,24 @@
   background: var(--color-bg);
 }
 
-.bar > :first-child {
-  flex: 1;
-}
-
 .add {
-  width: 100%;
+  flex: 1;
   min-height: 52px;
   font-size: 16px;
+}
+
+/* What became of an add or a favorite: a full row above the buttons. */
+.status {
+  order: -1;
+  flex-basis: 100%;
+}
+
+.added {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-accent-2-800);
 }
 
 .filled {

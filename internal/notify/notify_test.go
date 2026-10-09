@@ -422,6 +422,31 @@ func TestRetryThenSent(t *testing.T) {
 	}
 }
 
+func TestUndeliverableFailsAtOnce(t *testing.T) {
+	ctx := context.Background()
+	svc, st, _ := newTestService(t)
+	setPref(t, st, PlanReady, false, true)
+	sender := &fakeSender{fail: fmt.Errorf("%w: chat refused the message (status 400)", ErrUndeliverable)}
+	if err := svc.Register(ChannelChat, sender); err != nil {
+		t.Fatal(err)
+	}
+	const key = "plan_ready:2026-10-12"
+	if err := svc.Emit(ctx, planReady(key)); err != nil {
+		t.Fatal(err)
+	}
+	wait, err := svc.deliverDue(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := onlyRow(t, st, key, ChannelChat)
+	if r.Status != "failed" || r.Attempts != 1 || r.LastError.String != sender.fail.Error() {
+		t.Fatalf("row = %+v, want failed after one attempt with the sender's error", r)
+	}
+	if wait != -1 || len(sender.messages()) != 1 {
+		t.Fatalf("wait = %v after %d deliveries, want nothing pending after one", wait, len(sender.messages()))
+	}
+}
+
 func TestGiveUpAfter24Hours(t *testing.T) {
 	ctx := context.Background()
 	svc, st, c := newTestService(t)

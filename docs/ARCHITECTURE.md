@@ -684,6 +684,49 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
     `{"endpoint"}` and answers 204 whether or not it was stored.
   - An invalid body is 400 `invalid_request` (not a JSON object of the
     known fields) or `invalid_subscription` (a field fails validation).
+- `internal/chat` keeps the Google Chat incoming webhook in `chat_settings`
+  and is the outbox's sender for the `chat` channel. The webhook URL holds
+  its own key and token, so it is sealed with `secretbox` in
+  `webhook_url_ct` and never appears in a response, log line or error.
+  Under the signed-in `/api/v1`:
+  - `PUT /api/v1/settings/chat-webhook` (CSRF-checked) takes
+    `{"url", "space_label"}`, both required. The URL must be exactly
+    `https://chat.googleapis.com/v1/spaces/{space}/messages?key=…&token=…`:
+    that scheme and host spelled so, no port or user info, the space id
+    letters, digits, `-` or `_`, and the raw query exactly
+    `key=…&token=…` (in that order, no empty segment, no second `?`, no
+    other parameter), each decoding to at least 16 characters of letters,
+    digits, `-`, `_`, `.`, `~` or `=`. The space label is 1–100
+    characters. A refused body is 400 `invalid_request` (not a JSON object
+    of the two fields) or `invalid_webhook`. Saving replaces any stored
+    webhook and clears its test outcome.
+  - `GET /api/v1/settings/chat-webhook` answers `{space_label, url_masked,
+    last_test_at, last_test_status}`, so `url_masked` is `null` exactly when
+    no webhook is stored; `url_masked`
+    shows the space id and only the last four characters of the decoded
+    token (`…/spaces/AAQA…/messages?key=…&token=…ZxQ=`). Absent values are
+    `null`.
+  - `POST /api/v1/settings/chat-webhook/test` (CSRF-checked) posts
+    "MealQuest · test message", unthreaded, and records `last_test_at` and
+    `last_test_status` (`ok` for 2xx, else `failed`). Whatever status Google
+    Chat answers, it answers 200 with that status as `http_status` and the
+    settings as GET gives them. No webhook stored is 409 `not_configured`;
+    a webhook replaced during the test is 409 `webhook_changed`; no answer
+    from Google Chat is recorded as failed and answered 502
+    `chat_unreachable`.
+  - A notification is posted as `{"text"}`, plus `cardsV2` with an "Open"
+    button to the payload's path under `MEALQUEST_PUBLIC_URL` for
+    `plan_ready` and `list_ready`, with `threadKey=mealquest-week-YYYY-Www`
+    (the ISO week of the payload's week) and
+    `messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD`; a payload
+    with no week is posted unthreaded. 2xx is sent; 429, 5xx or no answer
+    is retried by the outbox; any other status, or no webhook stored, fails
+    the row at once (`notify.ErrUndeliverable`). Redirects are not
+    followed.
+  - The builders in `internal/chat/messages.go` make each event's
+    `notify.Event` (title and body shared with Web Push) and `chat.Text`
+    its Chat message, such as "This week's plan is ready: Tacos, Bolognese,
+    Tikka masala + 4 more. Open the plan →".
 
 ## Google Calendar
 

@@ -146,3 +146,11 @@ ON CONFLICT (id) DO UPDATE SET
 	last_test_status = excluded.last_test_status,
 	updated_at = excluded.updated_at
 RETURNING *;
+
+-- name: RecordChatTest :execrows
+-- Records the outcome of a test message sent to the webhook sealed in
+-- webhook_url_ct; affects no row when the webhook has been replaced or
+-- removed since the test began.
+UPDATE chat_settings
+SET last_test_at = ?, last_test_status = ?, updated_at = ?
+WHERE id = 1 AND webhook_url_ct = ?;

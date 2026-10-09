@@ -161,6 +161,35 @@ func (q *Queries) GetRecipeSearchSettings(ctx context.Context) (RecipeSearchSett
 	return i, err
 }
 
+const recordChatTest = `-- name: RecordChatTest :execrows
+UPDATE chat_settings
+SET last_test_at = ?, last_test_status = ?, updated_at = ?
+WHERE id = 1 AND webhook_url_ct = ?
+`
+
+type RecordChatTestParams struct {
+	LastTestAt     sql.NullString
+	LastTestStatus sql.NullString
+	UpdatedAt      string
+	WebhookUrlCt   []byte
+}
+
+// Records the outcome of a test message sent to the webhook sealed in
+// webhook_url_ct; affects no row when the webhook has been replaced or
+// removed since the test began.
+func (q *Queries) RecordChatTest(ctx context.Context, arg RecordChatTestParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, recordChatTest,
+		arg.LastTestAt,
+		arg.LastTestStatus,
+		arg.UpdatedAt,
+		arg.WebhookUrlCt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const setIntegrationsGoogleCalendar = `-- name: SetIntegrationsGoogleCalendar :execrows
 UPDATE integrations_google
 SET calendar_id = ?, calendar_name = ?, updated_at = ?

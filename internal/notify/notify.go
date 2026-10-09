@@ -12,7 +12,8 @@
 // registered for their channel. A delivered row is marked sent. A failed
 // delivery is retried after a backoff of one minute doubling up to one hour,
 // until 24 hours after the row was created; the delivery that fails at or
-// after that point marks it failed, with the error in last_error.
+// after that point, or with an error wrapping ErrUndeliverable, marks it
+// failed, with the error in last_error.
 package notify
 
 import (

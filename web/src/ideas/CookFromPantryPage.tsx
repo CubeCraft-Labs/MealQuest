@@ -6,7 +6,6 @@ import { duration } from '../plan/PlanPage.tsx'
 import { Button } from '../ui/Button.tsx'
 import { Card } from '../ui/Card.tsx'
 import { Chip } from '../ui/Chip.tsx'
-import { EmptyState } from '../ui/EmptyState.tsx'
 import { ErrorBanner } from '../ui/ErrorBanner.tsx'
 import { Icon } from '../ui/Icon.tsx'
 import { IconButton } from '../ui/IconButton.tsx'
@@ -16,6 +15,8 @@ import { TextInput } from '../ui/TextInput.tsx'
 import {
   FROM_INGREDIENTS_JOB_KIND,
   IDEAS_KEPT,
+  ideasJobFailure,
+  ideasJobLost,
   INGREDIENT_LIMIT,
   MAX_INGREDIENTS,
   parseIdeasResult,
@@ -40,16 +41,6 @@ const WHEN = [
 const findingLines: Record<Exclude<IdeaStage, 'done'>, string> = {
   suggesting: 'Thinking up ideas…',
   grounding: 'Finding recipes for them…',
-}
-
-// searchFailures says why a search failed, by its failure code. Any other
-// code is shown as it is; no_ideas_found is not a failure to fix, and has
-// its own empty state.
-const searchFailures: Record<string, string> = {
-  ai_failed: "The AI assistant couldn't come up with ideas.",
-  search_not_configured: 'Recipe search is not set up. An admin can set it up in Settings.',
-  search_failed: "The recipe search couldn't be reached.",
-  internal_error: 'Something went wrong on the server.',
 }
 
 // fold is an ingredient as the chips compare it, so "Rice" repeats " rice".
@@ -235,15 +226,7 @@ export function CookFromPantryPage() {
   } else if (findIdeas.isError) {
     results = <ErrorBanner onRetry={retry}>Couldn't start looking for ideas. {findIdeas.error.message}</ErrorBanner>
   } else if (jobId !== null && job.status === 'failed') {
-    const code = job.error!.message
-    results =
-      code === 'no_ideas_found' ? (
-        <EmptyState title="No ideas found" action={{ label: 'Retry', onClick: retry }}>
-          No recipe matched {asked!.quickOnly ? 'a quick dinner from ' : ''}those ingredients. Add a few more and try again.
-        </EmptyState>
-      ) : (
-        <ErrorBanner onRetry={retry}>Couldn't find ideas. {searchFailures[code] ?? code}</ErrorBanner>
-      )
+    results = <ErrorBanner onRetry={retry}>Couldn't find ideas. {ideasJobFailure(job.error!.message)}</ErrorBanner>
   } else if (found.error !== null) {
     results = <ErrorBanner onRetry={retry}>Couldn't read the ideas. {found.error.message}</ErrorBanner>
   } else if (jobId !== null) {
@@ -251,7 +234,7 @@ export function CookFromPantryPage() {
     const done = job.status === 'succeeded'
     // A job not found will not be found by asking again: Retry searches
     // again. Any other failed poll is asked again.
-    const lost = job.error instanceof ApiError && job.error.status === 404
+    const lost = ideasJobLost(job.error)
     results = (
       <>
         {job.error !== null && (

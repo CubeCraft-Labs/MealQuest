@@ -471,18 +471,24 @@ describe('CookFromPantryPage', () => {
       expect(await screen.findByRole('alert')).toHaveTextContent(message)
     })
 
-    it('says no ideas were found, with no cards', async () => {
+    it('shows no ideas found with the ErrorBanner and no cards, and Retry searches again', async () => {
       let n = 0
       const { fetchMock, jobs } = stubServer({ [FIND]: () => jsonResponse(202, { jobId: `j${++n}` }) })
       jobs.j1 = state('failed', 'grounding', [], false, 'no_ideas_found')
-      jobs.j2 = state('failed', 'grounding', [], false, 'no_ideas_found')
+      jobs.j2 = state('succeeded', 'done', [CURRY])
       await renderPage()
       await searched(fetchMock)
 
-      expect(await screen.findByRole('heading', { name: 'No ideas found' })).toBeInTheDocument()
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent("Couldn't find ideas. No ideas came back with a recipe to match.")
       expect(screen.queryAllByRole('article')).toHaveLength(0)
-      fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
-      await waitFor(() => expect(calls(fetchMock, FIND)).toHaveLength(2))
+      expect(screen.queryAllByTestId('skeleton-card')).toHaveLength(0)
+      expect(screen.queryByRole('heading', { name: 'No ideas found' })).toBeNull()
+
+      fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+      await screen.findByRole('article', { name: CURRY.name })
+      expect(calls(fetchMock, FIND)).toHaveLength(2)
+      expect(screen.queryByRole('alert')).toBeNull()
     })
 
     it('shows an unknown job with the ErrorBanner, and Retry searches again', async () => {

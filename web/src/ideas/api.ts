@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useApi } from '../api/index.ts'
+import { ApiError, useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { parseDinner } from '../dinners/api.ts'
 import { QUEST_LOG_KEY } from '../discover/api.ts'
@@ -47,6 +47,29 @@ export type IdeasResult = {
   quick_only: boolean
   ideas: Idea[]
   dropped: number
+}
+
+// IDEAS_JOB_FAILURES says why an ideas job failed, by its failure code.
+// no_ideas_found is no fault to fix, but the search still came back empty.
+const IDEAS_JOB_FAILURES: Record<string, string> = {
+  no_ideas_found: 'No ideas came back with a recipe to match.',
+  ai_failed: "The AI assistant couldn't come up with ideas.",
+  search_not_configured: 'Recipe search is not set up. An admin can set it up in Settings.',
+  search_failed: "The recipe search couldn't be reached.",
+  internal_error: 'Something went wrong on the server.',
+}
+
+// ideasJobFailure says why an ideas job failed; an unknown code is shown
+// as it is.
+export function ideasJobFailure(code: string): string {
+  return IDEAS_JOB_FAILURES[code] ?? code
+}
+
+// ideasJobLost says a poll of an ideas job failed because the server no
+// longer has the job (404), so asking for it again will not find it: the
+// search must be started again.
+export function ideasJobLost(error: Error | null): boolean {
+  return error instanceof ApiError && error.status === 404
 }
 
 // Search is what Find ideas asks for.

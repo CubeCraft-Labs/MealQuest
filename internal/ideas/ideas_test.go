@@ -16,6 +16,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/llm"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes/recipestest"
@@ -32,17 +33,21 @@ type env struct {
 	search *recipestest.Search
 	pages  *recipestest.Pages
 	images *recipestest.Images
-	// model answers ideas_from_ingredients; normalize answers
-	// normalize_recipe while grounding.
+	// model answers ideas_from_ingredients and quick_ideas; normalize
+	// answers normalize_recipe while grounding.
 	model     *llm.Fake
 	normalize *llm.Fake
-	// fail, when set, fails ideas_from_ingredients without a model call.
+	// fail, when set, fails ideas_from_ingredients and quick_ideas without
+	// a model call.
 	fail error
+	st   *store.Store
 }
 
-// newEnv returns an ideas service over a migrated store and an unstarted
+// newEnv returns an ideas service over a migrated store with the
+// household's settings seeded and an unstarted
 // job runner. It finds ideas through the real harness and
-// ideas_from_ingredients with the scripted e.model, and grounds with fake
+// ideas_from_ingredients or quick_ideas with the scripted e.model, and
+// grounds with fake
 // search, pages and images and the scripted e.normalize.
 func newEnv(t *testing.T) *env {
 	t.Helper()
@@ -60,12 +65,16 @@ func newEnv(t *testing.T) *env {
 	if err := store.Migrate(ctx, st.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
+	if err := household.SeedSettings(ctx, st, "America/New_York"); err != nil {
+		t.Fatal(err)
+	}
 	e := &env{
 		search:    &recipestest.Search{Results: map[string][]recipes.Candidate{}},
 		pages:     &recipestest.Pages{Bodies: map[string][]byte{}},
 		images:    &recipestest.Images{JPEGs: map[string][]byte{}},
 		model:     &llm.Fake{},
 		normalize: &llm.Fake{},
+		st:        st,
 	}
 	g := recipestest.NewGrounder(t, st, dataDir, e.search, e.pages, e.images, e.normalize)
 	guard, err := harness.NewGuard(harness.DefaultMaxCalls)
@@ -84,12 +93,18 @@ func newEnv(t *testing.T) *env {
 		}
 		return skills.IdeasFromIngredients(ctx, cfg, scope, in)
 	}
+	quick := func(ctx context.Context, scope string, in skills.QuickIdeasRequest) (skills.QuickIdeaList, error) {
+		if e.fail != nil {
+			return skills.QuickIdeaList{}, e.fail
+		}
+		return skills.QuickIdeas(ctx, cfg, scope, in)
+	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	e.runner, err = jobs.NewRunner(st, logger, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.svc, err = NewService(g, generate, e.runner, logger)
+	e.svc, err = NewService(st, g, generate, quick, e.runner, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

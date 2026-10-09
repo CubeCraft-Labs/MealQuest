@@ -192,7 +192,7 @@ func newTestSuggest(t *testing.T) *suggest.Service {
 }
 
 // newTestIdeas returns an ideas service with its own unstarted job runner
-// and a generator that always fails.
+// and generators that always fail.
 func newTestIdeas(t *testing.T) *ideas.Service {
 	t.Helper()
 	st := newTestStore(t)
@@ -205,7 +205,10 @@ func newTestIdeas(t *testing.T) *ideas.Service {
 	fail := func(context.Context, string, skills.IdeasRequest) (skills.Ideas, error) {
 		return skills.Ideas{}, errors.New("no model in this test")
 	}
-	svc, err := ideas.NewService(g, fail, runner, logger)
+	failQuick := func(context.Context, string, skills.QuickIdeasRequest) (skills.QuickIdeaList, error) {
+		return skills.QuickIdeaList{}, errors.New("no model in this test")
+	}
+	svc, err := ideas.NewService(st, g, fail, failQuick, runner, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

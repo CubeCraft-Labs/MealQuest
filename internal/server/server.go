@@ -57,7 +57,7 @@ type RouteMounter interface {
 // /api/v1/integrations/google and its /connect, /callback and /calendars,
 // PUT /api/v1/integrations/google/calendar and DELETE
 // /api/v1/integrations/google; ideasSvc serves POST
-// /api/v1/ideas/from-ingredients; runner serves
+// /api/v1/ideas/from-ingredients and POST /api/v1/ideas/quick; runner serves
 // POST /api/v1/jobs and GET /api/v1/jobs/{id}; photos serves
 // GET /media/photos/{id}-{size}.jpg; assets is the web build
 // served for every other GET. /health, /auth and the web build are public.
@@ -164,6 +164,7 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Get("/integrations/google/calendars", getGoogleCalendars(logger, googleSvc))
 	apiV1.Put("/integrations/google/calendar", putGoogleCalendar(logger, googleSvc))
 	apiV1.Post("/ideas/from-ingredients", postIdeasFromIngredients(logger, ideasSvc))
+	apiV1.Post("/ideas/quick", postIdeasQuick(logger, ideasSvc))
 	apiV1.Post("/jobs", postJob(logger, runner))
 	apiV1.Get("/jobs/{id}", getJob(logger, runner))
 	media.Get("/photos/{name}", getPhoto(logger, photos))

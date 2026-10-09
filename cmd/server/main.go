@@ -139,7 +139,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	ideasSvc, err := ideas.NewService(grounder, ideaFinder(ai, guard), runner, logger)
+	ideasSvc, err := ideas.NewService(db, grounder, ideaFinder(ai, guard), quickIdeaFinder(ai, guard), runner, logger)
 	if err != nil {
 		return err
 	}
@@ -287,7 +287,7 @@ func newJobRunner(db *store.Store, logger *slog.Logger) (*jobs.Runner, *jobKinds
 // starts (dinners.NewService registers dinners.KindGroundDinner and
 // suggest.NewService suggest.KindSuggestionBatch, plan.NewService
 // plan.KindDraftWeek, shopping.NewService shopping.KindTitleSupplyRun,
-// ideas.NewService ideas.KindFromIngredients).
+// ideas.NewService ideas.KindFromIngredients and ideas.KindQuick).
 func registerJobKinds(runner *jobs.Runner) (*jobKinds, error) {
 	builtins, err := jobs.RegisterBuiltins(runner)
 	if err != nil {
@@ -353,6 +353,18 @@ func ideaFinder(ai *aisettings.Service, guard *harness.Guard) ideas.Generator {
 			return skills.Ideas{}, err
 		}
 		return skills.IdeasFromIngredients(ctx, cfg, scope, in)
+	}
+}
+
+// quickIdeaFinder runs quick_ideas with the AI settings current at each
+// run, sharing guard.
+func quickIdeaFinder(ai *aisettings.Service, guard *harness.Guard) ideas.QuickGenerator {
+	return func(ctx context.Context, scope string, in skills.QuickIdeasRequest) (skills.QuickIdeaList, error) {
+		cfg, err := ai.HarnessConfig(ctx, guard)
+		if err != nil {
+			return skills.QuickIdeaList{}, err
+		}
+		return skills.QuickIdeas(ctx, cfg, scope, in)
 	}
 }
 

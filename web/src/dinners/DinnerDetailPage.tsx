@@ -3,7 +3,7 @@ import { ChevronLeft, Heart } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router'
 import { ApiError } from '../api/errors.ts'
-import { planKey, usePlan, useSwapDay } from '../plan/api.ts'
+import { planKey, usePlan, useWeekSwap } from '../plan/api.ts'
 import { duration } from '../plan/PlanPage.tsx'
 import { weekdayName } from '../plan/week.ts'
 import { useBreakpoint } from '../shell/useBreakpoint.ts'
@@ -128,13 +128,14 @@ function Recipe({ dinner }: { dinner: DinnerDetail }) {
 }
 
 // AddedStatus says what became of a dinner added to a day: being saved,
-// added, or why it couldn't be, with Retry, which sends the same swap again.
-// The week's plan stays read while it shows, so a retry finds the day to
-// swap; once added, the plan is read again from the server.
+// added, or why it couldn't be, with Retry, which sends the same swap again
+// as the Draft board would (useWeekSwap), and is not offered while that is
+// refused. The week's plan stays read while it shows, so a retry finds the
+// day to swap; once added, the plan is read again from the server.
 function AddedStatus({ added }: { added: Added }) {
   const queryClient = useQueryClient()
   usePlan(added.week)
-  const swap = useSwapDay(added.week)
+  const { swap, refused, swapIn } = useWeekSwap(added.week)
   const { date } = added.swap
   const done = swap.succeeded === added.swap
   const failed = swap.failed?.swap === added.swap ? swap.failed.error : null
@@ -145,7 +146,7 @@ function AddedStatus({ added }: { added: Added }) {
   if (failed !== null) {
     return (
       <div className={styles.status}>
-        <ErrorBanner onRetry={() => swap.mutate(added.swap)}>
+        <ErrorBanner onRetry={refused ? undefined : () => swapIn(added.swap)}>
           Couldn't add it to {weekdayName(date)} {weekNames[added.which]}. {failed.message}
         </ErrorBanner>
       </div>

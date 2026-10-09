@@ -1,6 +1,6 @@
 import { useId, useState } from 'react'
 import { Link } from 'react-router'
-import { usePlan, useSwapDay, type PlanDinner, type Swap } from '../plan/api.ts'
+import { usePlan, useWeekSwap, type PlanDinner, type Swap } from '../plan/api.ts'
 import { cooking } from '../plan/PlanPage.tsx'
 import swapStyles from '../plan/SwapSheet.module.css'
 import { addDays, dayOfMonth, localNow, weekdayName, weekLabel, weekStart as weekOf } from '../plan/week.ts'
@@ -41,13 +41,14 @@ type WeekDaysProps = {
 }
 
 // WeekDays is the seven days of the week starting on week, each with its
-// dinner; choosing one swaps the dinner in through the Plan's own swap
-// (useSwapDay). A week with no plan offers to draft it on the Draft board:
+// dinner; choosing one swaps the dinner in as the Draft board swaps a day
+// (useWeekSwap). A week with no plan offers to draft it on the Draft board:
 // nothing here makes a plan up. A dinner already on the week can't be added
-// again, nor can one while a change to the week is still being saved.
+// again, nor can one while a swap of the week is still being saved or the
+// week is being pushed to Calendar.
 function WeekDays({ dinner, week, which, onAdd }: WeekDaysProps) {
   const plan = usePlan(week)
-  const swap = useSwapDay(week)
+  const { swap, push, refused, swapIn } = useWeekSwap(week)
 
   if (plan.isError) {
     return <ErrorBanner onRetry={() => void plan.refetch()}>Couldn't load {weekNames[which]}'s plan. {plan.error.message}</ErrorBanner>
@@ -74,10 +75,10 @@ function WeekDays({ dinner, week, which, onAdd }: WeekDaysProps) {
 
   const days = plan.data.days
   const planned = days.find((day) => day.dinner.id === dinner.id)
-  const choosable = planned === undefined && !swap.pending
+  const choosable = planned === undefined && !refused
   function add(date: string) {
     const chosen: Swap = { date, dinner: planDinner(dinner), fromQuestLog: dinner.status === 'quest_log' }
-    swap.mutate(chosen)
+    swapIn(chosen)
     onAdd({ week, which, swap: chosen })
   }
   return (
@@ -86,8 +87,10 @@ function WeekDays({ dinner, week, which, onAdd }: WeekDaysProps) {
         <p className={swapStyles.empty}>
           {dinner.name} is already on {weekdayName(planned.date)} {weekNames[which]}.
         </p>
+      ) : swap.pending ? (
+        <p className={swapStyles.empty}>A change to {weekNames[which]} is still being saved.</p>
       ) : (
-        swap.pending && <p className={swapStyles.empty}>A change to {weekNames[which]} is still being saved.</p>
+        push.pending && <p className={swapStyles.empty}>The plan for {weekNames[which]} is being pushed to Calendar.</p>
       )}
       <ul aria-label={`Days of ${weekNames[which]}`} className={swapStyles.rows}>
         {days.map((day) => (

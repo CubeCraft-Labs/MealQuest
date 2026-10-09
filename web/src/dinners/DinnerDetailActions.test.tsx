@@ -7,6 +7,7 @@ import { createNetworkStatus } from '../pwa/networkStatus.ts'
 import { HOUSEHOLD_SETTINGS } from '../test/ApiProviders.tsx'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { mockViewport } from '../test/matchMedia.ts'
+import { PlanPage } from '../plan/PlanPage.tsx'
 import { DinnerDetailPage } from './DinnerDetailPage.tsx'
 
 const DINNER = '/api/v1/dinners/d1'
@@ -66,7 +67,7 @@ function planBody(weekStart: string, names: string[], ids = names.map((_, i) => 
     week_start: weekStart,
     status: 'draft',
     ai_note: null,
-    calendar_synced_at: null,
+    calendar_synced_at: null as string | null,
     days: names.map((name, i) => ({
       date: new Date(start + i * 86_400_000).toISOString().slice(0, 10),
       dinner: { id: ids[i], name, photo: null, minutes: 30, method: 'stovetop' },
@@ -127,14 +128,15 @@ function deferred() {
 }
 
 // renderPage loads /me (for the CSRF token every write needs) and renders
-// the bowls' detail screen, with a probe for the Plan.
-async function renderPage() {
+// the bowls' detail screen, with plan for the Plan: a probe unless told
+// otherwise. It answers with the router.
+async function renderPage(plan = <h1>Plan probe</h1>) {
   const api = createApiClient(fakeLocation('/dinner/d1'), createNetworkStatus(window), createVerifiedSession(localStorage))
   await api.loadMe()
   const router = createMemoryRouter(
     [
       { path: '/dinner/:id', element: <DinnerDetailPage /> },
-      { path: '/plan', element: <h1>Plan probe</h1> },
+      { path: '/plan', element: plan },
     ],
     { initialEntries: ['/dinner/d1'] },
   )
@@ -146,6 +148,7 @@ async function renderPage() {
     </ApiProvider>,
   )
   await screen.findByRole('heading', { level: 1, name: 'Korean beef bowls' })
+  return router
 }
 
 // openSheet opens Add to this week and waits for the week's days.
@@ -288,6 +291,70 @@ describe('Add to this week', () => {
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Added to Thursday this week.'))
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(sent(fetchMock, 'PUT')).toEqual([`${THURSDAY} {"dinner_id":"d1"}`, `${THURSDAY} {"dinner_id":"d1"}`])
+  })
+
+  it("leaves a push's Supply run outcome behind on the Plan, as a swap on the Draft board does", async () => {
+    let plan = planBody('2026-10-05', THIS_NAMES)
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, plan),
+      [`POST ${THIS_WEEK}/push-calendar`]: () => {
+        plan = { ...plan, status: 'synced', calendar_synced_at: '2026-10-07T16:00:00Z' }
+        return jsonResponse(200, { ...plan, supply_run: { status: 'generated', error: null } })
+      },
+      [`PUT ${THURSDAY}`]: () => {
+        plan = { ...thursdaySwapped(), status: 'changed', calendar_synced_at: '2026-10-07T16:00:00Z' }
+        return jsonResponse(200, plan)
+      },
+      'GET /api/v1/shopping/2026-10-05': () => errorResponse(404, 'not_found'),
+    })
+    const router = await renderPage(<PlanPage />)
+
+    // The week is pushed on the Plan, which says its Supply run was made.
+    await act(() => router.navigate('/plan'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Looks good — push to Calendar' }))
+    expect(await screen.findByRole('status')).toHaveTextContent("Made this week's Supply run from the plan.")
+    // Coming back from the dinner with nothing swapped, it still says so.
+    await act(() => router.navigate('/dinner/d1'))
+    await screen.findByRole('heading', { level: 1, name: 'Korean beef bowls' })
+    await act(() => router.navigate('/plan'))
+    expect(await screen.findByRole('status')).toHaveTextContent("Made this week's Supply run from the plan.")
+
+    // Thursday is swapped from the dinner's Add to this week.
+    await act(() => router.navigate('/dinner/d1'))
+    await screen.findByRole('heading', { level: 1, name: 'Korean beef bowls' })
+    const { days } = await openSheet()
+    fireEvent.click(within(days).getByRole('button', { name: /Thursday 8/ }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Added to Thursday this week.'))
+
+    // The Plan shows the swapped plan, not changed since its push, and no
+    // longer says the earlier plan's Supply run was made.
+    await act(() => router.navigate('/plan'))
+    expect(await screen.findByText('Changes not pushed to Google Calendar')).toBeInTheDocument()
+    expect(screen.getByText('Korean beef bowls')).toBeInTheDocument()
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.queryByText("Made this week's Supply run from the plan.")).not.toBeInTheDocument()
+    expect(sent(fetchMock, 'POST')).toEqual([`${THIS_WEEK}/push-calendar undefined`])
+    expect(sent(fetchMock, 'PUT')).toEqual([`${THURSDAY} {"dinner_id":"d1"}`])
+  })
+
+  it('refuses a swap while the week is being pushed to Calendar', async () => {
+    const push = deferred()
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('2026-10-05', THIS_NAMES)),
+      [`POST ${THIS_WEEK}/push-calendar`]: () => push.response,
+      'GET /api/v1/shopping/2026-10-05': () => errorResponse(404, 'not_found'),
+    })
+    const router = await renderPage(<PlanPage />)
+    await act(() => router.navigate('/plan'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Looks good — push to Calendar' }))
+    await waitFor(() => expect(sent(fetchMock, 'POST')).toHaveLength(1))
+
+    await act(() => router.navigate('/dinner/d1'))
+    await screen.findByRole('heading', { level: 1, name: 'Korean beef bowls' })
+    const { sheet, days } = await openSheet()
+    expect(within(sheet).getByText('The plan for this week is being pushed to Calendar.')).toBeInTheDocument()
+    expect(within(days).queryAllByRole('button')).toHaveLength(0)
+    expect(sent(fetchMock, 'PUT')).toEqual([])
   })
 })
 

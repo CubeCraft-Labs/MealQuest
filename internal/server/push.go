@@ -89,9 +89,10 @@ func deletePushSubscription(logger *slog.Logger, svc *push.Service) http.Handler
 // postTestPush answers POST /settings/notifications/test-push: it queues
 // push.TestTitle for every device that turned on push, aimed at /plan, and
 // answers 202 with the event key and how many subscriptions it goes to.
-// Delivery follows through the notification outbox. With no subscription
-// it is 409 no_subscriptions, and with push switched off for plan_ready
-// 409 push_off; neither sends anything. It never posts to Google Chat.
+// Delivery follows through the notification outbox. With push switched
+// off for plan_ready it is 409 push_off, whether or not any device has
+// turned on push; otherwise with no subscription it is 409
+// no_subscriptions. Neither sends anything. It never posts to Google Chat.
 func postTestPush(logger *slog.Logger, svc *push.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sent, err := svc.SendTest(r.Context())

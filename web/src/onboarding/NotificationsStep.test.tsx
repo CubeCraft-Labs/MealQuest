@@ -18,6 +18,12 @@ import styles from './Onboarding.module.css'
 const IPHONE_SAFARI =
   'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1'
 
+const IPHONE_CHROME =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/138.0.7204.119 Mobile/15E148 Safari/604.1'
+
+const IOS_UNSUPPORTED =
+  "Notifications aren't on: on iPhone and iPad they only work once MealQuest is on the Home Screen. Tap Share, then Add to Home Screen, open MealQuest from there, and turn them on in Settings under Notifications."
+
 const COMPLETED_AT = '2026-10-06T21:30:00.000Z'
 
 // requestPermission stands in for the browser's Notification API, which
@@ -132,7 +138,11 @@ async function finishFromResult(server: ReturnType<typeof stubFirstRunServer>) {
 }
 
 function useIphoneSafariTab() {
-  vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(IPHONE_SAFARI)
+  useIphoneTab(IPHONE_SAFARI)
+}
+
+function useIphoneTab(userAgent: string) {
+  vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(userAgent)
   Object.defineProperty(navigator, 'maxTouchPoints', { configurable: true, value: 5 })
   Object.defineProperty(navigator, 'standalone', { configurable: true, value: false })
   vi.stubGlobal('matchMedia', (query: string) => ({ matches: false, media: query }) as MediaQueryList)
@@ -265,10 +275,18 @@ describe('onboarding step 3', () => {
     const server = await renderStep()
     fireEvent.click(turnOn())
 
-    expect(await screen.findByRole('status')).toHaveTextContent(
-      "Notifications aren't on: on iPhone and iPad they only work once MealQuest is on the Home Screen. Tap Share, then Add to Home Screen, open MealQuest from there, and turn them on in Settings under Notifications.",
-    )
+    expect(await screen.findByRole('status')).toHaveTextContent(IOS_UNSUPPORTED)
     expect(screen.getByRole('note')).toHaveTextContent('Tap Share, then Add to Home Screen to get notifications')
+    expect(requestPermission).not.toHaveBeenCalled()
+    await finishFromResult(server)
+  })
+
+  it('"Turn on notifications" in another iOS browser also says to add MealQuest to the Home Screen first', async () => {
+    useIphoneTab(IPHONE_CHROME)
+    const server = await renderStep()
+    fireEvent.click(turnOn())
+
+    expect(await screen.findByRole('status')).toHaveTextContent(IOS_UNSUPPORTED)
     expect(requestPermission).not.toHaveBeenCalled()
     await finishFromResult(server)
   })

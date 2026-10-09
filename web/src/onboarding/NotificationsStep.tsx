@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { CalendarDays, ShoppingBasket, Sparkles, UtensilsCrossed, type LucideIcon } from 'lucide-react'
 import { useNavigate } from 'react-router'
-import { InstallHint, isIosSafari, isStandalone } from '../pwa/InstallHint.tsx'
+import { InstallHint, isIos, isStandalone } from '../pwa/InstallHint.tsx'
 import type { SubscribePushResult } from '../push/subscribe.ts'
 import { usePush } from '../push/usePush.ts'
 import { PUSH_STATUS_KEY } from '../settings/notificationsApi.ts'
@@ -13,7 +13,8 @@ import { OnboardingStep } from './OnboardingStep.tsx'
 import styles from './Onboarding.module.css'
 
 // IOS_UNSUPPORTED says how to get notifications on iPhone and iPad, where
-// Web Push reaches only the app installed to the Home Screen.
+// Web Push reaches only the app installed to the Home Screen, whichever
+// browser the page is open in.
 const IOS_UNSUPPORTED =
   "Notifications aren't on: on iPhone and iPad they only work once MealQuest is on the Home Screen. Tap Share, then Add to Home Screen, open MealQuest from there, and turn them on in Settings under Notifications."
 
@@ -26,7 +27,7 @@ function resultText(result: SubscribePushResult): string {
     case 'denied':
       return "Notifications aren't on: this browser blocked them. To turn them on later, allow notifications for this site in the browser's site settings, then turn them on in Settings under Notifications."
     case 'unsupported':
-      return isIosSafari(navigator) && !isStandalone()
+      return isIos(navigator) && !isStandalone()
         ? IOS_UNSUPPORTED
         : "Notifications aren't on: this browser can't receive them, so nothing was turned on."
     case 'dismissed':

@@ -306,3 +306,20 @@ func TestSendTestWithPushOff(t *testing.T) {
 		t.Fatalf("rows = %+v, want none", rows)
 	}
 }
+
+// Push off is reported before the subscriptions are looked at, so with
+// both push off and no device subscribed the answer is push off.
+func TestSendTestWithPushOffAndNoSubscriptions(t *testing.T) {
+	t.Parallel()
+	svc, st := newTestService(t)
+	if _, err := st.Writer.Exec(`UPDATE notification_prefs SET push = 0 WHERE event = 'plan_ready'`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := svc.SendTest(context.Background())
+	if !errors.Is(err, notify.ErrPushOff) || errors.Is(err, ErrNoSubscriptions) {
+		t.Fatalf("SendTest = %v, want notify.ErrPushOff", err)
+	}
+	if rows := notifytest.Rows(t, st, notify.PlanReady); len(rows) != 0 {
+		t.Fatalf("rows = %+v, want none", rows)
+	}
+}

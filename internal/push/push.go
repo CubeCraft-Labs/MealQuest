@@ -115,12 +115,23 @@ type TestSent struct {
 // notification outbox as a plan_ready event whose tap opens TestURL. Its
 // key, "plan_ready:test-" and a new id, is never used twice, so it is never
 // taken for an event already sent. It goes to push alone, never to Google
-// Chat. With no subscription it is ErrNoSubscriptions, and with push
-// switched off for plan_ready it is notify.ErrPushOff; neither queues
-// anything. Delivery happens after SendTest returns, with the outbox's
-// retries.
+// Chat. With push switched off for plan_ready it is notify.ErrPushOff,
+// whether or not any device has turned on push; otherwise with no
+// subscription it is ErrNoSubscriptions. Neither queues anything. Delivery
+// happens after SendTest returns, with the outbox's retries.
 func (s *Service) SendTest(ctx context.Context) (TestSent, error) {
-	subs, err := db.New(s.st.Reader).ListPushSubscriptions(ctx)
+	q := db.New(s.st.Reader)
+	pref, err := q.GetNotificationPref(ctx, string(notify.PlanReady))
+	if errors.Is(err, sql.ErrNoRows) {
+		return TestSent{}, fmt.Errorf("push: no notification preference for %s", notify.PlanReady)
+	}
+	if err != nil {
+		return TestSent{}, fmt.Errorf("push: read notification preference for %s: %w", notify.PlanReady, err)
+	}
+	if pref.Push != 1 {
+		return TestSent{}, fmt.Errorf("%w: %s", notify.ErrPushOff, notify.PlanReady)
+	}
+	subs, err := q.ListPushSubscriptions(ctx)
 	if err != nil {
 		return TestSent{}, fmt.Errorf("push: list subscriptions: %w", err)
 	}

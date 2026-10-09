@@ -291,8 +291,21 @@ func TestTestPushAPI(t *testing.T) {
 	svc, st, _ := newTestPushWith(t)
 	router := newPushRouter(t, svc)
 
-	// With no device subscribed there is nothing to test.
+	// With push off for plan_ready and no device subscribed, push off is
+	// what the test says.
+	if _, err := st.Writer.Exec(`UPDATE notification_prefs SET push = 0 WHERE event = 'plan_ready'`); err != nil {
+		t.Fatal(err)
+	}
 	rec, body := serve(t, router, signedIn(http.MethodPost, testPushPath, nil))
+	if rec.Code != http.StatusConflict || body["error"].(map[string]any)["code"] != "push_off" {
+		t.Errorf("POST with push off and no subscriptions = %d %s, want 409 push_off", rec.Code, rec.Body)
+	}
+	if _, err := st.Writer.Exec(`UPDATE notification_prefs SET push = 1 WHERE event = 'plan_ready'`); err != nil {
+		t.Fatal(err)
+	}
+
+	// With no device subscribed there is nothing to test.
+	rec, body = serve(t, router, signedIn(http.MethodPost, testPushPath, nil))
 	if rec.Code != http.StatusConflict || body["error"].(map[string]any)["code"] != "no_subscriptions" {
 		t.Errorf("POST with no subscriptions = %d %s, want 409 no_subscriptions", rec.Code, rec.Body)
 	}

@@ -32,6 +32,15 @@ export function useKeepScreenOn(): KeepScreenOn {
     let requesting = false
     let left = false
 
+    // The browser may let a lock go while the switch is on: always when the
+    // page is hidden, and, the specification allows, while it is still
+    // visible. Either way the lock is asked for again at once if the page is
+    // visible, or when it is visible again if not, so the switch never claims
+    // a lock that is not held.
+    function onRelease() {
+      if (!left) acquire()
+    }
+
     function acquire() {
       if (document.visibilityState !== 'visible' || requesting) return
       if (sentinel !== null && !sentinel.released) return
@@ -39,8 +48,16 @@ export function useKeepScreenOn(): KeepScreenOn {
       wakeLock.request('screen').then(
         (granted) => {
           requesting = false
-          if (left) void granted.release()
-          else sentinel = granted
+          if (left) {
+            void granted.release()
+            return
+          }
+          sentinel = granted
+          granted.addEventListener('release', onRelease)
+          // While the request was pending the page may have been hidden and
+          // shown again (that visibilitychange was ignored) and the lock let
+          // go before it could be listened for, so check again now.
+          acquire()
         },
         (err: unknown) => {
           requesting = false

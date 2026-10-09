@@ -362,6 +362,28 @@ func (q *Queries) ListShoppingListsThrough(ctx context.Context, weekStart string
 	return items, nil
 }
 
+const markShoppingListSentToChat = `-- name: MarkShoppingListSentToChat :execrows
+UPDATE shopping_lists
+SET sent_to_chat_at = ?, updated_at = ?
+WHERE id = ? AND status = 'current' AND frozen_at IS NULL
+`
+
+type MarkShoppingListSentToChatParams struct {
+	SentToChatAt sql.NullString
+	UpdatedAt    string
+	ID           string
+}
+
+// Records list id sent to Google Chat at sent_to_chat_at, unless it is
+// frozen into the Supply archive.
+func (q *Queries) MarkShoppingListSentToChat(ctx context.Context, arg MarkShoppingListSentToChatParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markShoppingListSentToChat, arg.SentToChatAt, arg.UpdatedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const moveShoppingGroup = `-- name: MoveShoppingGroup :exec
 UPDATE shopping_groups
 SET position = ?, updated_at = ?

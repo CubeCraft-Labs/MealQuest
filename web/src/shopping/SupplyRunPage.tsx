@@ -1,10 +1,10 @@
 import { Archive, Check, CloudUpload, MessageSquare } from 'lucide-react'
 import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
-import { Unavailable } from '../plan/PlanPage.tsx'
 import { defaultWeek, localNow, weekdayKicker, weekLabel, weekStart as weekOf } from '../plan/week.ts'
 import { formatClockTime, useHouseholdSettings } from '../settings/api.ts'
 import { useBreakpoint, type Breakpoint } from '../shell/useBreakpoint.ts'
+import { Button } from '../ui/Button.tsx'
 import buttonStyles from '../ui/Button.module.css'
 import { Checkbox } from '../ui/Checkbox.tsx'
 import { EmptyState } from '../ui/EmptyState.tsx'
@@ -14,6 +14,7 @@ import { Skeleton } from '../ui/Skeleton.tsx'
 import { Tag } from '../ui/Tag.tsx'
 import {
   useGenerateSupplyRun,
+  useSendToChat,
   useSupplyRun,
   useToggles,
   WEEK_PARAM,
@@ -26,10 +27,6 @@ import styles from './SupplyRunPage.module.css'
 
 // SUPPLY_ARCHIVE is the Supply archive screen.
 export const SUPPLY_ARCHIVE = '/plan/shopping/archive'
-
-// CHAT_HINT is why Send to Google Chat is unavailable.
-// TODO(Feature 19): send the Supply run to Google Chat once it is built.
-const CHAT_HINT = 'Sending the shopping list to Google Chat arrives in a later update.'
 
 // sentAt is when the Supply run was sent to Google Chat as its status line
 // says it, in the household's zone: "Sat 8:00 am".
@@ -104,6 +101,17 @@ function SentStatus({ at, timezone }: { at: Date; timezone: string }) {
   )
 }
 
+// SendToChat posts the Supply run to Google Chat: "Send to Google Chat"
+// until it is sent, then "Send again", which posts it once more.
+function SendToChat({ sent, pending, onSend }: { sent: boolean; pending: boolean; onSend: () => void }) {
+  return (
+    <Button className={styles.action} disabled={pending} onClick={onSend}>
+      <Icon icon={MessageSquare} size="inline" />
+      {pending ? 'Sending…' : sent ? 'Send again' : 'Send to Google Chat'}
+    </Button>
+  )
+}
+
 // ArchiveLink opens the Supply archive: an outline action from tablet up, a
 // grape link on mobile.
 function ArchiveLink({ layout }: { layout: Breakpoint }) {
@@ -120,13 +128,15 @@ function ArchiveLink({ layout }: { layout: Breakpoint }) {
 // the week's dates, the title with the count still to buy of all items, and
 // one card per dinner, stacked on mobile and in three masonry columns from
 // tablet up, where Archive and Send to Google Chat are actions in the
-// header. On a current Supply run each item toggles at once (useToggles); a
+// header; a send that fails says why. On a current Supply run each item toggles at once (useToggles); a
 // toggle refused puts the item back and says why. An archived one, or any
 // opened from the Supply archive (readOnly), is read-only and tagged
 // Archived, and a toggle it refused is not offered again.
 function SupplyRunList({ weekStart, timezone, layout, readOnly }: WeekProps) {
   const toggles = useToggles(weekStart)
+  const send = useSendToChat(weekStart)
   const run = toggles.shown
+  const sent = run.sent_to_chat_at !== null
   const viewOnly = readOnly || run.status === 'archived'
   const wide = layout !== 'mobile'
   const failed = toggles.failed
@@ -155,12 +165,7 @@ function SupplyRunList({ weekStart, timezone, layout, readOnly }: WeekProps) {
         {wide && (
           <div className={styles.actions}>
             <ArchiveLink layout={layout} />
-            {!viewOnly && (
-              <Unavailable hint={CHAT_HINT} below className={styles.action}>
-                <Icon icon={MessageSquare} size="inline" />
-                Send to Google Chat
-              </Unavailable>
-            )}
+            {!viewOnly && <SendToChat sent={sent} pending={send.isPending} onSend={() => send.mutate(sent)} />}
           </div>
         )}
       </header>
@@ -169,6 +174,9 @@ function SupplyRunList({ weekStart, timezone, layout, readOnly }: WeekProps) {
           Couldn't mark {failedItem ? failedItem.name : 'an item'} {failed.toggle.needed ? 'to buy' : '“have it”'}.{' '}
           {failed.error.message}
         </ErrorBanner>
+      )}
+      {send.isError && !viewOnly && (
+        <ErrorBanner onRetry={() => send.mutate(sent)}>Couldn't send the shopping list to Google Chat. {send.error.message}</ErrorBanner>
       )}
       {wide && run.sent_to_chat_at !== null && <SentStatus at={run.sent_to_chat_at} timezone={timezone} />}
       {run.groups.length === 0 ? (

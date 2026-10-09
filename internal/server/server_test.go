@@ -26,6 +26,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify/notifytest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes/recipestest"
@@ -186,7 +187,7 @@ func newTestSuggest(t *testing.T) *suggest.Service {
 	fail := func(context.Context, string, skills.SideQuestsRequest) (skills.SideQuests, error) {
 		return skills.SideQuests{}, errors.New("no model in this test")
 	}
-	svc, err := suggest.NewService(st, g, fail, runner, logger)
+	svc, err := suggest.NewService(st, g, fail, runner, notifytest.New(t, st), logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +207,7 @@ func newTestPlan(t *testing.T) *plan.Service {
 	fail := func(context.Context, string, skills.WeekRequest) (skills.Week, error) {
 		return skills.Week{}, errors.New("no model in this test")
 	}
-	svc, err := plan.NewService(st, fail, runner, newTestGoogle(t), &url.URL{Scheme: "https", Host: "mealquest.example"}, logger)
+	svc, err := plan.NewService(st, fail, runner, newTestGoogle(t), notifytest.New(t, st), &url.URL{Scheme: "https", Host: "mealquest.example"}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +215,8 @@ func newTestPlan(t *testing.T) *plan.Service {
 }
 
 // newTestShopping returns a shopping service over a migrated temp
-// database, whose Supply runs stay untitled.
+// database, whose Supply runs stay untitled and whose posts to Google Chat
+// all fail.
 func newTestShopping(t *testing.T) *shopping.Service {
 	t.Helper()
 	st := newTestStore(t)
@@ -223,7 +225,7 @@ func newTestShopping(t *testing.T) *shopping.Service {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := shopping.NewService(st, untitled, runner, logger)
+	svc, err := shopping.NewService(st, untitled, runner, notifytest.New(t, st), newTestChat(t), logger)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -304,7 +304,7 @@ func TestSendThreadsByWeek(t *testing.T) {
 	}
 	week := mustDate(t, "2026-10-12")
 	events := []notify.Event{
-		PlanReady(week, []string{"Tacos", "Bolognese", "Tikka masala", "A", "B", "C", "D"}),
+		PlanReady(week, week, []string{"Tacos", "Bolognese", "Tikka masala", "A", "B", "C", "D"}),
 		ListReady(week, 19, 7),
 		DayOfReminder(mustDate(t, "2026-10-18"), "01J9DINNER", "Tacos"),
 		NewSuggestions("01J9BATCH", week, []string{"Pho"}),
@@ -383,7 +383,7 @@ func TestSendClassifiesStatus(t *testing.T) {
 	if _, err := svc.Put(ctx, testHook, "Family"); err != nil {
 		t.Fatal(err)
 	}
-	m := notify.Message{Payload: payloadOf(PlanReady(mustDate(t, "2026-10-12"), []string{"Tacos"}))}
+	m := notify.Message{Payload: payloadOf(PlanReady(mustDate(t, "2026-10-12"), mustDate(t, "2026-10-12"), []string{"Tacos"}))}
 	for _, tc := range []struct {
 		status        int
 		ok, permanent bool
@@ -464,7 +464,7 @@ func TestOutboxRowsFollowClassification(t *testing.T) {
 
 	week := mustDate(t, "2026-10-12")
 	f.setStatus(http.StatusBadRequest)
-	planned := PlanReady(week, []string{"Tacos"})
+	planned := PlanReady(week, week, []string{"Tacos"})
 	if err := notifier.Emit(ctx, planned); err != nil {
 		t.Fatal(err)
 	}
@@ -527,4 +527,62 @@ func (b *syncBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+func TestPostSupplyRun(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := newFakeChat(t)
+	svc, _ := newTestService(t, f)
+	week := mustDate(t, "2026-10-12")
+	groups := []SupplyRunGroup{{Dinner: "Tacos", Items: []SupplyRunItem{{Name: "tortillas"}}}}
+
+	if err := svc.PostSupplyRun(ctx, week, "Week 42 · Oct 12 – 18", groups); !errors.Is(err, ErrNotConfigured) {
+		t.Fatalf("PostSupplyRun without a webhook = %v, want ErrNotConfigured", err)
+	}
+	if _, err := svc.Put(ctx, testHook, "Family"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.PostSupplyRun(ctx, week, "Week 42 · Oct 12 – 18", groups); err != nil {
+		t.Fatal(err)
+	}
+	reqs := f.requests()
+	if len(reqs) != 1 {
+		t.Fatalf("Chat got %d requests, want 1", len(reqs))
+	}
+	r := reqs[0]
+	if r.Query.Get("threadKey") != "mealquest-week-2026-W42" || r.Query.Get("messageReplyOption") != replyOption {
+		t.Errorf("threading = %v", r.Query)
+	}
+	if want := SupplyRunText("Week 42 · Oct 12 – 18", groups); r.Body["text"] != want {
+		t.Errorf("text = %q, want %q", r.Body["text"], want)
+	}
+	data, _ := json.Marshal(r.Body["cardsV2"])
+	var cards []cardV2
+	if err := json.Unmarshal(data, &cards); err != nil || len(cards) != 1 {
+		t.Fatalf("cardsV2 = %s, %v", data, err)
+	}
+	buttons := cards[0].Card.Sections[0].Widgets[0].ButtonList.Buttons
+	if cards[0].Card.Header.Title != "Supply run · Week 42 · Oct 12 – 18" || len(buttons) != 1 ||
+		buttons[0].OnClick.OpenLink.URL != "https://mealquest.example/plan/shopping?week=2026-10-12" {
+		t.Errorf("card = %s, want an Open button to the week's Supply run", data)
+	}
+
+	f.setStatus(http.StatusForbidden)
+	err := svc.PostSupplyRun(ctx, week, "Week 42 · Oct 12 – 18", groups)
+	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "403") {
+		t.Errorf("PostSupplyRun answered 403 = %v, want ErrRefused with the status", err)
+	}
+	if err != nil {
+		assertNoSecret(t, "refused error", err.Error())
+	}
+
+	f.srv.Close()
+	err = svc.PostSupplyRun(ctx, week, "Week 42 · Oct 12 – 18", groups)
+	if !errors.Is(err, ErrUnreachable) {
+		t.Errorf("PostSupplyRun unanswered = %v, want ErrUnreachable", err)
+	}
+	if err != nil {
+		assertNoSecret(t, "unreachable error", err.Error())
+	}
 }

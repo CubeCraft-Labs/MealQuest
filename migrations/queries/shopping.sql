@@ -89,6 +89,13 @@ UPDATE shopping_lists
 SET title = ?, updated_at = ?
 WHERE id = ? AND title IS NULL AND status = 'current' AND frozen_at IS NULL;
 
+-- name: MarkShoppingListSentToChat :execrows
+-- Records list id sent to Google Chat at sent_to_chat_at, unless it is
+-- frozen into the Supply archive.
+UPDATE shopping_lists
+SET sent_to_chat_at = ?, updated_at = ?
+WHERE id = ? AND status = 'current' AND frozen_at IS NULL;
+
 -- name: FreezeShoppingList :execrows
 -- Freezes list id into the Supply archive at frozen_at, unless it is
 -- frozen already.

@@ -15,6 +15,7 @@ import (
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/chat/chattest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
@@ -785,5 +786,122 @@ func TestSupplyArchive(t *testing.T) {
 	}
 	if frozen.Status != "archived" || frozen.NeededCount != 2 || frozen.TotalCount != 3 || !reflect.DeepEqual(frozen.render(), wantLines) {
 		t.Errorf("frozen list = %s %d/%d %v, want archived 2/3 %v", frozen.Status, frozen.NeededCount, frozen.TotalCount, frozen.render(), wantLines)
+	}
+}
+
+// TestSupplyRunSendChat posts the week's Supply run to Google Chat once,
+// records sent_to_chat_at, answers a second send with the status as it
+// is, and posts again only with resend.
+func TestSupplyRunSendChat(t *testing.T) {
+	t.Parallel()
+	e := newPlansRouter(t)
+	e.groundWeek(t)
+	var l supplyRunJSON
+	callShopping(t, e, http.MethodPost, shoppingPath+"2026-10-12/generate", "", &l)
+	callShopping(t, e, http.MethodPatch, shoppingPath+"items/"+l.itemID(t, "onion"), `{"needed":false}`, nil)
+	send := shoppingPath + "2026-10-12/send-chat"
+
+	if status, body := callShopping(t, e, http.MethodPost, send, `{}`, nil); status != http.StatusConflict || errorCode(body) != "not_configured" {
+		t.Fatalf("send with no webhook = %d %v, want 409 not_configured", status, body)
+	}
+	if _, err := e.chatSvc.Put(t.Context(), chattest.Webhook, "Family"); err != nil {
+		t.Fatal(err)
+	}
+
+	var sent supplyRunJSON
+	if status, body := callShopping(t, e, http.MethodPost, send, `{}`, &sent); status != http.StatusOK {
+		t.Fatalf("send = %d %v", status, body)
+	}
+	if sent.SentToChatAt == nil || sent.WeekStart != "2026-10-12" || !reflect.DeepEqual(sent.render(), []string{
+		"Monday 2026-10-12 Beef Chili: ground beef [1 lb] needed",
+		"Monday 2026-10-12 Beef Chili: kidney beans [2 cans] needed",
+		"Monday 2026-10-12 Beef Chili: onion [1] have it",
+		"Tuesday 2026-10-13 Regular 2026-10-13: spaghetti [500 g] needed",
+		"Tuesday 2026-10-13 Regular 2026-10-13: basil [null] needed",
+	}) {
+		t.Errorf("send answer = %+v, want the Supply run with sent_to_chat_at", sent)
+	}
+	posts := e.chat.Posts()
+	if len(posts) != 1 {
+		t.Fatalf("Google Chat got %d posts, want 1", len(posts))
+	}
+	want := "Supply run · Week 42 · Oct 12 – 18\n\n*Beef Chili*\n• ground beef — 1 lb\n• kidney beans — 2 cans\n\n" +
+		"*Regular 2026-10-13*\n• spaghetti — 500 g\n• basil\n\nOpen the Supply run →"
+	if posts[0].Text() != want {
+		t.Errorf("posted text = %q, want %q", posts[0].Text(), want)
+	}
+
+	var again supplyRunJSON
+	if status, body := callShopping(t, e, http.MethodPost, send, `{}`, &again); status != http.StatusOK || again.SentToChatAt == nil || *again.SentToChatAt != *sent.SentToChatAt {
+		t.Errorf("send again = %d %v, sent_to_chat_at %v, want 200 and %s", status, body, again.SentToChatAt, *sent.SentToChatAt)
+	}
+	if n := len(e.chat.Posts()); n != 1 {
+		t.Errorf("send again without resend posted: %d posts, want 1", n)
+	}
+	var got supplyRunJSON
+	callShopping(t, e, http.MethodGet, shoppingPath+"2026-10-12", "", &got)
+	if got.SentToChatAt == nil || *got.SentToChatAt != *sent.SentToChatAt {
+		t.Errorf("GET sent_to_chat_at = %v, want %s", got.SentToChatAt, *sent.SentToChatAt)
+	}
+
+	var resent supplyRunJSON
+	if status, body := callShopping(t, e, http.MethodPost, send, `{"resend":true}`, &resent); status != http.StatusOK || resent.SentToChatAt == nil {
+		t.Fatalf("resend = %d %v", status, body)
+	}
+	if n := len(e.chat.Posts()); n != 2 {
+		t.Errorf("resend: %d posts, want 2", n)
+	}
+}
+
+func TestSupplyRunSendChatErrors(t *testing.T) {
+	t.Parallel()
+	e := newPlansRouter(t)
+	e.groundWeek(t)
+	callShopping(t, e, http.MethodPost, shoppingPath+"2026-10-12/generate", "", nil)
+	if _, err := e.chatSvc.Put(t.Context(), chattest.Webhook, "Family"); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, path, body string
+		status           int
+		code             string
+	}{
+		{"no body", "2026-10-12/send-chat", "", http.StatusBadRequest, "invalid_request"},
+		{"resend not a boolean", "2026-10-12/send-chat", `{"resend":"yes"}`, http.StatusBadRequest, "invalid_request"},
+		{"unknown field", "2026-10-12/send-chat", `{"force":true}`, http.StatusBadRequest, "invalid_request"},
+		{"not a Monday", "2026-10-13/send-chat", `{}`, http.StatusBadRequest, "invalid_week"},
+		{"no list", "2026-10-19/send-chat", `{}`, http.StatusNotFound, "not_found"},
+	} {
+		status, body := callShopping(t, e, http.MethodPost, shoppingPath+tc.path, tc.body, nil)
+		if status != tc.status || errorCode(body) != tc.code {
+			t.Errorf("%s = %d %v, want %d %s", tc.name, status, body, tc.status, tc.code)
+		}
+	}
+
+	e.chat.SetStatus(http.StatusInternalServerError)
+	status, body := callShopping(t, e, http.MethodPost, shoppingPath+"2026-10-12/send-chat", `{}`, nil)
+	if status != http.StatusBadGateway || errorCode(body) != "chat_refused" || body["error"].(map[string]any)["retryable"] != true {
+		t.Errorf("send Google Chat refuses = %d %v, want 502 chat_refused, retryable", status, body)
+	}
+	e.chat.SetStatus(http.StatusNotFound)
+	status, body = callShopping(t, e, http.MethodPost, shoppingPath+"2026-10-12/send-chat", `{}`, nil)
+	if status != http.StatusBadGateway || errorCode(body) != "chat_refused" || body["error"].(map[string]any)["retryable"] != false {
+		t.Errorf("send Google Chat answers 404 = %d %v, want 502 chat_refused, not retryable", status, body)
+	}
+	e.chat.Close()
+	status, body = callShopping(t, e, http.MethodPost, shoppingPath+"2026-10-12/send-chat", `{}`, nil)
+	if status != http.StatusBadGateway || errorCode(body) != "chat_unreachable" {
+		t.Errorf("send Google Chat does not answer = %d %v, want 502 chat_unreachable", status, body)
+	}
+	var l supplyRunJSON
+	callShopping(t, e, http.MethodGet, shoppingPath+"2026-10-12", "", &l)
+	if l.SentToChatAt != nil {
+		t.Errorf("sent_to_chat_at after failed sends = %s, want null", *l.SentToChatAt)
+	}
+
+	e.archive(t)
+	status, body = callShopping(t, e, http.MethodPost, shoppingPath+"2026-10-12/send-chat", `{"resend":true}`, nil)
+	if status != http.StatusConflict || errorCode(body) != "archived" {
+		t.Errorf("send an archived list = %d %v, want 409 archived", status, body)
 	}
 }

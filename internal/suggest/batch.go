@@ -10,9 +10,12 @@ import (
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/chat"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 )
@@ -54,7 +57,18 @@ func (r batchResult) PublicJSON() ([]byte, error) { return json.Marshal(r) }
 // recording the batch's end fails, so does the job; when it times out at
 // shutdown, the job is left running and the batch with it, for the next
 // start to fail.
+//
+// A scheduled or manual batch that ends done having added Side quests to
+// the deck emits new_suggestions, keyed by the batch, in the transaction
+// that records it done. A replenish batch, which tops up the deck as the
+// household swipes, never notifies. A notification that cannot be stored
+// fails the done write with it, as any failure recording the batch's end
+// does: the job fails, and its Side quests stay in the deck.
 func (s *Service) runBatch(ctx context.Context, p BatchJob, publish func(batchResult) error) (batchResult, error) {
+	batch, err := db.New(s.st.Reader).GetSuggestionBatch(ctx, p.BatchID)
+	if err != nil {
+		return batchResult{}, fmt.Errorf("suggest: read batch %s: %w", p.BatchID, err)
+	}
 	n, err := db.New(s.st.Writer).StartSuggestionBatch(ctx, db.StartSuggestionBatchParams{
 		UpdatedAt: store.Now().String(),
 		ID:        p.BatchID,
@@ -65,14 +79,19 @@ func (s *Service) runBatch(ctx context.Context, p BatchJob, publish func(batchRe
 	if n == 0 {
 		return batchResult{}, fmt.Errorf("suggest: batch %s is not pending", p.BatchID)
 	}
-	res, err := s.fill(ctx, p.BatchID, publish)
+	f, err := s.fill(ctx, p.BatchID, publish)
 	if err == nil {
-		if err := s.finishBatch(ctx, p.BatchID, BatchDone); err != nil {
+		var ev *notify.Event
+		if batch.Trigger != TriggerReplenish && len(f.names) > 0 {
+			e := chat.NewSuggestions(p.BatchID, household.WeekStart(f.today), f.names)
+			ev = &e
+		}
+		if err := s.finishBatch(ctx, p.BatchID, BatchDone, ev); err != nil {
 			return batchResult{}, err
 		}
-		return res, nil
+		return f.res, nil
 	}
-	finishErr := s.finishBatch(ctx, p.BatchID, BatchFailed)
+	finishErr := s.finishBatch(ctx, p.BatchID, BatchFailed, nil)
 	if ctx.Err() != nil {
 		return batchResult{}, errors.Join(ctx.Err(), finishErr)
 	}
@@ -85,50 +104,60 @@ func (s *Service) runBatch(ctx context.Context, p BatchJob, publish func(batchRe
 	return batchResult{}, errors.Join(err, finishErr)
 }
 
+// filled is what fill did: the batch's result, the names of the Side
+// quests it added to the deck, and the household's date it ran on.
+type filled struct {
+	res   batchResult
+	names []string
+	today store.LocalDate
+}
+
 // fill does runBatch's work, returning a *jobs.Failure for a failure the
 // household may see.
-func (s *Service) fill(ctx context.Context, batchID string, publish func(batchResult) error) (batchResult, error) {
+func (s *Service) fill(ctx context.Context, batchID string, publish func(batchResult) error) (filled, error) {
 	res := batchResult{BatchID: batchID, Stage: StageSuggesting, SuggestionIDs: []string{}}
 	if err := publish(res); err != nil {
-		return batchResult{}, err
+		return filled{}, err
 	}
 	in, err := s.request(ctx)
 	if err != nil {
-		return batchResult{}, err
+		return filled{}, err
 	}
 	out, err := s.suggest(ctx, batchID, in)
 	if err != nil {
 		if ctx.Err() != nil {
-			return batchResult{}, ctx.Err()
+			return filled{}, ctx.Err()
 		}
-		return batchResult{}, &jobs.Failure{Code: ReasonAIFailed}
+		return filled{}, &jobs.Failure{Code: ReasonAIFailed}
 	}
 	res.Stage = StageGrounding
 	res.Dropped = len(out.Dropped)
 	if err := publish(res); err != nil {
-		return batchResult{}, err
+		return filled{}, err
 	}
+	var names []string
 	left := out.Suggestions
 	for len(res.SuggestionIDs) < BatchSize && len(left) > 0 {
 		round := left[:min(BatchSize-len(res.SuggestionIDs), len(left))]
 		left = left[len(round):]
 		grounded, err := s.ground(ctx, round)
 		if err != nil {
-			return batchResult{}, err
+			return filled{}, err
 		}
 		res.Dropped += len(round) - len(grounded)
-		ids, err := s.store(ctx, batchID, grounded)
+		ids, stored, err := s.store(ctx, batchID, grounded)
 		if err != nil {
-			return batchResult{}, err
+			return filled{}, err
 		}
 		res.Dropped += len(grounded) - len(ids)
 		res.SuggestionIDs = append(res.SuggestionIDs, ids...)
+		names = append(names, stored...)
 		if err := publish(res); err != nil {
-			return batchResult{}, err
+			return filled{}, err
 		}
 	}
 	res.Stage = StageDone
-	return res, nil
+	return filled{res: res, names: names, today: in.Context.Today}, nil
 }
 
 // request reads what suggest_side_quests is given: the household context,
@@ -203,9 +232,11 @@ func (s *Service) ground(ctx context.Context, quests []skills.SideQuest) ([]grou
 // suggest_side_quests ran, a dinner it repeats was added, a suggestion it
 // repeats passed or a Rotation check dropped, or a Regular it cites renamed
 // or archived. Passed names are read in the same transaction as the store,
-// so a Pass or drop committed before it is never missed.
-func (s *Service) store(ctx context.Context, batchID string, quests []groundedQuest) ([]string, error) {
+// so a Pass or drop committed before it is never missed. The names stored
+// are returned with the ids.
+func (s *Service) store(ctx context.Context, batchID string, quests []groundedQuest) ([]string, []string, error) {
 	ids := []string{}
+	var stored []string
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		q := db.New(tx)
 		existing, err := q.ListUnarchivedDinners(ctx)
@@ -269,13 +300,14 @@ func (s *Service) store(ctx context.Context, batchID string, quests []groundedQu
 			}
 			names = append(names, d.Name)
 			ids = append(ids, id)
+			stored = append(stored, d.Name)
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return ids, nil
+	return ids, stored, nil
 }
 
 // citedIDs returns the ids of the Regulars named cited, false when one

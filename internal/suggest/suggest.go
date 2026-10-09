@@ -20,6 +20,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 )
@@ -109,14 +110,16 @@ type Service struct {
 	st       *store.Store
 	grounder *recipes.Grounder
 	suggest  Suggester
+	notifier *notify.Service
 	logger   *slog.Logger
 	batchJob *jobs.Kind[BatchJob]
 }
 
 // NewService returns a service over st that suggests with suggest, grounds
-// with grounder and registers the KindSuggestionBatch job on runner, which
-// must not have started yet.
-func NewService(st *store.Store, grounder *recipes.Grounder, suggest Suggester, runner *jobs.Runner, logger *slog.Logger) (*Service, error) {
+// with grounder, tells the household through notifier, which must be over
+// st, and registers the KindSuggestionBatch job on runner, which must not
+// have started yet.
+func NewService(st *store.Store, grounder *recipes.Grounder, suggest Suggester, runner *jobs.Runner, notifier *notify.Service, logger *slog.Logger) (*Service, error) {
 	switch {
 	case st == nil:
 		return nil, errors.New("suggest: nil store")
@@ -126,10 +129,12 @@ func NewService(st *store.Store, grounder *recipes.Grounder, suggest Suggester, 
 		return nil, errors.New("suggest: nil suggester")
 	case runner == nil:
 		return nil, errors.New("suggest: nil job runner")
+	case notifier == nil:
+		return nil, errors.New("suggest: nil notifier")
 	case logger == nil:
 		return nil, errors.New("suggest: nil logger")
 	}
-	s := &Service{st: st, grounder: grounder, suggest: suggest, logger: logger}
+	s := &Service{st: st, grounder: grounder, suggest: suggest, notifier: notifier, logger: logger}
 	kind, err := jobs.Register(runner, KindSuggestionBatch, s.runBatch, Reasons...)
 	if err != nil {
 		return nil, err
@@ -252,26 +257,38 @@ func (s *Service) startBatch(ctx context.Context, tx *sql.Tx, trigger string) (B
 	return Batch{ID: row.ID, JobID: jobID, Trigger: row.Trigger, Status: row.Status, Created: true}, nil
 }
 
-// finishBatch records running batch id as status, with
-// jobs.FinalWriteContext: the write is made even when ctx has been
-// cancelled, but a writer that stays busy cannot hold its worker past
-// jobs.FinalWriteTimeout. Its job's handler returns any error, so the job
+// finishBatch records running batch id as status, and emits ev with it
+// when ev is not nil, with jobs.FinalWriteContext: the write is made even
+// when ctx has been cancelled, but a writer that stays busy cannot hold its
+// worker past jobs.FinalWriteTimeout. Its job's handler returns any error, so the job
 // never ends succeeded with the batch still running; the runner keeps only
 // a code, so the error is logged too.
-func (s *Service) finishBatch(ctx context.Context, id, status string) error {
+func (s *Service) finishBatch(ctx context.Context, id, status string, ev *notify.Event) error {
 	write, cancel := jobs.FinalWriteContext(ctx)
 	defer cancel()
-	n, err := db.New(s.st.Writer).FinishSuggestionBatch(write, db.FinishSuggestionBatchParams{
-		Status:    status,
-		UpdatedAt: store.Now().String(),
-		ID:        id,
+	err := s.st.WithTx(write, func(tx *sql.Tx) error {
+		n, err := db.New(tx).FinishSuggestionBatch(write, db.FinishSuggestionBatchParams{
+			Status:    status,
+			UpdatedAt: store.Now().String(),
+			ID:        id,
+		})
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return errors.New("batch is not running")
+		}
+		if ev == nil {
+			return nil
+		}
+		return s.notifier.EmitTx(write, tx, *ev)
 	})
-	if err == nil && n != 1 {
-		err = errors.New("batch is not running")
-	}
 	if err != nil {
 		s.logger.ErrorContext(ctx, "record suggestion batch status", "batch_id", id, "status", status, "error", err)
 		return fmt.Errorf("suggest: record batch %s %s: %w", id, status, err)
+	}
+	if ev != nil {
+		s.notifier.Wake()
 	}
 	return nil
 }

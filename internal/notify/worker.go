@@ -104,8 +104,9 @@ func (s *Service) Wait() {
 	s.wg.Wait()
 }
 
-// wakeWorker gives the worker a token to look for due rows.
-func (s *Service) wakeWorker() {
+// Wake tells the worker to look for due rows, as after EmitTx's
+// transaction commits.
+func (s *Service) Wake() {
 	select {
 	case s.wake <- struct{}{}:
 	default: // the worker already has a token and will look again

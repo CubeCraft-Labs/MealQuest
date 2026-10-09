@@ -143,6 +143,8 @@ type Querier interface {
 	GetShoppingList(ctx context.Context, weekStart string) (ShoppingList, error)
 	// A suggestion with its dinner. Returns sql.ErrNoRows for an unknown id.
 	GetSuggestion(ctx context.Context, id string) (GetSuggestionRow, error)
+	// Batch id. Returns sql.ErrNoRows when there is none.
+	GetSuggestionBatch(ctx context.Context, id string) (SuggestionBatch, error)
 	// The id of the job that runs batch batch_id.
 	GetSuggestionBatchJobID(ctx context.Context, arg GetSuggestionBatchJobIDParams) (string, error)
 	// The plan of the week starting week_start. Returns sql.ErrNoRows when
@@ -233,6 +235,9 @@ type Querier interface {
 	// Records a delivered notification; updated_at is when it was sent. The
 	// lease must still be the claim's.
 	MarkNotificationSent(ctx context.Context, arg MarkNotificationSentParams) (int64, error)
+	// Records list id sent to Google Chat at sent_to_chat_at, unless it is
+	// frozen into the Supply archive.
+	MarkShoppingListSentToChat(ctx context.Context, arg MarkShoppingListSentToChatParams) (int64, error)
 	// Records an edit of plan id, raising its revision: a synced plan becomes
 	// changed, any other keeps its status.
 	MarkWeekPlanEdited(ctx context.Context, arg MarkWeekPlanEditedParams) error

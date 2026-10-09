@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/chat"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/shopping"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
@@ -16,6 +17,9 @@ import (
 
 // maxShoppingItemBody bounds a PATCH /shopping/items/{id} body.
 const maxShoppingItemBody = 1 << 10
+
+// maxSendChatBody bounds a POST /shopping/{weekStart}/send-chat body.
+const maxSendChatBody = 1 << 10
 
 // supplyRun is a Supply run as the API shows it. label is the week label,
 // which stands in for title until the AI writes one.
@@ -57,6 +61,12 @@ type supplyRunItem struct {
 type generatedSupplyRun struct {
 	supplyRun
 	Skipped []shopping.SkippedDay `json:"skipped"`
+}
+
+// sendChatRequest is the POST /shopping/{weekStart}/send-chat body:
+// resend posts a week already sent again.
+type sendChatRequest struct {
+	Resend bool `json:"resend"`
 }
 
 // shoppingItemPatch is the PATCH /shopping/items/{id} body.
@@ -117,6 +127,51 @@ func postSupplyRunGenerate(logger *slog.Logger, svc *shopping.Service) http.Hand
 			skipped = []shopping.SkippedDay{}
 		}
 		writeJSON(w, r, logger, http.StatusOK, generatedSupplyRun{supplyRun: out, Skipped: skipped})
+	}
+}
+
+// postSupplyRunSendChat posts the week's Supply run to Google Chat and
+// answers with it, sent_to_chat_at recorded. Its body is a JSON object,
+// {} or {"resend": true}: a week already sent is answered as it is,
+// without a second post, unless resend is true. No webhook stored is 409
+// not_configured; Google Chat not answering is 502 chat_unreachable,
+// retryable, and refusing the message 502 chat_refused, retryable only for
+// 429 or 5xx.
+func postSupplyRunSendChat(logger *slog.Logger, svc *shopping.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		week, ok := weekStartOrFail(w, r, logger)
+		if !ok {
+			return
+		}
+		body, err := decodePatch[sendChatRequest](http.MaxBytesReader(w, r.Body, maxSendChatBody))
+		if err != nil {
+			writeError(w, r, logger, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		l, err := svc.SendToChat(r.Context(), week, body.Resend)
+		var refused *chat.RefusedError
+		switch {
+		case errors.Is(err, chat.ErrNotConfigured):
+			writeError(w, r, logger, http.StatusConflict, "not_configured", "no Google Chat webhook is configured; add one in Settings")
+			return
+		case errors.Is(err, chat.ErrUnreachable):
+			logger.WarnContext(r.Context(), "send Supply run to Google Chat", "error", err)
+			writeAPIError(w, r, logger, http.StatusBadGateway, apiError{Code: "chat_unreachable", Message: "Google Chat did not answer", Retryable: true})
+			return
+		case errors.As(err, &refused):
+			logger.WarnContext(r.Context(), "send Supply run to Google Chat", "error", err)
+			writeAPIError(w, r, logger, http.StatusBadGateway, apiError{Code: "chat_refused", Message: err.Error(), Retryable: refused.Retryable()})
+			return
+		case err != nil:
+			writeShoppingError(w, r, logger, "send Supply run to Google Chat", err)
+			return
+		}
+		out, err := supplyRunOf(week, l)
+		if err != nil {
+			writeShoppingError(w, r, logger, "send Supply run to Google Chat", err)
+			return
+		}
+		writeJSON(w, r, logger, http.StatusOK, out)
 	}
 }
 

@@ -259,6 +259,26 @@ func (q *Queries) GetSuggestion(ctx context.Context, id string) (GetSuggestionRo
 	return i, err
 }
 
+const getSuggestionBatch = `-- name: GetSuggestionBatch :one
+SELECT id, "trigger", status, ai_run_id, created_at, updated_at FROM suggestion_batches
+WHERE id = ?
+`
+
+// Batch id. Returns sql.ErrNoRows when there is none.
+func (q *Queries) GetSuggestionBatch(ctx context.Context, id string) (SuggestionBatch, error) {
+	row := q.db.QueryRowContext(ctx, getSuggestionBatch, id)
+	var i SuggestionBatch
+	err := row.Scan(
+		&i.ID,
+		&i.Trigger,
+		&i.Status,
+		&i.AiRunID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getSuggestionBatchJobID = `-- name: GetSuggestionBatchJobID :one
 SELECT id FROM jobs
 WHERE kind = ?1

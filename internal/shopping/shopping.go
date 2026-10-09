@@ -27,10 +27,12 @@ import (
 	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/chat"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 )
 
@@ -95,6 +97,8 @@ type Service struct {
 	st       *store.Store
 	title    Titler
 	titleJob *jobs.Kind[TitleJob]
+	notifier *notify.Service
+	chat     *chat.Service
 	logger   *slog.Logger
 	// now is the clock weeks are ended and current on; tests replace it.
 	now func() time.Time
@@ -104,12 +108,17 @@ type Service struct {
 	// waits for the title jobs in flight to store their titles or fail,
 	// and no title job runs archive_title while a freeze is under way.
 	titling sync.RWMutex
+	// sending serializes SendToChat, so a week is posted to Google Chat
+	// once however many sends race.
+	sending sync.Mutex
 }
 
 // NewService returns a service over st that titles Supply runs with title
-// in KindTitleSupplyRun jobs, which it registers on runner, and logs to
-// logger. runner must not have started yet.
-func NewService(st *store.Store, title Titler, runner *jobs.Runner, logger *slog.Logger) (*Service, error) {
+// in KindTitleSupplyRun jobs, which it registers on runner, tells the
+// household through notifier, which must be over st, sends Supply runs to
+// Google Chat through chatSvc, and logs to logger. runner must not have
+// started yet.
+func NewService(st *store.Store, title Titler, runner *jobs.Runner, notifier *notify.Service, chatSvc *chat.Service, logger *slog.Logger) (*Service, error) {
 	switch {
 	case st == nil:
 		return nil, errors.New("shopping: nil store")
@@ -117,10 +126,14 @@ func NewService(st *store.Store, title Titler, runner *jobs.Runner, logger *slog
 		return nil, errors.New("shopping: nil titler")
 	case runner == nil:
 		return nil, errors.New("shopping: nil job runner")
+	case notifier == nil:
+		return nil, errors.New("shopping: nil notifier")
+	case chatSvc == nil:
+		return nil, errors.New("shopping: nil chat service")
 	case logger == nil:
 		return nil, errors.New("shopping: nil logger")
 	}
-	s := &Service{st: st, title: title, logger: logger, now: time.Now}
+	s := &Service{st: st, title: title, notifier: notifier, chat: chatSvc, logger: logger, now: time.Now}
 	kind, err := jobs.Register(runner, KindTitleSupplyRun, s.runTitleJob, ReasonTitleFailed)
 	if err != nil {
 		return nil, err
@@ -272,6 +285,7 @@ func (s *Service) generate(ctx context.Context, weekStart store.LocalDate, check
 		return Generated{}, fmt.Errorf("shopping: generate: %w", err)
 	}
 	var out Generated
+	notified := false
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		q := db.New(tx)
 		plan, err := q.GetWeekPlan(ctx, weekStart.String())
@@ -293,8 +307,9 @@ func (s *Service) generate(ctx context.Context, weekStart store.LocalDate, check
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("shopping: read list: %w", err)
 		}
+		created := err != nil
 		switch {
-		case err != nil: // no list yet
+		case created: // no list yet
 			list = db.ShoppingList{ID: store.NewID(), WeekStart: weekStart.String(), PlanID: plan.ID, Status: StatusCurrent}
 			err = q.CreateShoppingList(ctx, db.CreateShoppingListParams{
 				ID: list.ID, WeekStart: list.WeekStart, PlanID: list.PlanID, CreatedAt: now, UpdatedAt: now,
@@ -313,6 +328,13 @@ func (s *Service) generate(ctx context.Context, weekStart store.LocalDate, check
 			return err
 		}
 		out = Generated{List: listOf(list, groups), Skipped: skipped}
+		if created {
+			ev := chat.ListReady(weekStart, out.List.Counts().Needed, len(groups))
+			if err := s.notifier.EmitTx(ctx, tx, ev); err != nil {
+				return fmt.Errorf("shopping: %w", err)
+			}
+			notified = true
+		}
 		if list.Title.Valid {
 			return nil
 		}
@@ -330,6 +352,9 @@ func (s *Service) generate(ctx context.Context, weekStart store.LocalDate, check
 	}
 	if out.TitleJobID != nil {
 		s.titleJob.Wake()
+	}
+	if notified {
+		s.notifier.Wake()
 	}
 	return out, nil
 }

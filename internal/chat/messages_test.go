@@ -36,7 +36,7 @@ func TestMessages(t *testing.T) {
 	}{
 		{
 			name:  "plan ready",
-			ev:    PlanReady(week, []string{"Tacos", "Bolognese", "Tikka masala", "Lemon orzo", "Bibimbap", "Shakshuka", "Chili"}),
+			ev:    PlanReady(week, week, []string{"Tacos", "Bolognese", "Tikka masala", "Lemon orzo", "Bibimbap", "Shakshuka", "Chili"}),
 			key:   "plan_ready:2026-10-12",
 			url:   "/plan",
 			week:  "2026-10-12",
@@ -46,13 +46,33 @@ func TestMessages(t *testing.T) {
 		},
 		{
 			name:  "plan ready with three dinners",
-			ev:    PlanReady(week, []string{"Tacos", "Bolognese", "Tikka masala"}),
+			ev:    PlanReady(week, week, []string{"Tacos", "Bolognese", "Tikka masala"}),
 			key:   "plan_ready:2026-10-12",
 			url:   "/plan",
 			week:  "2026-10-12",
 			title: "This week's plan is ready",
 			body:  "Tacos, Bolognese, Tikka masala",
 			chatT: "This week's plan is ready: Tacos, Bolognese, Tikka masala. Open the plan →",
+		},
+		{
+			name:  "plan ready for next week",
+			ev:    PlanReady(week, mustDate(t, "2026-10-05"), []string{"Tacos", "Bolognese", "Tikka masala", "Lemon orzo"}),
+			key:   "plan_ready:2026-10-12",
+			url:   "/plan",
+			week:  "2026-10-12",
+			title: "Next week's plan is ready",
+			body:  "Tacos, Bolognese, Tikka masala + 1 more",
+			chatT: "Next week's plan is ready: Tacos, Bolognese, Tikka masala + 1 more. Open the plan →",
+		},
+		{
+			name:  "plan ready for a later week",
+			ev:    PlanReady(mustDate(t, "2026-10-26"), mustDate(t, "2026-10-05"), []string{"Tacos"}),
+			key:   "plan_ready:2026-10-26",
+			url:   "/plan",
+			week:  "2026-10-26",
+			title: "The plan for the week of Oct 26 is ready",
+			body:  "Tacos",
+			chatT: "The plan for the week of Oct 26 is ready: Tacos. Open the plan →",
 		},
 		{
 			name:  "list ready",
@@ -112,6 +132,23 @@ func TestMessages(t *testing.T) {
 		if got := Text(payloadOf(ev)); got != tc.chatT {
 			t.Errorf("%s: Text = %q, want %q", tc.name, got, tc.chatT)
 		}
+	}
+}
+
+func TestSupplyRunText(t *testing.T) {
+	t.Parallel()
+	got := SupplyRunText("Week 42 · Oct 12 – 18", []SupplyRunGroup{
+		{Dinner: "Tacos", Items: []SupplyRunItem{{Name: "ground beef", Qty: "1 lb"}, {Name: "tortillas"}}},
+		{Dinner: "Bolognese"},
+		{Dinner: "Pho", Items: []SupplyRunItem{{Name: "rice noodles", Qty: "200 g"}}},
+	})
+	want := "Supply run · Week 42 · Oct 12 – 18\n\n*Tacos*\n• ground beef — 1 lb\n• tortillas\n\n*Pho*\n• rice noodles — 200 g\n\nOpen the Supply run →"
+	if got != want {
+		t.Errorf("SupplyRunText =\n%s\nwant\n%s", got, want)
+	}
+	got = SupplyRunText("Cozy week", []SupplyRunGroup{{Dinner: "Tacos"}})
+	if want := "Supply run · Cozy week\n\nNothing left to buy.\n\nOpen the Supply run →"; got != want {
+		t.Errorf("SupplyRunText with nothing needed = %q, want %q", got, want)
 	}
 }
 

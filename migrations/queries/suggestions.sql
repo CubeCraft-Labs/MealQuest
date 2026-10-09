@@ -26,6 +26,11 @@ WHERE kind = sqlc.arg(kind)
 ORDER BY id
 LIMIT 1;
 
+-- name: GetSuggestionBatch :one
+-- Batch id. Returns sql.ErrNoRows when there is none.
+SELECT * FROM suggestion_batches
+WHERE id = ?;
+
 -- name: StartSuggestionBatch :execrows
 -- Marks a pending batch running; a batch in any other status is left as
 -- it is (0 rows).

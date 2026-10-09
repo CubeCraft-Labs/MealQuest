@@ -206,6 +206,25 @@ export function useGenerateSupplyRun(weekStart: string) {
   })
 }
 
+// useSendToChat posts the week's Supply run to Google Chat (POST
+// /api/v1/shopping/{weekStart}/send-chat); the Supply run it answers with,
+// sent_to_chat_at recorded, is the one shown. A week already sent is posted
+// again only with resend: without it the server answers with the Supply
+// run as it is.
+export function useSendToChat(weekStart: string) {
+  const { apiFetch } = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (resend: boolean): Promise<SupplyRun> => {
+      const path = `${supplyRunPath(weekStart)}/send-chat`
+      return parseSupplyRun(`POST ${path}`, weekStart, await apiFetch<unknown>(path, { method: 'POST', body: { resend } }))
+    },
+    onSuccess: (run) => {
+      queryClient.setQueryData<SupplyRun | null>(supplyRunKey(weekStart), run)
+    },
+  })
+}
+
 // Toggle is one item marked to buy (needed) or "have it" (not needed).
 export type Toggle = { id: string; needed: boolean }
 

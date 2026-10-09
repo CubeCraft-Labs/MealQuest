@@ -656,6 +656,25 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
 - Events: `plan_ready`, `list_ready`, `day_of_reminder`, `new_suggestions`,
   `rotation_review`; each can go to Web Push and/or Google Chat per
   `notification_prefs`.
+- Where each event is emitted, with its idempotency key. Each is stored by
+  `notify.EmitTx` in the transaction of the change it is about, so the
+  change and its notification commit together or not at all:
+  - `plan_ready:{weekStart}` (URL `/plan`) when a draft job stores the
+    AI's draft of a week. Only the first draft of a week notifies: a
+    redraft (Rebuild week) has the same key, and a manual swap never
+    drafts. Its title is "Next week's plan is ready" (or "This week's",
+    or "The plan for the week of Oct 26") and its body the drafted
+    dinners Monday to Sunday.
+  - `list_ready:{weekStart}` (URL `/plan/shopping`) when a week's Supply
+    run is first created, by `POST /shopping/{weekStart}/generate` or
+    after Push to Calendar; remaking it does not notify.
+  - `new_suggestions:{batchId}` (URL `/discover`) when a `scheduled` or
+    `manual` suggestion batch ends done having added Side quests, in the
+    transaction recording it done. A `replenish` batch never notifies.
+  - `day_of_reminder:{date}` (URL `/dinner/{id}`) through
+    `plan.Service.EmitDayOfReminder(date)`, which names the dinner planned
+    on the date and emits nothing for a week with no plan. The scheduler
+    calls it at `reminder_time` (Feature 20).
 - Delivery goes through `notification_outbox`.
 - Web Push uses VAPID (`webpush-go`). Google Chat uses the stored incoming
   webhook.
@@ -880,6 +899,22 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
   through `shopping.Generate` and answers with the same shape plus
   `skipped: [{date, dinner_id, dinner_name, reason}]`. 404 when the week
   has no plan, 409 `archived` when its list is in the Supply archive.
+- `POST /api/v1/shopping/{weekStart}/send-chat` (CSRF-checked) takes
+  `{}` or `{"resend": true}` and posts the Supply run to Google Chat
+  through `chat.PostSupplyRun`, in the week's thread: "Supply run · " and
+  its title (or week label), each dinner with items still needed and those
+  items, and a card whose "Open" button links to
+  `/plan/shopping?week={weekStart}` under `MEALQUEST_PUBLIC_URL`. It
+  records `sent_to_chat_at` and answers with the Supply run as `GET` gives
+  it. A week already sent is answered as it is, with no second post,
+  unless `resend` is true. No webhook stored is 409 `not_configured`;
+  Google Chat not answering is 502 `chat_unreachable` (retryable) and
+  answering with a status other than 2xx 502 `chat_refused` (retryable
+  only for 429 or 5xx), and neither
+  records `sent_to_chat_at`. 404 when the week has no Supply run, 409
+  `archived` when it is in the Supply archive, 400 `invalid_request` for a
+  bad body. `shopping.SendToChat(weekStart, resend)` is what
+  `shopping_chat_autosend` calls (Feature 20).
 - `PATCH /api/v1/shopping/items/{id}` takes `{needed}` (a required
   boolean; it sets the flag, it does not flip it) and answers `{id,
   needed, needed_count, total_count}` with the list's counts after the

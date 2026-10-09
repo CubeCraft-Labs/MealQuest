@@ -17,6 +17,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify/notifytest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes/recipestest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/suggest"
@@ -40,7 +41,7 @@ func newSuggestionsRouter(t *testing.T, names ...string) (http.Handler, *store.S
 	fail := func(context.Context, string, skills.SideQuestsRequest) (skills.SideQuests, error) {
 		return skills.SideQuests{}, errors.New("no model in this test")
 	}
-	svc, err := suggest.NewService(st, g, fail, runner, logger)
+	svc, err := suggest.NewService(st, g, fail, runner, notifytest.New(t, st), logger)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -753,3 +753,34 @@ func TestWorkerDeliversEmittedEvent(t *testing.T) {
 		t.Fatalf("%d deliveries, want 1", n)
 	}
 }
+
+// TestEmitTxCommitsWithTheCallersTransaction: EmitTx's rows are stored only
+// when the caller's transaction commits.
+func TestEmitTxCommitsWithTheCallersTransaction(t *testing.T) {
+	ctx := context.Background()
+	svc, st, _ := newTestService(t)
+	setPref(t, st, PlanReady, true, false)
+	const key = "plan_ready:2026-10-12"
+	rollback := errors.New("roll back")
+	err := st.WithTx(ctx, func(tx *sql.Tx) error {
+		if err := svc.EmitTx(ctx, tx, planReady(key)); err != nil {
+			return err
+		}
+		return rollback
+	})
+	if !errors.Is(err, rollback) {
+		t.Fatalf("WithTx = %v", err)
+	}
+	if rows := outbox(t, st, key); len(rows) != 0 {
+		t.Fatalf("rows after rollback = %v, want none", rows)
+	}
+	if err := st.WithTx(ctx, func(tx *sql.Tx) error { return svc.EmitTx(ctx, tx, planReady(key)) }); err != nil {
+		t.Fatal(err)
+	}
+	if r := onlyRow(t, st, key, ChannelPush); r.Status != "pending" {
+		t.Errorf("row after commit = %+v, want pending", r)
+	}
+	if err := st.WithTx(ctx, func(tx *sql.Tx) error { return svc.EmitTx(ctx, tx, Event{Type: PlanReady, Key: key}) }); !errors.Is(err, ErrInvalidEvent) {
+		t.Errorf("EmitTx of an invalid event = %v, want ErrInvalidEvent", err)
+	}
+}

@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/llm"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ideas"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes/recipestest"
 )
@@ -121,4 +123,75 @@ func TestQuickJobShowsOnlySafeSources(t *testing.T) {
 		t.Fatalf("POST = %d: %s", rec.Code, rec.Body)
 	}
 	checkIdeaSources(t, h, body["jobId"].(string))
+}
+
+// legacyIdea is an idea as the result builders stored it before sources
+// were made safe: the grounded recipe's raw link and stored site name,
+// which is the link's host when its page named no site.
+func legacyIdea(name, link, site string) map[string]any {
+	return map[string]any{
+		"name": name, "method": "stovetop", "minutes_total": 25, "difficulty": "easy",
+		"recipe_id": "01JLEGACY" + strings.ToUpper(strings.ReplaceAll(name, " ", "")), "photo_url": "/api/v1/photos/legacy",
+		"source_url": link, "site_name": site,
+	}
+}
+
+// A job of either idea kind whose result was stored before sources were
+// made safe is served with the sources a job stored now holds: neither a
+// token-bearing link nor a name taken from its host.
+func TestJobServesLegacyIdeaResultsWithOnlySafeSources(t *testing.T) {
+	t.Parallel()
+	model, normalize, search, pages, images := newQuickFakes()
+	h, _, st := newIdeasRouter(t, model, normalize, search, pages, images, false)
+	legacy := []any{
+		legacyIdea("Chicken Curry", cleanSourceLink, "Curry House"),
+		legacyIdea("Beef Stew", "https://"+queryHost+"/stew?access_token="+queryToken, queryHost),
+		legacyIdea("Bean Chili", "https://"+userinfoToken+"@"+userinfoHost+"/chili", userinfoHost),
+	}
+	for kind, result := range map[string]map[string]any{
+		ideas.KindFromIngredients: {"stage": "done", "ingredients": []string{"rice"}, "quick_only": false, "ideas": legacy, "dropped": 0},
+		ideas.KindQuick:           {"stage": "done", "kind": "under30", "exclude": []string{}, "ideas": legacy, "dropped": 0},
+	} {
+		js, err := json.Marshal(result)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := "legacy-" + kind
+		if _, err := st.Writer.ExecContext(t.Context(),
+			`INSERT INTO jobs (id, kind, status, payload, result, created_at, updated_at) VALUES (?, ?, 'succeeded', '{}', ?, '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')`,
+			id, kind, string(js)); err != nil {
+			t.Fatal(err)
+		}
+		checkIdeaSources(t, h, id)
+	}
+}
+
+// An idea job whose grounded recipe's stored link does not parse fails,
+// even when no site name is stored, rather than show the idea without a
+// source.
+func TestIdeaJobFailsOnUnparseableSourceWithoutSiteName(t *testing.T) {
+	t.Parallel()
+	const badLink = "https://kitchen.example/%zz"
+	model, normalize, search, pages, images := sourceFakes(t, 25)
+	idea := fmt.Sprintf(`{"name":%q,"uses":["rice"],"missing":[],"est_minutes":25,"method":"stovetop","difficulty":"easy","search_query":%q}`, sourceCases[0].dish, sourceCases[0].dish)
+	js := `{"ideas":[` + idea + `]}`
+	for range 2 {
+		model.QueueGenerate(llm.GenerateResult{Response: llm.Response{Text: js, JSON: json.RawMessage(js)}})
+	}
+	h, _, st := newIdeasRouter(t, model, normalize, search, pages, images, true)
+	if job := waitJob(t, h, startIdeasJob(t, h)); job["status"] != "succeeded" {
+		t.Fatalf("grounding job = %v", job)
+	}
+	// The recipe is now stored under badLink with no site name, and the
+	// search finds it there.
+	res, err := st.Writer.ExecContext(t.Context(), `UPDATE recipes SET source_url = ?, site_name = NULL WHERE source_url = ?`, badLink, cleanSourceLink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		t.Fatalf("updated %d recipes (%v), want 1", n, err)
+	}
+	search.Results[sourceCases[0].dish] = []recipes.Candidate{{URL: badLink}}
+	job := waitJob(t, h, startIdeasJob(t, h))
+	assertFailedWithoutIdeas(t, job, jobs.CodeInternal)
 }

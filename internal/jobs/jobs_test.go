@@ -773,7 +773,7 @@ func TestServiceOnlyKind(t *testing.T) {
 	}
 }
 
-func TestFailedResultAppliesOnlyToItsKindsFailedJobs(t *testing.T) {
+func TestShownResultAppliesOnlyToItsKindsJobs(t *testing.T) {
 	t.Parallel()
 	st := migratedStore(t)
 	r := newRunner(t, st, 1)
@@ -788,17 +788,24 @@ func TestFailedResultAppliesOnlyToItsKindsFailedJobs(t *testing.T) {
 	}
 	hidden := register(t, r, "hidden", h, "stopped")
 	plain := register(t, r, "plain", h, "stopped")
-	if err := hidden.FailedResult(func(json.RawMessage) (json.RawMessage, error) {
-		return json.RawMessage(`{"done":0}`), nil
+	if err := hidden.ShownResult(func(status Status, stored json.RawMessage) (json.RawMessage, error) {
+		if status == StatusFailed {
+			return json.RawMessage(`{"done":0}`), nil
+		}
+		var res countResult
+		if err := json.Unmarshal(stored, &res); err != nil {
+			return nil, err
+		}
+		return json.Marshal(countResult{Done: res.Done * 10})
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := hidden.FailedResult(nil); err == nil {
-		t.Error("FailedResult(nil) succeeded, want an error")
+	if err := hidden.ShownResult(nil); err == nil {
+		t.Error("ShownResult(nil) succeeded, want an error")
 	}
 	start(t, r)
-	if err := hidden.FailedResult(func(s json.RawMessage) (json.RawMessage, error) { return s, nil }); err == nil {
-		t.Error("FailedResult after Start succeeded, want an error")
+	if err := hidden.ShownResult(func(_ Status, s json.RawMessage) (json.RawMessage, error) { return s, nil }); err == nil {
+		t.Error("ShownResult after Start succeeded, want an error")
 	}
 
 	for _, tc := range []struct {
@@ -806,9 +813,10 @@ func TestFailedResultAppliesOnlyToItsKindsFailedJobs(t *testing.T) {
 		steps int
 		want  string
 	}{
-		{hidden, 0, `{"done":0}`}, // failed: shown through FailedResult
-		{hidden, 3, `{"done":3}`}, // succeeded: as stored
-		{plain, 0, `{"done":5}`},  // failed, kind without FailedResult: as stored
+		{hidden, 0, `{"done":0}`},  // failed: shown through ShownResult
+		{hidden, 3, `{"done":30}`}, // succeeded: shown through ShownResult
+		{plain, 0, `{"done":5}`},   // failed, kind without ShownResult: as stored
+		{plain, 3, `{"done":3}`},   // succeeded, kind without ShownResult: as stored
 	} {
 		job := waitFor(t, r, enqueue(t, tc.kind, countPayload{Steps: tc.steps}), finished)
 		if string(job.Result) != tc.want {

@@ -186,16 +186,18 @@ func readRecipe(ctx context.Context, q *db.Queries, recipeID string, d *Detail) 
 // site name is siteName: the name only when the page gave it (see
 // pageSiteName) and the link only when it is free of secrets (see
 // safeSourceURL). It is the one way a fetched recipe's source reaches a
-// client.
+// client. A sourceURL that does not parse is an error, whether or not a
+// site name is stored.
 func SourceOf(siteName sql.NullString, sourceURL string) (Source, error) {
-	site, err := pageSiteName(siteName, sourceURL)
+	link, err := url.Parse(sourceURL)
 	if err != nil {
-		return Source{}, err
+		// Not wrapped: url.Parse's error quotes the link.
+		return Source{}, errors.New("source url does not parse")
 	}
-	return Source{SiteName: site, URL: safeSourceURL(sourceURL)}, nil
+	return Source{SiteName: pageSiteName(siteName, link), URL: safeSourceURL(sourceURL)}, nil
 }
 
-// pageSiteName is the stored site name of a recipe fetched from sourceURL
+// pageSiteName is the stored site name of a recipe fetched from link
 // when it is one the page gave, else nil. A page that names no site is
 // stored under recipes.HostSiteName of the URL it was served from: the
 // pasted link's host, which may hold a personal token (a private
@@ -205,23 +207,18 @@ func SourceOf(siteName sql.NullString, sourceURL string) (Source, error) {
 // is treated as one and withheld. A site that names itself as a domain,
 // such as "Food.com", loses its name with them: a credit that does not
 // name the site is better than one that leaks a link.
-func pageSiteName(stored sql.NullString, sourceURL string) (*string, error) {
+func pageSiteName(stored sql.NullString, link *url.URL) *string {
 	if !stored.Valid {
-		return nil, nil
-	}
-	link, err := url.Parse(sourceURL)
-	if err != nil {
-		// Not wrapped: url.Parse's error quotes the link.
-		return nil, errors.New("source url does not parse")
+		return nil
 	}
 	name := stored.String
 	if strings.EqualFold(name, recipes.HostSiteName(link)) || net.ParseIP(name) != nil {
-		return nil, nil
+		return nil
 	}
 	if u, err := url.Parse("https://" + name + "/"); err == nil && u.Host == name && strings.Contains(name, ".") {
-		return nil, nil
+		return nil
 	}
-	return &name, nil
+	return &name
 }
 
 // safeSourceURL is sourceURL when it is verifiably free of secrets — an

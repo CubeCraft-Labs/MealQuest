@@ -124,18 +124,18 @@ func NewService(st *store.Store, grounder *recipes.Grounder, generate Generator,
 	}
 	s := &Service{st: st, grounder: grounder, runner: runner, generate: generate, quick: quick, logger: logger}
 	var err error
-	if s.job, err = register(runner, KindFromIngredients, s.run, withoutIdeas[Result]); err != nil {
+	if s.job, err = register(runner, KindFromIngredients, s.run, shownJobResult[Result]); err != nil {
 		return nil, err
 	}
-	if s.quickJob, err = register(runner, KindQuick, s.runQuick, withoutIdeas[QuickResult]); err != nil {
+	if s.quickJob, err = register(runner, KindQuick, s.runQuick, shownJobResult[QuickResult]); err != nil {
 		return nil, err
 	}
 	return s, nil
 }
 
-// register registers the service-only job name, run by run, whose failed
-// jobs show their result through failed.
-func register[P any, R jobs.Public](runner *jobs.Runner, name string, run jobs.Handler[P, R], failed func(json.RawMessage) (json.RawMessage, error)) (*jobs.Kind[P], error) {
+// register registers the service-only job name, run by run, whose jobs
+// show their result through show.
+func register[P any, R jobs.Public](runner *jobs.Runner, name string, run jobs.Handler[P, R], show func(jobs.Status, json.RawMessage) (json.RawMessage, error)) (*jobs.Kind[P], error) {
 	kind, err := jobs.Register(runner, name, run, Reasons...)
 	if err != nil {
 		return nil, err
@@ -143,7 +143,7 @@ func register[P any, R jobs.Public](runner *jobs.Runner, name string, run jobs.H
 	if err := kind.ServiceOnly(); err != nil {
 		return nil, err
 	}
-	if err := kind.FailedResult(failed); err != nil {
+	if err := kind.ShownResult(show); err != nil {
 		return nil, err
 	}
 	return kind, nil
@@ -254,6 +254,9 @@ type shownResult[R any] interface {
 	shown() int
 	// cleared is the result showing no ideas.
 	cleared() R
+	// withSafeSources is the result with each idea's source as
+	// shownSource gives it.
+	withSafeSources() (R, error)
 }
 
 func (r Result) shown() int { return len(r.Ideas) }
@@ -263,11 +266,25 @@ func (r Result) cleared() Result {
 	return r
 }
 
+func (r Result) withSafeSources() (Result, error) {
+	ideas := make([]Idea, len(r.Ideas))
+	for i, idea := range r.Ideas {
+		src, err := shownSource(idea.SourceURL, idea.SiteName)
+		if err != nil {
+			return Result{}, fmt.Errorf("ideas: idea %d: %w", i, err)
+		}
+		idea.SourceURL, idea.SiteName = src.URL, src.SiteName
+		ideas[i] = idea
+	}
+	r.Ideas = ideas
+	return r, nil
+}
+
 // finish ends a job whose work returned res and err. A job that failed
 // has its result published again with no ideas, to tidy the stored
 // result. That write is not what keeps a failed job from showing ideas,
 // since it may fail and a job interrupted by restart never makes it:
-// withoutIdeas, applied whenever a failed job is read, is.
+// shownJobResult, applied whenever a failed job is read, is.
 func finish[R shownResult[R]](ctx context.Context, logger *slog.Logger, what string, res R, err error, publish func(R) error) (R, error) {
 	var zero R
 	if err == nil {
@@ -412,15 +429,24 @@ func ground(ctx context.Context, g *recipes.Grounder, reqs []recipes.GroundReque
 	return failed
 }
 
-// withoutIdeas is a failed job's stored result as the job shows it: with no
-// ideas, however the job failed, so a failed job never shows ideas kept
-// before the failure.
-func withoutIdeas[R shownResult[R]](stored json.RawMessage) (json.RawMessage, error) {
+// shownJobResult is a job's stored result as the job shows it. A failed
+// job's shows no ideas, however the job failed, so a failed job never
+// shows ideas kept before the failure. Any other job's shows each idea's
+// source as shownSource gives it, so a result stored before sources were
+// made safe never shows a link or name that could leak a secret.
+func shownJobResult[R shownResult[R]](status jobs.Status, stored json.RawMessage) (json.RawMessage, error) {
 	var res R
 	if err := json.Unmarshal(stored, &res); err != nil {
-		return nil, fmt.Errorf("ideas: decode failed job's result: %w", err)
+		return nil, fmt.Errorf("ideas: decode %s job's result: %w", status, err)
 	}
-	return res.cleared().PublicJSON()
+	if status == jobs.StatusFailed {
+		return res.cleared().PublicJSON()
+	}
+	safe, err := res.withSafeSources()
+	if err != nil {
+		return nil, err
+	}
+	return safe.PublicJSON()
 }
 
 // ideaOf is idea as grounded by gr.
@@ -454,6 +480,24 @@ func sourceOf(gr recipes.Grounded) (dinners.Source, error) {
 		return dinners.Source{}, fmt.Errorf("ideas: recipe %s: %w", gr.RecipeID, err)
 	}
 	return src, nil
+}
+
+// shownSource is the source of an idea as stored in a job's result, with
+// link sourceURL and site name siteName, as a client may see it (see
+// dinners.SourceOf). A result stored now already holds it, and one stored
+// before sources were made safe holds the grounded recipe's own, with ""
+// for no site name, as sourceOf reads it; a null link, which only a result
+// stored now holds, is checked as "".
+func shownSource(sourceURL, siteName *string) (dinners.Source, error) {
+	var link string
+	if sourceURL != nil {
+		link = *sourceURL
+	}
+	var site sql.NullString
+	if siteName != nil {
+		site = sql.NullString{String: *siteName, Valid: *siteName != ""}
+	}
+	return dinners.SourceOf(site, link)
 }
 
 // QuickJob is the KindQuick payload: the kind of Quick dinner wanted,
@@ -524,6 +568,20 @@ func (r QuickResult) shown() int { return len(r.Ideas) }
 func (r QuickResult) cleared() QuickResult {
 	r.Ideas = []QuickIdea{}
 	return r
+}
+
+func (r QuickResult) withSafeSources() (QuickResult, error) {
+	ideas := make([]QuickIdea, len(r.Ideas))
+	for i, idea := range r.Ideas {
+		src, err := shownSource(idea.SourceURL, idea.SiteName)
+		if err != nil {
+			return QuickResult{}, fmt.Errorf("ideas: idea %d: %w", i, err)
+		}
+		idea.SourceURL, idea.SiteName = src.URL, src.SiteName
+		ideas[i] = idea
+	}
+	r.Ideas = ideas
+	return r, nil
 }
 
 // OfQuickKind reports whether a recipe cooked by method in minutes (nil

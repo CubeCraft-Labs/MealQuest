@@ -19,9 +19,10 @@ const (
 	// further failure doubles it, up to retryMax.
 	retryFirst = time.Minute
 	retryMax   = time.Hour
-	// giveUpAfter is how long after its creation a row is retried. The
-	// last retry is due at that moment, and a delivery failing then or
-	// later marks the row failed.
+	// giveUpAfter is how long after its creation a row may be delivered.
+	// The last retry is due at that moment; a row claimed then or later is
+	// marked failed without being sent, and a delivery failing at or
+	// after it marks the row failed.
 	giveUpAfter = 24 * time.Hour
 	// sendTimeout bounds one Send.
 	sendTimeout = 30 * time.Second
@@ -175,7 +176,8 @@ func (s *Service) deliverDue(ctx context.Context) (time.Duration, error) {
 // deliver sends a claimed row through its channel's sender and records the
 // outcome. A row that cannot be sent at all, because its payload does not
 // decode or its channel has no sender, is failed at once: retrying cannot
-// help.
+// help. A row 24 hours or more past its creation is failed without being
+// sent: it is too stale to deliver.
 func (s *Service) deliver(ctx context.Context, row db.NotificationOutbox) {
 	logger := s.logger.With("notification_id", row.ID, "event_key", row.EventKey, "channel", row.Channel)
 	var payload Payload
@@ -194,9 +196,27 @@ func (s *Service) deliver(ctx context.Context, row db.NotificationOutbox) {
 		return
 	}
 
+	created, err := parseTimestamp(row.CreatedAt)
+	if err != nil {
+		reason := fmt.Sprintf("created_at does not parse: %v", err)
+		logger.ErrorContext(ctx, "notification failed", "reason", reason)
+		s.giveUp(ctx, logger, row, 0, reason)
+		return
+	}
+	deadline := created.Add(giveUpAfter)
+	if !s.now().Before(deadline) {
+		reason := "not delivered within 24 hours of creation"
+		if row.LastError.Valid {
+			reason += "; last error: " + row.LastError.String
+		}
+		logger.ErrorContext(ctx, "notification failed; giving up", "reason", reason)
+		s.giveUp(ctx, logger, row, 0, reason)
+		return
+	}
+
 	attempt := row.Attempts + 1
 	sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)
-	err := sender.Send(sendCtx, Message{
+	err = sender.Send(sendCtx, Message{
 		ID: row.ID, EventKey: row.EventKey, Channel: Channel(row.Channel), Payload: payload, Attempt: attempt,
 	})
 	cancel()
@@ -215,13 +235,6 @@ func (s *Service) deliver(ctx context.Context, row db.NotificationOutbox) {
 		return
 	}
 
-	created, perr := parseTimestamp(row.CreatedAt)
-	if perr != nil {
-		logger.ErrorContext(ctx, "notification failed", "reason", "created_at does not parse", "error", perr)
-		s.giveUp(ctx, logger, row, 1, err.Error())
-		return
-	}
-	deadline := created.Add(giveUpAfter)
 	if !now.Before(deadline) {
 		logger.ErrorContext(ctx, "notification failed; giving up", "attempt", attempt, "error", err)
 		s.giveUp(ctx, logger, row, 1, err.Error())

@@ -458,15 +458,20 @@ func TestGiveUpAfter24Hours(t *testing.T) {
 	}
 
 	// Attempts at 0, 1, 3, 7, 15, 31 and 63 minutes, then hourly to 1383
-	// minutes (22 more), then the last at the deadline: 30 in all.
-	const wantAttempts = 30
+	// minutes (22 more): 29 in all. The row is due once more at the
+	// deadline, where it is failed without being sent.
+	const wantAttempts = 29
 	r := onlyRow(t, st, key, ChannelPush)
 	if r.Status != "failed" || r.Attempts != wantAttempts || r.NextAttemptAt.Valid ||
-		r.LastError.String != "push service unavailable" || r.UpdatedAt != timestamp(deadline) {
+		r.LastError.String != "not delivered within 24 hours of creation; last error: push service unavailable" ||
+		r.UpdatedAt != timestamp(deadline) {
 		t.Fatalf("row = %+v, want failed at %s after %d attempts", r, timestamp(deadline), wantAttempts)
 	}
-	if len(times) != wantAttempts || !times[len(times)-1].Equal(deadline) || !times[len(times)-2].Equal(start.Add(1383*time.Minute)) {
-		t.Fatalf("attempted at %v, want %d attempts ending 1383 min and 24 h after creation", times, wantAttempts)
+	if len(times) != wantAttempts+1 || !times[len(times)-1].Equal(deadline) || !times[len(times)-2].Equal(start.Add(1383*time.Minute)) {
+		t.Fatalf("due at %v, want %d attempts ending 1383 min after creation, then the deadline", times, wantAttempts)
+	}
+	if n := len(sender.messages()); n != wantAttempts {
+		t.Fatalf("%d deliveries, want %d", n, wantAttempts)
 	}
 
 	// A failed row is never delivered again.
@@ -479,24 +484,68 @@ func TestGiveUpAfter24Hours(t *testing.T) {
 	}
 }
 
-func TestOverdueRowFailsOnFirstFailure(t *testing.T) {
+// TestOverdueRowIsNeverDelivered covers a row first claimed 24 hours or
+// more after its creation, as when the service was down: it is failed
+// without calling the sender, whether the sender would succeed or fail.
+func TestOverdueRowIsNeverDelivered(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		at   time.Duration
+		fail error
+	}{
+		{"succeeding sender at 24 h", 24 * time.Hour, nil},
+		{"succeeding sender after 24 h", 25 * time.Hour, nil},
+		{"failing sender at 24 h", 24 * time.Hour, errors.New("gone")},
+		{"failing sender after 24 h", 25 * time.Hour, errors.New("gone")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			svc, st, c := newTestService(t)
+			setPref(t, st, PlanReady, true, false)
+			sender := &fakeSender{fail: tc.fail}
+			if err := svc.Register(ChannelPush, sender); err != nil {
+				t.Fatal(err)
+			}
+			const key = "plan_ready:2026-10-12"
+			if err := svc.Emit(ctx, planReady(key)); err != nil {
+				t.Fatal(err)
+			}
+			c.set(start.Add(tc.at))
+			if _, err := svc.deliverDue(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if n := len(sender.messages()); n != 0 {
+				t.Fatalf("%d deliveries of an overdue row, want 0", n)
+			}
+			r := onlyRow(t, st, key, ChannelPush)
+			if r.Status != "failed" || r.Attempts != 0 || r.NextAttemptAt.Valid ||
+				r.LastError.String != "not delivered within 24 hours of creation" || r.UpdatedAt != timestamp(start.Add(tc.at)) {
+				t.Fatalf("row = %+v, want failed without an attempt", r)
+			}
+		})
+	}
+}
+
+// TestRowJustBeforeDeadlineIsDelivered pins the boundary from the other
+// side: a row claimed just under 24 hours after its creation is sent.
+func TestRowJustBeforeDeadlineIsDelivered(t *testing.T) {
 	ctx := context.Background()
 	svc, st, c := newTestService(t)
 	setPref(t, st, PlanReady, true, false)
-	if err := svc.Register(ChannelPush, &fakeSender{fail: errors.New("gone")}); err != nil {
+	sender := &fakeSender{}
+	if err := svc.Register(ChannelPush, sender); err != nil {
 		t.Fatal(err)
 	}
 	const key = "plan_ready:2026-10-12"
 	if err := svc.Emit(ctx, planReady(key)); err != nil {
 		t.Fatal(err)
 	}
-	// The service was down for more than a day.
-	c.set(start.Add(25 * time.Hour))
+	c.set(start.Add(24*time.Hour - time.Millisecond))
 	if _, err := svc.deliverDue(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if r := onlyRow(t, st, key, ChannelPush); r.Status != "failed" || r.Attempts != 1 || r.LastError.String != "gone" {
-		t.Fatalf("row = %+v, want failed after 1 attempt", r)
+	if r := onlyRow(t, st, key, ChannelPush); r.Status != "sent" || r.Attempts != 1 || len(sender.messages()) != 1 {
+		t.Fatalf("row = %+v after %d deliveries, want sent once", r, len(sender.messages()))
 	}
 }
 

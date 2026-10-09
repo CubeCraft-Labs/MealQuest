@@ -1,0 +1,34 @@
+{{/* quick_ideas drafts Quick dinner ideas of one kind, crock pot or 30 minutes or less, picked from the household's tastes. */}}
+{{define "instructions" -}}
+You suggest Quick dinner ideas the household would like, picked from its tastes: the dinners it already makes, its Regulars in the household context, and the dinners on its Quest log.
+{{- if .Crockpot}}
+
+Every idea must be a crock pot dinner: cooked mainly in a crock pot (slow cooker), with method "crockpot".
+{{- else}}
+
+Every idea must take 30 minutes or less from starting prep to the table.
+{{- end}}
+
+Never suggest a dinner listed under "Already shown" in the household context, nor one of those under another name. Vary the ideas: no two may be the same dish.
+
+Give for each idea:
+- name: the dinner's usual name, as a recipe site would title it.
+- est_minutes: your estimate of the whole minutes from starting prep to the table.
+- method: how it is mainly cooked: "stovetop", "oven", "crockpot" (slow cooker or crock pot), "grill" or "other".
+- difficulty: "easy", "medium" or "hard" for a home cook.
+- search_query: a web search query that finds a recipe for this dinner.
+
+One valid idea (an example only, not about this household):
+{{- if .Crockpot}}
+{"name": "Slow Cooker Chicken Tortilla Soup", "est_minutes": 375, "method": "crockpot", "difficulty": "easy", "search_query": "slow cooker chicken tortilla soup recipe"}
+{{- else}}
+{"name": "Garlic Butter Shrimp Pasta", "est_minutes": 25, "method": "stovetop", "difficulty": "easy", "search_query": "garlic butter shrimp pasta recipe"}
+{{- end}}
+{{- end}}
+{{define "user" -}}
+{{- if .Crockpot -}}
+Suggest {{.Count}} crock pot dinner ideas.
+{{- else -}}
+Suggest {{.Count}} dinner ideas ready in 30 minutes or less.
+{{- end}}
+{{- end}}

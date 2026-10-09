@@ -288,6 +288,89 @@ func (s *Service) createRegular(ctx context.Context, r NewRegular, updatedBy str
 	return row, nil
 }
 
+// IdeaOrigins are the origins of a dinner added from an idea: ingredients
+// for Cook from what I have, quick for Quick dinners.
+var IdeaOrigins = []string{"ingredients", "quick"}
+
+// NewQuestLog is a dinner to add to the Quest log from an idea: its name,
+// the recipe the idea was already grounded in, and its origin, one of
+// IdeaOrigins.
+type NewQuestLog struct {
+	Name     string
+	RecipeID string
+	Origin   string
+}
+
+// AddToQuestLog adds n to the Quest log, recording updatedBy: a dinner
+// with status quest_log and origin n.Origin, grounded in recipe n.RecipeID
+// (its method, minutes, difficulty and photo), and returns it with
+// created true. When an unarchived dinner already repeats it, by the same
+// rule that refuses a duplicate Regular (a harness.Similar name, or the
+// recipe's link), that dinner is returned as it is, with created false,
+// so adding the same idea again never makes a second dinner: a Regular
+// stays a Regular and a Quest log dinner stays in the Quest log. A
+// repeated dinner still awaiting the household's choice (a suggested Side
+// quest, or one tried and awaiting its Rotation check) is a
+// *DuplicateError and changes nothing: adding it would make that choice
+// for them. An unknown recipe is an error.
+func (s *Service) AddToQuestLog(ctx context.Context, n NewQuestLog, updatedBy string) (d Dinner, created bool, err error) {
+	if updatedBy == "" {
+		return Dinner{}, false, errors.New("dinners: add to Quest log: no member to record as updated_by")
+	}
+	if !slices.Contains(IdeaOrigins, n.Origin) {
+		return Dinner{}, false, fmt.Errorf("dinners: add to Quest log: origin %q is not one of %s", n.Origin, strings.Join(IdeaOrigins, ", "))
+	}
+	name, err := checkName(n.Name)
+	if err != nil {
+		return Dinner{}, false, err
+	}
+	var row db.Dinner
+	err = s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		q := db.New(tx)
+		recipe, err := q.GetRecipe(ctx, n.RecipeID)
+		if err != nil {
+			return fmt.Errorf("dinners: add to Quest log: read recipe %s: %w", n.RecipeID, err)
+		}
+		existing, found, err := findRepeat(ctx, q, "", name, sql.NullString{String: recipe.SourceUrl, Valid: true})
+		if err != nil {
+			return err
+		}
+		if found {
+			if existing.Status != StatusRegular && existing.Status != StatusQuestLog {
+				return &DuplicateError{Existing: fromRow(existing)}
+			}
+			row = existing
+			return nil
+		}
+		now := store.Now().String()
+		row, err = q.CreateDinner(ctx, db.CreateDinnerParams{
+			ID:              store.NewID(),
+			Name:            name,
+			NormalizedName:  harness.Normalize(name),
+			Status:          StatusQuestLog,
+			Origin:          n.Origin,
+			Method:          recipe.Method,
+			MinutesTotal:    recipe.MinutesTotal,
+			Difficulty:      recipe.Difficulty,
+			RecipeID:        sql.NullString{String: recipe.ID, Valid: true},
+			PhotoID:         recipe.PhotoID,
+			GroundingStatus: GroundingGrounded,
+			UpdatedBy:       sql.NullString{String: updatedBy, Valid: true},
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		})
+		if err != nil {
+			return fmt.Errorf("dinners: add to Quest log: %w", err)
+		}
+		created = true
+		return nil
+	})
+	if err != nil {
+		return Dinner{}, false, err
+	}
+	return fromRow(row), created, nil
+}
+
 // List returns the dinners with status, which must be regular or
 // quest_log, ordered by normalized name. The Quest log is the dinners
 // accepted and not yet scheduled, so a quest_log dinner on the plan for the
@@ -551,9 +634,23 @@ func checkRecipeURL(raw string) (*url.URL, error) {
 // source_url of the recipe it is grounded in, else the recipe_url still
 // awaiting grounding.
 func checkUnique(ctx context.Context, q *db.Queries, self, name string, recipeURL sql.NullString) error {
+	row, found, err := findRepeat(ctx, q, self, name, recipeURL)
+	if err != nil {
+		return err
+	}
+	if found {
+		return &DuplicateError{Existing: fromRow(row)}
+	}
+	return nil
+}
+
+// findRepeat returns the first unarchived dinner other than self that
+// name or recipeURL repeats, as checkUnique decides it, and whether there
+// is one.
+func findRepeat(ctx context.Context, q *db.Queries, self, name string, recipeURL sql.NullString) (db.Dinner, bool, error) {
 	rows, err := q.ListUnarchivedDinners(ctx)
 	if err != nil {
-		return fmt.Errorf("dinners: list for dedupe: %w", err)
+		return db.Dinner{}, false, fmt.Errorf("dinners: list for dedupe: %w", err)
 	}
 	for _, row := range rows {
 		if row.Dinner.ID == self {
@@ -564,10 +661,10 @@ func checkUnique(ctx context.Context, q *db.Queries, self, name string, recipeUR
 			link = row.RecipeSourceUrl
 		}
 		if harness.Similar(name, row.Dinner.Name) || (recipeURL.Valid && link == recipeURL) {
-			return &DuplicateError{Existing: fromRow(row.Dinner)}
+			return row.Dinner, true, nil
 		}
 	}
-	return nil
+	return db.Dinner{}, false, nil
 }
 
 // PhotoURL is where the API serves a list-sized copy of photo id.

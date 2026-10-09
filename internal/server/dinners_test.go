@@ -98,7 +98,7 @@ func newDinnersEnv(t *testing.T) *dinnersEnv {
 		t.Fatal(err)
 	}
 	e.h, err = NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t),
-		svc, newTestSuggest(t), newTestPlan(t), newTestShopping(t), newTestGoogle(t), runner, photos, fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
+		svc, newTestSuggest(t), newTestPlan(t), newTestShopping(t), newTestGoogle(t), newTestIdeas(t), runner, photos, fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
 	if err != nil {
 		t.Fatal(err)
 	}

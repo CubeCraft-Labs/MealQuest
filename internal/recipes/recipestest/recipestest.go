@@ -23,12 +23,16 @@ import (
 )
 
 // Search is a recipes.SearchSource and recipes.SearchProvider answering
-// each query from Results. Err, when set, fails every search. Gate, when
-// set, makes every search wait for it to close.
+// each query from Results. Err, when set, fails every search, and Fail
+// fails the searches for its queries. Gate, when set, makes every search
+// wait for it to close, and Gates makes the searches for its queries wait
+// for theirs.
 type Search struct {
 	Results map[string][]recipes.Candidate
 	Err     error
+	Fail    map[string]error
 	Gate    chan struct{}
+	Gates   map[string]chan struct{}
 
 	mu      sync.Mutex
 	queries []string
@@ -40,15 +44,21 @@ func (s *Search) Search(ctx context.Context, query string, n int) ([]recipes.Can
 	s.mu.Lock()
 	s.queries = append(s.queries, query)
 	s.mu.Unlock()
-	if s.Gate != nil {
+	for _, gate := range []chan struct{}{s.Gate, s.Gates[query]} {
+		if gate == nil {
+			continue
+		}
 		select {
-		case <-s.Gate:
+		case <-gate:
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
 	}
 	if s.Err != nil {
 		return nil, s.Err
+	}
+	if err := s.Fail[query]; err != nil {
+		return nil, err
 	}
 	c := s.Results[query]
 	return c[:min(n, len(c))], nil

@@ -112,6 +112,63 @@ func TestPageSiteNameWithholdsHosts(t *testing.T) {
 	}
 }
 
+// TestSafeSourceURLOnlyWithoutSecrets: a recipe link is shown only when it
+// is https to a host with no user, password, query or fragment, each of
+// which can carry a token; any other link, or one that does not parse, is
+// withheld whole.
+func TestSafeSourceURLOnlyWithoutSecrets(t *testing.T) {
+	t.Parallel()
+	for _, link := range []string{
+		"https://www.example.com/recipes/chicken-curry",
+		"https://example.com",
+		"https://example.com:8443/stew/",
+		"https://[2001:db8::1]/curry",
+		"https://1.2.3.4/curry",
+		"https://Kitchen-2.Example.com./curry",
+	} {
+		if got := dinners.SafeSourceURL(link); got == nil || *got != link {
+			t.Errorf("SafeSourceURL(%q) = %v, want the link", link, deref(got))
+		}
+	}
+	for _, link := range []string{
+		"https://example.com/curry?access_token=query-token",
+		"https://example.com/curry?",
+		"https://user:password@example.com/curry",
+		"https://token@example.com/curry",
+		"https://@example.com/curry",
+		"http://example.com/curry",
+		"https://example.com/curry#token=fragment-token",
+		"https://example.com/curry#",
+		"ftp://example.com/curry",
+		"https:example.com/curry",
+		"https:///curry",
+		"https://example.com:99999/curry",
+		"https://example.com:0/curry",
+		"//example.com/curry",
+		"https://secret-token\x7f.example/%zz",
+		"",
+		// Hosts url.Parse accepts but the browser's URL parser refuses
+		// (or reads as another host), which would fail the whole recipe
+		// screen.
+		"https://[bad]/curry",
+		"https://[fe80::1%25en0]/curry",
+		"https://[1.2.3.4]/curry",
+		"https://1.2.3.999/curry",
+		"https://1.2.3.4.5/curry",
+		"https://999/curry",
+		"https://example.0x/curry",
+		"https://xn--a/curry",
+		"https://ex%61mple.com/curry",
+		"https://ex%2fample.com/curry",
+		"https://a..b/curry",
+		"https://café.example/curry",
+	} {
+		if got := dinners.SafeSourceURL(link); got != nil {
+			t.Errorf("SafeSourceURL(%q) = %q, want nil", link, *got)
+		}
+	}
+}
+
 func deref(s *string) any {
 	if s == nil {
 		return nil

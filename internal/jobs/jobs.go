@@ -135,12 +135,14 @@ type Job struct {
 type runFunc func(ctx context.Context, payload string, publish func(json.RawMessage) error) (result json.RawMessage, code, reason string)
 
 // handler is a registered kind: run runs a job, check reports whether a
-// payload decodes into the kind's payload type, and serviceOnly is set when
-// Runner.Enqueue refuses the kind.
+// payload decodes into the kind's payload type, serviceOnly is set when
+// Runner.Enqueue refuses the kind, and failedResult, when set, is what Get
+// shows of a failed job's stored result (see Kind.FailedResult).
 type handler struct {
-	run         runFunc
-	check       func(payload []byte) bool
-	serviceOnly bool
+	run          runFunc
+	check        func(payload []byte) bool
+	serviceOnly  bool
+	failedResult func(stored json.RawMessage) (json.RawMessage, error)
 }
 
 // Runner owns the job handlers and the worker pool.
@@ -307,6 +309,27 @@ func (k *Kind[P]) ServiceOnly() error {
 	return nil
 }
 
+// FailedResult makes Get return, for a failed job of the kind with a
+// stored result, show's view of that result instead of the result itself.
+// It is applied on every read, so it holds however the job failed: by its
+// handler, as interrupted by restart, or after a write meant to tidy the
+// result failed. A show error fails Get. A kind that never calls it shows a
+// failed job's last result as stored. It must be called before Start.
+func (k *Kind[P]) FailedResult(show func(stored json.RawMessage) (json.RawMessage, error)) error {
+	if show == nil {
+		return fmt.Errorf("jobs: failed result %q: nil func", k.name)
+	}
+	k.r.mu.Lock()
+	defer k.r.mu.Unlock()
+	if k.r.started {
+		return fmt.Errorf("jobs: failed result %q: runner already started", k.name)
+	}
+	h := k.r.handlers[k.name]
+	h.failedResult = show
+	k.r.handlers[k.name] = h
+	return nil
+}
+
 // Wake tells an idle worker to look for a job, as Enqueue does itself:
 // call it after committing the transaction a job was enqueued in.
 func (k *Kind[P]) Wake() { k.r.wakeOne() }
@@ -402,7 +425,8 @@ func (r *Runner) Wait() {
 	r.wg.Wait()
 }
 
-// Get returns the job with id, or ErrNotFound.
+// Get returns the job with id, or ErrNotFound. A failed job's result is
+// shown through its kind's FailedResult, when the kind set one.
 func (r *Runner) Get(ctx context.Context, id string) (Job, error) {
 	row, err := db.New(r.st.Reader).GetJob(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -417,6 +441,21 @@ func (r *Runner) Get(ctx context.Context, id string) (Job, error) {
 	}
 	if row.Error.Valid {
 		job.Error = &row.Error.String
+	}
+	if job.Status == StatusFailed && job.Result != nil {
+		r.mu.Lock()
+		show := r.handlers[job.Kind].failedResult
+		r.mu.Unlock()
+		if show != nil {
+			shown, err := show(job.Result)
+			if err != nil {
+				return Job{}, fmt.Errorf("jobs: show failed %s result: %w", job.Kind, err)
+			}
+			if !json.Valid(shown) {
+				return Job{}, fmt.Errorf("jobs: show failed %s result: not one JSON value", job.Kind)
+			}
+			job.Result = shown
+		}
 	}
 	return job, nil
 }

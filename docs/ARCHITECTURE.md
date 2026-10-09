@@ -308,6 +308,36 @@ automatic** (D-021).
   still `pending` or `running` with no job queued or running (the process
   stopped, or recording its end failed) is set `failed`, so it does not
   block the next.
+- Cook from what I have (`ideas.Service`, Feature 18). `POST
+  /api/v1/ideas/from-ingredients {ingredients[], quick_only}` (both
+  required) checks the list with `skills.CleanIngredients` — 1 to 20
+  entries, each non-blank, at most 80 characters, with a non-empty
+  `harness.Normalize` form that no earlier entry shares — answering 400
+  `invalid_request` otherwise, then enqueues an `ideas_from_ingredients`
+  job (service-only: `POST /jobs` refuses the kind) and answers 202
+  `{jobId}` without waiting. The job runs `ideas_from_ingredients` (scope:
+  `skills.IdeasScope`, the flag and the normalized list in order), then
+  grounds its ideas in the model's order with `Grounder.GroundEach`, as
+  many as are still wanted at a time, until 5 are kept or none are left.
+  An idea no recipe grounds is dropped; with `quick_only`, so is one whose
+  grounded recipe is not a Quick dinner (`ideas.IsQuick`: method
+  `crockpot`, or `minutes_total` ≤ 30 — the recipe's, never the model's
+  `est_minutes`). Ideas are not stored as dinners. The job publishes
+  `{stage, ingredients, quick_only, ideas: [{name, uses, missing, summary,
+  method, minutes_total, difficulty, quick, recipe_id, photo_url,
+  source_url, site_name}], dropped}` at each stage (`suggesting`,
+  `grounding`, `done`) and again as each idea is kept, the moment its
+  grounding finishes, so the result fills idea by idea; the ideas shown
+  are always in the model's order, an earlier idea that grounds later
+  taking its place before those shown. It fails with `no_ideas_found`
+  (every idea was dropped), `ai_failed` (the skill or `normalize_recipe`
+  failed; no idea is made up instead, D-017), `search_not_configured` or
+  `search_failed`. A failed job shows no ideas, even those kept before the
+  failure: the kind registers a `FailedResult` view, so `GET
+  /api/v1/jobs/{id}` empties the `ideas` of any failed job's result on
+  read, however it failed (including `interrupted by restart` and an
+  `internal_error` whose clearing write failed). Before it fails it also
+  publishes its result again with no ideas, to tidy what is stored.
   `GET /api/v1/suggestions/deck` returns `{suggestions: [{id, dinner_id,
   name, photo_url, difficulty, method, minutes_total, cuisine, reason,
   cited_regular_ids, status, dinner_status, decided_at, created_at}],
@@ -470,6 +500,22 @@ automatic** (D-021).
   not a Regular; and one whose reason is over 180 characters or names none
   of its cited Regulars. Cited names are rewritten as the household writes
   them. Grounding each survivor in a recipe is the caller's next step.
+- **Ideas from ingredients** (`skills.IdeasFromIngredients`, skill
+  `ideas_from_ingredients` v1): from the household's ingredient list (the
+  "Ingredients on hand" context section) and the Quick only flag, asks for
+  8 ideas `{name, uses[], missing[], est_minutes, method, difficulty,
+  search_query}` at the household temperature. Malformed replies (a
+  missing field, a bad enum, an empty name, more than 8 ideas) get the one
+  repair turn. The invariant is enforced in Go: a `uses` entry is kept
+  only when its `harness.Normalize` form is a listed ingredient's, and is
+  then written as the household wrote it, once, in the household's order;
+  `missing` loses blanks, repeats and anything listed. An idea left using
+  none of the listed ingredients, or repeating an earlier idea
+  (`harness.Similar`), is dropped into `Dropped`. Each kept idea's summary
+  line (`skills.IdeaSummary`) is computed from the corrected lists: "Uses
+  all 5 · missing: 1 lime" when every ingredient is used, "Uses 3 of 5 ·
+  missing: …" otherwise, with "nothing missing" in place of the list when
+  nothing is.
 - **Supply run titles** (`skills.TitleArchive`, skill `archive_title`
   v1): from the names of the week's planned dinners in day order, writes
   `{title}`, the Supply run's post title in the Supply archive, at the
@@ -625,7 +671,8 @@ untitled (the job fails `title_failed`), and stores nothing. The
   candidates `Ground` would try, without grounding any. Search failures
   wrap `recipes.ErrSearchFailed` and model provider failures
   `recipes.ErrNormalizeFailed`. `GroundMany` grounds items 3 at a time and returns one result per
-  item, so one failure never affects its siblings. A recipe is usable only
+  item, so one failure never affects its siblings; `GroundEach` grounds
+  the same way but reports each item, one at a time, as it finishes. A recipe is usable only
   with ingredients, an image and, if given, a positive total time.
 
 ## Scheduler

@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/vapid"
 )
@@ -69,22 +70,86 @@ func (e *ValidationError) Error() string {
 	return "invalid push subscription: " + strings.Join(parts, "; ")
 }
 
-// Service stores push subscriptions.
+// Service stores push subscriptions and sends a test notification to them.
 type Service struct {
 	st        *store.Store
 	publicKey string
+	notifier  *notify.Service
 }
 
 // NewService returns a Service over st handing out publicKey, the VAPID
-// public key in vapid's encoding.
-func NewService(st *store.Store, publicKey string) (*Service, error) {
+// public key in vapid's encoding, that sends its test notification through
+// notifier.
+func NewService(st *store.Store, publicKey string, notifier *notify.Service) (*Service, error) {
 	if st == nil {
 		return nil, errors.New("push: nil store")
 	}
 	if _, err := vapid.ParsePublicKey(publicKey); err != nil {
 		return nil, fmt.Errorf("push: VAPID public key: %w", err)
 	}
-	return &Service{st: st, publicKey: publicKey}, nil
+	if notifier == nil {
+		return nil, errors.New("push: nil notifier")
+	}
+	return &Service{st: st, publicKey: publicKey, notifier: notifier}, nil
+}
+
+// The test notification SendTest sends.
+const (
+	TestTitle = "MealQuest test notification"
+	TestBody  = "Push works on this device. Tap to open the plan."
+	TestURL   = "/plan"
+)
+
+// ErrNoSubscriptions is returned by SendTest when no device has turned on
+// push: there is nothing to send the test to.
+var ErrNoSubscriptions = errors.New("push: no device has turned on notifications")
+
+// TestSent is a test notification queued for delivery: its event key and
+// how many subscriptions were stored when it was queued.
+type TestSent struct {
+	EventKey      string `json:"event_key"`
+	Subscriptions int    `json:"subscriptions"`
+}
+
+// SendTest queues TestTitle for every stored subscription, through the
+// notification outbox as a plan_ready event whose tap opens TestURL. Its
+// key, "plan_ready:test-" and a new id, is never used twice, so it is never
+// taken for an event already sent. It goes to push alone, never to Google
+// Chat. With push switched off for plan_ready it is notify.ErrPushOff,
+// whether or not any device has turned on push; otherwise with no
+// subscription it is ErrNoSubscriptions. Neither queues anything. Delivery
+// happens after SendTest returns, with the outbox's retries.
+func (s *Service) SendTest(ctx context.Context) (TestSent, error) {
+	q := db.New(s.st.Reader)
+	pref, err := q.GetNotificationPref(ctx, string(notify.PlanReady))
+	if errors.Is(err, sql.ErrNoRows) {
+		return TestSent{}, fmt.Errorf("push: no notification preference for %s", notify.PlanReady)
+	}
+	if err != nil {
+		return TestSent{}, fmt.Errorf("push: read notification preference for %s: %w", notify.PlanReady, err)
+	}
+	if pref.Push != 1 {
+		return TestSent{}, fmt.Errorf("%w: %s", notify.ErrPushOff, notify.PlanReady)
+	}
+	subs, err := q.ListPushSubscriptions(ctx)
+	if err != nil {
+		return TestSent{}, fmt.Errorf("push: list subscriptions: %w", err)
+	}
+	if len(subs) == 0 {
+		return TestSent{}, ErrNoSubscriptions
+	}
+	key := string(notify.PlanReady) + ":test-" + store.NewID()
+	err = s.notifier.EmitPush(ctx, notify.Event{
+		Type:  notify.PlanReady,
+		Key:   key,
+		Title: TestTitle,
+		Body:  TestBody,
+		URL:   TestURL,
+	})
+	if err != nil {
+		return TestSent{}, fmt.Errorf("push: send test notification: %w", err)
+	}
+	return TestSent{EventKey: key, Subscriptions: len(subs)}, nil
 }
 
 // PublicKey returns the VAPID public key, for applicationServerKey.

@@ -259,6 +259,54 @@ func TestEmitIgnoresDuplicateKey(t *testing.T) {
 	}
 }
 
+func TestEmitPushStoresOnlyAPushRow(t *testing.T) {
+	ctx := context.Background()
+	svc, st, _ := newTestService(t)
+	setPref(t, st, PlanReady, true, true)
+	const key = "plan_ready:test-1"
+	if err := svc.EmitPush(ctx, planReady(key)); err != nil {
+		t.Fatal(err)
+	}
+	r := onlyRow(t, st, key, ChannelPush)
+	if r.Status != "pending" || r.NextAttemptAt.String != timestamp(start) {
+		t.Errorf("row = %+v, want pending, due now", r)
+	}
+	select {
+	case <-svc.wake:
+	default:
+		t.Error("EmitPush did not wake the worker")
+	}
+
+	// The same key again is ignored, as by Emit.
+	if err := svc.EmitPush(ctx, planReady(key)); err != nil {
+		t.Fatalf("duplicate EmitPush: %v", err)
+	}
+	if got := onlyRow(t, st, key, ChannelPush); got != r {
+		t.Fatalf("duplicate EmitPush changed the row:\n got %+v\nwant %+v", got, r)
+	}
+}
+
+func TestEmitPushRefusesWhenPushIsOff(t *testing.T) {
+	svc, st, _ := newTestService(t)
+	setPref(t, st, PlanReady, false, true)
+	const key = "plan_ready:test-1"
+	if err := svc.EmitPush(context.Background(), planReady(key)); !errors.Is(err, ErrPushOff) {
+		t.Fatalf("EmitPush = %v, want ErrPushOff", err)
+	}
+	if rows := outbox(t, st, key); len(rows) != 0 {
+		t.Fatalf("rows = %v, want none", rows)
+	}
+}
+
+func TestEmitPushRejectsInvalidEvents(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	ev := planReady("plan_ready:test-1")
+	ev.URL = "https://evil.example/plan"
+	if err := svc.EmitPush(context.Background(), ev); !errors.Is(err, ErrInvalidEvent) {
+		t.Fatalf("EmitPush = %v, want ErrInvalidEvent", err)
+	}
+}
+
 func TestEmitRejectsInvalidEvents(t *testing.T) {
 	svc, st, _ := newTestService(t)
 	valid := planReady("plan_ready:2026-10-12")

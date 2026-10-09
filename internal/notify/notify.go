@@ -8,6 +8,8 @@
 // nothing the second time and never touches a row already stored, whatever
 // its status. EmitTx does the same inside the caller's transaction, so an
 // event is stored with the change it is about; the caller then calls Wake.
+// EmitPush stores an event for the push channel alone, for a test of push
+// delivery that must not reach Google Chat.
 //
 // The worker started by Start delivers due rows through the Sender
 // registered for their channel. A delivered row is marked sent. A failed
@@ -103,6 +105,10 @@ type Payload struct {
 // stored.
 var ErrInvalidEvent = errors.New("notify: invalid event")
 
+// ErrPushOff is returned by EmitPush when the event type's preference
+// switches push off; nothing is stored.
+var ErrPushOff = errors.New("notify: push is switched off for this event")
+
 // Service emits notifications and runs the worker that delivers them.
 type Service struct {
 	st     *store.Store
@@ -153,10 +159,39 @@ func (s *Service) Emit(ctx context.Context, ev Event) error {
 	return nil
 }
 
+// EmitPush stores one pending push notification of ev and wakes the
+// worker, as Emit does but never for Google Chat, whatever the preference
+// says of it. When the preference of ev's type switches push off it is
+// ErrPushOff and stores nothing. It is for a test of push delivery, which
+// must not post to the household's Chat space.
+func (s *Service) EmitPush(ctx context.Context, ev Event) error {
+	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		return s.emitTx(ctx, tx, ev, func(pref db.NotificationPref) ([]Channel, error) {
+			if pref.Push != 1 {
+				return nil, fmt.Errorf("%w: %s", ErrPushOff, ev.Type)
+			}
+			return []Channel{ChannelPush}, nil
+		})
+	})
+	if err != nil {
+		return err
+	}
+	s.Wake()
+	return nil
+}
+
 // EmitTx stores ev's notifications as Emit does, in tx, so they are
 // committed with the change the event is about or not at all. The caller
 // calls Wake once tx has committed.
 func (s *Service) EmitTx(ctx context.Context, tx *sql.Tx, ev Event) error {
+	return s.emitTx(ctx, tx, ev, func(pref db.NotificationPref) ([]Channel, error) {
+		return enabledChannels(pref), nil
+	})
+}
+
+// emitTx stores ev in tx for each channel that channels chooses from the
+// preference of ev's type.
+func (s *Service) emitTx(ctx context.Context, tx *sql.Tx, ev Event, channels func(db.NotificationPref) ([]Channel, error)) error {
 	if err := validate(ev); err != nil {
 		return err
 	}
@@ -177,9 +212,13 @@ func (s *Service) EmitTx(ctx context.Context, tx *sql.Tx, ev Event) error {
 	if err != nil {
 		return fmt.Errorf("notify: read notification preference for %s: %w", ev.Type, err)
 	}
+	chs, err := channels(pref)
+	if err != nil {
+		return err
+	}
 	now := timestamp(s.now())
 	var queued []Channel
-	for _, ch := range enabledChannels(pref) {
+	for _, ch := range chs {
 		n, err := q.InsertNotification(ctx, db.InsertNotificationParams{
 			ID:            store.NewID(),
 			EventKey:      ev.Key,

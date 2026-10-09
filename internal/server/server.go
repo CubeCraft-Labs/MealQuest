@@ -60,8 +60,9 @@ type RouteMounter interface {
 // /api/v1/integrations/google and its /connect, /callback and /calendars,
 // PUT /api/v1/integrations/google/calendar and DELETE
 // /api/v1/integrations/google; pushSvc serves GET
-// /api/v1/push/vapid-public-key and POST and DELETE
-// /api/v1/push/subscriptions; runner serves
+// /api/v1/push/vapid-public-key, POST and DELETE
+// /api/v1/push/subscriptions and POST
+// /api/v1/settings/notifications/test-push; runner serves
 // POST /api/v1/jobs and GET /api/v1/jobs/{id}; photos serves
 // GET /media/photos/{id}-{size}.jpg; assets is the web build
 // served for every other GET. /health, /auth and the web build are public.
@@ -133,6 +134,7 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Patch("/settings/household", patchHouseholdSettings(logger, settings))
 	apiV1.Get("/settings/notifications", getNotificationSettings(logger, settings))
 	apiV1.Put("/settings/notifications", putNotificationSettings(logger, settings))
+	apiV1.Post("/settings/notifications/test-push", postTestPush(logger, pushSvc))
 	apiV1.Get("/settings/recipe-search", getRecipeSearchSettings(logger, search))
 	apiV1.Patch("/settings/recipe-search", patchRecipeSearchSettings(logger, search))
 	apiV1.Post("/settings/recipe-search/test", postRecipeSearchTest(logger, search))

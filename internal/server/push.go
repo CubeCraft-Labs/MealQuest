@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/push"
 )
 
@@ -82,6 +83,33 @@ func deletePushSubscription(logger *slog.Logger, svc *push.Service) http.Handler
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// postTestPush answers POST /settings/notifications/test-push: it queues
+// push.TestTitle for every device that turned on push, aimed at /plan, and
+// answers 202 with the event key and how many subscriptions it goes to.
+// Delivery follows through the notification outbox. With push switched
+// off for plan_ready it is 409 push_off, whether or not any device has
+// turned on push; otherwise with no subscription it is 409
+// no_subscriptions. Neither sends anything. It never posts to Google Chat.
+func postTestPush(logger *slog.Logger, svc *push.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sent, err := svc.SendTest(r.Context())
+		switch {
+		case errors.Is(err, push.ErrNoSubscriptions):
+			writeError(w, r, logger, http.StatusConflict, "no_subscriptions",
+				"no device has turned on notifications, so there is nothing to send the test to")
+		case errors.Is(err, notify.ErrPushOff):
+			writeError(w, r, logger, http.StatusConflict, "push_off",
+				"push is switched off for New weekly plan ready in Notifications settings, so no test was sent")
+		case err != nil:
+			logger.ErrorContext(r.Context(), "send test push", "error", err)
+			writeError(w, r, logger, http.StatusInternalServerError, "internal", "internal error")
+		default:
+			logger.InfoContext(r.Context(), "test push queued", "event_key", sent.EventKey, "subscriptions", sent.Subscriptions)
+			writeJSON(w, r, logger, http.StatusAccepted, sent)
+		}
 	}
 }
 

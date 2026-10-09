@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify/notifytest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/vapid"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/migrations"
@@ -35,7 +37,7 @@ func newTestService(t *testing.T) (*Service, *store.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := NewService(st, pair.PublicKey)
+	svc, err := NewService(st, pair.PublicKey, notifytest.New(t, st))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,11 +88,19 @@ func rows(t *testing.T, st *store.Store) map[string]storedRow {
 func TestNewServiceRefusesBadPublicKey(t *testing.T) {
 	t.Parallel()
 	_, st := newTestService(t)
-	if _, err := NewService(st, "not-a-key"); err == nil {
+	notifier := notifytest.New(t, st)
+	if _, err := NewService(st, "not-a-key", notifier); err == nil {
 		t.Error("NewService accepted a malformed public key")
 	}
-	if _, err := NewService(nil, ""); err == nil {
+	if _, err := NewService(nil, "", notifier); err == nil {
 		t.Error("NewService accepted a nil store")
+	}
+	pair, err := vapid.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewService(st, pair.PublicKey, nil); err == nil {
+		t.Error("NewService accepted a nil notifier")
 	}
 }
 
@@ -220,5 +230,96 @@ func TestSubscribeValidates(t *testing.T) {
 	}
 	if got := rows(t, st); len(got) != 0 {
 		t.Errorf("invalid requests stored %d rows", len(got))
+	}
+}
+
+func TestSendTestQueuesOnePushToPlan(t *testing.T) {
+	t.Parallel()
+	svc, st := newTestService(t)
+	p256dh, auth := browserKeys(t)
+	for _, ep := range []string{endpoint, endpoint + "-2"} {
+		if _, err := svc.Subscribe(context.Background(), SubscribeRequest{Endpoint: ep, P256dh: p256dh, Auth: auth}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	first, err := svc.SendTest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(first.EventKey, "plan_ready:test-") || first.Subscriptions != 2 {
+		t.Errorf("SendTest = %+v, want a plan_ready:test- key and 2 subscriptions", first)
+	}
+	// A second test is a new event, not taken for the first.
+	second, err := svc.SendTest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.EventKey == first.EventKey {
+		t.Fatalf("two tests share the key %s", first.EventKey)
+	}
+
+	// Seeded prefs send plan_ready to Google Chat too; the test never does.
+	rows := notifytest.Rows(t, st, notify.PlanReady)
+	if len(rows) != 2 {
+		t.Fatalf("rows = %+v, want one per test", rows)
+	}
+	byKey := map[string]notifytest.Row{}
+	for _, r := range rows {
+		byKey[r.Key] = r
+	}
+	for _, sent := range []TestSent{first, second} {
+		want := notifytest.Row{Key: sent.EventKey, Channel: notify.ChannelPush, Payload: notify.Payload{
+			Event: notify.PlanReady, Title: "MealQuest test notification", Body: TestBody, URL: "/plan", Tag: sent.EventKey,
+		}}
+		if got := byKey[sent.EventKey]; got != want {
+			t.Errorf("row of %s = %+v, want %+v", sent.EventKey, got, want)
+		}
+	}
+}
+
+func TestSendTestWithoutSubscriptions(t *testing.T) {
+	t.Parallel()
+	svc, st := newTestService(t)
+	if _, err := svc.SendTest(context.Background()); !errors.Is(err, ErrNoSubscriptions) {
+		t.Fatalf("SendTest = %v, want ErrNoSubscriptions", err)
+	}
+	if rows := notifytest.Rows(t, st, notify.PlanReady); len(rows) != 0 {
+		t.Fatalf("rows = %+v, want none", rows)
+	}
+}
+
+func TestSendTestWithPushOff(t *testing.T) {
+	t.Parallel()
+	svc, st := newTestService(t)
+	p256dh, auth := browserKeys(t)
+	if _, err := svc.Subscribe(context.Background(), SubscribeRequest{Endpoint: endpoint, P256dh: p256dh, Auth: auth}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Writer.Exec(`UPDATE notification_prefs SET push = 0 WHERE event = 'plan_ready'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SendTest(context.Background()); !errors.Is(err, notify.ErrPushOff) {
+		t.Fatalf("SendTest = %v, want notify.ErrPushOff", err)
+	}
+	if rows := notifytest.Rows(t, st, notify.PlanReady); len(rows) != 0 {
+		t.Fatalf("rows = %+v, want none", rows)
+	}
+}
+
+// Push off is reported before the subscriptions are looked at, so with
+// both push off and no device subscribed the answer is push off.
+func TestSendTestWithPushOffAndNoSubscriptions(t *testing.T) {
+	t.Parallel()
+	svc, st := newTestService(t)
+	if _, err := st.Writer.Exec(`UPDATE notification_prefs SET push = 0 WHERE event = 'plan_ready'`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := svc.SendTest(context.Background())
+	if !errors.Is(err, notify.ErrPushOff) || errors.Is(err, ErrNoSubscriptions) {
+		t.Fatalf("SendTest = %v, want notify.ErrPushOff", err)
+	}
+	if rows := notifytest.Rows(t, st, notify.PlanReady); len(rows) != 0 {
+		t.Fatalf("rows = %+v, want none", rows)
 	}
 }

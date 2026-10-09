@@ -603,9 +603,9 @@ func TestSettingsChangeAppliedLateStillFires(t *testing.T) {
 	wantKeys(t, "claims", e.claimed(scheduler.DayOfReminder), []string{"2026-10-06", "2026-10-07"})
 }
 
-// A claim that fails is retried, not skipped, and the period then runs once.
-func TestClaimFailureIsRetried(t *testing.T) {
-	e := newEnv(t)
+// failClaims makes every claim fail until recover is called.
+func (e *env) failClaims() (recover func()) {
+	e.t.Helper()
 	for _, q := range []string{
 		`CREATE TABLE fail_claims (on_ INTEGER NOT NULL)`,
 		`INSERT INTO fail_claims VALUES (1)`,
@@ -614,9 +614,21 @@ func TestClaimFailureIsRetried(t *testing.T) {
 			BEGIN SELECT RAISE(ABORT, 'injected claim failure'); END`,
 	} {
 		if _, err := e.st.Writer.Exec(q); err != nil {
-			t.Fatal(err)
+			e.t.Fatal(err)
 		}
 	}
+	return func() {
+		e.t.Helper()
+		if _, err := e.st.Writer.Exec(`UPDATE fail_claims SET on_ = 0`); err != nil {
+			e.t.Fatal(err)
+		}
+	}
+}
+
+// A claim that fails is retried, not skipped, and the period then runs once.
+func TestClaimFailureIsRetried(t *testing.T) {
+	e := newEnv(t)
+	recoverClaims := e.failClaims()
 	var rec recorder
 	r := e.start(at(2026, 10, 7, 12, 0), reminder(&rec))
 	wantKeys(t, "boot with failing claims", rec.keys(), nil)
@@ -625,14 +637,36 @@ func TestClaimFailureIsRetried(t *testing.T) {
 		t.Errorf("next wake %s, want a retry after %s", next, scheduler.ClaimRetry)
 	}
 
-	if _, err := e.st.Writer.Exec(`UPDATE fail_claims SET on_ = 0`); err != nil {
-		t.Fatal(err)
-	}
+	recoverClaims()
 	r.runUntil(at(2026, 10, 7, 12, 0).Add(scheduler.ClaimRetry))
 	wantKeys(t, "after the retry", rec.keys(), []string{"2026-10-06"})
 	r.runUntil(at(2026, 10, 7, 23, 0))
 	wantKeys(t, "end of day", rec.keys(), []string{"2026-10-06", "2026-10-07"})
 	wantKeys(t, "claims", e.claimed(scheduler.DayOfReminder), []string{"2026-10-06", "2026-10-07"})
+}
+
+// A claim that keeps failing past the next daily fire is retried for its
+// own period, not the most recent one: that period, now more than
+// CatchUpWindow old, is recorded as missed, and the later period runs once.
+func TestClaimFailureRecoversAfterNextFire(t *testing.T) {
+	e := newEnv(t)
+	recoverClaims := e.failClaims()
+	var rec recorder
+	// The 7 October 16:30 reminder is due and its claim fails, past the
+	// 8 October 16:30 fire.
+	r := e.start(at(2026, 10, 7, 16, 45), reminder(&rec))
+	r.runUntil(at(2026, 10, 8, 17, 0))
+	wantKeys(t, "runs while failing", rec.keys(), nil)
+	wantKeys(t, "claims while failing", e.claimed(scheduler.DayOfReminder), nil)
+
+	// Claims recover 24h31m after the 7 October fire.
+	recoverClaims()
+	r.runUntil(at(2026, 10, 8, 17, 1))
+	wantKeys(t, "after recovery", rec.keys(), []string{"2026-10-08"})
+	wantKeys(t, "claims after recovery", e.claimed(scheduler.DayOfReminder), []string{"2026-10-07", "2026-10-08"})
+
+	r.runUntil(at(2026, 10, 9, 16, 0))
+	wantKeys(t, "next day", rec.keys(), []string{"2026-10-08"})
 }
 
 func TestSettingsChangeTimezone(t *testing.T) {

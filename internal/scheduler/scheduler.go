@@ -26,9 +26,13 @@
 // # Claim failures
 //
 // A claim that fails (the database refused the insert) is never skipped:
-// the scheduler logs it and does not advance past it, but repeats the
-// whole pass every ClaimRetry until the claim succeeds. Periods the pass
-// already claimed are claimed again and skipped, so each still runs once.
+// the scheduler logs it and keeps that period's fire time, and every
+// ClaimRetry claims that same period again until the claim succeeds. Only
+// then does it apply the catch-up rule to it, running it if its fire time
+// is within CatchUpWindow of the successful claim and recording it as
+// missed otherwise, and only then does it go on to later fire times, even
+// when one has passed meanwhile. Each period is claimed by its own fire
+// time, so the later period runs once as well.
 //
 // # Time zone and DST
 //
@@ -351,36 +355,37 @@ func compile(schedules []Schedule, settings household.Settings) (*plan, error) {
 
 // loop fires schedules until ctx is cancelled. done is the instant up to
 // which fire times have been handled; it starts at the zero time so the
-// first pass catches up. Each pass first applies the pending settings
-// changes in order, handling fire times up to a change under the plan it
-// replaces, then handles fire times up to now under the current plan. A
-// pass with a failed claim keeps done and its unapplied changes where they
-// were and is repeated after ClaimRetry.
+// first pass catches up. retry is the periods whose claim failed, each
+// with its own fire time. Each pass first claims retry again; while any
+// claim there still fails, the pass stops and is repeated after
+// ClaimRetry. Otherwise it applies the pending settings changes in order,
+// handling fire times up to a change under the plan it replaces, then
+// handles fire times up to now under the current plan, stopping after the
+// first stretch in which a claim failed.
 func (s *Scheduler) loop(ctx context.Context, p *plan) {
 	var done time.Time
 	var pending []change
+	var retry []target
 	for {
 		now := s.now()
 		pending = append(pending, s.takeChanges()...)
-		failed := false
-		for len(pending) > 0 {
+		retry = s.retry(ctx, retry, now)
+		for len(retry) == 0 && len(pending) > 0 {
 			c := pending[0]
 			if c.at.After(done) {
-				if p != nil && !s.fire(ctx, p, done, c.at, now) {
-					failed = true
-					break
+				if p != nil {
+					retry = s.fire(ctx, p, done, c.at, now)
 				}
 				done = c.at
 			}
 			p = s.compileChange(ctx, c.settings)
 			pending = pending[1:]
 		}
-		if !failed {
-			if p == nil || s.fire(ctx, p, done, now, now) {
-				done = now
-			} else {
-				failed = true
+		if len(retry) == 0 {
+			if p != nil {
+				retry = s.fire(ctx, p, done, now, now)
 			}
+			done = now
 		}
 		if ctx.Err() != nil {
 			return
@@ -388,7 +393,7 @@ func (s *Scheduler) loop(ctx context.Context, p *plan) {
 
 		var timeout <-chan time.Time
 		switch {
-		case failed:
+		case len(retry) > 0:
 			timeout = s.after(ClaimRetry)
 		case p != nil:
 			if next, ok := p.next(now); ok {
@@ -418,31 +423,54 @@ func (s *Scheduler) compileChange(ctx context.Context, settings household.Settin
 	return p
 }
 
+// target is one schedule's period, named by the fire time it belongs to.
+type target struct {
+	it  item
+	loc *time.Location
+	at  time.Time
+}
+
 // fire handles, for every schedule, its most recent fire time at or before
-// until if it is after done; now is the current instant. It reports false
-// when a claim failed, so the fire times it covered must be handled again.
-func (s *Scheduler) fire(ctx context.Context, p *plan, done, until, now time.Time) bool {
-	ok := true
+// until if it is after done; now is the current instant. It returns the
+// targets whose claim failed, to be claimed again.
+func (s *Scheduler) fire(ctx context.Context, p *plan, done, until, now time.Time) []target {
+	var failed []target
 	for _, it := range p.items {
 		if ctx.Err() != nil {
-			return ok
+			return failed
 		}
 		at, due := fireBefore(it.rule, p.loc, until)
 		if !due || !at.After(done) {
 			continue
 		}
-		if !s.handle(ctx, it, p.loc, at, now) {
-			ok = false
+		if t := (target{it: it, loc: p.loc, at: at}); !s.handle(ctx, t, now) {
+			failed = append(failed, t)
 		}
 	}
-	return ok
+	return failed
 }
 
-// handle claims the period of it fired at at and runs it, or records it as
-// missed when at is more than CatchUpWindow before now. It reports false
+// retry handles targets again at now and returns those whose claim still
+// failed.
+func (s *Scheduler) retry(ctx context.Context, targets []target, now time.Time) []target {
+	var failed []target
+	for i, t := range targets {
+		if ctx.Err() != nil {
+			return append(failed, targets[i:]...)
+		}
+		if !s.handle(ctx, t, now) {
+			failed = append(failed, t)
+		}
+	}
+	return failed
+}
+
+// handle claims the period of t and runs it, or records it as missed when
+// its fire time is more than CatchUpWindow before now. It reports false
 // when the claim failed and the period is still unclaimed.
-func (s *Scheduler) handle(ctx context.Context, it item, loc *time.Location, at, now time.Time) bool {
-	date := household.Today(at, loc)
+func (s *Scheduler) handle(ctx context.Context, t target, now time.Time) bool {
+	it, at := t.it, t.at
+	date := household.Today(at, t.loc)
 	period := Period{Key: it.rule.PeriodKey(date), FireAt: at, Date: date}
 	if it.rule.NextWeek {
 		period.Week = household.WeekStart(addDays(date, 7))

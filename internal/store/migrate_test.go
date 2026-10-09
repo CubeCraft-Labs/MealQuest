@@ -176,8 +176,8 @@ func TestMigrateEmbeddedMigrations(t *testing.T) {
 	if err := Migrate(context.Background(), s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed", got)
 	}
 }
 
@@ -197,8 +197,8 @@ func TestMigrateBootstrapThenEmbeddedInitApplies(t *testing.T) {
 	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed", got)
 	}
 	if !tableExists(t, s, "dinners") {
 		t.Error("table from 0001_init was not created")
@@ -887,5 +887,38 @@ func TestMigrateShoppingListUntitledRefusesUndatedGroup(t *testing.T) {
 	}
 	if tableExists(t, s, "shopping_groups_copy") {
 		t.Error("shopping_groups_copy left behind")
+	}
+}
+
+// TestMigrateShoppingListChatSendUnconfirmed applies 0017 over a list
+// already sent: it keeps every value, and the list has no send
+// unconfirmed.
+func TestMigrateShoppingListChatSendUnconfirmed(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	migrateBefore(t, s, "0017")
+	for _, stmt := range []string{
+		`INSERT INTO week_plans (id, week_start, status, created_at, updated_at)
+			VALUES ('plan-1', '2026-10-12', 'synced', 'c', 'u')`,
+		`INSERT INTO shopping_lists (id, week_start, plan_id, title, status, sent_to_chat_at, frozen_at, created_at, updated_at)
+			VALUES ('list-1', '2026-10-12', 'plan-1', 'Noodle week', 'current', 's', NULL, 'c1', 'u1')`,
+	} {
+		if _, err := s.Writer.Exec(stmt); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+
+	var got string
+	if err := s.Reader.QueryRowContext(ctx, `SELECT
+		id || '|' || title || '|' || status || '|' || sent_to_chat_at || '|' || COALESCE(chat_send_unconfirmed_at, 'NULL') || '|' || updated_at
+		FROM shopping_lists`).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if want := "list-1|Noodle week|current|s|NULL|u1"; got != want {
+		t.Errorf("shopping list after 0017 = %s, want %s", got, want)
 	}
 }

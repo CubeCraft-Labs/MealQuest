@@ -50,3 +50,57 @@ describe('service worker activation', () => {
     expect(cacheStorage.delete).toHaveBeenCalledTimes(2)
   })
 })
+
+// The push listeners only hand src/push/notification.ts the worker's globals;
+// jsdom has no ServiceWorkerGlobalScope, so registration and clients are
+// stubbed and the events are plain Events with the worker event's fields.
+describe('service worker push listeners', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  async function dispatch(type: string, fields: object): Promise<void> {
+    vi.stubGlobal('caches', { keys: vi.fn(async () => []), delete: vi.fn() })
+    vi.stubGlobal('__WB_MANIFEST', [])
+    await import('./sw')
+    const pending: Promise<unknown>[] = []
+    self.dispatchEvent(
+      Object.assign(new Event(type), { waitUntil: (promise: Promise<unknown>) => pending.push(promise) }, fields),
+    )
+    expect(pending).toHaveLength(1)
+    await Promise.all(pending)
+  }
+
+  it('shows a push message as a notification', async () => {
+    const registration = { showNotification: vi.fn(async () => {}) }
+    vi.stubGlobal('registration', registration)
+    const payload = JSON.stringify({ title: 'Plan ready', body: 'Adjust the Draft board.', tag: 'plan_ready', url: '/plan' })
+    await dispatch('push', { data: { text: () => payload } })
+    expect(registration.showNotification).toHaveBeenCalledWith('Plan ready', {
+      body: 'Adjust the Draft board.',
+      tag: 'plan_ready',
+      icon: '/icons/icon-192.png',
+      badge: '/icons/icon-192.png',
+      data: { url: '/plan' },
+    })
+  })
+
+  it('shows the generic notification for a push without a payload', async () => {
+    const registration = { showNotification: vi.fn(async () => {}) }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.stubGlobal('registration', registration)
+    await dispatch('push', { data: null })
+    expect(registration.showNotification).toHaveBeenCalledWith('MealQuest', expect.objectContaining({ data: { url: '/' } }))
+    expect(warn).toHaveBeenCalledWith('MealQuest: push message has no payload; showing the generic notification')
+    warn.mockRestore()
+  })
+
+  it('closes a tapped notification and opens its url', async () => {
+    const clients = { matchAll: vi.fn(async () => []), openWindow: vi.fn(async () => null) }
+    vi.stubGlobal('clients', clients)
+    const notification = { data: { url: '/discover' }, close: vi.fn() }
+    await dispatch('notificationclick', { notification })
+    expect(notification.close).toHaveBeenCalled()
+    expect(clients.openWindow).toHaveBeenCalledWith(`${self.location.origin}/discover`)
+  })
+})

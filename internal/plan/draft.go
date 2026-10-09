@@ -10,6 +10,7 @@ import (
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/chat"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
@@ -147,6 +148,12 @@ func (s *Service) request(ctx context.Context, weekStart store.LocalDate) (skill
 // draft_week was given: a day whose dinner is no longer in it, or is in it
 // as a Regular rather than the Quest log or the other way round, leaves
 // everything as it is, failing with ReasonPoolChanged.
+//
+// A stored draft emits plan_ready, keyed by the week, in the same
+// transaction, naming the drafted dinners Monday to Sunday. The key is the week's,
+// so only the AI's first draft of a week notifies: a redraft (Rebuild week)
+// stores no second notification. A manual swap never drafts, so never
+// notifies.
 func (s *Service) storeDraft(ctx context.Context, weekStart, thisWeek store.LocalDate, confirm bool, base int64, week skills.Week) (string, error) {
 	var planID string
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
@@ -156,8 +163,10 @@ func (s *Service) storeDraft(ctx context.Context, weekStart, thisWeek store.Loca
 			return fmt.Errorf("plan: list draft pool: %w", err)
 		}
 		pool := make(map[string]string, len(rows))
+		names := make(map[string]string, len(rows))
 		for _, d := range rows {
 			pool[d.ID] = d.Status
+			names[d.ID] = d.Name
 		}
 		for _, d := range week.Days {
 			status, ok := pool[d.DinnerID]
@@ -215,11 +224,16 @@ func (s *Service) storeDraft(ctx context.Context, weekStart, thisWeek store.Loca
 				return fmt.Errorf("plan: put %s of %s: %w", d.Date, planID, err)
 			}
 		}
-		return nil
+		planned := make([]string, len(week.Days))
+		for i, d := range week.Days {
+			planned[i] = names[d.DinnerID]
+		}
+		return s.notifier.EmitTx(ctx, tx, chat.PlanReady(weekStart, thisWeek, planned))
 	})
 	if err != nil {
 		return "", err
 	}
+	s.notifier.Wake()
 	return planID, nil
 }
 

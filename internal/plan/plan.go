@@ -22,10 +22,12 @@ import (
 	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/chat"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 )
 
@@ -138,6 +140,7 @@ type Service struct {
 	st       *store.Store
 	draft    Drafter
 	cal      Calendar
+	notifier *notify.Service
 	logger   *slog.Logger
 	draftJob *jobs.Kind[DraftJob]
 	// publicURL is MEALQUEST_PUBLIC_URL, under which a pushed event links
@@ -146,11 +149,12 @@ type Service struct {
 }
 
 // NewService returns a service over st that drafts with draft, pushes to
-// cal with links under publicURL, and registers the KindDraftWeek job on
+// cal with links under publicURL, tells the household through notifier,
+// which must be over st, and registers the KindDraftWeek job on
 // runner, which must not have started yet. The kind is service-only:
 // StartDraft, which keeps one draft in flight per week, is the only way to
 // enqueue it.
-func NewService(st *store.Store, draft Drafter, runner *jobs.Runner, cal Calendar, publicURL *url.URL, logger *slog.Logger) (*Service, error) {
+func NewService(st *store.Store, draft Drafter, runner *jobs.Runner, cal Calendar, notifier *notify.Service, publicURL *url.URL, logger *slog.Logger) (*Service, error) {
 	switch {
 	case st == nil:
 		return nil, errors.New("plan: nil store")
@@ -160,12 +164,14 @@ func NewService(st *store.Store, draft Drafter, runner *jobs.Runner, cal Calenda
 		return nil, errors.New("plan: nil job runner")
 	case cal == nil:
 		return nil, errors.New("plan: nil calendar")
+	case notifier == nil:
+		return nil, errors.New("plan: nil notifier")
 	case publicURL == nil:
 		return nil, errors.New("plan: nil public URL")
 	case logger == nil:
 		return nil, errors.New("plan: nil logger")
 	}
-	s := &Service{st: st, draft: draft, cal: cal, logger: logger, publicURL: publicURL}
+	s := &Service{st: st, draft: draft, cal: cal, notifier: notifier, logger: logger, publicURL: publicURL}
 	kind, err := jobs.Register(runner, KindDraftWeek, s.runDraft, Reasons...)
 	if err != nil {
 		return nil, err
@@ -224,6 +230,30 @@ func (s *Service) Get(ctx context.Context, weekStart store.LocalDate) (p Plan, e
 		err = errors.Join(err, tx.Rollback())
 	}()
 	return readPlan(ctx, db.New(tx), weekStart)
+}
+
+// EmitDayOfReminder emits day_of_reminder for date, keyed by the date,
+// naming the dinner planned on it, and reports whether it did: a date whose
+// week has no plan emits nothing. The scheduler calls it at the
+// household's reminder_time (Feature 20); emitting a date again stores no
+// second notification.
+func (s *Service) EmitDayOfReminder(ctx context.Context, date store.LocalDate) (bool, error) {
+	p, err := s.Get(ctx, household.WeekStart(date))
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	for _, d := range p.Days {
+		if d.Date == date.String() {
+			if err := s.notifier.Emit(ctx, chat.DayOfReminder(date, d.Dinner.ID, d.Dinner.Name)); err != nil {
+				return false, fmt.Errorf("plan: %w", err)
+			}
+			return true, nil
+		}
+	}
+	return false, fmt.Errorf("plan: week %s has no day %s", p.WeekStart, date)
 }
 
 // readPlan reads the plan of the week starting weekStart through q, with

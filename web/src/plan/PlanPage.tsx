@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { CalendarDays, Check, ChevronLeft, ChevronRight, Plus, RefreshCw, ShoppingCart } from 'lucide-react'
-import { useEffect, useId, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router'
 import { ApiError, useJob } from '../api/index.ts'
 import { QUEST_LOG_KEY } from '../discover/api.ts'
@@ -9,7 +9,7 @@ import { methodLabels } from '../settings/RegularsSettingsPage.tsx'
 import { formatClockTime, useHouseholdSettings } from '../settings/api.ts'
 import { supplyRunScreen, useGenerateSupplyRun, useSupplyRun } from '../shopping/api.ts'
 import { useBreakpoint, type Breakpoint } from '../shell/useBreakpoint.ts'
-import { Button, type ButtonVariant } from '../ui/Button.tsx'
+import { Button } from '../ui/Button.tsx'
 import buttonStyles from '../ui/Button.module.css'
 import { EmptyState } from '../ui/EmptyState.tsx'
 import { ErrorBanner } from '../ui/ErrorBanner.tsx'
@@ -660,40 +660,6 @@ function PushFailure({ error, cached, onRetry }: { error: Error; cached: boolean
           ? 'The plan changed while it was being pushed; push it again.'
           : error.message}
     </ErrorBanner>
-  )
-}
-
-// Unavailable is an action with nothing behind it yet (Send to Google
-// Chat): it stays focusable, so a tap or focus shows the tooltip saying
-// why, above it or, at the top of the page, below.
-export function Unavailable({
-  hint,
-  variant = 'primary',
-  below = false,
-  className,
-  children,
-}: {
-  hint: string
-  variant?: ButtonVariant
-  below?: boolean
-  className?: string
-  children: ReactNode
-}) {
-  const hintId = useId()
-  return (
-    <div className={[styles.unavailable, below && styles.below].filter(Boolean).join(' ')}>
-      <Button
-        variant={variant}
-        className={[className, styles[variant]].filter(Boolean).join(' ')}
-        aria-disabled="true"
-        aria-describedby={hintId}
-      >
-        {children}
-      </Button>
-      <span id={hintId} role="tooltip" className={styles.hint}>
-        {hint}
-      </span>
-    </div>
   )
 }
 

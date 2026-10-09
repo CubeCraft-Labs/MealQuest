@@ -27,6 +27,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ideas"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify/notifytest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes/recipestest"
@@ -55,7 +56,7 @@ func newTestRouterWith(t *testing.T, version string, settings *household.Setting
 		"index.html":             {Data: []byte(fixtureIndex)},
 		"assets/index-AbC123.js": {Data: []byte(fixtureAsset)},
 	}
-	r, err := NewRouter(logger, version, nil, stubAuth{}, stubSessions{}, settings, newTestSearch(t), newTestAI(t), newTestDinners(t), newTestSuggest(t), newTestPlan(t), newTestShopping(t), newTestGoogle(t), newTestIdeas(t), runner, newTestPhotos(t), assets)
+	r, err := NewRouter(logger, version, nil, stubAuth{}, stubSessions{}, settings, newTestSearch(t), newTestAI(t), newTestChat(t), newTestDinners(t), newTestSuggest(t), newTestPlan(t), newTestShopping(t), newTestGoogle(t), newTestPush(t), newTestIdeas(t), runner, newTestPhotos(t), assets)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,11 +109,14 @@ func newTestStore(t *testing.T) *store.Store {
 }
 
 // newTestSettings returns a settings service over a migrated temp database
-// seeded with zone America/New_York.
+// seeded with zone America/New_York and the seed notification preferences.
 func newTestSettings(t *testing.T) *household.SettingsService {
 	t.Helper()
 	st := newTestStore(t)
 	if err := household.SeedSettings(context.Background(), st, "America/New_York"); err != nil {
+		t.Fatal(err)
+	}
+	if err := household.SeedNotificationPrefs(context.Background(), st); err != nil {
 		t.Fatal(err)
 	}
 	return household.NewSettingsService(st)
@@ -184,7 +188,7 @@ func newTestSuggest(t *testing.T) *suggest.Service {
 	fail := func(context.Context, string, skills.SideQuestsRequest) (skills.SideQuests, error) {
 		return skills.SideQuests{}, errors.New("no model in this test")
 	}
-	svc, err := suggest.NewService(st, g, fail, runner, logger)
+	svc, err := suggest.NewService(st, g, fail, runner, notifytest.New(t, st), logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +232,7 @@ func newTestPlan(t *testing.T) *plan.Service {
 	fail := func(context.Context, string, skills.WeekRequest) (skills.Week, error) {
 		return skills.Week{}, errors.New("no model in this test")
 	}
-	svc, err := plan.NewService(st, fail, runner, newTestGoogle(t), &url.URL{Scheme: "https", Host: "mealquest.example"}, logger)
+	svc, err := plan.NewService(st, fail, runner, newTestGoogle(t), notifytest.New(t, st), &url.URL{Scheme: "https", Host: "mealquest.example"}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +240,8 @@ func newTestPlan(t *testing.T) *plan.Service {
 }
 
 // newTestShopping returns a shopping service over a migrated temp
-// database, whose Supply runs stay untitled.
+// database, whose Supply runs stay untitled and whose posts to Google Chat
+// all fail.
 func newTestShopping(t *testing.T) *shopping.Service {
 	t.Helper()
 	st := newTestStore(t)
@@ -245,7 +250,7 @@ func newTestShopping(t *testing.T) *shopping.Service {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := shopping.NewService(st, untitled, runner, logger)
+	svc, err := shopping.NewService(st, untitled, runner, notifytest.New(t, st), newTestChat(t), logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +317,7 @@ func TestNewRouterRequiresAISettings(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), nil, newTestDinners(t), newTestSuggest(t), newTestPlan(t), newTestShopping(t), newTestGoogle(t), newTestIdeas(t), newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
+	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), nil, newTestChat(t), newTestDinners(t), newTestSuggest(t), newTestPlan(t), newTestShopping(t), newTestGoogle(t), newTestPush(t), newTestIdeas(t), newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
 		t.Fatal("NewRouter accepted a nil AI settings service")
 	}
 }
@@ -321,7 +326,7 @@ func TestNewRouterRequiresSearchSettings(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), nil, newTestAI(t), newTestDinners(t), newTestSuggest(t), newTestPlan(t), newTestShopping(t), newTestGoogle(t), newTestIdeas(t), newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
+	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), nil, newTestAI(t), newTestChat(t), newTestDinners(t), newTestSuggest(t), newTestPlan(t), newTestShopping(t), newTestGoogle(t), newTestPush(t), newTestIdeas(t), newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
 		t.Fatal("NewRouter accepted a nil recipe search settings service")
 	}
 }
@@ -330,7 +335,7 @@ func TestNewRouterRequiresPhotoFiles(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t), newTestDinners(t), newTestSuggest(t), newTestPlan(t), newTestShopping(t), newTestGoogle(t), newTestIdeas(t), newTestRunner(t), nil, fstest.MapFS{"index.html": {}}); err == nil {
+	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t), newTestChat(t), newTestDinners(t), newTestSuggest(t), newTestPlan(t), newTestShopping(t), newTestGoogle(t), newTestPush(t), newTestIdeas(t), newTestRunner(t), nil, fstest.MapFS{"index.html": {}}); err == nil {
 		t.Fatal("NewRouter accepted nil photo files")
 	}
 }
@@ -339,7 +344,7 @@ func TestNewRouterRequiresSettings(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, nil, newTestSearch(t), newTestAI(t), newTestDinners(t), newTestSuggest(t), newTestPlan(t), newTestShopping(t), newTestGoogle(t), newTestIdeas(t), newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
+	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, nil, newTestSearch(t), newTestAI(t), newTestChat(t), newTestDinners(t), newTestSuggest(t), newTestPlan(t), newTestShopping(t), newTestGoogle(t), newTestPush(t), newTestIdeas(t), newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
 		t.Fatal("NewRouter accepted a nil settings service")
 	}
 }
@@ -348,7 +353,7 @@ func TestNewRouterRequiresDinners(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t), nil, newTestSuggest(t), newTestPlan(t), newTestShopping(t), newTestGoogle(t), newTestIdeas(t), newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
+	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t), newTestChat(t), nil, newTestSuggest(t), newTestPlan(t), newTestShopping(t), newTestGoogle(t), newTestPush(t), newTestIdeas(t), newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
 		t.Fatal("NewRouter accepted a nil dinners service")
 	}
 }
@@ -357,7 +362,7 @@ func TestNewRouterRequiresSuggestions(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t), newTestDinners(t), nil, newTestPlan(t), newTestShopping(t), newTestGoogle(t), newTestIdeas(t), newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
+	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t), newTestChat(t), newTestDinners(t), nil, newTestPlan(t), newTestShopping(t), newTestGoogle(t), newTestPush(t), newTestIdeas(t), newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
 		t.Fatal("NewRouter accepted a nil suggestions service")
 	}
 }
@@ -366,7 +371,7 @@ func TestNewRouterRequiresPlan(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t), newTestDinners(t), newTestSuggest(t), nil, newTestShopping(t), newTestGoogle(t), newTestIdeas(t), newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
+	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t), newTestChat(t), newTestDinners(t), newTestSuggest(t), nil, newTestShopping(t), newTestGoogle(t), newTestPush(t), newTestIdeas(t), newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
 		t.Fatal("NewRouter accepted a nil plan service")
 	}
 }
@@ -375,7 +380,7 @@ func TestNewRouterRequiresShopping(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t), newTestDinners(t), newTestSuggest(t), newTestPlan(t), nil, newTestGoogle(t), newTestIdeas(t), newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
+	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t), newTestChat(t), newTestDinners(t), newTestSuggest(t), newTestPlan(t), nil, newTestGoogle(t), newTestPush(t), newTestIdeas(t), newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
 		t.Fatal("NewRouter accepted a nil shopping service")
 	}
 }
@@ -384,7 +389,7 @@ func TestNewRouterRequiresIdeas(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t), newTestDinners(t), newTestSuggest(t), newTestPlan(t), newTestShopping(t), newTestGoogle(t), nil, newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
+	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t), newTestChat(t), newTestDinners(t), newTestSuggest(t), newTestPlan(t), newTestShopping(t), newTestGoogle(t), newTestPush(t), nil, newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
 		t.Fatal("NewRouter accepted a nil ideas service")
 	}
 }
@@ -393,7 +398,7 @@ func TestNewRouterRequiresGoogle(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t), newTestDinners(t), newTestSuggest(t), newTestPlan(t), newTestShopping(t), nil, newTestIdeas(t), newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
+	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t), newTestChat(t), newTestDinners(t), newTestSuggest(t), newTestPlan(t), newTestShopping(t), nil, newTestPush(t), newTestIdeas(t), newTestRunner(t), newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
 		t.Fatal("NewRouter accepted a nil Google Calendar service")
 	}
 }
@@ -402,7 +407,7 @@ func TestNewRouterRequiresJobRunner(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t), newTestDinners(t), newTestSuggest(t), newTestPlan(t), newTestShopping(t), newTestGoogle(t), newTestIdeas(t), nil, newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
+	if _, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t), newTestChat(t), newTestDinners(t), newTestSuggest(t), newTestPlan(t), newTestShopping(t), newTestGoogle(t), newTestPush(t), newTestIdeas(t), nil, newTestPhotos(t), fstest.MapFS{"index.html": {}}); err == nil {
 		t.Fatal("NewRouter accepted a nil job runner")
 	}
 }

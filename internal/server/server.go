@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/aisettings"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/chat"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
@@ -19,6 +20,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ideas"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/push"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/shopping"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/suggest"
@@ -37,9 +39,11 @@ type RouteMounter interface {
 // has its client address and scheme resolved, honouring forwarded headers
 // only from a peer in trusted (see resolveOrigin). version is reported by
 // GET /health; auth mounts the /auth routes; sessions guards /api/v1 and
-// /media; settings serves /api/v1/settings/household; search serves
+// /media; settings serves /api/v1/settings/household and
+// /api/v1/settings/notifications; search serves
 // /api/v1/settings/recipe-search and its /test; ai serves
 // /api/v1/settings/ai, its /api-key, /verify, /models and /reset-prompt;
+// chatSvc serves GET and PUT /api/v1/settings/chat-webhook and its /test;
 // dinnerSvc serves GET and POST /api/v1/dinners, GET, PATCH and DELETE
 // /api/v1/dinners/{id}, POST /api/v1/dinners/{id}/favorite, GET
 // /api/v1/dinners/{id}/recipe-candidates and POST /api/v1/dinners/{id}/ground;
@@ -56,7 +60,10 @@ type RouteMounter interface {
 // /api/v1/shopping/items/{id}; googleSvc serves GET
 // /api/v1/integrations/google and its /connect, /callback and /calendars,
 // PUT /api/v1/integrations/google/calendar and DELETE
-// /api/v1/integrations/google; ideasSvc serves POST
+// /api/v1/integrations/google; pushSvc serves GET
+// /api/v1/push/vapid-public-key, POST and DELETE
+// /api/v1/push/subscriptions and POST
+// /api/v1/settings/notifications/test-push; ideasSvc serves POST
 // /api/v1/ideas/from-ingredients and POST /api/v1/ideas/quick, and with
 // dinnerSvc POST /api/v1/ideas/{jobId}/items/{i}/quest-log and, with
 // planSvc too, /cook-tonight; runner serves
@@ -64,7 +71,7 @@ type RouteMounter interface {
 // GET /media/photos/{id}-{size}.jpg; assets is the web build
 // served for every other GET. /health, /auth and the web build are public.
 // Requests to /api/v1 other than GET also need the session's CSRF token in CSRFHeader.
-func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, settings *household.SettingsService, search *recipes.SearchSettingsService, ai *aisettings.Service, dinnerSvc *dinners.Service, suggestSvc *suggest.Service, planSvc *plan.Service, shopSvc *shopping.Service, googleSvc *gcal.Service, ideasSvc *ideas.Service, runner *jobs.Runner, photos PhotoFiles, assets fs.FS) (http.Handler, error) {
+func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, settings *household.SettingsService, search *recipes.SearchSettingsService, ai *aisettings.Service, chatSvc *chat.Service, dinnerSvc *dinners.Service, suggestSvc *suggest.Service, planSvc *plan.Service, shopSvc *shopping.Service, googleSvc *gcal.Service, pushSvc *push.Service, ideasSvc *ideas.Service, runner *jobs.Runner, photos PhotoFiles, assets fs.FS) (http.Handler, error) {
 	if settings == nil {
 		return nil, errors.New("server: nil household settings service")
 	}
@@ -73,6 +80,9 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	}
 	if ai == nil {
 		return nil, errors.New("server: nil AI settings service")
+	}
+	if chatSvc == nil {
+		return nil, errors.New("server: nil Google Chat service")
 	}
 	if dinnerSvc == nil {
 		return nil, errors.New("server: nil dinners service")
@@ -88,6 +98,9 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	}
 	if googleSvc == nil {
 		return nil, errors.New("server: nil Google Calendar service")
+	}
+	if pushSvc == nil {
+		return nil, errors.New("server: nil push service")
 	}
 	if ideasSvc == nil {
 		return nil, errors.New("server: nil ideas service")
@@ -126,6 +139,9 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Get("/me", me(logger))
 	apiV1.Get("/settings/household", getHouseholdSettings(logger, settings))
 	apiV1.Patch("/settings/household", patchHouseholdSettings(logger, settings))
+	apiV1.Get("/settings/notifications", getNotificationSettings(logger, settings))
+	apiV1.Put("/settings/notifications", putNotificationSettings(logger, settings))
+	apiV1.Post("/settings/notifications/test-push", postTestPush(logger, pushSvc))
 	apiV1.Get("/settings/recipe-search", getRecipeSearchSettings(logger, search))
 	apiV1.Patch("/settings/recipe-search", patchRecipeSearchSettings(logger, search))
 	apiV1.Post("/settings/recipe-search/test", postRecipeSearchTest(logger, search))
@@ -135,6 +151,9 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Post("/settings/ai/verify", postAIVerify(logger, ai))
 	apiV1.Get("/settings/ai/models", getAIModels(logger, ai))
 	apiV1.Post("/settings/ai/reset-prompt", postAIResetPrompt(logger, ai))
+	apiV1.Get("/settings/chat-webhook", getChatWebhook(logger, chatSvc))
+	apiV1.Put("/settings/chat-webhook", putChatWebhook(logger, chatSvc))
+	apiV1.Post("/settings/chat-webhook/test", postChatWebhookTest(logger, chatSvc))
 	apiV1.Get("/dinners", getDinners(logger, dinnerSvc))
 	apiV1.Post("/dinners", postDinner(logger, dinnerSvc))
 	apiV1.Get("/dinners/{id}", getDinner(logger, dinnerSvc))
@@ -154,6 +173,7 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Get("/shopping/archive", getSupplyArchive(logger, shopSvc))
 	apiV1.Get("/shopping/{weekStart}", getSupplyRun(logger, shopSvc))
 	apiV1.Post("/shopping/{weekStart}/generate", postSupplyRunGenerate(logger, shopSvc))
+	apiV1.Post("/shopping/{weekStart}/send-chat", postSupplyRunSendChat(logger, shopSvc))
 	apiV1.Patch("/shopping/items/{id}", patchShoppingItem(logger, shopSvc))
 	apiV1.Get("/rotation-reviews", getRotationReviews(logger, planSvc))
 	apiV1.Post("/dinners/{id}/rotation-review", postRotationReview(logger, planSvc))
@@ -166,6 +186,9 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Delete("/integrations/google", deleteGoogle(logger, googleSvc))
 	apiV1.Get("/integrations/google/calendars", getGoogleCalendars(logger, googleSvc))
 	apiV1.Put("/integrations/google/calendar", putGoogleCalendar(logger, googleSvc))
+	apiV1.Get("/push/vapid-public-key", getVAPIDPublicKey(logger, pushSvc))
+	apiV1.Post("/push/subscriptions", postPushSubscription(logger, pushSvc))
+	apiV1.Delete("/push/subscriptions", deletePushSubscription(logger, pushSvc))
 	apiV1.Post("/ideas/from-ingredients", postIdeasFromIngredients(logger, ideasSvc))
 	apiV1.Post("/ideas/quick", postIdeasQuick(logger, ideasSvc))
 	apiV1.Post("/ideas/{jobId}/items/{i}/quest-log", postIdeaQuestLog(logger, ideasSvc, dinnerSvc))

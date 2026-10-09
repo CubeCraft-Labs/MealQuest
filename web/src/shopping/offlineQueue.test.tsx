@@ -93,6 +93,7 @@ function stubServer(
     title: null,
     status: week === '2026-10-05' ? status : 'current',
     sent_to_chat_at: null,
+    chat_send_unconfirmed_at: null,
     ...counts(week),
     groups: [
       {

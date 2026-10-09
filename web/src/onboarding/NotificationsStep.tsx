@@ -1,32 +1,38 @@
 import { useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { CalendarDays, ShoppingBasket, Sparkles, UtensilsCrossed, type LucideIcon } from 'lucide-react'
 import { useNavigate } from 'react-router'
-import { InstallHint } from '../pwa/InstallHint.tsx'
+import { InstallHint, isIos, isStandalone } from '../pwa/InstallHint.tsx'
+import type { SubscribePushResult } from '../push/subscribe.ts'
+import { usePush } from '../push/usePush.ts'
+import { PUSH_STATUS_KEY } from '../settings/notificationsApi.ts'
 import { needsMoreRegulars, useCompleteOnboarding } from '../settings/api.ts'
 import { Button } from '../ui/Button.tsx'
 import { Icon } from '../ui/Icon.tsx'
 import { OnboardingStep } from './OnboardingStep.tsx'
 import styles from './Onboarding.module.css'
 
-// NotificationsResult is how asking to turn on notifications ended.
-export type NotificationsResult = 'enabled' | 'denied' | 'unavailable'
+// IOS_UNSUPPORTED says how to get notifications on iPhone and iPad, where
+// Web Push reaches only the app installed to the Home Screen, whichever
+// browser the page is open in.
+const IOS_UNSUPPORTED =
+  "Notifications aren't on: on iPhone and iPad they only work once MealQuest is on the Home Screen. Tap Share, then Add to Home Screen, open MealQuest from there, and turn them on in Settings under Notifications."
 
-export type EnableNotifications = () => Promise<NotificationsResult>
-
-// TODO(Feature 19): Web Push. Until it is wired, notifications cannot be
-// turned on, and nothing asks the browser for permission. This placeholder
-// is the interim state: "Turn on notifications" answers 'unavailable', and
-// the step tells the household plainly that nothing was turned on.
-export function notificationsUnavailable(): Promise<NotificationsResult> {
-  return Promise.resolve('unavailable')
-}
-
-// notOnReasons says why notifications are not on after asking, for each
-// result other than 'enabled'.
-const notOnReasons: Record<Exclude<NotificationsResult, 'enabled'>, string> = {
-  unavailable:
-    "Notifications aren't on yet: MealQuest can't send them until the notification feature ships, so nothing was turned on. You can finish setting up now.",
-  denied: "Notifications aren't on: this browser blocked them. You can allow them in the browser's settings later.",
+// resultText says how turning on notifications ended. 'dismissed' leaves the
+// choice open, so it is the only result that keeps "Turn on notifications".
+function resultText(result: SubscribePushResult): string {
+  switch (result) {
+    case 'subscribed':
+      return "Notifications are on for this device. MealQuest will let the household know when there's something to look at."
+    case 'denied':
+      return "Notifications aren't on: this browser blocked them. To turn them on later, allow notifications for this site in the browser's site settings, then turn them on in Settings under Notifications."
+    case 'unsupported':
+      return isIos(navigator) && !isStandalone()
+        ? IOS_UNSUPPORTED
+        : "Notifications aren't on: this browser can't receive them, so nothing was turned on."
+    case 'dismissed':
+      return "The permission prompt was closed without an answer, so notifications are still off. Turn them on to be asked again, or choose Maybe later."
+  }
 }
 
 const topics: { icon: LucideIcon; name: string; meaning: string }[] = [
@@ -52,27 +58,26 @@ const topics: { icon: LucideIcon; name: string; meaning: string }[] = [
   },
 ]
 
-export type NotificationsStepProps = {
-  // Asks to turn on notifications when the household taps "Turn on
-  // notifications" — never on render.
-  enableNotifications?: EnableNotifications
-}
-
 // NotificationsStep is onboarding step 3: what MealQuest notifies about, the
-// iOS install hint, and finishing onboarding. "Maybe later", and "Turn on
-// notifications" once they are enabled, record that onboarding is finished
-// and go Home. When they are not enabled, the step says so and offers only
-// "Finish setting up". When the server refuses because the household has
-// fewer than three Regulars, the reason shows with a way back to step 2 to
-// add them.
-export function NotificationsStep({ enableNotifications = notificationsUnavailable }: NotificationsStepProps) {
+// iOS install hint, and finishing onboarding. "Turn on notifications" turns
+// on Web Push on this device from that tap — the only place onboarding asks
+// for permission — and says how it ended: on, blocked with how to allow it
+// later, or not supported with how to get it on iPhone. Then only "Finish
+// setting up" is offered, except after a dismissed prompt, which can be
+// asked again. "Maybe later" finishes without asking. When the server
+// refuses to finish because the household has fewer than three Regulars,
+// the reason shows with a way back to step 2 to add them.
+export function NotificationsStep() {
   const navigate = useNavigate()
+  const push = usePush()
+  const queryClient = useQueryClient()
   const complete = useCompleteOnboarding()
   const [enabling, setEnabling] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
   const [fewRegulars, setFewRegulars] = useState(false)
-  const [notOn, setNotOn] = useState<string | null>(null)
+  const [result, setResult] = useState<SubscribePushResult | null>(null)
   const busy = enabling || complete.isPending
+  const decided = result !== null && result !== 'dismissed'
 
   async function finish() {
     try {
@@ -90,23 +95,20 @@ export function NotificationsStep({ enableNotifications = notificationsUnavailab
     setFewRegulars(false)
   }
 
+  // turnOn calls subscribePush straight from the tap, before anything is
+  // awaited, so the browser lets it ask for permission.
   async function turnOn() {
     clearProblem()
+    setResult(null)
     setEnabling(true)
-    let result: NotificationsResult
     try {
-      result = await enableNotifications()
+      setResult(await push.subscribePush())
     } catch (error) {
       setProblem(`Could not turn on notifications: ${(error as Error).message}`)
-      return
     } finally {
       setEnabling(false)
+      void queryClient.invalidateQueries({ queryKey: PUSH_STATUS_KEY })
     }
-    if (result !== 'enabled') {
-      setNotOn(notOnReasons[result])
-      return
-    }
-    await finish()
   }
 
   function later() {
@@ -119,7 +121,7 @@ export function NotificationsStep({ enableNotifications = notificationsUnavailab
       step={3}
       title="Stay in the loop"
       action={
-        notOn ? (
+        decided ? (
           <div className={styles.actions}>
             <Button className={styles.action} disabled={busy} onClick={later}>
               Finish setting up
@@ -154,9 +156,9 @@ export function NotificationsStep({ enableNotifications = notificationsUnavailab
       <div className={styles.hint}>
         <InstallHint />
       </div>
-      {notOn && (
-        <p role="status" className={styles.notOn}>
-          {notOn}
+      {result !== null && (
+        <p role="status" className={styles.result}>
+          {resultText(result)}
         </p>
       )}
       {problem && (

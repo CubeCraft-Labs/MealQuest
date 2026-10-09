@@ -43,6 +43,7 @@ headers, so sign-in works whichever peer the request arrives from.
 | Path | Purpose |
 | --- | --- |
 | `cmd/server` | Entry point; wiring only. |
+| `cmd/vapidgen` | Prints a new VAPID key pair for Web Push. |
 | `internal/config` | Env-only `MEALQUEST_*` config; secrets from `*_FILE`. |
 | `internal/server` | HTTP server, router, middleware. |
 | `internal/frontend` | Embedded PWA, SPA fallback. |
@@ -53,6 +54,7 @@ headers, so sign-in works whichever peer the request arrives from.
 | `internal/ai/llm`, `internal/ai/harness`, `internal/ai/skills` | AI provider adapters, skill harness, skills. |
 | `internal/suggest`, `internal/plan`, `internal/shopping`, `internal/ideas` | Feature services. |
 | `internal/gcal`, `internal/notify`, `internal/push`, `internal/chat` | Integrations. |
+| `internal/vapid` | VAPID key generation and validation. |
 | `internal/jobs`, `internal/scheduler` | Background jobs and schedules. |
 | `migrations/` | SQL migrations (no goose or golang-migrate). |
 | `web/` | React PWA. |
@@ -102,7 +104,7 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 | `week_plans` | week_start (unique), status (`draft` / `synced` / `changed`), ai_note, ai_run_id, calendar_synced_at, revision (raised by every swap and stored draft). |
 | `plan_days` | plan_id, date (unique per plan), dinner_id, is_new, calendar_event_id (set while the chosen calendar shows the day as planned; cleared when its dinner changes, another calendar is chosen or Google Calendar is disconnected). |
 | `rotation_reviews` | dinner_id + plan_date (unique), status, decision (`keep` / `drop` / `not_made`), name (set only by a drop: the dinner's name when dropped, kept whatever it is later renamed, so a drop stays among the passed names), decided_at, updated_by. |
-| `shopping_lists` | week_start (unique), plan_id, title (the AI-written post title; NULL until written or when the AI fails, when the week label is shown instead; never empty), status (`current` / `archived`), sent_to_chat_at, frozen_at. |
+| `shopping_lists` | week_start (unique), plan_id, title (the AI-written post title; NULL until written or when the AI fails, when the week label is shown instead; never empty), status (`current` / `archived`), sent_to_chat_at, chat_send_unconfirmed_at (a send to Google Chat recorded as begun before posting and cleared once its outcome is known; left set when it may or may not have posted), frozen_at. |
 | `shopping_groups` / `shopping_items` | One group per plan day with ingredients: dinner_id, date, position (by date). Item name, qty (the display quantity, NULL when the recipe gives none), needed (bool), position. Made by `shopping.Generate` from the plan, with no model call: an item is a grounded recipe ingredient's normalized name with qty and unit joined ("2 cups"), or a manual recipe's line as typed with no qty. Regenerating keeps the id and needed flag of an item whose (dinner_id, name) is unchanged. |
 | `ai_settings` | One row: provider, base_url, model, temperature, system_prompt, api_key_ct, api_key_last4, key_verified_at. |
 | `recipe_search_settings` | One row: provider (`searxng` / `brave`), base_url (the SearXNG instance), api_key_ct and api_key_last4 (Brave). |
@@ -788,9 +790,110 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
 - Events: `plan_ready`, `list_ready`, `day_of_reminder`, `new_suggestions`,
   `rotation_review`; each can go to Web Push and/or Google Chat per
   `notification_prefs`.
+- Where each event is emitted, with its idempotency key. Each is stored by
+  `notify.EmitTx` in the transaction of the change it is about, so the
+  change and its notification commit together or not at all:
+  - `plan_ready:{weekStart}` (URL `/plan`) when a draft job stores the
+    AI's draft of a week. Only the first draft of a week notifies: a
+    redraft (Rebuild week) has the same key, and a manual swap never
+    drafts. Its title is "Next week's plan is ready" (or "This week's",
+    or "The plan for the week of Oct 26") and its body the drafted
+    dinners Monday to Sunday.
+  - `list_ready:{weekStart}` (URL `/plan/shopping`) when a week's Supply
+    run is first created, by `POST /shopping/{weekStart}/generate` or
+    after Push to Calendar; remaking it does not notify.
+  - `new_suggestions:{batchId}` (URL `/discover`) when a `scheduled` or
+    `manual` suggestion batch first adds Side quests to the deck, in the
+    transaction storing them, so they are announced even when a later
+    round or recording the batch's end fails; it names that round's Side
+    quests, and a later round's emit stores nothing. A `replenish` batch
+    never notifies.
+  - `day_of_reminder:{date}` (URL `/dinner/{id}`) through
+    `plan.Service.EmitDayOfReminder(date)`, which names the dinner planned
+    on the date and emits nothing for a week with no plan. The scheduler
+    calls it at `reminder_time` (Feature 20).
 - Delivery goes through `notification_outbox`.
 - Web Push uses VAPID (`webpush-go`). Google Chat uses the stored incoming
   webhook.
+- VAPID configuration (`MEALQUEST_VAPID_PUBLIC_KEY`,
+  `MEALQUEST_VAPID_PRIVATE_KEY_FILE`, `MEALQUEST_VAPID_SUBJECT`) is required
+  at boot, all three together. Both keys are unpadded base64url P-256 keys
+  (`internal/vapid`): the public key the 65-byte uncompressed point, the
+  private key the 32-byte scalar, read only from its file. Boot derives the
+  public point from the private key and refuses a pair that does not
+  match. The subject is `mailto:<address>` or an `https://` URL.
+  `go run ./cmd/vapidgen` prints a new pair.
+- `internal/push` keeps the subscriptions, one row per endpoint, under the
+  signed-in `/api/v1`:
+  - `GET /api/v1/push/vapid-public-key` answers `{"public_key": "…"}`, the
+    browser's `applicationServerKey`. The private key is never served.
+  - `POST /api/v1/push/subscriptions` (CSRF-checked) takes
+    `{"endpoint", "keys": {"p256dh", "auth"}, "user_agent"?}` — the
+    endpoint an `https://` URL, the keys unpadded base64url as
+    `PushSubscription.toJSON()` gives them (p256dh a P-256 point, auth 16
+    bytes); unknown fields such as `expirationTime`, and nulls, are
+    refused. It upserts by endpoint: an endpoint already stored keeps its
+    id and `created_at`, has its keys and user agent replaced and its
+    failure count cleared. It answers 200 with
+    `{id, endpoint, user_agent, created_at, updated_at}`, never the keys.
+  - `DELETE /api/v1/push/subscriptions` (CSRF-checked) takes
+    `{"endpoint"}` and answers 204 whether or not it was stored.
+  - An invalid body is 400 `invalid_request` (not a JSON object of the
+    known fields) or `invalid_subscription` (a field fails validation).
+  - `POST /api/v1/settings/notifications/test-push` (CSRF-checked) checks
+    delivery to the household's devices. It queues "MealQuest test
+    notification" through `notification_outbox`, so it takes the real
+    delivery path with its retries. It is a `plan_ready` event whose tap
+    opens `/plan`. Its key is `plan_ready:test-<ULID>`, new on every call,
+    so `Emit` never deduplicates it. It goes to the `push` channel only
+    (`notify.Service.EmitPush`), never to the family Google Chat space.
+    It answers 202 `{event_key, subscriptions}`. Two cases send nothing
+    and answer 409 rather than report success: no device has subscribed
+    (`no_subscriptions`), or push is switched off for `plan_ready` in
+    the preferences (`push_off`).
+- `internal/chat` keeps the Google Chat incoming webhook in `chat_settings`
+  and is the outbox's sender for the `chat` channel. The webhook URL holds
+  its own key and token, so it is sealed with `secretbox` in
+  `webhook_url_ct` and never appears in a response, log line or error.
+  Under the signed-in `/api/v1`:
+  - `PUT /api/v1/settings/chat-webhook` (CSRF-checked) takes
+    `{"url", "space_label"}`, both required. The URL must be exactly
+    `https://chat.googleapis.com/v1/spaces/{space}/messages?key=…&token=…`:
+    that scheme and host spelled so, no port or user info, the space id
+    letters, digits, `-` or `_`, and the raw query exactly
+    `key=…&token=…` (in that order, no empty segment, no second `?`, no
+    other parameter), each decoding to at least 16 characters of letters,
+    digits, `-`, `_`, `.`, `~` or `=`. The space label is 1–100
+    characters. A refused body is 400 `invalid_request` (not a JSON object
+    of the two fields) or `invalid_webhook`. Saving replaces any stored
+    webhook and clears its test outcome.
+  - `GET /api/v1/settings/chat-webhook` answers `{space_label, url_masked,
+    last_test_at, last_test_status}`, so `url_masked` is `null` exactly when
+    no webhook is stored; `url_masked`
+    shows the space id and only the last four characters of the decoded
+    token (`…/spaces/AAQA…/messages?key=…&token=…ZxQ=`). Absent values are
+    `null`.
+  - `POST /api/v1/settings/chat-webhook/test` (CSRF-checked) posts
+    "MealQuest · test message", unthreaded, and records `last_test_at` and
+    `last_test_status` (`ok` for 2xx, else `failed`). Whatever status Google
+    Chat answers, it answers 200 with that status as `http_status` and the
+    settings as GET gives them. No webhook stored is 409 `not_configured`;
+    a webhook replaced during the test is 409 `webhook_changed`; no answer
+    from Google Chat is recorded as failed and answered 502
+    `chat_unreachable`.
+  - A notification is posted as `{"text"}`, plus `cardsV2` with an "Open"
+    button to the payload's path under `MEALQUEST_PUBLIC_URL` for
+    `plan_ready` and `list_ready`, with `threadKey=mealquest-week-YYYY-Www`
+    (the ISO week of the payload's week) and
+    `messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD`; a payload
+    with no week is posted unthreaded. 2xx is sent; 429, 5xx or no answer
+    is retried by the outbox; any other status, or no webhook stored, fails
+    the row at once (`notify.ErrUndeliverable`). Redirects are not
+    followed.
+  - The builders in `internal/chat/messages.go` make each event's
+    `notify.Event` (title and body shared with Web Push) and `chat.Text`
+    its Chat message, such as "This week's plan is ready: Tacos, Bolognese,
+    Tikka masala + 4 more. Open the plan →".
 
 ## Google Calendar
 
@@ -934,7 +1037,8 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
 ## Supply run API (Feature 17)
 
 - `GET /api/v1/shopping/{weekStart}` returns `{weekStart, label, title,
-  status, sent_to_chat_at, needed_count, total_count, groups: [{dinner:
+  status, sent_to_chat_at, chat_send_unconfirmed_at, needed_count,
+  total_count, groups: [{dinner:
   {id, name}, date, day, items: [{id, name, qty, needed}]}]}`: `label` is
   the week label (shown while `title` is null), `day` the plan day's
   weekday ("Monday"), `qty` null when the recipe gives none,
@@ -944,6 +1048,27 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
   through `shopping.Generate` and answers with the same shape plus
   `skipped: [{date, dinner_id, dinner_name, reason}]`. 404 when the week
   has no plan, 409 `archived` when its list is in the Supply archive.
+- `POST /api/v1/shopping/{weekStart}/send-chat` (CSRF-checked) takes
+  `{}` or `{"resend": true}` and posts the Supply run to Google Chat
+  through `chat.PostSupplyRun`, in the week's thread: "Supply run · " and
+  its title (or week label), each dinner with items still needed and those
+  items, and a card whose "Open" button links to
+  `/plan/shopping?week={weekStart}` under `MEALQUEST_PUBLIC_URL`. It
+  records `chat_send_unconfirmed_at` before posting, then
+  `sent_to_chat_at` (clearing it) once Google Chat accepts, and answers
+  with the Supply run as `GET` gives it. A week already sent, or with a
+  send unconfirmed, is answered as it is, with no second post, unless
+  `resend` is true. No webhook stored is 409 `not_configured`; Google Chat
+  answering with a status other than 2xx is 502 `chat_refused` (retryable
+  only for 429 or 5xx), clearing the send begun; Google Chat not
+  answering, or accepting a post that cannot then be recorded, is 502
+  `chat_unconfirmed` (not retryable: the post may have been made), which
+  leaves `chat_send_unconfirmed_at` set, as does the process stopping
+  mid-send. The screen shows an unconfirmed send and sends again only on
+  request. 404 when the week has no Supply run, 409
+  `archived` when it is in the Supply archive, 400 `invalid_request` for a
+  bad body. `shopping.SendToChat(weekStart, resend)` is what
+  `shopping_chat_autosend` calls (Feature 20).
 - `PATCH /api/v1/shopping/items/{id}` takes `{needed}` (a required
   boolean; it sets the flag, it does not flip it) and answers `{id,
   needed, needed_count, total_count}` with the list's counts after the

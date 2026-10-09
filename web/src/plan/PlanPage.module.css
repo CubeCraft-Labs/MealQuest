@@ -258,73 +258,8 @@
   color: var(--color-neutral-700);
 }
 
-/* An action with nothing behind it yet (Send to Google Chat until Feature
-   19): it keeps focus, so hovering, tapping or focusing it shows the
-   tooltip. */
-.unavailable {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-}
-
 .pushButton {
   min-height: 50px;
-}
-
-.unavailable [aria-disabled='true'] {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-/* Unavailable, it neither darkens nor presses. */
-.unavailable .primary[aria-disabled='true']:hover,
-.unavailable .primary[aria-disabled='true']:active {
-  background: var(--color-accent);
-  transform: none;
-}
-
-.unavailable .outline[aria-disabled='true']:hover,
-.unavailable .outline[aria-disabled='true']:active {
-  background: transparent;
-  transform: none;
-}
-
-.hint {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
-  width: max-content;
-  max-width: 100%;
-  padding: 8px 12px;
-  border-radius: var(--radius-md);
-  background: var(--color-text);
-  color: var(--color-bg);
-  font-family: var(--font-body);
-  font-size: 13px;
-  line-height: 1.4;
-  text-align: center;
-  box-shadow: var(--shadow-md);
-  visibility: hidden;
-  pointer-events: none;
-}
-
-/* In the plan manager's header the tooltip opens below, at the action's
-   right edge. */
-.below .hint {
-  top: calc(100% + 8px);
-  bottom: auto;
-  left: auto;
-  right: 0;
-  transform: none;
-  width: 240px;
-  max-width: none;
-  z-index: 1;
-}
-
-.unavailable:hover .hint,
-.unavailable [aria-disabled='true']:focus + .hint {
-  visibility: visible;
 }
 
 /* The plan manager's header: kicker and title beside the week buttons, over

@@ -19,6 +19,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ideas"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify/notifytest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes/recipestest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
@@ -72,12 +73,12 @@ func newIdeaActionsRouter(t *testing.T, model, normalize *llm.Fake, search *reci
 		t.Error("draft_week ran: an idea action must never draft a plan")
 		return skills.Week{}, context.Canceled
 	}
-	planSvc, err := plan.NewService(st, draft, runner, newTestGoogle(t), &url.URL{Scheme: "https", Host: "mealquest.example"}, logger)
+	planSvc, err := plan.NewService(st, draft, runner, newTestGoogle(t), notifytest.New(t, st), &url.URL{Scheme: "https", Host: "mealquest.example"}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t),
-		dinnerSvc, newTestSuggest(t), planSvc, newTestShopping(t), newTestGoogle(t), ideasSvc, runner, newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
+	h, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t), newTestChat(t),
+		dinnerSvc, newTestSuggest(t), planSvc, newTestShopping(t), newTestGoogle(t), newTestPush(t), ideasSvc, runner, newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
 	if err != nil {
 		t.Fatal(err)
 	}

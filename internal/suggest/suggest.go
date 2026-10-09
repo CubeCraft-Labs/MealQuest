@@ -20,6 +20,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 )
@@ -109,14 +110,16 @@ type Service struct {
 	st       *store.Store
 	grounder *recipes.Grounder
 	suggest  Suggester
+	notifier *notify.Service
 	logger   *slog.Logger
 	batchJob *jobs.Kind[BatchJob]
 }
 
 // NewService returns a service over st that suggests with suggest, grounds
-// with grounder and registers the KindSuggestionBatch job on runner, which
-// must not have started yet.
-func NewService(st *store.Store, grounder *recipes.Grounder, suggest Suggester, runner *jobs.Runner, logger *slog.Logger) (*Service, error) {
+// with grounder, tells the household through notifier, which must be over
+// st, and registers the KindSuggestionBatch job on runner, which must not
+// have started yet.
+func NewService(st *store.Store, grounder *recipes.Grounder, suggest Suggester, runner *jobs.Runner, notifier *notify.Service, logger *slog.Logger) (*Service, error) {
 	switch {
 	case st == nil:
 		return nil, errors.New("suggest: nil store")
@@ -126,10 +129,12 @@ func NewService(st *store.Store, grounder *recipes.Grounder, suggest Suggester, 
 		return nil, errors.New("suggest: nil suggester")
 	case runner == nil:
 		return nil, errors.New("suggest: nil job runner")
+	case notifier == nil:
+		return nil, errors.New("suggest: nil notifier")
 	case logger == nil:
 		return nil, errors.New("suggest: nil logger")
 	}
-	s := &Service{st: st, grounder: grounder, suggest: suggest, logger: logger}
+	s := &Service{st: st, grounder: grounder, suggest: suggest, notifier: notifier, logger: logger}
 	kind, err := jobs.Register(runner, KindSuggestionBatch, s.runBatch, Reasons...)
 	if err != nil {
 		return nil, err

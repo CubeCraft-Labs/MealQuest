@@ -17,6 +17,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/auth"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/chat"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/config"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
@@ -25,7 +26,9 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ideas"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/push"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secretbox"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/server"
@@ -107,11 +110,30 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	notifier, err := notify.NewService(db, logger)
+	if err != nil {
+		return err
+	}
+	pushSender, err := push.NewSender(db, logger, cfg.VAPID.PublicKey, cfg.VAPID.PrivateKey.Reveal(), cfg.VAPID.Subject)
+	if err != nil {
+		return err
+	}
+	if err := notifier.Register(notify.ChannelPush, pushSender); err != nil {
+		return err
+	}
+	chatSvc, err := chat.NewService(db, box, cfg.PublicURL, http.DefaultTransport)
+	if err != nil {
+		return err
+	}
+	if err := notifier.Register(notify.ChannelChat, chatSvc); err != nil {
+		return err
+	}
+
 	dinnerSvc, err := dinners.NewService(db, grounder, runner, logger)
 	if err != nil {
 		return err
 	}
-	suggestSvc, err := suggest.NewService(db, grounder, sideQuests(ai, guard), runner, logger)
+	suggestSvc, err := suggest.NewService(db, grounder, sideQuests(ai, guard), runner, notifier, logger)
 	if err != nil {
 		return err
 	}
@@ -129,12 +151,17 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	planSvc, err := plan.NewService(db, weekDrafter(ai, guard), runner, googleSvc, cfg.PublicURL, logger)
+	planSvc, err := plan.NewService(db, weekDrafter(ai, guard), runner, googleSvc, notifier, cfg.PublicURL, logger)
 	if err != nil {
 		return err
 	}
 
-	shopSvc, err := shopping.NewService(db, archiveTitler(ai, guard), runner, logger)
+	shopSvc, err := shopping.NewService(db, archiveTitler(ai, guard), runner, notifier, chatSvc, logger)
+	if err != nil {
+		return err
+	}
+
+	pushSvc, err := push.NewService(db, cfg.VAPID.PublicKey, notifier)
 	if err != nil {
 		return err
 	}
@@ -160,20 +187,24 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, search, ai, dinnerSvc, suggestSvc, planSvc, shopSvc, googleSvc, ideasSvc, runner, photos, frontend.Assets())
+	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, search, ai, chatSvc, dinnerSvc, suggestSvc, planSvc, shopSvc, googleSvc, pushSvc, ideasSvc, runner, photos, frontend.Assets())
 	if err != nil {
 		return err
 	}
 
 	// Start fails the jobs a previous process left running before any
-	// worker runs. The workers stop, and are waited for, before the
-	// database closes.
-	jobsCtx, stopJobs := context.WithCancel(ctx)
+	// worker runs. The job workers and the notification worker stop, and
+	// are waited for, before the database closes.
+	workersCtx, stopWorkers := context.WithCancel(ctx)
 	defer func() {
-		stopJobs()
+		stopWorkers()
 		runner.Wait()
+		notifier.Wait()
 	}()
-	if err := runner.Start(jobsCtx); err != nil {
+	if err := runner.Start(workersCtx); err != nil {
+		return err
+	}
+	if err := notifier.Start(workersCtx); err != nil {
 		return err
 	}
 	// With those jobs failed, a dinner still pending with no grounding job

@@ -36,9 +36,8 @@ export type Ingredient = {
 // RecipeSource is where a fetched recipe came from. siteName is the site,
 // or null when there is none to name: a page that named no site, or a name
 // the server withheld because it could have come from the link. url is the
-// recipe's page, or null: today's API never sends the stored link, which can
-// carry a token, so the credit is text until the server sends a url it has
-// checked is free of secrets.
+// recipe's page, or null when the server withheld the stored link because
+// it could carry a token; the credit then never names its host.
 export type RecipeSource = { siteName: string | null; url: string | null }
 
 // DinnerDetail is a dinner with its recipe (GET /api/v1/dinners/{id}).
@@ -93,7 +92,7 @@ function detailPhotoId(where: string, value: unknown): string | undefined {
   return id
 }
 
-// sourceUrl is source.url, which today's API does not send, or a link safe
+// sourceUrl is source.url, null when the server withholds it, or a link safe
 // to open: https, with no user, password, query or fragment.
 function sourceUrl(where: string, value: unknown): string | null {
   if (value === undefined || value === null) return null

@@ -329,9 +329,11 @@ function swapKey(weekStart: string) {
 }
 
 // SwapDay is the swaps of one week, as the mutation cache holds them:
-// whether one is pending, and the failure of the latest, if it failed.
+// whether one is pending, the latest if it succeeded, and the failure of the
+// latest, if it failed.
 export type SwapDay = {
   pending: boolean
+  succeeded: Swap | null
   failed: { swap: Swap; error: Error } | null
   mutate: (chosen: Swap) => void
   dismiss: () => void
@@ -418,6 +420,7 @@ export function useSwapDay(weekStart: string): SwapDay {
 
   return {
     pending: swaps.some((swap) => swap.status === 'pending'),
+    succeeded: latest?.status === 'success' ? latest.swap : null,
     failed: latest?.status === 'error' ? { swap: latest.swap, error: latest.error! } : null,
     mutate,
     dismiss,

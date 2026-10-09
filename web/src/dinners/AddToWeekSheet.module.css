@@ -1,0 +1,7 @@
+/* A week with no plan: why there's no day, over the link to draft it. */
+.noPlan {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+}

@@ -1,8 +1,13 @@
+import { useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft, Heart } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router'
 import { ApiError } from '../api/errors.ts'
-import { duration, Unavailable } from '../plan/PlanPage.tsx'
+import { planKey, usePlan, useSwapDay } from '../plan/api.ts'
+import { duration } from '../plan/PlanPage.tsx'
+import { weekdayName } from '../plan/week.ts'
 import { useBreakpoint } from '../shell/useBreakpoint.ts'
+import { Button } from '../ui/Button.tsx'
 import buttonStyles from '../ui/Button.module.css'
 import { EmptyState } from '../ui/EmptyState.tsx'
 import { ErrorBanner } from '../ui/ErrorBanner.tsx'
@@ -11,16 +16,13 @@ import { IconButton } from '../ui/IconButton.tsx'
 import { Photo } from '../ui/Photo.tsx'
 import { Skeleton } from '../ui/Skeleton.tsx'
 import { Tag } from '../ui/Tag.tsx'
-import type { Difficulty } from './api.ts'
+import { AddToWeekSheet, weekNames, type Added } from './AddToWeekSheet.tsx'
+import { useToggleFavorite, type Difficulty } from './api.ts'
 import { useDinnerDetail, type DinnerDetail, type Ingredient, type RecipeSource } from './detail.ts'
 import styles from './DinnerDetailPage.module.css'
 
 // REGULAR_DINNERS is Settings → Regular dinners, where a recipe is fixed.
 export const REGULAR_DINNERS = '/settings/regulars'
-
-// ADD_HINT is why Add to this week and the heart are unavailable.
-// TODO(07423ba7): the add-to-week sheet and the favorite heart.
-const ADD_HINT = 'Adding to this week and the favorite heart arrive in the next update.'
 
 const difficultyLabels: Record<Difficulty, string> = { easy: 'Easy', medium: 'Medium', hard: 'Hard' }
 
@@ -125,20 +127,90 @@ function Recipe({ dinner }: { dinner: DinnerDetail }) {
   )
 }
 
+// AddedStatus says what became of a dinner added to a day: being saved,
+// added, or why it couldn't be, with Retry, which sends the same swap again.
+// The week's plan stays read while it shows, so a retry finds the day to
+// swap; once added, the plan is read again from the server.
+function AddedStatus({ added }: { added: Added }) {
+  const queryClient = useQueryClient()
+  usePlan(added.week)
+  const swap = useSwapDay(added.week)
+  const { date } = added.swap
+  const done = swap.succeeded === added.swap
+  const failed = swap.failed?.swap === added.swap ? swap.failed.error : null
+  useEffect(() => {
+    if (done) void queryClient.invalidateQueries({ queryKey: planKey(added.week) })
+  }, [done, queryClient, added.week])
+
+  if (failed !== null) {
+    return (
+      <div className={styles.status}>
+        <ErrorBanner onRetry={() => swap.mutate(added.swap)}>
+          Couldn't add it to {weekdayName(date)} {weekNames[added.which]}. {failed.message}
+        </ErrorBanner>
+      </div>
+    )
+  }
+  return (
+    <p role="status" className={[styles.status, styles.added].join(' ')}>
+      {done ? `Added to ${weekdayName(date)} ${weekNames[added.which]}.` : `Adding to ${weekdayName(date)}…`}
+    </p>
+  )
+}
+
+// AddToWeek is Add to this week: it opens the sheet of the week's days, and
+// says what became of the dinner added.
+function AddToWeek({ dinner }: { dinner: DinnerDetail }) {
+  const [open, setOpen] = useState(false)
+  const [added, setAdded] = useState<Added | null>(null)
+  function add(chosen: Added) {
+    setOpen(false)
+    setAdded(chosen)
+  }
+  return (
+    <>
+      {added !== null && <AddedStatus key={`${added.week} ${added.swap.date}`} added={added} />}
+      <Button className={styles.add} onClick={() => setOpen(true)}>
+        Add to this week
+      </Button>
+      {open && <AddToWeekSheet dinner={dinner} onAdd={add} onClose={() => setOpen(false)} />}
+    </>
+  )
+}
+
+// FavoriteHeart toggles whether the dinner is a favorite, at once, changing
+// back with the error and Retry if the server refuses. One toggle is sent at
+// a time.
+function FavoriteHeart({ dinner }: { dinner: DinnerDetail }) {
+  const favorite = useToggleFavorite()
+  function toggle() {
+    if (!favorite.isPending) favorite.mutate({ id: dinner.id, is_favorite: dinner.is_favorite })
+  }
+  return (
+    <>
+      {favorite.isError && (
+        <div className={styles.status}>
+          <ErrorBanner onRetry={toggle}>
+            Couldn't {dinner.is_favorite ? 'unfavorite' : 'favorite'} {dinner.name}. {favorite.error.message}
+          </ErrorBanner>
+        </div>
+      )}
+      <IconButton label="Favorite" size={52} aria-pressed={dinner.is_favorite} onClick={toggle}>
+        <Icon icon={Heart} size="nav" className={dinner.is_favorite ? styles.filled : undefined} />
+      </IconButton>
+    </>
+  )
+}
+
 // ActionBar is the bar at the bottom of the screen, the page's last child:
 // the page fills the scroll area so a short recipe still leaves it at the
 // bottom, and it sticks there over a long one. It holds Add to this week
-// and the favorite heart, showing whether the dinner is a favorite. Both
-// rest unavailable until the next update wires them.
+// and the favorite heart, with what became of either above them.
 function ActionBar({ dinner }: { dinner: DinnerDetail }) {
   return (
     <div className={styles.bar}>
-      <Unavailable hint={ADD_HINT} className={styles.add}>
-        Add to this week
-      </Unavailable>
-      <IconButton label="Favorite" size={52} aria-pressed={dinner.is_favorite} disabled>
-        <Icon icon={Heart} size="nav" className={dinner.is_favorite ? styles.filled : undefined} />
-      </IconButton>
+      <AddToWeek dinner={dinner} />
+      <FavoriteHeart dinner={dinner} />
     </div>
   )
 }

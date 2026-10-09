@@ -99,16 +99,19 @@ func TestPageSiteNameWithholdsHosts(t *testing.T) {
 		{"Bon Appétit", true, ptr("Bon Appétit")},
 		{"Mr. Food Test Kitchen", true, ptr("Mr. Food Test Kitchen")},
 	} {
-		got, err := dinners.PageSiteName(sql.NullString{String: tc.stored, Valid: tc.valid}, link)
+		src, err := dinners.SourceOf(sql.NullString{String: tc.stored, Valid: tc.valid}, link)
 		if err != nil {
-			t.Fatalf("PageSiteName(%q): %v", tc.stored, err)
+			t.Fatalf("SourceOf(%q): %v", tc.stored, err)
 		}
-		if (got == nil) != (tc.want == nil) || (got != nil && *got != *tc.want) {
-			t.Errorf("PageSiteName(%q) = %v, want %v", tc.stored, deref(got), deref(tc.want))
+		if got := src.SiteName; (got == nil) != (tc.want == nil) || (got != nil && *got != *tc.want) {
+			t.Errorf("SourceOf(%q) site name = %v, want %v", tc.stored, deref(got), deref(tc.want))
 		}
 	}
-	if _, err := dinners.PageSiteName(sql.NullString{String: "Delish", Valid: true}, "https://secret-token\x7f.example/%zz"); err == nil || strings.Contains(err.Error(), "secret-token") {
-		t.Errorf("PageSiteName of an unparseable link: err = %v, want one not quoting the link", err)
+	// A link that does not parse is an error with or without a site name.
+	for _, site := range []sql.NullString{{String: "Delish", Valid: true}, {}} {
+		if _, err := dinners.SourceOf(site, "https://secret-token\x7f.example/%zz"); err == nil || strings.Contains(err.Error(), "secret-token") {
+			t.Errorf("SourceOf(%v) of an unparseable link: err = %v, want one not quoting the link", site, err)
+		}
 	}
 }
 

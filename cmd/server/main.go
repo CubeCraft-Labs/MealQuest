@@ -24,6 +24,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/push"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
@@ -144,6 +145,11 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
+	notifier, err := notify.NewService(db, logger)
+	if err != nil {
+		return err
+	}
+
 	sessions, err := auth.NewSessionManager(db, cfg.SessionIdle, cfg.SessionMax)
 	if err != nil {
 		return err
@@ -166,14 +172,18 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	}
 
 	// Start fails the jobs a previous process left running before any
-	// worker runs. The workers stop, and are waited for, before the
-	// database closes.
-	jobsCtx, stopJobs := context.WithCancel(ctx)
+	// worker runs. The job workers and the notification worker stop, and
+	// are waited for, before the database closes.
+	workersCtx, stopWorkers := context.WithCancel(ctx)
 	defer func() {
-		stopJobs()
+		stopWorkers()
 		runner.Wait()
+		notifier.Wait()
 	}()
-	if err := runner.Start(jobsCtx); err != nil {
+	if err := runner.Start(workersCtx); err != nil {
+		return err
+	}
+	if err := notifier.Start(workersCtx); err != nil {
 		return err
 	}
 	// With those jobs failed, a dinner still pending with no grounding job

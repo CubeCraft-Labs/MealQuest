@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/aisettings"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/chat"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
@@ -40,6 +41,7 @@ type RouteMounter interface {
 // /media; settings serves /api/v1/settings/household; search serves
 // /api/v1/settings/recipe-search and its /test; ai serves
 // /api/v1/settings/ai, its /api-key, /verify, /models and /reset-prompt;
+// chatSvc serves GET and PUT /api/v1/settings/chat-webhook and its /test;
 // dinnerSvc serves GET and POST /api/v1/dinners, PATCH and DELETE
 // /api/v1/dinners/{id}, POST /api/v1/dinners/{id}/favorite, GET
 // /api/v1/dinners/{id}/recipe-candidates and POST /api/v1/dinners/{id}/ground;
@@ -63,7 +65,7 @@ type RouteMounter interface {
 // GET /media/photos/{id}-{size}.jpg; assets is the web build
 // served for every other GET. /health, /auth and the web build are public.
 // Requests to /api/v1 other than GET also need the session's CSRF token in CSRFHeader.
-func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, settings *household.SettingsService, search *recipes.SearchSettingsService, ai *aisettings.Service, dinnerSvc *dinners.Service, suggestSvc *suggest.Service, planSvc *plan.Service, shopSvc *shopping.Service, googleSvc *gcal.Service, pushSvc *push.Service, runner *jobs.Runner, photos PhotoFiles, assets fs.FS) (http.Handler, error) {
+func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, settings *household.SettingsService, search *recipes.SearchSettingsService, ai *aisettings.Service, chatSvc *chat.Service, dinnerSvc *dinners.Service, suggestSvc *suggest.Service, planSvc *plan.Service, shopSvc *shopping.Service, googleSvc *gcal.Service, pushSvc *push.Service, runner *jobs.Runner, photos PhotoFiles, assets fs.FS) (http.Handler, error) {
 	if settings == nil {
 		return nil, errors.New("server: nil household settings service")
 	}
@@ -72,6 +74,9 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	}
 	if ai == nil {
 		return nil, errors.New("server: nil AI settings service")
+	}
+	if chatSvc == nil {
+		return nil, errors.New("server: nil Google Chat service")
 	}
 	if dinnerSvc == nil {
 		return nil, errors.New("server: nil dinners service")
@@ -134,6 +139,9 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Post("/settings/ai/verify", postAIVerify(logger, ai))
 	apiV1.Get("/settings/ai/models", getAIModels(logger, ai))
 	apiV1.Post("/settings/ai/reset-prompt", postAIResetPrompt(logger, ai))
+	apiV1.Get("/settings/chat-webhook", getChatWebhook(logger, chatSvc))
+	apiV1.Put("/settings/chat-webhook", putChatWebhook(logger, chatSvc))
+	apiV1.Post("/settings/chat-webhook/test", postChatWebhookTest(logger, chatSvc))
 	apiV1.Get("/dinners", getDinners(logger, dinnerSvc))
 	apiV1.Post("/dinners", postDinner(logger, dinnerSvc))
 	apiV1.Patch("/dinners/{id}", patchDinner(logger, dinnerSvc))

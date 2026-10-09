@@ -48,8 +48,14 @@ type Message struct {
 	Attempt int64
 }
 
+// ErrUndeliverable is wrapped by a Sender's error when retrying cannot
+// help, such as a channel refusing the message outright: the worker marks
+// the row failed at once instead of retrying it.
+var ErrUndeliverable = errors.New("notify: undeliverable")
+
 // Sender delivers notifications on one channel. Send returns nil once the
-// channel has accepted m, and an error otherwise; the worker retries it.
+// channel has accepted m, and an error otherwise; the worker retries it,
+// unless the error wraps ErrUndeliverable.
 // The error's text is stored in notification_outbox.last_error and logged,
 // so it must never carry a secret: no webhook URL, key or token (a
 // *url.Error quotes its URL).
@@ -235,7 +241,7 @@ func (s *Service) deliver(ctx context.Context, row db.NotificationOutbox) {
 		return
 	}
 
-	if !now.Before(deadline) {
+	if errors.Is(err, ErrUndeliverable) || !now.Before(deadline) {
 		logger.ErrorContext(ctx, "notification failed; giving up", "attempt", attempt, "error", err)
 		s.giveUp(ctx, logger, row, 1, err.Error())
 		return

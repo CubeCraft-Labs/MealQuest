@@ -260,6 +260,10 @@ type Querier interface {
 	// event id while its dinner stays the same; a new dinner clears it, since
 	// Calendar no longer shows the day as planned.
 	PutPlanDay(ctx context.Context, arg PutPlanDayParams) error
+	// Records the outcome of a test message sent to the webhook sealed in
+	// webhook_url_ct; affects no row when the webhook has been replaced or
+	// removed since the test began.
+	RecordChatTest(ctx context.Context, arg RecordChatTestParams) (int64, error)
 	// Counts a delivery to a subscription that the push service did not accept.
 	RecordPushFailure(ctx context.Context, id string) error
 	// Records that the push service accepted a notification for a subscription.

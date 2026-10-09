@@ -706,6 +706,17 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
     `{"endpoint"}` and answers 204 whether or not it was stored.
   - An invalid body is 400 `invalid_request` (not a JSON object of the
     known fields) or `invalid_subscription` (a field fails validation).
+  - `POST /api/v1/settings/notifications/test-push` (CSRF-checked) checks
+    delivery to the household's devices. It queues "MealQuest test
+    notification" through `notification_outbox`, so it takes the real
+    delivery path with its retries. It is a `plan_ready` event whose tap
+    opens `/plan`. Its key is `plan_ready:test-<ULID>`, new on every call,
+    so `Emit` never deduplicates it. It goes to the `push` channel only
+    (`notify.Service.EmitPush`), never to the family Google Chat space.
+    It answers 202 `{event_key, subscriptions}`. Two cases send nothing
+    and answer 409 rather than report success: no device has subscribed
+    (`no_subscriptions`), or push is switched off for `plan_ready` in
+    the preferences (`push_off`).
 - `internal/chat` keeps the Google Chat incoming webhook in `chat_settings`
   and is the outbox's sender for the `chat` channel. The webhook URL holds
   its own key and token, so it is sealed with `secretbox` in

@@ -14,6 +14,8 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify/notifytest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/push"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/vapid"
@@ -22,6 +24,7 @@ import (
 const (
 	vapidPublicKeyPath    = "/api/v1/push/vapid-public-key"
 	pushSubscriptionsPath = "/api/v1/push/subscriptions"
+	testPushPath          = "/api/v1/settings/notifications/test-push"
 	testPushEndpoint      = "https://updates.push.services.mozilla.com/wpush/v2/gAAAAABk"
 )
 
@@ -41,7 +44,7 @@ func newTestPushWith(t *testing.T) (*push.Service, *store.Store, vapid.KeyPair) 
 		t.Fatal(err)
 	}
 	st := newTestStore(t)
-	svc, err := push.NewService(st, pair.PublicKey)
+	svc, err := push.NewService(st, pair.PublicKey, notifytest.New(t, st))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,4 +284,47 @@ func mustP256dh(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return base64.RawURLEncoding.EncodeToString(k.PublicKey().Bytes())
+}
+
+func TestTestPushAPI(t *testing.T) {
+	t.Parallel()
+	svc, st, _ := newTestPushWith(t)
+	router := newPushRouter(t, svc)
+
+	// With no device subscribed there is nothing to test.
+	rec, body := serve(t, router, signedIn(http.MethodPost, testPushPath, nil))
+	if rec.Code != http.StatusConflict || body["error"].(map[string]any)["code"] != "no_subscriptions" {
+		t.Errorf("POST with no subscriptions = %d %s, want 409 no_subscriptions", rec.Code, rec.Body)
+	}
+
+	for _, ep := range []string{testPushEndpoint, testPushEndpoint + "-phone"} {
+		req := signedIn(http.MethodPost, pushSubscriptionsPath, strings.NewReader(subscriptionJSON(t, ep, "")))
+		if rec, _ := serve(t, router, req); rec.Code != http.StatusOK {
+			t.Fatalf("POST subscription = %d %s", rec.Code, rec.Body)
+		}
+	}
+	rec, body = serve(t, router, signedIn(http.MethodPost, testPushPath, nil))
+	key, _ := body["event_key"].(string)
+	if rec.Code != http.StatusAccepted || !strings.HasPrefix(key, "plan_ready:test-") || body["subscriptions"] != float64(2) {
+		t.Fatalf("POST test-push = %d %s, want 202 with a plan_ready:test- key and 2 subscriptions", rec.Code, rec.Body)
+	}
+	// One push row, none for the household's Google Chat space, opening /plan.
+	want := []notifytest.Row{{Key: key, Channel: notify.ChannelPush, Payload: notify.Payload{
+		Event: notify.PlanReady, Title: "MealQuest test notification", Body: push.TestBody, URL: "/plan", Tag: key,
+	}}}
+	if got := notifytest.Rows(t, st, notify.PlanReady); len(got) != 1 || got[0] != want[0] {
+		t.Errorf("outbox = %+v, want %+v", got, want)
+	}
+
+	// With push off for plan_ready, the test says so and sends nothing.
+	if _, err := st.Writer.Exec(`UPDATE notification_prefs SET push = 0 WHERE event = 'plan_ready'`); err != nil {
+		t.Fatal(err)
+	}
+	rec, body = serve(t, router, signedIn(http.MethodPost, testPushPath, nil))
+	if rec.Code != http.StatusConflict || body["error"].(map[string]any)["code"] != "push_off" {
+		t.Errorf("POST with push off = %d %s, want 409 push_off", rec.Code, rec.Body)
+	}
+	if got := notifytest.Rows(t, st, notify.PlanReady); len(got) != 1 {
+		t.Errorf("outbox after push off = %+v, want still one row", got)
+	}
 }

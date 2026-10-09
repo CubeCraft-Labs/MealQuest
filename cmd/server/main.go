@@ -160,7 +160,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	pushSvc, err := push.NewService(db, cfg.VAPID.PublicKey)
+	pushSvc, err := push.NewService(db, cfg.VAPID.PublicKey, notifier)
 	if err != nil {
 		return err
 	}

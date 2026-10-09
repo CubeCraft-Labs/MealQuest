@@ -229,8 +229,8 @@
   color: var(--color-accent-700);
 }
 
-/* Step 3: why notifications are not on after asking for them. */
-.notOn {
+/* Step 3: whether notifications are on after asking for them, and why not. */
+.result {
   margin: var(--space-4) 0 0;
   padding: var(--space-4);
   border-radius: var(--radius-lg);

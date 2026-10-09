@@ -109,11 +109,30 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	notifier, err := notify.NewService(db, logger)
+	if err != nil {
+		return err
+	}
+	pushSender, err := push.NewSender(db, logger, cfg.VAPID.PublicKey, cfg.VAPID.PrivateKey.Reveal(), cfg.VAPID.Subject)
+	if err != nil {
+		return err
+	}
+	if err := notifier.Register(notify.ChannelPush, pushSender); err != nil {
+		return err
+	}
+	chatSvc, err := chat.NewService(db, box, cfg.PublicURL, http.DefaultTransport)
+	if err != nil {
+		return err
+	}
+	if err := notifier.Register(notify.ChannelChat, chatSvc); err != nil {
+		return err
+	}
+
 	dinnerSvc, err := dinners.NewService(db, grounder, runner, logger)
 	if err != nil {
 		return err
 	}
-	suggestSvc, err := suggest.NewService(db, grounder, sideQuests(ai, guard), runner, logger)
+	suggestSvc, err := suggest.NewService(db, grounder, sideQuests(ai, guard), runner, notifier, logger)
 	if err != nil {
 		return err
 	}
@@ -131,37 +150,18 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	planSvc, err := plan.NewService(db, weekDrafter(ai, guard), runner, googleSvc, cfg.PublicURL, logger)
+	planSvc, err := plan.NewService(db, weekDrafter(ai, guard), runner, googleSvc, notifier, cfg.PublicURL, logger)
 	if err != nil {
 		return err
 	}
 
-	shopSvc, err := shopping.NewService(db, archiveTitler(ai, guard), runner, logger)
+	shopSvc, err := shopping.NewService(db, archiveTitler(ai, guard), runner, notifier, chatSvc, logger)
 	if err != nil {
 		return err
 	}
 
 	pushSvc, err := push.NewService(db, cfg.VAPID.PublicKey)
 	if err != nil {
-		return err
-	}
-
-	notifier, err := notify.NewService(db, logger)
-	if err != nil {
-		return err
-	}
-	pushSender, err := push.NewSender(db, logger, cfg.VAPID.PublicKey, cfg.VAPID.PrivateKey.Reveal(), cfg.VAPID.Subject)
-	if err != nil {
-		return err
-	}
-	if err := notifier.Register(notify.ChannelPush, pushSender); err != nil {
-		return err
-	}
-	chatSvc, err := chat.NewService(db, box, cfg.PublicURL, http.DefaultTransport)
-	if err != nil {
-		return err
-	}
-	if err := notifier.Register(notify.ChannelChat, chatSvc); err != nil {
 		return err
 	}
 

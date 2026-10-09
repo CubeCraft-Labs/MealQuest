@@ -276,15 +276,16 @@ type ShoppingItem struct {
 }
 
 type ShoppingList struct {
-	ID           string
-	WeekStart    string
-	PlanID       string
-	Title        sql.NullString
-	Status       string
-	SentToChatAt sql.NullString
-	FrozenAt     sql.NullString
-	CreatedAt    string
-	UpdatedAt    string
+	ID                    string
+	WeekStart             string
+	PlanID                string
+	Title                 sql.NullString
+	Status                string
+	SentToChatAt          sql.NullString
+	FrozenAt              sql.NullString
+	CreatedAt             string
+	UpdatedAt             string
+	ChatSendUnconfirmedAt sql.NullString
 }
 
 type Suggestion struct {

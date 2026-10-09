@@ -6,7 +6,8 @@
 // row in notification_outbox keyed by (event key, channel). The event key is
 // the caller's idempotency key, so emitting the same event twice stores
 // nothing the second time and never touches a row already stored, whatever
-// its status.
+// its status. EmitTx does the same inside the caller's transaction, so an
+// event is stored with the change it is about; the caller then calls Wake.
 //
 // The worker started by Start delivers due rows through the Sender
 // registered for their channel. A delivered row is marked sent. A failed
@@ -142,6 +143,20 @@ func NewService(st *store.Store, logger *slog.Logger) (*Service, error) {
 // row with ev.Key is left as it is. An invalid event is ErrInvalidEvent and
 // stores nothing; a type with no preference row is an error.
 func (s *Service) Emit(ctx context.Context, ev Event) error {
+	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		return s.EmitTx(ctx, tx, ev)
+	})
+	if err != nil {
+		return err
+	}
+	s.Wake()
+	return nil
+}
+
+// EmitTx stores ev's notifications as Emit does, in tx, so they are
+// committed with the change the event is about or not at all. The caller
+// calls Wake once tx has committed.
+func (s *Service) EmitTx(ctx context.Context, tx *sql.Tx, ev Event) error {
 	if err := validate(ev); err != nil {
 		return err
 	}
@@ -154,42 +169,33 @@ func (s *Service) Emit(ctx context.Context, ev Event) error {
 		return fmt.Errorf("notify: encode payload of %s: %w", ev.Key, err)
 	}
 
-	var queued []Channel
-	err = s.st.WithTx(ctx, func(tx *sql.Tx) error {
-		q := db.New(tx)
-		pref, err := q.GetNotificationPref(ctx, string(ev.Type))
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("notify: no notification preference for %s", ev.Type)
-		}
-		if err != nil {
-			return fmt.Errorf("notify: read notification preference for %s: %w", ev.Type, err)
-		}
-		now := timestamp(s.now())
-		for _, ch := range enabledChannels(pref) {
-			n, err := q.InsertNotification(ctx, db.InsertNotificationParams{
-				ID:            store.NewID(),
-				EventKey:      ev.Key,
-				Channel:       string(ch),
-				Payload:       string(data),
-				NextAttemptAt: sql.NullString{String: now, Valid: true},
-				Now:           now,
-			})
-			if err != nil {
-				return fmt.Errorf("notify: store %s notification %s: %w", ch, ev.Key, err)
-			}
-			if n == 1 {
-				queued = append(queued, ch)
-			}
-		}
-		return nil
-	})
+	q := db.New(tx)
+	pref, err := q.GetNotificationPref(ctx, string(ev.Type))
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("notify: no notification preference for %s", ev.Type)
+	}
 	if err != nil {
-		return err
+		return fmt.Errorf("notify: read notification preference for %s: %w", ev.Type, err)
 	}
-	s.logger.InfoContext(ctx, "notification emitted", "event_key", ev.Key, "queued", queued)
-	if len(queued) > 0 {
-		s.wakeWorker()
+	now := timestamp(s.now())
+	var queued []Channel
+	for _, ch := range enabledChannels(pref) {
+		n, err := q.InsertNotification(ctx, db.InsertNotificationParams{
+			ID:            store.NewID(),
+			EventKey:      ev.Key,
+			Channel:       string(ch),
+			Payload:       string(data),
+			NextAttemptAt: sql.NullString{String: now, Valid: true},
+			Now:           now,
+		})
+		if err != nil {
+			return fmt.Errorf("notify: store %s notification %s: %w", ch, ev.Key, err)
+		}
+		if n == 1 {
+			queued = append(queued, ch)
+		}
 	}
+	s.logger.InfoContext(ctx, "notification stored in transaction", "event_key", ev.Key, "queued", queued)
 	return nil
 }
 

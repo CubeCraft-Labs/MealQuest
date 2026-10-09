@@ -53,6 +53,9 @@ var (
 	// ErrUnreachable is wrapped by the error of a post Google Chat did not
 	// answer.
 	ErrUnreachable = errors.New("chat: Google Chat did not answer")
+	// ErrRefused is matched by the *RefusedError of a post Google Chat
+	// answered with a status other than 2xx.
+	ErrRefused = errors.New("chat: Google Chat refused the message")
 	// ErrWebhookChanged is returned by Test when the webhook was replaced
 	// while the test message was being sent; nothing is recorded.
 	ErrWebhookChanged = errors.New("chat: the Google Chat webhook changed during the test")
@@ -76,6 +79,24 @@ type TestResult struct {
 	// HTTPStatus is the status Google Chat answered.
 	HTTPStatus int `json:"http_status"`
 	Settings
+}
+
+// RefusedError is a post Google Chat answered with Status, not 2xx. It
+// matches ErrRefused.
+type RefusedError struct {
+	Status int
+}
+
+func (e *RefusedError) Error() string {
+	return fmt.Sprintf("%v with status %d", ErrRefused, e.Status)
+}
+
+func (e *RefusedError) Unwrap() error { return ErrRefused }
+
+// Retryable reports whether posting again may succeed: Google Chat was
+// busy (429) or failing (5xx), rather than refusing the message.
+func (e *RefusedError) Retryable() bool {
+	return e.Status == http.StatusTooManyRequests || e.Status >= 500
 }
 
 // Problem is one invalid field of a webhook update, named by its JSON key.
@@ -362,22 +383,65 @@ func (s *Service) messageOf(p notify.Payload) (message, error) {
 	if !carded[p.Event] {
 		return msg, nil
 	}
-	ref, err := url.Parse(p.URL)
-	if err != nil || ref.Scheme != "" || ref.Host != "" || !strings.HasPrefix(p.URL, "/") {
-		return message{}, fmt.Errorf("payload url %q is not an app path", p.URL)
+	c, err := s.openCard(string(p.Event), p.Title, p.Body, p.URL)
+	if err != nil {
+		return message{}, err
+	}
+	msg.CardsV2 = []cardV2{c}
+	return msg, nil
+}
+
+// openCard is a card headed title and subtitle whose "Open" button links
+// to the app path under the public URL.
+func (s *Service) openCard(id, title, subtitle, path string) (cardV2, error) {
+	ref, err := url.Parse(path)
+	if err != nil || ref.Scheme != "" || ref.Host != "" || !strings.HasPrefix(path, "/") {
+		return cardV2{}, fmt.Errorf("payload url %q is not an app path", path)
 	}
 	link := s.publicURL.ResolveReference(ref)
-	msg.CardsV2 = []cardV2{{
-		CardID: string(p.Event),
+	return cardV2{
+		CardID: id,
 		Card: card{
-			Header: cardHeader{Title: p.Title, Subtitle: p.Body},
+			Header: cardHeader{Title: title, Subtitle: subtitle},
 			Sections: []cardSection{{Widgets: []cardWidget{{ButtonList: buttonList{Buttons: []button{{
 				Text:    "Open",
 				OnClick: onClick{OpenLink: openLink{URL: link.String()}},
 			}}}}}}},
 		},
-	}}
-	return msg, nil
+	}, nil
+}
+
+// PostSupplyRun posts the Supply run of the week starting on week, named
+// name, with groups, to the stored webhook in the week's thread: its
+// SupplyRunText and a card whose "Open" button links to that week's Supply
+// run. No webhook stored is ErrNotConfigured; a post Google Chat does not
+// answer wraps ErrUnreachable, and one it answers with a status other than
+// 2xx is a *RefusedError.
+func (s *Service) PostSupplyRun(ctx context.Context, week store.LocalDate, name string, groups []SupplyRunGroup) error {
+	row, err := db.New(s.st.Reader).GetChatSettings(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotConfigured
+	}
+	if err != nil {
+		return fmt.Errorf("chat: read chat settings: %w", err)
+	}
+	hook, err := s.open(row)
+	if err != nil {
+		return err
+	}
+	path := "/plan/shopping?" + url.Values{"week": {week.String()}}.Encode()
+	c, err := s.openCard("supply_run", "Supply run · "+name, "", path)
+	if err != nil {
+		return err
+	}
+	status, err := s.post(ctx, hook, message{Text: SupplyRunText(name, groups), CardsV2: []cardV2{c}}, ThreadKey(week))
+	if err != nil {
+		return err
+	}
+	if status < 200 || status >= 300 {
+		return &RefusedError{Status: status}
+	}
+	return nil
 }
 
 // post sends msg to hook, in thread when it is not empty, and returns the

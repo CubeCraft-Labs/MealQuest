@@ -163,6 +163,7 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Get("/shopping/archive", getSupplyArchive(logger, shopSvc))
 	apiV1.Get("/shopping/{weekStart}", getSupplyRun(logger, shopSvc))
 	apiV1.Post("/shopping/{weekStart}/generate", postSupplyRunGenerate(logger, shopSvc))
+	apiV1.Post("/shopping/{weekStart}/send-chat", postSupplyRunSendChat(logger, shopSvc))
 	apiV1.Patch("/shopping/items/{id}", patchShoppingItem(logger, shopSvc))
 	apiV1.Get("/rotation-reviews", getRotationReviews(logger, planSvc))
 	apiV1.Post("/dinners/{id}/rotation-review", postRotationReview(logger, planSvc))

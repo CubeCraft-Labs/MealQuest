@@ -23,6 +23,8 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify/notifytest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes/recipestest"
@@ -121,7 +123,7 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.svc, err = suggest.NewService(st, g, suggester, e.runner, logger)
+	e.svc, err = suggest.NewService(st, g, suggester, e.runner, notifytest.New(t, st), logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,6 +400,151 @@ func TestBatchStoresGroundedSideQuests(t *testing.T) {
 	}
 	if dinners != 0 {
 		t.Errorf("%d dropped Side quests stored as dinners, want none", dinners)
+	}
+}
+
+// TestBatchEmitsNewSuggestions: a scheduled or manual batch that adds Side
+// quests stores new_suggestions keyed by the batch, naming them; a
+// replenish batch, or one that adds none, stores nothing.
+func TestBatchEmitsNewSuggestions(t *testing.T) {
+	for _, tc := range []struct {
+		trigger string
+		grounds bool
+		notify  bool
+	}{
+		{suggest.TriggerScheduled, true, true},
+		{suggest.TriggerManual, true, true},
+		{suggest.TriggerReplenish, true, false},
+		{suggest.TriggerManual, false, false},
+	} {
+		t.Run(fmt.Sprintf("%s grounds %v", tc.trigger, tc.grounds), func(t *testing.T) {
+			e := newEnv(t)
+			e.start(t)
+			if tc.grounds {
+				e.recipe(t, "Chicken Shawarma Bowls")
+				e.recipe(t, "Chili Verde")
+			}
+			e.reply(
+				sideQuest("Chicken Shawarma Bowls", "Spiced chicken, like your Chicken Fajitas.", "Chicken Fajitas"),
+				sideQuest("Chili Verde", "Your Beef Chili gone green.", "Beef Chili"),
+			)
+			b, err := e.svc.StartBatch(t.Context(), tc.trigger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if job := e.waitJob(t, b.JobID); job.Status != jobs.StatusSucceeded {
+				t.Fatalf("batch job %s", job.Status)
+			}
+			rows := notifytest.Rows(t, e.st, notify.NewSuggestions)
+			if !tc.notify {
+				if len(rows) != 0 {
+					t.Errorf("new_suggestions rows = %+v, want none", rows)
+				}
+				return
+			}
+			if len(rows) != 1 {
+				t.Fatalf("new_suggestions rows = %+v, want one on push", rows)
+			}
+			r := rows[0]
+			if r.Key != "new_suggestions:"+b.ID || r.Channel != notify.ChannelPush || r.Payload.URL != "/discover" ||
+				r.Payload.Title != "New Side quests are in" || r.Payload.Body != "Chicken Shawarma Bowls, Chili Verde" || r.Payload.Week == "" {
+				t.Errorf("new_suggestions row = %+v, want key new_suggestions:%s naming the Side quests, /discover", r, b.ID)
+			}
+		})
+	}
+}
+
+// TestBatchNotifiesAsSideQuestsAreStored: new_suggestions is stored with
+// the first round to add Side quests, so a batch whose later round fails
+// still tells the household of those in the deck, once; a later round that
+// succeeds adds no second notification; a replenish batch notifies nothing.
+func TestBatchNotifiesAsSideQuestsAreStored(t *testing.T) {
+	for _, tc := range []struct {
+		trigger   string
+		lastFails bool
+		notify    bool
+	}{
+		{suggest.TriggerScheduled, true, true},
+		{suggest.TriggerManual, true, true},
+		{suggest.TriggerManual, false, true},
+		{suggest.TriggerReplenish, true, false},
+	} {
+		t.Run(fmt.Sprintf("%s last round fails %v", tc.trigger, tc.lastFails), func(t *testing.T) {
+			e := newEnv(t)
+			e.start(t)
+			// The first round grounds BatchSize Side quests but B; the
+			// second round grounds F.
+			var quests []string
+			for i := range suggest.BatchSize + 1 {
+				name := fmt.Sprintf("Fajita Dish %c", 'A'+i)
+				e.search.Results[name] = nil
+				if i != 1 {
+					e.recipe(t, name)
+				}
+				quests = append(quests, sideQuest(name, "Like your Chicken Fajitas.", "Chicken Fajitas"))
+			}
+			e.reply(quests...)
+			if tc.lastFails {
+				if _, err := e.st.Writer.ExecContext(t.Context(), `CREATE TRIGGER refuse_f BEFORE INSERT ON dinners WHEN NEW.name = 'Fajita Dish F' BEGIN SELECT RAISE(ABORT, 'F refused'); END`); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			b, err := e.svc.StartBatch(t.Context(), tc.trigger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			job := e.waitJob(t, b.JobID)
+			want, deck := jobs.StatusSucceeded, suggest.BatchSize
+			if tc.lastFails {
+				want, deck = jobs.StatusFailed, suggest.BatchSize-1
+			}
+			if job.Status != want {
+				t.Fatalf("batch job %s, want %s", job.Status, want)
+			}
+			if got := e.deckNames(t); len(got) != deck {
+				t.Fatalf("deck = %v, want %d Side quests", got, deck)
+			}
+			rows := notifytest.Rows(t, e.st, notify.NewSuggestions)
+			if !tc.notify {
+				if len(rows) != 0 {
+					t.Errorf("new_suggestions rows = %+v, want none", rows)
+				}
+				return
+			}
+			if len(rows) != 1 || rows[0].Key != "new_suggestions:"+b.ID ||
+				rows[0].Payload.Body != "Fajita Dish A, Fajita Dish C, Fajita Dish D + 1 more" {
+				t.Errorf("new_suggestions rows = %+v, want one keyed by batch %s naming the first round", rows, b.ID)
+			}
+		})
+	}
+}
+
+// TestBatchFailsWhenItsNotificationCannotBeStored: Side quests are stored
+// only with their notification, so a notification that cannot be stored
+// fails the batch with an empty deck rather than leaving Side quests the
+// household is never told of.
+func TestBatchFailsWhenItsNotificationCannotBeStored(t *testing.T) {
+	e := newEnv(t)
+	e.start(t)
+	e.recipe(t, "Chili Verde")
+	e.reply(sideQuest("Chili Verde", "Your Beef Chili gone green.", "Beef Chili"))
+	if _, err := e.st.Writer.ExecContext(t.Context(), `CREATE TRIGGER refuse_outbox BEFORE INSERT ON notification_outbox BEGIN SELECT RAISE(ABORT, 'outbox refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	b, err := e.svc.StartBatch(t.Context(), suggest.TriggerManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job := e.waitJob(t, b.JobID); job.Status != jobs.StatusFailed {
+		t.Fatalf("batch job %s, want failed", job.Status)
+	}
+	if got := e.batchStatus(t, b.ID); got != suggest.BatchFailed {
+		t.Errorf("batch status = %s, want failed", got)
+	}
+	if got := e.deckNames(t); len(got) != 0 {
+		t.Errorf("deck = %v with no notification stored, want empty", got)
 	}
 }
 
@@ -929,7 +1076,7 @@ func TestLaterBatchNeverResuggestsRenamedDrop(t *testing.T) {
 	fail := func(context.Context, string, skills.WeekRequest) (skills.Week, error) {
 		return skills.Week{}, errors.New("no draft in this test")
 	}
-	planSvc, err := plan.NewService(e.st, fail, e.runner, noCalendar{}, &url.URL{Scheme: "https", Host: "meals.example.com"}, logger)
+	planSvc, err := plan.NewService(e.st, fail, e.runner, noCalendar{}, notifytest.New(t, e.st), &url.URL{Scheme: "https", Host: "meals.example.com"}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1151,6 +1298,10 @@ func TestBatchJobFailsWhenRecordingItsEndFails(t *testing.T) {
 	if got := e.batchStatus(t, b.ID); got != suggest.BatchFailed {
 		t.Errorf("batch status = %s with its job failed, want failed", got)
 	}
+	// Its Side quests stay in the deck, and the household was told of them.
+	if rows := notifytest.Rows(t, e.st, notify.NewSuggestions); len(rows) != 1 || rows[0].Key != "new_suggestions:"+b.ID || rows[0].Payload.Body != "Chili Verde" {
+		t.Errorf("new_suggestions rows of a batch whose end was not recorded = %+v, want one naming Chili Verde", rows)
+	}
 }
 
 func TestBatchRecoversWhenRecordingItsEndAndItsJobsEndFail(t *testing.T) {
@@ -1284,7 +1435,7 @@ func TestBlockedBatchEndDoesNotHoldShutdown(t *testing.T) {
 	refuse := func(context.Context, string, skills.SideQuestsRequest) (skills.SideQuests, error) {
 		return skills.SideQuests{}, errors.New("not wanted")
 	}
-	svc, err := suggest.NewService(e.st, e.grounder, refuse, next, logger)
+	svc, err := suggest.NewService(e.st, e.grounder, refuse, next, notifytest.New(t, e.st), logger)
 	if err != nil {
 		t.Fatal(err)
 	}

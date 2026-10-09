@@ -58,15 +58,16 @@ type Ingredient struct {
 	RawText string  `json:"raw_text"`
 }
 
-// Source is the site a recipe was fetched from. It has no url: the page's
-// link, pasted or offered as a candidate, may carry a personal token, and
-// no stored link can be shown to be free of one, so like a dinner's
-// recipe_url and a candidate's page it never leaves the server. SiteName
-// is the name the page itself gives its site, and null when it gives none
-// or the stored name could have come from a link (see pageSiteName), so a
-// client shows "Recipe from {site}" only when SiteName is not null.
+// Source is the site a recipe was fetched from. SiteName is the name the
+// page itself gives its site, and null when it gives none or the stored
+// name could have come from a link (see pageSiteName), so a client shows
+// "Recipe from {site}" only when SiteName is not null. URL is the page's
+// link only when it is verifiably free of secrets (see safeSourceURL), and
+// null otherwise: a link pasted or offered as a candidate may carry a
+// personal token, so a client links the credit only when URL is not null.
 type Source struct {
 	SiteName *string `json:"site_name"`
+	URL      *string `json:"url"`
 }
 
 // Get returns dinner id with its recipe and the reason it was suggested,
@@ -149,7 +150,7 @@ func readRecipe(ctx context.Context, q *db.Queries, recipeID string, d *Detail) 
 		if err != nil {
 			return err
 		}
-		d.Source = &Source{SiteName: site}
+		d.Source = &Source{SiteName: site, URL: safeSourceURL(rec.SourceUrl)}
 	}
 	ings, err := q.ListRecipeIngredients(ctx, recipeID)
 	if err != nil {
@@ -207,6 +208,69 @@ func pageSiteName(stored sql.NullString, sourceURL string) (*string, error) {
 		return nil, nil
 	}
 	return &name, nil
+}
+
+// safeSourceURL is sourceURL when it is verifiably free of secrets — an
+// https link to a host, with no user or password, no query (not even a
+// bare "?") and no fragment (not even a bare "#") — else nil. Those are
+// the places a link carries a token; a link failing any check, or not
+// parsing, is withheld rather than trimmed, since a trimmed link is not the
+// page the recipe came from. The client (sourceUrl in
+// web/src/dinners/detail.ts) parses the link with the browser's URL parser
+// and refuses the whole recipe when it fails, so the host and port must
+// also be ones it parses: see browserHost.
+func safeSourceURL(sourceURL string) *string {
+	u, err := url.Parse(sourceURL)
+	if err != nil || u.Scheme != "https" || u.Opaque != "" || u.Host == "" || u.User != nil ||
+		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(sourceURL, "#") {
+		return nil
+	}
+	// url.Parse decodes a percent-encoded host; the link must spell its
+	// host out as it is checked.
+	authority, _, _ := strings.Cut(sourceURL[len(u.Scheme)+len("://"):], "/")
+	if authority != u.Host || !browserHost(u) {
+		return nil
+	}
+	if port := u.Port(); port != "" {
+		if n, err := strconv.ParseUint(port, 10, 16); err != nil || n == 0 {
+			return nil
+		}
+	}
+	return &sourceURL
+}
+
+// browserHost says whether u's host is one the browser's URL parser (the
+// WHATWG URL Standard) accepts as it stands, where url.Parse accepts more,
+// such as "[bad]". The rule is narrower than the browser's: a bracketed
+// host is an IPv6 address without a zone; any other is ASCII letters,
+// digits and hyphens in dot-separated labels, none empty but a trailing
+// one, none punycode ("xn--"), since the browser refuses invalid punycode
+// and checking it is not worth a decoder; and a host whose last label is
+// a number, which the browser reads as an IPv4 address, must be a dotted
+// quad. A link to any other host is withheld.
+func browserHost(u *url.URL) bool {
+	host := u.Hostname()
+	if strings.HasPrefix(u.Host, "[") {
+		ip := net.ParseIP(host)
+		return ip != nil && strings.Contains(host, ":")
+	}
+	labels := strings.Split(strings.TrimSuffix(host, "."), ".")
+	for _, label := range labels {
+		if label == "" || len(label) >= 4 && strings.EqualFold(label[:4], "xn--") {
+			return false
+		}
+		for _, c := range label {
+			if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '-') {
+				return false
+			}
+		}
+	}
+	last := labels[len(labels)-1]
+	if strings.Trim(last, "0123456789") == "" || len(last) >= 2 && strings.EqualFold(last[:2], "0x") {
+		ip := net.ParseIP(host)
+		return ip != nil && ip.To4() != nil && !strings.Contains(host, ":")
+	}
+	return true
 }
 
 // duplicatePosition is the error for two recipe items of kind at position.

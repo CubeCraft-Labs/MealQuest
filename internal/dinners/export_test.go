@@ -74,3 +74,6 @@ func (s *Service) RunGroundJob(ctx context.Context, p GroundJob) (string, error)
 
 // PageSiteName is pageSiteName.
 var PageSiteName = pageSiteName
+
+// SafeSourceURL is safeSourceURL.
+var SafeSourceURL = safeSourceURL

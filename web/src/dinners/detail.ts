@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { useEffect, useSyncExternalStore } from 'react'
 import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import {
@@ -31,11 +32,17 @@ export type Ingredient = {
   raw_text: string
 }
 
+// RecipeSource is where a fetched recipe came from. siteName is the site,
+// or null when there is none to name: a page that named no site, or a name
+// the server withheld because it could have come from the link. url is the
+// recipe's page, or null: today's API never sends the stored link, which can
+// carry a token, so the credit is text until the server sends a url it has
+// checked is free of secrets.
+export type RecipeSource = { siteName: string | null; url: string | null }
+
 // DinnerDetail is a dinner with its recipe (GET /api/v1/dinners/{id}).
-// siteName is the site the recipe was fetched from, or null when there is
-// none to name: a recipe typed in, a page that named no site, or a name the
-// server withheld because it could have come from the link. The recipe's
-// link itself never reaches the client.
+// source is null for a recipe typed in. cached says the service worker
+// answered from its saved copy because the server could not be reached.
 export type DinnerDetail = {
   id: string
   name: string
@@ -47,9 +54,10 @@ export type DinnerDetail = {
   photo_id: string | undefined
   ingredients: Ingredient[]
   steps: string[]
-  siteName: string | null
+  source: RecipeSource | null
   grounding_status: GroundingStatus
   why_picked: string | null
+  cached: boolean
 }
 
 function text(where: string, field: string, value: unknown): string {
@@ -84,14 +92,32 @@ function detailPhotoId(where: string, value: unknown): string | undefined {
   return id
 }
 
-function siteName(where: string, value: unknown): string | null {
-  if (value === null) return null
-  if (!isRecord(value)) throw new Error(`${where}: source is not an object`)
-  return nullableText(where, 'source site_name', value.site_name)
+// sourceUrl is source.url, which today's API does not send, or a link safe
+// to open: https, with no user, password, query or fragment.
+function sourceUrl(where: string, value: unknown): string | null {
+  if (value === undefined || value === null) return null
+  const href = text(where, 'source url', value)
+  let link: URL
+  try {
+    link = new URL(href)
+  } catch (error) {
+    throw new Error(`${where}: source url is not a URL`, { cause: error })
+  }
+  if (link.protocol !== 'https:' || link.username !== '' || link.password !== '' || link.search !== '' || link.hash !== '') {
+    throw new Error(`${where}: source url is not an https link without credentials, query or fragment`)
+  }
+  return link.href
 }
 
-// parseDinnerDetail checks a dinner with its recipe as the API sends it.
-export function parseDinnerDetail(where: string, body: unknown): DinnerDetail {
+function parseSource(where: string, value: unknown): RecipeSource | null {
+  if (value === null) return null
+  if (!isRecord(value)) throw new Error(`${where}: source is not an object`)
+  return { siteName: nullableText(where, 'source site_name', value.site_name), url: sourceUrl(where, value.url) }
+}
+
+// parseDinnerDetail checks a dinner with its recipe as the API sends it;
+// cached says whether the service worker answered from its saved copy.
+export function parseDinnerDetail(where: string, body: unknown, cached: boolean): DinnerDetail {
   if (!isRecord(body) || typeof body.id !== 'string' || typeof body.name !== 'string') {
     throw new Error(`${where}: response is not a dinner`)
   }
@@ -112,24 +138,41 @@ export function parseDinnerDetail(where: string, body: unknown): DinnerDetail {
     photo_id: detailPhotoId(where, body.photo_urls),
     ingredients: body.ingredients.map((ingredient) => parseIngredient(where, ingredient)),
     steps: body.steps.map((step) => text(where, 'step', step)),
-    siteName: siteName(where, body.source),
+    source: parseSource(where, body.source),
     grounding_status: oneOf(where, 'grounding_status', GROUNDING_STATUSES, body.grounding_status),
     why_picked: nullableText(where, 'why_picked', body.why_picked),
+    cached,
   }
 }
 
 // useDinnerDetail is dinner id with its recipe (GET /api/v1/dinners/{id}).
 // While the dinner is still finding its recipe it is read again every
-// GROUNDING_POLL_MS. An unknown or archived dinner fails with the API's 404.
-// It runs even while the browser reports offline, so the copy the service
-// worker saved is shown, or the read fails, instead of waiting for the
-// network.
+// GROUNDING_POLL_MS, but only while the server can be reached: polling pauses
+// while the browser is offline or the last read was the service worker's
+// saved copy, which would only answer the same again, and a saved pending
+// copy is read once more when the connection comes back. Polling stops on
+// unmount. An unknown or archived dinner fails with the API's 404. It runs
+// even while the browser reports offline, so the copy the service worker
+// saved is shown, or the read fails, instead of waiting for the network.
 export function useDinnerDetail(id: string) {
-  const { apiFetch } = useApi()
-  return useQuery({
+  const { apiRead, network } = useApi()
+  const offline = useSyncExternalStore(network.subscribe, network.offline)
+  const query = useQuery({
     queryKey: ['dinners', 'detail', id],
-    queryFn: async () => parseDinnerDetail(`GET ${DINNERS_PATH}/{id}`, await apiFetch<unknown>(dinnerPath(id))),
+    queryFn: async () => {
+      const read = await apiRead<unknown>(dinnerPath(id))
+      return parseDinnerDetail(`GET ${DINNERS_PATH}/{id}`, read.body, read.cached)
+    },
     networkMode: 'always',
-    refetchInterval: (query) => (query.state.data?.grounding_status === 'pending' ? GROUNDING_POLL_MS : false),
+    refetchInterval: (query) => {
+      const dinner = query.state.data
+      return dinner?.grounding_status === 'pending' && !dinner.cached && !offline ? GROUNDING_POLL_MS : false
+    },
   })
+  const { data, refetch } = query
+  const stalled = data?.grounding_status === 'pending' && data.cached
+  useEffect(() => {
+    if (stalled && !offline) void refetch()
+  }, [stalled, offline, refetch])
+  return query
 }

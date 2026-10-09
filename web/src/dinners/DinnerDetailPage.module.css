@@ -1,8 +1,12 @@
 /* Mock 1k. On mobile the photo and the sheet run full-bleed past the
-   shell's 20 px side padding; from tablet up they sit in one column. */
+   shell's 20 px side padding; from tablet up they sit in one column. The
+   page is at least as tall as the shell's scroll area (a stretched flex
+   item, so its height resolves the percentage) and the sheet grows into
+   any room left, so the action bar rests at the bottom of a short recipe. */
 .page {
   display: flex;
   flex-direction: column;
+  min-height: 100%;
   font-family: var(--font-body);
   color: var(--color-text);
 }
@@ -52,6 +56,7 @@
 /* The sheet overlaps the photo by 28 px. */
 .sheet {
   position: relative;
+  flex-grow: 1;
   margin-top: -28px;
   display: flex;
   flex-direction: column;
@@ -162,6 +167,10 @@
   color: var(--color-neutral-700);
 }
 
+.source a {
+  color: inherit;
+}
+
 .missing {
   display: flex;
   flex-direction: column;
@@ -189,8 +198,10 @@
   font-weight: 700;
 }
 
-/* Held at the bottom of the screen. Sticky offsets count from inside the
-   scroll area's padding, which on mobile already keeps clear of the nav bar. */
+/* At the bottom of the page, which fills the scroll area, and held at the
+   bottom of the screen over a long recipe. Sticky offsets count from inside
+   the scroll area's padding, which on mobile already keeps clear of the nav
+   bar. */
 .bar {
   position: sticky;
   bottom: 0;

@@ -12,7 +12,7 @@ import { Photo } from '../ui/Photo.tsx'
 import { Skeleton } from '../ui/Skeleton.tsx'
 import { Tag } from '../ui/Tag.tsx'
 import type { Difficulty } from './api.ts'
-import { useDinnerDetail, type DinnerDetail, type Ingredient } from './detail.ts'
+import { useDinnerDetail, type DinnerDetail, type Ingredient, type RecipeSource } from './detail.ts'
 import styles from './DinnerDetailPage.module.css'
 
 // REGULAR_DINNERS is Settings → Regular dinners, where a recipe is fixed.
@@ -55,6 +55,23 @@ function IngredientRow({ ingredient }: { ingredient: Ingredient }) {
       </span>
       <span className={styles.qty}>{quantity(ingredient)}</span>
     </li>
+  )
+}
+
+// SourceCredit is "Recipe from {site}": a link opening the recipe's page in
+// a new tab when the server sends a url safe to open, else plain text.
+function SourceCredit({ siteName, url }: RecipeSource & { siteName: string }) {
+  const credit = `Recipe from ${siteName}`
+  return (
+    <p className={styles.source}>
+      {url === null ? (
+        credit
+      ) : (
+        <a href={url} target="_blank" rel="noopener noreferrer">
+          {credit}
+        </a>
+      )}
+    </p>
   )
 }
 
@@ -101,12 +118,16 @@ function Recipe({ dinner }: { dinner: DinnerDetail }) {
           </ol>
         </section>
       )}
-      {dinner.siteName !== null && <p className={styles.source}>Recipe from {dinner.siteName}</p>}
+      {dinner.source !== null && dinner.source.siteName !== null && (
+        <SourceCredit siteName={dinner.source.siteName} url={dinner.source.url} />
+      )}
     </>
   )
 }
 
-// ActionBar is the bar held at the bottom of the screen: Add to this week
+// ActionBar is the bar at the bottom of the screen, the page's last child:
+// the page fills the scroll area so a short recipe still leaves it at the
+// bottom, and it sticks there over a long one. It holds Add to this week
 // and the favorite heart, showing whether the dinner is a favorite. Both
 // rest unavailable until the next update wires them.
 function ActionBar({ dinner }: { dinner: DinnerDetail }) {

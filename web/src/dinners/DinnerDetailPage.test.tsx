@@ -1,10 +1,13 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
+import { AppShell } from '../shell/AppShell.tsx'
+import { cacheFallbackHeader } from '../sw/routes.ts'
 import { ApiProviders } from '../test/ApiProviders.tsx'
 import { declaredStyle } from '../test/cssRules.ts'
 import { errorResponse, jsonResponse, stubFetchByPath } from '../test/fetchStub.ts'
 import { mockViewport } from '../test/matchMedia.ts'
+import { GROUNDING_POLL_MS } from './api.ts'
 import { DinnerDetailPage, REGULAR_DINNERS } from './DinnerDetailPage.tsx'
 
 const DINNER = '/api/v1/dinners/d1'
@@ -68,12 +71,13 @@ const FAILED = {
   why_picked: null,
 }
 
-// renderAt renders the detail screen at the last of entries, with probes
-// for where its links and back button go.
+// renderAt renders the detail screen at the last of entries, inside the
+// app shell's scroll area as App routes it, with probes for where its links
+// and back button go.
 function renderAt(entries: string[]) {
   const router = createMemoryRouter(
     [
-      { path: '/dinner/:id', element: <DinnerDetailPage /> },
+      { element: <AppShell />, children: [{ path: '/dinner/:id', element: <DinnerDetailPage /> }] },
       { path: '/', element: <h1>Home probe</h1> },
       { path: '/plan', element: <h1>Plan probe</h1> },
       { path: REGULAR_DINNERS, element: <h1>Regular dinners probe</h1> },
@@ -159,6 +163,29 @@ describe('DinnerDetailPage', () => {
       expect(screen.queryByRole('link', { name: /Recipe from/ })).not.toBeInTheDocument()
     })
 
+    it('links the credit to the recipe in a new tab once the server sends a safe url', async () => {
+      serve(detail({ source: { site_name: 'Serious Eats', url: 'https://www.seriouseats.com/korean-beef-bowls' } }))
+      renderAt(['/dinner/d1'])
+
+      const credit = await screen.findByRole('link', { name: 'Recipe from Serious Eats' })
+      expect(credit).toHaveAttribute('href', 'https://www.seriouseats.com/korean-beef-bowls')
+      expect(credit).toHaveAttribute('target', '_blank')
+      expect(credit).toHaveAttribute('rel', 'noopener noreferrer')
+    })
+
+    it.each([
+      ['http', 'http://www.seriouseats.com/korean-beef-bowls'],
+      ['a password', 'https://user:secret@www.seriouseats.com/korean-beef-bowls'],
+      ['a query', 'https://www.seriouseats.com/korean-beef-bowls?token=abc'],
+      ['a fragment', 'https://www.seriouseats.com/korean-beef-bowls#token=abc'],
+    ])('refuses a source url with %s', async (_, url) => {
+      serve(detail({ source: { site_name: 'Serious Eats', url } }))
+      renderAt(['/dinner/d1'])
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('source url is not an https link')
+      expect(screen.queryByRole('link', { name: /Recipe from/ })).not.toBeInTheDocument()
+    })
+
     it('leaves the credit out when the server names no site', async () => {
       serve(detail({ source: { site_name: null } }))
       renderAt(['/dinner/d1'])
@@ -180,7 +207,39 @@ describe('DinnerDetailPage', () => {
       const bar = heart.parentElement!
       expect(bar).toContainElement(add)
       expect(declaredStyle(bar).position).toBe('sticky')
+      expect(declaredStyle(bar).bottom).toBe('0px')
     })
+  })
+
+  // jsdom does no layout, so no test here can measure where the bar lands.
+  // This pins the CSS chain that puts it at the bottom of the screen on a
+  // short recipe: the shell's scroll area is a full-height flex item, the
+  // page fills it as a column, the sheet takes the room left and the bar is
+  // the page's last child. Drop any link and the bar sits right after the
+  // content again, and this fails.
+  it('fills the scroll area so the bar rests at the bottom of a short recipe', async () => {
+    serve(detail(FAILED))
+    renderAt(['/dinner/d1'])
+
+    const bar = (await screen.findByRole('button', { name: 'Favorite' })).parentElement!
+    const page = bar.parentElement!
+    const main = page.parentElement!
+    const shell = main.parentElement!
+    expect(main.tagName).toBe('MAIN')
+    expect(declaredStyle(shell).height).toBe('100dvh')
+    expect(declaredStyle(shell).display).toBe('flex')
+    expect(declaredStyle(shell).alignItems).toBe('')
+    expect(declaredStyle(main).overflowY).toBe('auto')
+
+    expect(declaredStyle(page).minHeight).toBe('100%')
+    expect(declaredStyle(page).display).toBe('flex')
+    expect(declaredStyle(page).flexDirection).toBe('column')
+    expect(page.lastElementChild).toBe(bar)
+    const sheet = screen.getByRole('article')
+    expect(sheet.parentElement).toBe(page)
+    expect(sheet.nextElementSibling).toBe(bar)
+    expect(declaredStyle(sheet).flexGrow).toBe('1')
+    expect(declaredStyle(bar).position).toBe('sticky')
   })
 
   it('shows the striped placeholder when the dinner has no photo', async () => {
@@ -230,6 +289,119 @@ describe('DinnerDetailPage', () => {
 
     expect(await screen.findByText(/Still finding the recipe/)).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'Fix recipe' })).not.toBeInTheDocument()
+  })
+
+  describe('while the recipe is being found', () => {
+    const PENDING = detail({ ...FAILED, grounding_status: 'pending', grounding_error: null })
+    const GROUNDED = detail({ grounding_status: 'grounded' })
+    let onLine: boolean
+    let body: unknown
+    let fromCache: boolean
+    let fetchMock: Mock<typeof fetch>
+
+    const reads = () => fetchMock.mock.calls.length
+    const tick = (intervals = 1) => act(() => vi.advanceTimersByTimeAsync(GROUNDING_POLL_MS * intervals))
+
+    function setOnline(value: boolean) {
+      onLine = value
+      act(() => {
+        window.dispatchEvent(new Event(value ? 'online' : 'offline'))
+      })
+    }
+
+    beforeEach(() => {
+      // Only intervals are faked: TanStack Query polls with setInterval, and
+      // Testing Library's waits keep their real timers.
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+      onLine = true
+      vi.spyOn(navigator, 'onLine', 'get').mockImplementation(() => onLine)
+      body = PENDING
+      fromCache = false
+      fetchMock = stubFetchByPath({
+        [DINNER]: () =>
+          new Response(JSON.stringify(body), {
+            headers: { 'Content-Type': 'application/json', ...(fromCache ? { [cacheFallbackHeader]: '1' } : {}) },
+          }),
+      })
+    })
+
+    // An offline event leaves TanStack Query's online manager, shared by
+    // every test, offline until an online event.
+    afterEach(() => {
+      window.dispatchEvent(new Event('online'))
+      vi.useRealTimers()
+      vi.restoreAllMocks()
+    })
+
+    it('reads the dinner again until the recipe lands, then stops', async () => {
+      renderAt(['/dinner/d1'])
+      expect(await screen.findByText(/Still finding the recipe/)).toBeInTheDocument()
+      expect(reads()).toBe(1)
+
+      await tick()
+      await waitFor(() => expect(reads()).toBe(2))
+
+      body = GROUNDED
+      await tick()
+      expect(await screen.findByRole('heading', { level: 2, name: 'Ingredients' })).toBeInTheDocument()
+      expect(reads()).toBe(3)
+
+      await tick(3)
+      expect(reads()).toBe(3)
+    })
+
+    it('pauses while the browser is offline and resumes when it is back', async () => {
+      renderAt(['/dinner/d1'])
+      expect(await screen.findByText(/Still finding the recipe/)).toBeInTheDocument()
+      expect(reads()).toBe(1)
+
+      setOnline(false)
+      await tick(3)
+      expect(reads()).toBe(1)
+
+      setOnline(true)
+      await tick()
+      await waitFor(() => expect(reads()).toBe(2))
+    })
+
+    it('reads a saved pending copy offline once, then waits for the connection', async () => {
+      onLine = false
+      fromCache = true
+      renderAt(['/dinner/d1'])
+      expect(await screen.findByText(/Still finding the recipe/)).toBeInTheDocument()
+      expect(reads()).toBe(1)
+
+      await tick(3)
+      expect(reads()).toBe(1)
+
+      // The connection comes back: the saved copy is read again at once,
+      // and polling goes on once the server answers.
+      fromCache = false
+      setOnline(true)
+      await waitFor(() => expect(reads()).toBe(2))
+      await tick()
+      await waitFor(() => expect(reads()).toBe(3))
+    })
+
+    it('stops polling on a saved copy even while the browser says it is online', async () => {
+      fromCache = true
+      renderAt(['/dinner/d1'])
+      expect(await screen.findByText(/Still finding the recipe/)).toBeInTheDocument()
+
+      await tick(3)
+      expect(reads()).toBe(1)
+    })
+
+    it('stops polling when the page is left', async () => {
+      const router = renderAt(['/dinner/d1'])
+      expect(await screen.findByText(/Still finding the recipe/)).toBeInTheDocument()
+      expect(reads()).toBe(1)
+
+      await act(() => router.navigate('/'))
+      expect(screen.getByRole('heading', { name: 'Home probe' })).toBeInTheDocument()
+      await tick(3)
+      expect(reads()).toBe(1)
+    })
   })
 
   it('says an unknown or removed dinner is not found', async () => {

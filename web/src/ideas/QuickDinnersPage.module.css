@@ -1,0 +1,166 @@
+/* Quick dinners, handoff mock 1j. */
+.page {
+  box-sizing: border-box;
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-top: 6px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* The 36 px grape circle holding the zap. */
+.zap {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+  color: var(--on-accent);
+}
+
+.zapIcon {
+  width: 18px;
+  height: 18px;
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 24px;
+  font-weight: 400;
+  line-height: 1.1;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.helper {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--color-neutral-800);
+}
+
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  border-radius: 24px;
+  background: var(--color-neutral-100);
+}
+
+.photo {
+  flex: none;
+  width: 64px;
+  height: 64px;
+}
+
+.text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.name {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1.15;
+}
+
+.meta {
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--color-neutral-700);
+}
+
+.failure {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--color-accent-700);
+}
+
+/* The teal "+": a 36 px circle in the IconButton's 44 px hit box (scoped
+   to the rows to outrank the IconButton's 40 px face). */
+.rows .add > span {
+  width: 36px;
+  height: 36px;
+}
+
+/* An idea added: a check in the "+"'s place, of the same size. */
+.added {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent-2-100);
+  color: var(--color-accent-2-800);
+}
+
+/* "↻ Show me more": a grape-700 text button, 44 px tall. */
+.more {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--color-accent-700);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.more:focus-visible {
+  outline: 3px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.end {
+  margin: 0;
+  text-align: center;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-neutral-700);
+}
+
+.skeletonRow {
+  height: 84px;
+  border-radius: 24px;
+}

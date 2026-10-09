@@ -9,6 +9,7 @@ import { errorResponse, jsonResponse, stubFetchByPath } from '../test/fetchStub.
 import { mockViewport } from '../test/matchMedia.ts'
 import { GROUNDING_POLL_MS } from './api.ts'
 import { DinnerDetailPage, REGULAR_DINNERS } from './DinnerDetailPage.tsx'
+import sourceCases from './testdata/source_url_cases.json'
 
 const DINNER = '/api/v1/dinners/d1'
 
@@ -184,6 +185,23 @@ describe('DinnerDetailPage', () => {
 
       expect(await screen.findByRole('alert')).toHaveTextContent('source url is not an https link')
       expect(screen.queryByRole('link', { name: /Recipe from/ })).not.toBeInTheDocument()
+    })
+
+    // Each source exactly as the Go handler sends it for a stored link
+    // (internal/server's TestGetDinnerSourceURLOnlyWhenSafe checks the same
+    // file), so every url the server sends must parse here.
+    it.each(sourceCases.cases)('renders the source the server sends for $stored', async ({ source }) => {
+      serve(detail({ source }))
+      renderAt(['/dinner/d1'])
+
+      const credit = await screen.findByText('Recipe from Curry House')
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      if (source.url === null) {
+        expect(credit.closest('a')).toBeNull()
+        expect(screen.queryByRole('link', { name: /Recipe from/ })).not.toBeInTheDocument()
+      } else {
+        expect(screen.getByRole('link', { name: 'Recipe from Curry House' })).toHaveAttribute('href', new URL(source.url).href)
+      }
     })
 
     it('leaves the credit out when the server names no site', async () => {

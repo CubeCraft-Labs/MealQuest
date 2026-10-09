@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -293,6 +294,37 @@ func TestGetDinnerSourceURLOnlyWhenSafe(t *testing.T) {
 			t.Fatal(err)
 		}
 		withheld(tc.what, cleanID, "Curry House", tc.link, "kitchen.example", "-token-", "password", "fragment")
+	}
+
+	// web/src/dinners/testdata/source_url_cases.json pins source as this
+	// handler sends it for each stored link; the recipe screen's tests
+	// render each one, so a link the server sends and the client refuses
+	// fails one side or the other.
+	fixture, err := os.ReadFile("../../web/src/dinners/testdata/source_url_cases.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shared struct {
+		Cases []struct {
+			Stored string
+			Source map[string]any
+		}
+	}
+	if err := json.Unmarshal(fixture, &shared); err != nil {
+		t.Fatal(err)
+	}
+	if len(shared.Cases) == 0 {
+		t.Fatal("source_url_cases.json has no cases")
+	}
+	for _, c := range shared.Cases {
+		if _, err := e.st.Writer.Exec(`UPDATE recipes SET source_url = ? WHERE id = (SELECT recipe_id FROM dinners WHERE id = ?)`, c.Stored, cleanID); err != nil {
+			t.Fatal(err)
+		}
+		if src := source(c.Stored, cleanID); !reflect.DeepEqual(src, c.Source) {
+			got, _ := json.Marshal(src)
+			want, _ := json.Marshal(c.Source)
+			t.Errorf("source of %s = %s, want %s", c.Stored, got, want)
+		}
 	}
 }
 

@@ -122,6 +122,9 @@ func TestSafeSourceURLOnlyWithoutSecrets(t *testing.T) {
 		"https://www.example.com/recipes/chicken-curry",
 		"https://example.com",
 		"https://example.com:8443/stew/",
+		"https://[2001:db8::1]/curry",
+		"https://1.2.3.4/curry",
+		"https://Kitchen-2.Example.com./curry",
 	} {
 		if got := dinners.SafeSourceURL(link); got == nil || *got != link {
 			t.Errorf("SafeSourceURL(%q) = %v, want the link", link, deref(got))
@@ -144,6 +147,21 @@ func TestSafeSourceURLOnlyWithoutSecrets(t *testing.T) {
 		"//example.com/curry",
 		"https://secret-token\x7f.example/%zz",
 		"",
+		// Hosts url.Parse accepts but the browser's URL parser refuses
+		// (or reads as another host), which would fail the whole recipe
+		// screen.
+		"https://[bad]/curry",
+		"https://[fe80::1%25en0]/curry",
+		"https://[1.2.3.4]/curry",
+		"https://1.2.3.999/curry",
+		"https://1.2.3.4.5/curry",
+		"https://999/curry",
+		"https://example.0x/curry",
+		"https://xn--a/curry",
+		"https://ex%61mple.com/curry",
+		"https://ex%2fample.com/curry",
+		"https://a..b/curry",
+		"https://café.example/curry",
 	} {
 		if got := dinners.SafeSourceURL(link); got != nil {
 			t.Errorf("SafeSourceURL(%q) = %q, want nil", link, *got)

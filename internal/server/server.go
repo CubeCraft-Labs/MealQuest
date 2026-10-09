@@ -18,6 +18,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/push"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/shopping"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/suggest"
@@ -55,12 +56,14 @@ type RouteMounter interface {
 // /api/v1/shopping/items/{id}; googleSvc serves GET
 // /api/v1/integrations/google and its /connect, /callback and /calendars,
 // PUT /api/v1/integrations/google/calendar and DELETE
-// /api/v1/integrations/google; runner serves
+// /api/v1/integrations/google; pushSvc serves GET
+// /api/v1/push/vapid-public-key and POST and DELETE
+// /api/v1/push/subscriptions; runner serves
 // POST /api/v1/jobs and GET /api/v1/jobs/{id}; photos serves
 // GET /media/photos/{id}-{size}.jpg; assets is the web build
 // served for every other GET. /health, /auth and the web build are public.
 // Requests to /api/v1 other than GET also need the session's CSRF token in CSRFHeader.
-func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, settings *household.SettingsService, search *recipes.SearchSettingsService, ai *aisettings.Service, dinnerSvc *dinners.Service, suggestSvc *suggest.Service, planSvc *plan.Service, shopSvc *shopping.Service, googleSvc *gcal.Service, runner *jobs.Runner, photos PhotoFiles, assets fs.FS) (http.Handler, error) {
+func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, settings *household.SettingsService, search *recipes.SearchSettingsService, ai *aisettings.Service, dinnerSvc *dinners.Service, suggestSvc *suggest.Service, planSvc *plan.Service, shopSvc *shopping.Service, googleSvc *gcal.Service, pushSvc *push.Service, runner *jobs.Runner, photos PhotoFiles, assets fs.FS) (http.Handler, error) {
 	if settings == nil {
 		return nil, errors.New("server: nil household settings service")
 	}
@@ -84,6 +87,9 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	}
 	if googleSvc == nil {
 		return nil, errors.New("server: nil Google Calendar service")
+	}
+	if pushSvc == nil {
+		return nil, errors.New("server: nil push service")
 	}
 	if runner == nil {
 		return nil, errors.New("server: nil job runner")
@@ -158,6 +164,9 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Delete("/integrations/google", deleteGoogle(logger, googleSvc))
 	apiV1.Get("/integrations/google/calendars", getGoogleCalendars(logger, googleSvc))
 	apiV1.Put("/integrations/google/calendar", putGoogleCalendar(logger, googleSvc))
+	apiV1.Get("/push/vapid-public-key", getVAPIDPublicKey(logger, pushSvc))
+	apiV1.Post("/push/subscriptions", postPushSubscription(logger, pushSvc))
+	apiV1.Delete("/push/subscriptions", deletePushSubscription(logger, pushSvc))
 	apiV1.Post("/jobs", postJob(logger, runner))
 	apiV1.Get("/jobs/{id}", getJob(logger, runner))
 	media.Get("/photos/{name}", getPhoto(logger, photos))

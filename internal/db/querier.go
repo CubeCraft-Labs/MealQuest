@@ -62,6 +62,7 @@ type Querier interface {
 	DecideSuggestion(ctx context.Context, arg DecideSuggestionParams) (int64, error)
 	DeleteAIRunsBefore(ctx context.Context, cutoff string) (int64, error)
 	DeleteIntegrationsGoogle(ctx context.Context) error
+	DeletePushSubscription(ctx context.Context, endpoint string) (int64, error)
 	DeleteRecipeIngredients(ctx context.Context, recipeID string) error
 	DeleteRecipeSteps(ctx context.Context, recipeID string) error
 	DeleteShoppingGroup(ctx context.Context, id string) error
@@ -276,6 +277,10 @@ type Querier interface {
 	// Creates the single row (id 1) or replaces every column except id and
 	// created_at.
 	UpsertIntegrationsGoogle(ctx context.Context, arg UpsertIntegrationsGoogleParams) (IntegrationsGoogle, error)
+	// Stores a browser's push subscription, keyed by its endpoint. Subscribing
+	// an endpoint already stored replaces its keys and user agent and clears
+	// its failure count, keeping its id, created_at and last_success_at.
+	UpsertPushSubscription(ctx context.Context, arg UpsertPushSubscriptionParams) (PushSubscription, error)
 	// A recipe is keyed by source_url: re-fetching the same URL updates the
 	// existing row and keeps its id and created_at, which the returned row
 	// carries. Replace its ingredients and steps in the same transaction with

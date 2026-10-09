@@ -19,6 +19,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secretbox"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/vapid"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/migrations"
 )
 
@@ -59,6 +60,17 @@ func loadConfig(t *testing.T, keyFile string) config.Config {
 	t.Setenv(config.EnvOIDCAllowedGroups, "mealquest-admin")
 	t.Setenv(config.EnvGoogleClientID, "mealquest.apps.googleusercontent.com")
 	t.Setenv(config.EnvGoogleClientSecretFile, googleSecretPath)
+	pair, err := vapid.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	vapidKeyPath := filepath.Join(dir, "vapid_private_key")
+	if err := os.WriteFile(vapidKeyPath, []byte(pair.PrivateKey+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.EnvVAPIDPublicKey, pair.PublicKey)
+	t.Setenv(config.EnvVAPIDPrivateKeyFile, vapidKeyPath)
+	t.Setenv(config.EnvVAPIDSubject, "mailto:owner@example.com")
 	// MEALQUEST_DEFAULT_TZ is left unset; t.Setenv restores any outer value.
 	t.Setenv(config.EnvDefaultTZ, "")
 	if err := os.Unsetenv(config.EnvDefaultTZ); err != nil {

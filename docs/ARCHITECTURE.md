@@ -43,6 +43,7 @@ headers, so sign-in works whichever peer the request arrives from.
 | Path | Purpose |
 | --- | --- |
 | `cmd/server` | Entry point; wiring only. |
+| `cmd/vapidgen` | Prints a new VAPID key pair for Web Push. |
 | `internal/config` | Env-only `MEALQUEST_*` config; secrets from `*_FILE`. |
 | `internal/server` | HTTP server, router, middleware. |
 | `internal/frontend` | Embedded PWA, SPA fallback. |
@@ -53,6 +54,7 @@ headers, so sign-in works whichever peer the request arrives from.
 | `internal/ai/llm`, `internal/ai/harness`, `internal/ai/skills` | AI provider adapters, skill harness, skills. |
 | `internal/suggest`, `internal/plan`, `internal/shopping`, `internal/ideas` | Feature services. |
 | `internal/gcal`, `internal/notify`, `internal/push`, `internal/chat` | Integrations. |
+| `internal/vapid` | VAPID key generation and validation. |
 | `internal/jobs`, `internal/scheduler` | Background jobs and schedules. |
 | `migrations/` | SQL migrations (no goose or golang-migrate). |
 | `web/` | React PWA. |
@@ -657,6 +659,31 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
 - Delivery goes through `notification_outbox`.
 - Web Push uses VAPID (`webpush-go`). Google Chat uses the stored incoming
   webhook.
+- VAPID configuration (`MEALQUEST_VAPID_PUBLIC_KEY`,
+  `MEALQUEST_VAPID_PRIVATE_KEY_FILE`, `MEALQUEST_VAPID_SUBJECT`) is required
+  at boot, all three together. Both keys are unpadded base64url P-256 keys
+  (`internal/vapid`): the public key the 65-byte uncompressed point, the
+  private key the 32-byte scalar, read only from its file. Boot derives the
+  public point from the private key and refuses a pair that does not
+  match. The subject is `mailto:<address>` or an `https://` URL.
+  `go run ./cmd/vapidgen` prints a new pair.
+- `internal/push` keeps the subscriptions, one row per endpoint, under the
+  signed-in `/api/v1`:
+  - `GET /api/v1/push/vapid-public-key` answers `{"public_key": "…"}`, the
+    browser's `applicationServerKey`. The private key is never served.
+  - `POST /api/v1/push/subscriptions` (CSRF-checked) takes
+    `{"endpoint", "keys": {"p256dh", "auth"}, "user_agent"?}` — the
+    endpoint an `https://` URL, the keys unpadded base64url as
+    `PushSubscription.toJSON()` gives them (p256dh a P-256 point, auth 16
+    bytes); unknown fields such as `expirationTime`, and nulls, are
+    refused. It upserts by endpoint: an endpoint already stored keeps its
+    id and `created_at`, has its keys and user agent replaced and its
+    failure count cleared. It answers 200 with
+    `{id, endpoint, user_agent, created_at, updated_at}`, never the keys.
+  - `DELETE /api/v1/push/subscriptions` (CSRF-checked) takes
+    `{"endpoint"}` and answers 204 whether or not it was stored.
+  - An invalid body is 400 `invalid_request` (not a JSON object of the
+    known fields) or `invalid_subscription` (a field fails validation).
 
 ## Google Calendar
 

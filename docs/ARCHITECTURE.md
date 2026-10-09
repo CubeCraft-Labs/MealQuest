@@ -775,7 +775,7 @@ purge are fixed and not configurable.
 
 | Schedule | When | Does |
 | --- | --- | --- |
-| `suggestions_weekly` | Sunday 08:00 | New batch of Side quests. |
+| `suggestions_weekly` | Sunday 08:00 | New batch of Side quests (`suggest.Service.WeeklySchedule`). |
 | `plan_draft` | Friday 09:00 | AI drafts next week's plan. |
 | `shopping_chat_autosend` | Saturday 08:00 | Sends the Supply run to Google Chat. |
 | `day_of_reminder` | Daily 16:30 | Tonight's dinner reminder. |
@@ -803,6 +803,16 @@ claimed without running (logged as missed) so it never runs later. DST
 follows `household.LocalTime`: a skipped time fires later by the gap, a
 repeated time fires once, at its first occurrence.
 
+Each schedule is built by the service that does its work, as a
+`scheduler.Schedule` value, and registered in `cmd/server` before the
+scheduler starts: `suggest.Service.WeeklySchedule()` is `suggestions_weekly`.
+Its run calls `StartScheduledBatch(period.Week)`, which starts the same
+batch and job as `POST /api/v1/suggestions/batches` (`StartBatch(manual)`),
+with the `scheduled` trigger, and returns at once; the batch runs as a job. When a
+batch is already pending or running the period starts none and logs it.
+Fake-clock tests of a schedule live in `internal/scheduler`, where
+`SetClock` is visible to tests.
+
 ## Notifications
 
 - Events: `plan_ready`, `list_ready`, `day_of_reminder`, `new_suggestions`,
@@ -820,12 +830,18 @@ repeated time fires once, at its first occurrence.
   - `list_ready:{weekStart}` (URL `/plan/shopping`) when a week's Supply
     run is first created, by `POST /shopping/{weekStart}/generate` or
     after Push to Calendar; remaking it does not notify.
-  - `new_suggestions:{batchId}` (URL `/discover`) when a `scheduled` or
-    `manual` suggestion batch first adds Side quests to the deck, in the
-    transaction storing them, so they are announced even when a later
-    round or recording the batch's end fails; it names that round's Side
-    quests, and a later round's emit stores nothing. A `replenish` batch
-    never notifies.
+  - `new_suggestions:{YYYY-Www}` for a `scheduled` batch, the ISO week it
+    was scheduled for (carried in its job, so a batch caught up late is
+    still keyed by its own week), or `new_suggestions:{batchId}` for a
+    `manual` one (URL `/discover`), when the batch first adds Side quests
+    to the deck, in the transaction storing them, so they are announced
+    even when a later round or recording the batch's end fails. Its title
+    counts that round's Side quests ("3 new Side quests are in") and its
+    body names them; a later round's emit stores nothing. A batch that
+    fails before storing any, as when `suggest_side_quests` fails (the
+    failure is in `ai_runs`), sends nothing. A `replenish` batch never
+    notifies. This is the only place `new_suggestions` is emitted; the
+    `suggestions_weekly` schedule does not emit it itself.
   - `day_of_reminder:{date}` (URL `/dinner/{id}`) through
     `plan.Service.EmitDayOfReminder(date)`, which names the dinner planned
     on the date and emits nothing for a week with no plan. The scheduler

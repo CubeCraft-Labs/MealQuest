@@ -300,6 +300,45 @@ func (e *env) runBatch(t *testing.T) batchResult {
 	return res
 }
 
+// scheduledWeek is the week the tests' scheduled batches are for: the
+// Monday of 2026-W41.
+var scheduledWeek = mustDate("2026-10-05")
+
+func mustDate(s string) store.LocalDate {
+	d, err := store.ParseLocalDate(s)
+	if err != nil {
+		panic(err)
+	}
+	return d
+}
+
+func mustZone(t *testing.T, name string) *time.Location {
+	t.Helper()
+	loc, err := household.LoadZone(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return loc
+}
+
+// startBatch starts a batch with trigger, a scheduled one for
+// scheduledWeek, and returns it with the key its new_suggestions has.
+func (e *env) startBatch(t *testing.T, trigger string) (suggest.Batch, string) {
+	t.Helper()
+	if trigger == suggest.TriggerScheduled {
+		b, err := e.svc.StartScheduledBatch(t.Context(), scheduledWeek)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b, "new_suggestions:2026-W41"
+	}
+	b, err := e.svc.StartBatch(t.Context(), trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b, "new_suggestions:" + b.ID
+}
+
 func (e *env) batchStatus(t *testing.T, id string) string {
 	t.Helper()
 	var status string
@@ -404,8 +443,9 @@ func TestBatchStoresGroundedSideQuests(t *testing.T) {
 }
 
 // TestBatchEmitsNewSuggestions: a scheduled or manual batch that adds Side
-// quests stores new_suggestions keyed by the batch, naming them; a
-// replenish batch, or one that adds none, stores nothing.
+// quests stores new_suggestions counting and naming them, keyed by the
+// scheduled ISO week or the manual batch, for that week or the current
+// one; a replenish batch, or one that adds none, stores nothing.
 func TestBatchEmitsNewSuggestions(t *testing.T) {
 	for _, tc := range []struct {
 		trigger string
@@ -428,10 +468,7 @@ func TestBatchEmitsNewSuggestions(t *testing.T) {
 				sideQuest("Chicken Shawarma Bowls", "Spiced chicken, like your Chicken Fajitas.", "Chicken Fajitas"),
 				sideQuest("Chili Verde", "Your Beef Chili gone green.", "Beef Chili"),
 			)
-			b, err := e.svc.StartBatch(t.Context(), tc.trigger)
-			if err != nil {
-				t.Fatal(err)
-			}
+			b, key := e.startBatch(t, tc.trigger)
 			if job := e.waitJob(t, b.JobID); job.Status != jobs.StatusSucceeded {
 				t.Fatalf("batch job %s", job.Status)
 			}
@@ -446,9 +483,13 @@ func TestBatchEmitsNewSuggestions(t *testing.T) {
 				t.Fatalf("new_suggestions rows = %+v, want one on push", rows)
 			}
 			r := rows[0]
-			if r.Key != "new_suggestions:"+b.ID || r.Channel != notify.ChannelPush || r.Payload.URL != "/discover" ||
-				r.Payload.Title != "New Side quests are in" || r.Payload.Body != "Chicken Shawarma Bowls, Chili Verde" || r.Payload.Week == "" {
-				t.Errorf("new_suggestions row = %+v, want key new_suggestions:%s naming the Side quests, /discover", r, b.ID)
+			week := household.WeekStart(store.LocalDateOf(time.Now().In(mustZone(t, "America/New_York")))).String()
+			if tc.trigger == suggest.TriggerScheduled {
+				week = scheduledWeek.String()
+			}
+			if r.Key != key || r.Channel != notify.ChannelPush || r.Payload.URL != "/discover" ||
+				r.Payload.Title != "2 new Side quests are in" || r.Payload.Body != "Chicken Shawarma Bowls, Chili Verde" || r.Payload.Week != week {
+				t.Errorf("new_suggestions row = %+v, want key %s counting and naming the Side quests, week %s, /discover", r, key, week)
 			}
 		})
 	}
@@ -490,10 +531,7 @@ func TestBatchNotifiesAsSideQuestsAreStored(t *testing.T) {
 				}
 			}
 
-			b, err := e.svc.StartBatch(t.Context(), tc.trigger)
-			if err != nil {
-				t.Fatal(err)
-			}
+			b, key := e.startBatch(t, tc.trigger)
 			job := e.waitJob(t, b.JobID)
 			want, deck := jobs.StatusSucceeded, suggest.BatchSize
 			if tc.lastFails {
@@ -512,9 +550,9 @@ func TestBatchNotifiesAsSideQuestsAreStored(t *testing.T) {
 				}
 				return
 			}
-			if len(rows) != 1 || rows[0].Key != "new_suggestions:"+b.ID ||
+			if len(rows) != 1 || rows[0].Key != key || rows[0].Payload.Title != "4 new Side quests are in" ||
 				rows[0].Payload.Body != "Fajita Dish A, Fajita Dish C, Fajita Dish D + 1 more" {
-				t.Errorf("new_suggestions rows = %+v, want one keyed by batch %s naming the first round", rows, b.ID)
+				t.Errorf("new_suggestions rows = %+v, want one keyed %s counting and naming the first round", rows, key)
 			}
 		})
 	}
@@ -1299,7 +1337,7 @@ func TestBatchJobFailsWhenRecordingItsEndFails(t *testing.T) {
 		t.Errorf("batch status = %s with its job failed, want failed", got)
 	}
 	// Its Side quests stay in the deck, and the household was told of them.
-	if rows := notifytest.Rows(t, e.st, notify.NewSuggestions); len(rows) != 1 || rows[0].Key != "new_suggestions:"+b.ID || rows[0].Payload.Body != "Chili Verde" {
+	if rows := notifytest.Rows(t, e.st, notify.NewSuggestions); len(rows) != 1 || rows[0].Key != "new_suggestions:"+b.ID || rows[0].Payload.Title != "1 new Side quest is in" || rows[0].Payload.Body != "Chili Verde" {
 		t.Errorf("new_suggestions rows of a batch whose end was not recorded = %+v, want one naming Chili Verde", rows)
 	}
 }
@@ -1471,6 +1509,47 @@ func TestStartBatchRefusesUnknownTrigger(t *testing.T) {
 	e := newEnv(t)
 	if _, err := e.svc.StartBatch(t.Context(), "whenever"); err == nil {
 		t.Fatal("unknown trigger accepted")
+	}
+}
+
+// TestScheduledBatchNeedsItsWeek: a scheduled batch is started only by
+// StartScheduledBatch, for a Monday.
+func TestScheduledBatchNeedsItsWeek(t *testing.T) {
+	e := newEnv(t)
+	if _, err := e.svc.StartBatch(t.Context(), suggest.TriggerScheduled); err == nil {
+		t.Error("StartBatch started a scheduled batch with no week")
+	}
+	for _, week := range []store.LocalDate{{}, mustDate("2026-10-06")} {
+		if _, err := e.svc.StartScheduledBatch(t.Context(), week); err == nil {
+			t.Errorf("StartScheduledBatch(%q) accepted a week that is not a Monday", week)
+		}
+	}
+	if n := e.activeBatches(t); n != 0 {
+		t.Errorf("%d active batches, want none", n)
+	}
+}
+
+// TestScheduledBatchKeyedByItsWeekWhenRunLate: a scheduled batch's
+// new_suggestions is keyed by the week it was scheduled for, not the week
+// it runs in, so a batch caught up after its week ended still tells the
+// household of that week's Side quests and leaves the next week's key free.
+func TestScheduledBatchKeyedByItsWeekWhenRunLate(t *testing.T) {
+	e := newEnv(t)
+	e.start(t)
+	e.recipe(t, "Chili Verde")
+	e.reply(sideQuest("Chili Verde", "Your Beef Chili gone green.", "Beef Chili"))
+	// A week long past: the batch runs today, weeks later.
+	b, err := e.svc.StartScheduledBatch(t.Context(), mustDate("2026-01-05"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job := e.waitJob(t, b.JobID); job.Status != jobs.StatusSucceeded {
+		t.Fatalf("batch job %s", job.Status)
+	}
+	rows := notifytest.Rows(t, e.st, notify.NewSuggestions)
+	if len(rows) != 1 || rows[0].Key != "new_suggestions:2026-W02" || rows[0].Payload.Week != "2026-01-05" ||
+		rows[0].Payload.Title != "1 new Side quest is in" {
+		t.Errorf("new_suggestions rows = %+v, want one keyed new_suggestions:2026-W02 for 2026-01-05", rows)
 	}
 }
 

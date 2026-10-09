@@ -44,3 +44,13 @@ describe('service worker source', () => {
     )
   })
 })
+
+describe('service worker push listeners source', () => {
+  it('delegates push and notificationclick to src/push/notification.ts', () => {
+    expect(source).toContain("import { openNotification, showPush } from './push/notification'")
+    expect(source).toMatch(/self\.addEventListener\('push', \(event\) => \{\s*event\.waitUntil\(\s*showPush\(event\.data\?\.text\(\) \?\? null, self\.registration, self\.location\.origin,/)
+    expect(source).toMatch(
+      /self\.addEventListener\('notificationclick', \(event\) => \{\s*event\.notification\.close\(\)\s*event\.waitUntil\(openNotification\(event\.notification\.data, self\.clients, self\.location\.origin\)\)/,
+    )
+  })
+})

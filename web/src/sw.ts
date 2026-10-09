@@ -15,6 +15,7 @@ import { ExpirationPlugin } from 'workbox-expiration'
 import { PrecacheFallbackPlugin, matchPrecache, precacheAndRoute } from 'workbox-precaching'
 import { registerRoute } from 'workbox-routing'
 import { CacheFirst, NetworkOnly, type Strategy } from 'workbox-strategies'
+import { openNotification, showPush } from './push/notification'
 import { createApiStrategy } from './sw/apiStrategy'
 import {
   cacheNames,
@@ -112,4 +113,19 @@ self.addEventListener('activate', (event) => {
 // over when the household chooses Reload.
 self.addEventListener('message', (event) => {
   if (event.data?.type === 'SKIP_WAITING') void self.skipWaiting()
+})
+
+// Web Push: src/push/notification.ts decides what to show and where a tap
+// goes; these listeners only hand it the worker's globals. A payload that is
+// not a MealQuest notice still shows a generic notification, and the reason
+// is logged.
+self.addEventListener('push', (event) => {
+  event.waitUntil(
+    showPush(event.data?.text() ?? null, self.registration, self.location.origin, (message) => console.warn(message)),
+  )
+})
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close()
+  event.waitUntil(openNotification(event.notification.data, self.clients, self.location.origin))
 })

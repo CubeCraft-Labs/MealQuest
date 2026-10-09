@@ -308,6 +308,89 @@ automatic** (D-021).
   still `pending` or `running` with no job queued or running (the process
   stopped, or recording its end failed) is set `failed`, so it does not
   block the next.
+- Cook from what I have (`ideas.Service`, Feature 18). `POST
+  /api/v1/ideas/from-ingredients {ingredients[], quick_only}` (both
+  required) checks the list with `skills.CleanIngredients` — 1 to 20
+  entries, each non-blank, at most 80 characters, with a non-empty
+  `harness.Normalize` form that no earlier entry shares — answering 400
+  `invalid_request` otherwise, then enqueues an `ideas_from_ingredients`
+  job (service-only: `POST /jobs` refuses the kind) and answers 202
+  `{jobId}` without waiting. The job runs `ideas_from_ingredients` (scope:
+  `skills.IdeasScope`, the flag and the normalized list in order), then
+  grounds its ideas in the model's order with `Grounder.GroundEach`, as
+  many as are still wanted at a time, until 5 are kept or none are left.
+  An idea no recipe grounds is dropped; with `quick_only`, so is one whose
+  grounded recipe is not a Quick dinner (`ideas.IsQuick`: method
+  `crockpot`, or `minutes_total` ≤ 30 — the recipe's, never the model's
+  `est_minutes`). Ideas are not stored as dinners. The job publishes
+  `{stage, ingredients, quick_only, ideas: [{name, uses, missing, summary,
+  method, minutes_total, difficulty, quick, recipe_id, photo_url,
+  source_url, site_name}], dropped}` at each stage (`suggesting`,
+  `grounding`, `done`) and again as each idea is kept, the moment its
+  grounding finishes, so the result fills idea by idea; the ideas shown
+  are always in the model's order, an earlier idea that grounds later
+  taking its place before those shown. It fails with `no_ideas_found`
+  (every idea was dropped), `ai_failed` (the skill or `normalize_recipe`
+  failed; no idea is made up instead, D-017), `search_not_configured` or
+  `search_failed`. A failed job shows no ideas, even those kept before the
+  failure: the kind registers a `FailedResult` view, so `GET
+  /api/v1/jobs/{id}` empties the `ideas` of any failed job's result on
+  read, however it failed (including `interrupted by restart` and an
+  `internal_error` whose clearing write failed). Before it fails it also
+  publishes its result again with no ideas, to tidy what is stored.
+- Quick dinners (`ideas.Service`, Feature 18). `POST /api/v1/ideas/quick
+  {kind, exclude[]}` (both required; `exclude` is `[]` on a first page)
+  checks `kind` with `skills.CheckQuickKind` — `crockpot` or `under30`,
+  no default — and `exclude` with `skills.CleanExclude` — at most 60
+  names, each non-blank, at most 120 characters, with a non-empty
+  `harness.Normalize` form no earlier name shares — answering 400
+  `invalid_request` otherwise, then enqueues a `quick_ideas` job
+  (service-only) and answers 202 `{jobId}` without waiting. The job reads
+  the household context (`harness.BuildContext`, budget 16000), runs
+  `quick_ideas` (scope: `skills.QuickIdeasScope`, the kind and the
+  normalized excluded names in order), then grounds its ideas exactly as
+  the ingredients job does (the same `Grounder.GroundEach` rounds, model
+  order and failure codes) until 6 are kept or none are left. The kind is
+  enforced on the grounded recipe, never the model's estimate
+  (`ideas.OfQuickKind`): `crockpot` keeps method `crockpot`
+  (`normalize_recipe` writes a slow cooker as `crockpot`), `under30`
+  keeps a known `minutes_total` ≤ 30; every other idea is dropped. The
+  model is asked for 12, more than a page, so dropped ideas can be
+  replaced; when fewer than 6 survive the page shows only those, never
+  padded with an idea not of the kind. The job publishes `{stage, kind,
+  exclude, ideas: [{name, method, minutes_total, difficulty, recipe_id,
+  photo_url, source_url, site_name}], dropped}` at each stage and as each
+  idea is kept, fails with the same reasons, and a failed job shows no
+  ideas through the same `FailedResult` view. "↻ Show me more" posts
+  again with every name the tab has shown so far in `exclude`.
+- Idea actions (Feature 18). Both act on idea `{i}` (0, 1, …; anything
+  else is 400 `invalid_request`) of a **succeeded** `ideas_from_ingredients`
+  or `quick_ideas` job, read from its stored result
+  (`ideas.Service.Idea`): its name and `recipe_id`, never grounded again.
+  A job still queued or running is 409 `ideas_not_ready` (its ideas may
+  still move); an unknown job, another kind, a failed job or an index past
+  its ideas is 404 `not_found`. `POST
+  /api/v1/ideas/{jobId}/items/{i}/quest-log` (no body) runs
+  `dinners.Service.AddToQuestLog`: in one transaction, an unarchived
+  dinner the idea repeats — the same rule that refuses a duplicate Regular
+  (`harness.Similar` name, or the recipe's link) — is answered 200 as it
+  is (a Regular stays a Regular); one awaiting the household's choice
+  (`suggested`, `tried`) is 409 `duplicate_dinner` and changes nothing;
+  otherwise it creates a dinner with status `quest_log`, origin
+  `ingredients` or `quick`, grounded in the idea's recipe (its method,
+  minutes, difficulty and photo), answered 201. Repeating the call
+  answers the same dinner. `POST /api/v1/ideas/{jobId}/items/{i}/cook-tonight`
+  (no body) takes today as the household-local date in the household
+  timezone and its Monday (`plan.Service.Tonight`); when that week has no
+  plan it answers 409 `no_plan` and changes nothing — no dinner, no plan
+  (a plan holds all seven days; the household plans the week first).
+  Otherwise it adds or finds the dinner as `quest-log` does and puts it
+  on today through `plan.Service.Swap`, exactly like a Draft board swap
+  (plan marked edited, revision raised, a synced plan becomes `changed`,
+  the day's calendar event id cleared, `is_new` for a Quest log dinner),
+  answering 200 `{dinner, plan}`. The week is always today's own, so no
+  other day is written; a dinner already on another day of the week is
+  409 `dinner_already_planned`.
   `GET /api/v1/suggestions/deck` returns `{suggestions: [{id, dinner_id,
   name, photo_url, difficulty, method, minutes_total, cuisine, reason,
   cited_regular_ids, status, dinner_status, decided_at, created_at}],
@@ -470,6 +553,32 @@ automatic** (D-021).
   not a Regular; and one whose reason is over 180 characters or names none
   of its cited Regulars. Cited names are rewritten as the household writes
   them. Grounding each survivor in a recipe is the caller's next step.
+- **Ideas from ingredients** (`skills.IdeasFromIngredients`, skill
+  `ideas_from_ingredients` v1): from the household's ingredient list (the
+  "Ingredients on hand" context section) and the Quick only flag, asks for
+  8 ideas `{name, uses[], missing[], est_minutes, method, difficulty,
+  search_query}` at the household temperature. Malformed replies (a
+  missing field, a bad enum, an empty name, more than 8 ideas) get the one
+  repair turn. The invariant is enforced in Go: a `uses` entry is kept
+  only when its `harness.Normalize` form is a listed ingredient's, and is
+  then written as the household wrote it, once, in the household's order;
+  `missing` loses blanks, repeats and anything listed. An idea left using
+  none of the listed ingredients, or repeating an earlier idea
+  (`harness.Similar`), is dropped into `Dropped`. Each kept idea's summary
+  line (`skills.IdeaSummary`) is computed from the corrected lists: "Uses
+  all 5 · missing: 1 lime" when every ingredient is used, "Uses 3 of 5 ·
+  missing: …" otherwise, with "nothing missing" in place of the list when
+  nothing is.
+- **Quick ideas** (`skills.QuickIdeas`, skill `quick_ideas` v1): from the
+  household context, a kind (`crockpot` or `under30`, which picks the
+  prompt's rule) and the names already shown (the "Already shown" context
+  section), asks for 12 ideas `{name, est_minutes, method, difficulty,
+  search_query}` at the household temperature. Malformed replies (a
+  missing field, a bad enum, an empty name, more than 12 ideas) get the
+  one repair turn. An idea repeating an excluded name or an earlier idea
+  (`harness.Similar`, on the normalized names) is dropped into `Dropped`,
+  so an excluded name is never returned. Whether an idea is of the kind
+  is left to the grounded recipe (see Quick dinners above).
 - **Supply run titles** (`skills.TitleArchive`, skill `archive_title`
   v1): from the names of the week's planned dinners in day order, writes
   `{title}`, the Supply run's post title in the Supply archive, at the
@@ -625,7 +734,8 @@ untitled (the job fails `title_failed`), and stores nothing. The
   candidates `Ground` would try, without grounding any. Search failures
   wrap `recipes.ErrSearchFailed` and model provider failures
   `recipes.ErrNormalizeFailed`. `GroundMany` grounds items 3 at a time and returns one result per
-  item, so one failure never affects its siblings. A recipe is usable only
+  item, so one failure never affects its siblings; `GroundEach` grounds
+  the same way but reports each item, one at a time, as it finishes. A recipe is usable only
   with ingredients, an image and, if given, a positive total time.
 
 ## Scheduler

@@ -772,3 +772,47 @@ func TestServiceOnlyKind(t *testing.T) {
 		t.Error("ServiceOnly after Start succeeded, want an error")
 	}
 }
+
+func TestFailedResultAppliesOnlyToItsKindsFailedJobs(t *testing.T) {
+	t.Parallel()
+	st := migratedStore(t)
+	r := newRunner(t, st, 1)
+	h := func(_ context.Context, p countPayload, publish func(countResult) error) (countResult, error) {
+		if err := publish(countResult{Done: 5}); err != nil {
+			return countResult{}, err
+		}
+		if p.Steps == 0 {
+			return countResult{}, &Failure{Code: "stopped"}
+		}
+		return countResult{Done: p.Steps}, nil
+	}
+	hidden := register(t, r, "hidden", h, "stopped")
+	plain := register(t, r, "plain", h, "stopped")
+	if err := hidden.FailedResult(func(json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"done":0}`), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := hidden.FailedResult(nil); err == nil {
+		t.Error("FailedResult(nil) succeeded, want an error")
+	}
+	start(t, r)
+	if err := hidden.FailedResult(func(s json.RawMessage) (json.RawMessage, error) { return s, nil }); err == nil {
+		t.Error("FailedResult after Start succeeded, want an error")
+	}
+
+	for _, tc := range []struct {
+		kind  *Kind[countPayload]
+		steps int
+		want  string
+	}{
+		{hidden, 0, `{"done":0}`}, // failed: shown through FailedResult
+		{hidden, 3, `{"done":3}`}, // succeeded: as stored
+		{plain, 0, `{"done":5}`},  // failed, kind without FailedResult: as stored
+	} {
+		job := waitFor(t, r, enqueue(t, tc.kind, countPayload{Steps: tc.steps}), finished)
+		if string(job.Result) != tc.want {
+			t.Errorf("%s job with %d steps: %s result = %s, want %s", job.Kind, tc.steps, job.Status, job.Result, tc.want)
+		}
+	}
+}

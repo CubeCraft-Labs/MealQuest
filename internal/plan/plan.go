@@ -423,6 +423,40 @@ func (s *Service) Swap(ctx context.Context, weekStart store.LocalDate, date, din
 	return p, nil
 }
 
+// Tonight returns today, the household-local date now in the household's
+// zone, and the Monday starting its week, when that week has a plan: Swap
+// of that week and day sets tonight's dinner. A week with no plan is
+// ErrNotFound; no plan is made for it, since a plan holds all seven days.
+// The week is always today's own, so Swap never writes a different day.
+func (s *Service) Tonight(ctx context.Context) (week, today store.LocalDate, err error) {
+	tx, err := s.st.Reader.BeginTx(ctx, nil)
+	if err != nil {
+		return store.LocalDate{}, store.LocalDate{}, fmt.Errorf("plan: begin read: %w", err)
+	}
+	defer func() {
+		err = errors.Join(err, tx.Rollback())
+	}()
+	q := db.New(tx)
+	settings, err := q.GetHouseholdSettings(ctx)
+	if err != nil {
+		return store.LocalDate{}, store.LocalDate{}, fmt.Errorf("plan: read household settings: %w", err)
+	}
+	zone, err := household.LoadZone(settings.Timezone)
+	if err != nil {
+		return store.LocalDate{}, store.LocalDate{}, fmt.Errorf("plan: household settings: %w", err)
+	}
+	today = household.Today(time.Now(), zone)
+	week = household.WeekStart(today)
+	_, err = q.GetWeekPlan(ctx, week.String())
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.LocalDate{}, store.LocalDate{}, ErrNotFound
+	}
+	if err != nil {
+		return store.LocalDate{}, store.LocalDate{}, fmt.Errorf("plan: read week %s: %w", week, err)
+	}
+	return week, today, nil
+}
+
 // isNew is plan_days.is_new for a dinner with status: 1 for the Quest log.
 func isNew(status string) int64 {
 	if status == dinners.StatusQuestLog {

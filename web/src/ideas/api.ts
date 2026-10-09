@@ -220,11 +220,12 @@ export type QuickPage = { jobId: string; ideas: QuickIdea[] }
 
 // QuickTab is what one tab of Quick dinners has found this session: the
 // pages found, the job finding the next one, whether the server has said
-// there are no more, and the ideas added to the Quest log, as
+// there are no more, why the last page asked for could not start, kept
+// until Retry asks again, and the ideas added to the Quest log, as
 // "jobId:index".
-export type QuickTab = { pages: QuickPage[]; jobId: string | null; ended: boolean; added: string[] }
+export type QuickTab = { pages: QuickPage[]; jobId: string | null; ended: boolean; startError: Error | null; added: string[] }
 
-const NEW_TAB: QuickTab = { pages: [], jobId: null, ended: false, added: [] }
+const NEW_TAB: QuickTab = { pages: [], jobId: null, ended: false, startError: null, added: [] }
 
 export function quickTabKey(kind: QuickKind) {
   return ['ideas', 'quick', kind] as const
@@ -258,20 +259,23 @@ export function useQuickTab(kind: QuickKind) {
 
 // useFindQuickIdeas starts finding a page of Quick dinner ideas of kind,
 // none named in exclude (POST /api/v1/ideas/quick), and makes its job the
-// tab's job, also if the screen has been left meanwhile. Its mutationKey is
-// the tab's, so a tab shown again knows a page is still being asked for.
+// tab's job, or its failure the tab's startError, also if the screen has
+// been left meanwhile. Its mutationKey is the tab's, so a tab shown again
+// knows a page is still being asked for.
 export function useFindQuickIdeas(kind: QuickKind) {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
   return useMutation({
     mutationKey: quickTabKey(kind),
     mutationFn: async (exclude: string[]): Promise<string> => {
+      queryClient.setQueryData<QuickTab>(quickTabKey(kind), (tab) => ({ ...(tab ?? NEW_TAB), startError: null }))
       const body = await apiFetch<unknown>(QUICK_PATH, { method: 'POST', body: { kind, exclude } })
       if (!isRecord(body) || typeof body.jobId !== 'string') throw new Error(`POST ${QUICK_PATH}: response has no jobId`)
       const jobId = body.jobId
       queryClient.setQueryData<QuickTab>(quickTabKey(kind), (tab) => ({ ...(tab ?? NEW_TAB), jobId }))
       return jobId
     },
+    onError: (startError: Error) => queryClient.setQueryData<QuickTab>(quickTabKey(kind), (tab) => ({ ...(tab ?? NEW_TAB), startError })),
   })
 }
 
@@ -285,8 +289,9 @@ function ideaPath({ jobId, index }: IdeaRef, action: 'quest-log' | 'cook-tonight
 // useAddIdeaToQuestLog adds an idea to the Quest log (POST
 // /api/v1/ideas/{jobId}/items/{i}/quest-log) and resolves with the
 // dinner's name. Asking again answers the same dinner. The Quest log is
-// read again after it.
-export function useAddIdeaToQuestLog() {
+// read again after it, and onAdded told, also if the caller has unmounted
+// meanwhile.
+export function useAddIdeaToQuestLog(onAdded?: (idea: IdeaRef) => void) {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
   return useMutation({
@@ -294,7 +299,10 @@ export function useAddIdeaToQuestLog() {
       const path = ideaPath(idea, 'quest-log')
       return parseDinner(`POST ${path}`, await apiFetch<unknown>(path, { method: 'POST' })).name
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: QUEST_LOG_KEY }),
+    onSuccess: (_name, idea) => {
+      onAdded?.(idea)
+      return queryClient.invalidateQueries({ queryKey: QUEST_LOG_KEY })
+    },
   })
 }
 

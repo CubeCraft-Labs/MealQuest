@@ -59,9 +59,20 @@ function meta(idea: QuickIdea): string {
 // QuickRow is one idea (mock 1j): its washed photo, name and meta line, and
 // the teal "+" that adds it to the Quest log, a check once it is there.
 // ideaRef is null while its job runs: the server takes an idea only once
-// the job has succeeded.
-function QuickRow({ idea, ideaRef, added, onAdded }: { idea: QuickIdea; ideaRef: IdeaRef | null; added: boolean; onAdded: () => void }) {
-  const questLog = useAddIdeaToQuestLog()
+// the job has succeeded. onAdded marks the idea added, also if the row has
+// unmounted before the add settles.
+function QuickRow({
+  idea,
+  ideaRef,
+  added,
+  onAdded,
+}: {
+  idea: QuickIdea
+  ideaRef: IdeaRef | null
+  added: boolean
+  onAdded: (idea: IdeaRef) => void
+}) {
+  const questLog = useAddIdeaToQuestLog(onAdded)
   return (
     <li className={styles.row} aria-label={idea.name}>
       <Photo id={idea.photo_id} name={idea.name} radius="50%" sizes="64px" className={styles.photo} />
@@ -84,7 +95,7 @@ function QuickRow({ idea, ideaRef, added, onAdded }: { idea: QuickIdea; ideaRef:
           tone="teal"
           className={styles.add}
           disabled={ideaRef === null || questLog.isPending}
-          onClick={() => questLog.mutate(ideaRef!, { onSuccess: onAdded })}
+          onClick={() => questLog.mutate(ideaRef!)}
         >
           <Icon icon={Plus} size="nav" />
         </IconButton>
@@ -108,20 +119,20 @@ function Skeletons({ count }: { count: number }) {
 // the tab is first shown; what it finds is kept for the session.
 function QuickTabPanel({ kind }: { kind: QuickKind }) {
   const [tab, update] = useQuickTab(kind)
-  const find = useFindQuickIdeas(kind)
-  const { mutate } = find
+  const { mutate } = useFindQuickIdeas(kind)
   // A page being asked for, also by this tab before it was last shown.
   const starting = useIsMutating({ mutationKey: quickTabKey(kind) }) > 0
   const job = useJob<unknown>(QUICK_JOB_KIND, tab.jobId)
   const names = shownNames(tab)
 
   // ask asks for the next page, excluding every name shown; Retry asks
-  // again for the page that failed.
+  // again for the page that failed. A page that could not start stays the
+  // tab's startError until Retry: nothing asks again by itself.
   const ask = () => mutate(names)
 
   // The first page, asked for once.
   const asked = useRef(false)
-  const fresh = tab.pages.length === 0 && tab.jobId === null && !tab.ended && !starting
+  const fresh = tab.pages.length === 0 && tab.jobId === null && !tab.ended && tab.startError === null && !starting
   useEffect(() => {
     if (!fresh || asked.current) return
     asked.current = true
@@ -152,7 +163,7 @@ function QuickTabPanel({ kind }: { kind: QuickKind }) {
     else if (exhausted) update((t) => (t.jobId === jobId ? { ...t, jobId: null, ended: true } : t))
   }, [jobId, ideas, exhausted, update])
 
-  const markAdded = (key: string) => update((t) => ({ ...t, added: [...t.added, key] }))
+  const markAdded = ({ jobId, index }: IdeaRef) => update((t) => ({ ...t, added: [...t.added, `${jobId}:${index}`] }))
 
   // The rows of every page found, then of the page being found, in one
   // keyed list: a page kept with the tab's pages keeps its rows, and with
@@ -164,10 +175,10 @@ function QuickTabPanel({ kind }: { kind: QuickKind }) {
   let next = null
   if (starting) {
     next = <Skeletons count={QUICK_IDEAS_KEPT} />
-  } else if (find.isError) {
+  } else if (tab.startError !== null) {
     next = (
       <li>
-        <ErrorBanner onRetry={ask}>Couldn't start looking for Quick dinners. {find.error.message}</ErrorBanner>
+        <ErrorBanner onRetry={ask}>Couldn't start looking for Quick dinners. {tab.startError.message}</ErrorBanner>
       </li>
     )
   } else if (jobId !== null && failure !== null && !exhausted) {
@@ -203,7 +214,7 @@ function QuickTabPanel({ kind }: { kind: QuickKind }) {
 
   // Show me more once the tab is between pages; the server takes at most
   // MAX_EXCLUDE names to leave out, so past that there is no more to ask.
-  const between = !starting && !find.isError && jobId === null && tab.pages.length > 0
+  const between = !starting && tab.startError === null && jobId === null && tab.pages.length > 0
   const allShown = tab.ended || names.length > MAX_EXCLUDE
   const busy = starting || (jobId !== null && failure === null && found.error === null && job.status !== 'succeeded')
 
@@ -212,7 +223,7 @@ function QuickTabPanel({ kind }: { kind: QuickKind }) {
       <p className={styles.helper}>{helpers[kind]}</p>
       <ul aria-busy={busy} aria-label="Quick dinners" className={styles.rows}>
         {rows.map(({ idea, ref, key }) => (
-          <QuickRow key={key} idea={idea} ideaRef={ref} added={tab.added.includes(key)} onAdded={() => markAdded(key)} />
+          <QuickRow key={key} idea={idea} ideaRef={ref} added={tab.added.includes(key)} onAdded={markAdded} />
         ))}
         {next}
       </ul>

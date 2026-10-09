@@ -279,6 +279,28 @@ describe('QuickDinnersPage', () => {
       expect(within(row(QUESADILLAS.name)).getByRole('img', { name: 'In the Quest log' })).toBeInTheDocument()
     })
 
+    it('marks an add that settles while another tab is shown', async () => {
+      const added = Promise.withResolvers<Response>()
+      const { fetchMock, jobs } = quickServer(['j1', 'j2'], { 'POST /api/v1/ideas/j1/items/0/quest-log': () => added.promise })
+      jobs.j1 = state('succeeded', 'done', 'under30', [ORZO, QUESADILLAS])
+      jobs.j2 = state('succeeded', 'done', 'crockpot', [CHILI])
+      const queryClient = createQueryClient()
+      await renderPage(queryClient)
+      await screen.findByRole('listitem', { name: ORZO.name })
+
+      fireEvent.click(addButton(ORZO.name))
+      await waitFor(() => expect(calls(fetchMock, 'POST /api/v1/ideas/j1/items/0/quest-log')).toHaveLength(1))
+      fireEvent.click(tab('Crock pot'))
+      await screen.findByRole('listitem', { name: CHILI.name })
+      added.resolve(jsonResponse(201, dinnerBody('dn-1', ORZO.name, { status: 'quest_log', origin: 'quick' })))
+      await waitFor(() => expect(queryClient.isMutating()).toBe(0))
+
+      fireEvent.click(tab('30 min or less'))
+      expect(within(row(ORZO.name)).getByRole('img', { name: 'In the Quest log' })).toBeInTheDocument()
+      expect(addButton(QUESADILLAS.name)).toBeEnabled()
+      expect(calls(fetchMock, 'POST /api/v1/ideas/j1/items/0/quest-log')).toHaveLength(1)
+    })
+
     it('shows its failure in its row and lets it be pressed again', async () => {
       let fail = true
       const { jobs } = quickServer(['j1'], {
@@ -385,6 +407,72 @@ describe('QuickDinnersPage', () => {
         { kind: 'under30', exclude: [] },
         { kind: 'under30', exclude: [] },
       ])
+    })
+
+    it('keeps a first page that cannot start across a tab switch, asking again only on Retry', async () => {
+      let under30 = 0
+      const { fetchMock, jobs } = stubServer({
+        [QUICK]: (init) => {
+          const { kind } = JSON.parse(String(init?.body)) as { kind: string }
+          if (kind === 'crockpot') return jsonResponse(202, { jobId: 'j2' })
+          return ++under30 === 1 ? errorResponse(500, 'internal') : jsonResponse(202, { jobId: 'j1' })
+        },
+      })
+      jobs.j1 = state('succeeded', 'done', 'under30', [ORZO])
+      jobs.j2 = state('succeeded', 'done', 'crockpot', [CHILI])
+      await renderPage()
+      await screen.findByRole('alert')
+
+      fireEvent.click(tab('Crock pot'))
+      await screen.findByRole('listitem', { name: CHILI.name })
+      fireEvent.click(tab('30 min or less'))
+
+      const alert = screen.getByRole('alert')
+      expect(alert).toHaveTextContent("Couldn't start looking for Quick dinners. internal message")
+      expect(screen.queryAllByTestId('skeleton-row')).toHaveLength(0)
+      expect(searches(fetchMock)).toEqual([
+        { kind: 'under30', exclude: [] },
+        { kind: 'crockpot', exclude: [] },
+      ])
+
+      fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+      await screen.findByRole('listitem', { name: ORZO.name })
+      expect(screen.queryByRole('alert')).toBeNull()
+      expect(calls(fetchMock, QUICK)).toHaveLength(3)
+    })
+
+    it('keeps a later page that cannot start across a tab switch, asking again only on Retry', async () => {
+      let under30 = 0
+      const { fetchMock, jobs } = stubServer({
+        [QUICK]: (init) => {
+          const { kind } = JSON.parse(String(init?.body)) as { kind: string }
+          if (kind === 'crockpot') return jsonResponse(202, { jobId: 'j2' })
+          under30++
+          return under30 === 2 ? errorResponse(500, 'internal') : jsonResponse(202, { jobId: under30 === 1 ? 'j1' : 'j3' })
+        },
+      })
+      jobs.j1 = state('succeeded', 'done', 'under30', [ORZO])
+      jobs.j2 = state('succeeded', 'done', 'crockpot', [CHILI])
+      jobs.j3 = state('succeeded', 'done', 'under30', [QUESADILLAS])
+      await renderPage()
+      await screen.findByRole('listitem', { name: ORZO.name })
+      fireEvent.click(await showMore())
+      await screen.findByRole('alert')
+
+      fireEvent.click(tab('Crock pot'))
+      await screen.findByRole('listitem', { name: CHILI.name })
+      fireEvent.click(tab('30 min or less'))
+
+      const alert = screen.getByRole('alert')
+      expect(alert).toHaveTextContent("Couldn't start looking for Quick dinners. internal message")
+      expect(rowNames()).toEqual([ORZO.name])
+      expect(screen.queryByRole('button', { name: 'Show me more' })).toBeNull()
+      expect(calls(fetchMock, QUICK)).toHaveLength(3)
+
+      fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+      await screen.findByRole('listitem', { name: QUESADILLAS.name })
+      expect(searches(fetchMock)[3]).toEqual({ kind: 'under30', exclude: [ORZO.name] })
+      expect(screen.queryByRole('alert')).toBeNull()
     })
 
     it.each([

@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -291,6 +292,19 @@ func (s *Service) emitTx(ctx context.Context, tx *sql.Tx, ev Event, channels fun
 	}
 	s.logger.InfoContext(ctx, "notification stored in transaction", "event_key", ev.Key, "queued", queued)
 	return nil
+}
+
+// ChannelOn reports whether the preference of event type ev switches
+// channel ch on. A type with no preference row is an error.
+func (s *Service) ChannelOn(ctx context.Context, ev EventType, ch Channel) (bool, error) {
+	pref, err := db.New(s.st.Reader).GetNotificationPref(ctx, string(ev))
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("notify: no notification preference for %s", ev)
+	}
+	if err != nil {
+		return false, fmt.Errorf("notify: read notification preference for %s: %w", ev, err)
+	}
+	return slices.Contains(enabledChannels(pref), ch), nil
 }
 
 // enabledChannels returns the channels pref switches on.

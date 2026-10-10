@@ -65,7 +65,7 @@ func newIdeaActionsRouter(t *testing.T, model, normalize *llm.Fake, search *reci
 	if err != nil {
 		t.Fatal(err)
 	}
-	dinnerSvc, err := dinners.NewService(st, g, runner, logger)
+	dinnerSvc, err := dinners.NewService(st, g, runner, func() {}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func newIdeaActionsRouter(t *testing.T, model, normalize *llm.Fake, search *reci
 		t.Error("draft_week ran: an idea action must never draft a plan")
 		return skills.Week{}, context.Canceled
 	}
-	planSvc, err := plan.NewService(st, draft, runner, newTestGoogle(t), notifytest.New(t, st), &url.URL{Scheme: "https", Host: "mealquest.example"}, logger)
+	planSvc, err := plan.NewService(st, draft, runner, newTestGoogle(t), notifytest.New(t, st), func() {}, &url.URL{Scheme: "https", Host: "mealquest.example"}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

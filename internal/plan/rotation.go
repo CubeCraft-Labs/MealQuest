@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/chat"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/scheduler"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 )
 
@@ -79,12 +82,40 @@ type Decided struct {
 	UpdatedBy    string `json:"updated_by"`
 }
 
+// RotationCheckSchedule is the rotation_check schedule: every day at the
+// household's review_time it runs MarkTried for the day before, so each
+// Quest log dinner planned yesterday is tried and the household is asked
+// "Keep it in rotation?". Its period is the fire date, claimed as
+// rotation_check:YYYY-MM-DD. It never makes a dinner a Regular.
+func (s *Service) RotationCheckSchedule() scheduler.Schedule {
+	return scheduler.Schedule{
+		Name: scheduler.RotationCheck,
+		Rule: func(settings household.Settings) scheduler.Rule {
+			return scheduler.Daily(settings.ReviewTime)
+		},
+		PeriodKey: func(p scheduler.Period) string {
+			return scheduler.RotationCheck + ":" + p.Key
+		},
+		Run: func(ctx context.Context, p scheduler.Period) error {
+			yesterday := addDays(p.Date, -1)
+			n, err := s.MarkTried(ctx, yesterday)
+			if err != nil {
+				return err
+			}
+			s.logger.InfoContext(ctx, "Rotation check: Quest log dinners marked tried",
+				"period", p.Key, "plan_date", yesterday.String(), "tried", n)
+			return nil
+		},
+	}
+}
+
 // MarkTried moves every dinner in the Quest log planned on date, the
-// household-local day just past, on a plan of any status, to tried and
-// opens a pending Rotation check of it for date. It is idempotent: a
-// dinner already checked for date is left as it is, so a later run never
-// moves one returned to the Quest log ("We didn't make it") again. It
-// returns how many dinners it moved.
+// household-local day just past, on a plan of any status, to tried, opens
+// a pending Rotation check of it for date and emits its rotation_review
+// (chat.RotationReview), all in one transaction. It is idempotent: a
+// dinner already checked for date is left as it is and not notified of
+// again, so a later run never moves one returned to the Quest log ("We
+// didn't make it") again. It returns how many dinners it moved.
 func (s *Service) MarkTried(ctx context.Context, date store.LocalDate) (int, error) {
 	var n int
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
@@ -95,6 +126,10 @@ func (s *Service) MarkTried(ctx context.Context, date store.LocalDate) (int, err
 		}
 		now := store.Now().String()
 		for _, id := range ids {
+			d, err := q.GetDinner(ctx, id)
+			if err != nil {
+				return fmt.Errorf("plan: read dinner %s: %w", id, err)
+			}
 			moved, err := q.MarkDinnerTried(ctx, db.MarkDinnerTriedParams{UpdatedAt: now, ID: id})
 			if err != nil {
 				return fmt.Errorf("plan: mark %s tried: %w", id, err)
@@ -107,12 +142,18 @@ func (s *Service) MarkTried(ctx context.Context, date store.LocalDate) (int, err
 			}); err != nil {
 				return fmt.Errorf("plan: open Rotation check of %s for %s: %w", id, date, err)
 			}
+			if err := s.notifier.EmitTx(ctx, tx, chat.RotationReview(id, d.Name, date)); err != nil {
+				return fmt.Errorf("plan: %w", err)
+			}
 		}
 		n = len(ids)
 		return nil
 	})
 	if err != nil {
 		return 0, err
+	}
+	if n > 0 {
+		s.notifier.Wake()
 	}
 	return n, nil
 }

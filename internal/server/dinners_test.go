@@ -93,7 +93,7 @@ func newDinnersEnv(t *testing.T) *dinnersEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := dinners.NewService(st, g, runner, logger)
+	svc, err := dinners.NewService(st, g, runner, func() {}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

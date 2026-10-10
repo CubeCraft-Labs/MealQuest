@@ -66,42 +66,59 @@ func ListReady(week store.LocalDate, needed, dinners int) notify.Event {
 }
 
 // DayOfReminder is the day_of_reminder event of the dinner dinnerID, named
-// name, planned on date.
+// name, planned on date: "Tonight: Tacos · Recipe →", a title carrying its
+// own call to action.
 func DayOfReminder(date store.LocalDate, dinnerID, name string) notify.Event {
 	return notify.Event{
 		Type:  notify.DayOfReminder,
 		Key:   string(notify.DayOfReminder) + ":" + date.String(),
-		Title: "Tonight's dinner",
+		Title: "Tonight: " + name + " · Recipe →",
+		URL:   "/dinner/" + dinnerID,
+		Week:  household.WeekStart(date),
+	}
+}
+
+// StartReminder is the day_of_reminder event, keyed
+// day_of_reminder:start:{date}, reminding the household to start the
+// crock-pot dinner dinnerID, named name and planned on date, by startBy,
+// a time in the household zone: "Start the crock pot by 9:30 am".
+func StartReminder(date store.LocalDate, dinnerID, name string, startBy time.Time) notify.Event {
+	return notify.Event{
+		Type:  notify.DayOfReminder,
+		Key:   string(notify.DayOfReminder) + ":start:" + date.String(),
+		Title: "Start the crock pot by " + startBy.Format("3:04 pm"),
 		Body:  name,
 		URL:   "/dinner/" + dinnerID,
 		Week:  household.WeekStart(date),
 	}
 }
 
-// NewSuggestions is the new_suggestions event of suggestion batch batchID,
-// made in the week starting on week, naming its Side quests.
-func NewSuggestions(batchID string, week store.LocalDate, names []string) notify.Event {
+// NewSuggestions is the new_suggestions event keyed by id, the ISO week
+// ("2026-W41") of a scheduled suggestion batch or the batch id of a manual
+// one, of the week starting on week: how many new Side quests there are,
+// and their names.
+func NewSuggestions(id string, week store.LocalDate, names []string) notify.Event {
 	return notify.Event{
 		Type:  notify.NewSuggestions,
-		Key:   string(notify.NewSuggestions) + ":" + batchID,
-		Title: "New Side quests are in",
+		Key:   string(notify.NewSuggestions) + ":" + id,
+		Title: count(len(names), "new Side quest is in", "new Side quests are in"),
 		Body:  nameList(names),
 		URL:   "/discover",
 		Week:  week,
 	}
 }
 
-// RotationReview is the rotation_review event asking whether the dinner
-// dinnerID, named name and tried in the week starting on week, becomes a
-// Regular.
-func RotationReview(dinnerID, name string, week store.LocalDate) notify.Event {
+// RotationReview is the rotation_review event, keyed
+// rotation_review:{dinnerID}:{planDate}, of the Rotation check of the
+// dinner dinnerID, named name and tried on planDate: "How was Pho? Keep it
+// in rotation?". It opens Home, where the Rotation check card asks.
+func RotationReview(dinnerID, name string, planDate store.LocalDate) notify.Event {
 	return notify.Event{
 		Type:  notify.RotationReview,
-		Key:   string(notify.RotationReview) + ":" + dinnerID,
-		Title: "Keep it in rotation?",
-		Body:  "You tried " + name + ". Make it a Regular?",
+		Key:   string(notify.RotationReview) + ":" + dinnerID + ":" + planDate.String(),
+		Title: "How was " + name + "? Keep it in rotation?",
 		URL:   "/",
-		Week:  week,
+		Week:  household.WeekStart(planDate),
 	}
 }
 
@@ -172,9 +189,13 @@ func planTitle(week, thisWeek store.LocalDate) string {
 }
 
 // Text is the Google Chat message of p: its title, its body after a colon
-// and the event's call to action with an arrow.
+// and the event's call to action with an arrow. A title ending in an arrow,
+// with no body, carries its own call to action and is the message as it is.
 func Text(p notify.Payload) string {
 	text := p.Title
+	if p.Body == "" && strings.HasSuffix(text, "→") {
+		return text
+	}
 	if p.Body != "" {
 		if endsSentence(text) {
 			text += " "

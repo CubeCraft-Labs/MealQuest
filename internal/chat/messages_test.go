@@ -2,6 +2,7 @@ package chat
 
 import (
 	"testing"
+	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
@@ -100,9 +101,19 @@ func TestMessages(t *testing.T) {
 			key:   "day_of_reminder:2026-10-15",
 			url:   "/dinner/01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
 			week:  "2026-10-12",
-			title: "Tonight's dinner",
-			body:  "Tacos",
-			chatT: "Tonight's dinner: Tacos. Open the recipe →",
+			title: "Tonight: Tacos · Recipe →",
+			body:  "",
+			chatT: "Tonight: Tacos · Recipe →",
+		},
+		{
+			name:  "crock-pot start reminder",
+			ev:    StartReminder(mustDate(t, "2026-10-15"), "01J9Z8Y7X6W5V4T3S2R1Q0P9N8", "Beef Chili", time.Date(2026, 10, 15, 9, 30, 0, 0, time.FixedZone("CDT", -5*60*60))),
+			key:   "day_of_reminder:start:2026-10-15",
+			url:   "/dinner/01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+			week:  "2026-10-12",
+			title: "Start the crock pot by 9:30 am",
+			body:  "Beef Chili",
+			chatT: "Start the crock pot by 9:30 am: Beef Chili. Open the recipe →",
 		},
 		{
 			name:  "new suggestions",
@@ -110,19 +121,29 @@ func TestMessages(t *testing.T) {
 			key:   "new_suggestions:01J9BATCH",
 			url:   "/discover",
 			week:  "2026-10-12",
-			title: "New Side quests are in",
+			title: "5 new Side quests are in",
 			body:  "Lemon orzo, Bibimbap, Shakshuka + 2 more",
-			chatT: "New Side quests are in: Lemon orzo, Bibimbap, Shakshuka + 2 more. Open Discover →",
+			chatT: "5 new Side quests are in: Lemon orzo, Bibimbap, Shakshuka + 2 more. Open Discover →",
+		},
+		{
+			name:  "new suggestions of a scheduled week",
+			ev:    NewSuggestions("2026-W42", week, []string{"Pho"}),
+			key:   "new_suggestions:2026-W42",
+			url:   "/discover",
+			week:  "2026-10-12",
+			title: "1 new Side quest is in",
+			body:  "Pho",
+			chatT: "1 new Side quest is in: Pho. Open Discover →",
 		},
 		{
 			name:  "rotation review",
-			ev:    RotationReview("01J9DINNER", "Lemon orzo", week),
-			key:   "rotation_review:01J9DINNER",
+			ev:    RotationReview("01J9DINNER", "Lemon orzo", mustDate(t, "2026-10-14")),
+			key:   "rotation_review:01J9DINNER:2026-10-14",
 			url:   "/",
 			week:  "2026-10-12",
-			title: "Keep it in rotation?",
-			body:  "You tried Lemon orzo. Make it a Regular?",
-			chatT: "Keep it in rotation? You tried Lemon orzo. Make it a Regular? Open MealQuest →",
+			title: "How was Lemon orzo? Keep it in rotation?",
+			body:  "",
+			chatT: "How was Lemon orzo? Keep it in rotation? Open MealQuest →",
 		},
 	} {
 		ev := tc.ev

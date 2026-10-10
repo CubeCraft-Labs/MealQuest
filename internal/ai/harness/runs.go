@@ -34,8 +34,8 @@ const (
 	StatusProviderError RunStatus = "provider_error"
 )
 
-// RunRetention is how long ai_runs rows are kept. The daily purge calls
-// Purge with time.Now().Add(-RunRetention).
+// RunRetention is how long ai_runs rows are kept. The daily purge,
+// PurgeSchedule, calls Purge with its fire time less RunRetention.
 const RunRetention = 30 * 24 * time.Hour
 
 // runSaveTimeout bounds writing the ai_runs row of a run that has failed,
@@ -46,9 +46,6 @@ var runSaveTimeout = 5 * time.Second
 // Purge deletes the ai_runs rows created before olderThan and returns how
 // many it deleted. The suggestion_batches and week_plans references to
 // those rows are cleared first, in the same transaction.
-//
-// Nothing in this package calls Purge: the scheduler's daily ai_runs purge
-// (Feature 20) must call it with time.Now().Add(-RunRetention).
 func Purge(ctx context.Context, st *store.Store, olderThan time.Time) (int64, error) {
 	if olderThan.IsZero() {
 		return 0, errors.New("harness: purge ai_runs: zero cutoff")

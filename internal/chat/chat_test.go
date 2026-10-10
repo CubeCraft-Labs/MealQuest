@@ -308,7 +308,7 @@ func TestSendThreadsByWeek(t *testing.T) {
 		ListReady(week, 19, 7),
 		DayOfReminder(mustDate(t, "2026-10-18"), "01J9DINNER", "Tacos"),
 		NewSuggestions("01J9BATCH", week, []string{"Pho"}),
-		RotationReview("01J9DINNER", "Pho", week),
+		RotationReview("01J9DINNER", "Pho", mustDate(t, "2026-10-14")),
 	}
 	for _, ev := range events {
 		if err := svc.Send(ctx, notify.Message{ID: "n1", EventKey: ev.Key, Channel: notify.ChannelChat, Payload: payloadOf(ev), Attempt: 1}); err != nil {

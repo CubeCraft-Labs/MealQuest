@@ -19,6 +19,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
@@ -154,17 +155,35 @@ type Batch struct {
 	Created bool `json:"-"`
 }
 
-// StartBatch creates a batch with trigger and enqueues the
+// StartBatch creates a manual or replenish batch and enqueues the
 // KindSuggestionBatch job that runs it, unless a batch is already pending
-// or running, which it returns instead with Created false.
+// or running, which it returns instead with Created false. A scheduled
+// batch is started by StartScheduledBatch.
 func (s *Service) StartBatch(ctx context.Context, trigger string) (Batch, error) {
+	if trigger == TriggerScheduled {
+		return Batch{}, errors.New("suggest: a scheduled batch is started by StartScheduledBatch")
+	}
 	if !slices.Contains(triggers, trigger) {
 		return Batch{}, fmt.Errorf("suggest: unknown batch trigger %q", trigger)
 	}
+	return s.start(ctx, trigger, "")
+}
+
+// StartScheduledBatch is StartBatch for a scheduled batch for the ISO week
+// starting on Monday week, which keys its new_suggestions (see noticeOf).
+func (s *Service) StartScheduledBatch(ctx context.Context, week store.LocalDate) (Batch, error) {
+	if week.IsZero() || household.WeekStart(week) != week {
+		return Batch{}, fmt.Errorf("suggest: scheduled batch week %s is not a Monday", week)
+	}
+	return s.start(ctx, TriggerScheduled, week.String())
+}
+
+// start does StartBatch's work for a batch with trigger and the job week.
+func (s *Service) start(ctx context.Context, trigger, week string) (Batch, error) {
 	var b Batch
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		var err error
-		b, err = s.startBatch(ctx, tx, trigger)
+		b, err = s.startBatch(ctx, tx, trigger, week)
 		return err
 	})
 	if err != nil {
@@ -228,10 +247,11 @@ func failedBatch(ctx context.Context, q *db.Queries) (*Batch, error) {
 	return &Batch{ID: cur.ID, JobID: jobID, Trigger: cur.Trigger, Status: cur.Status}, nil
 }
 
-// startBatch does StartBatch's work in tx: the batch and the job that runs
-// it are committed together, so a batch is never seen without its job. The
-// caller wakes the job runner once tx has committed and Created is true.
-func (s *Service) startBatch(ctx context.Context, tx *sql.Tx, trigger string) (Batch, error) {
+// startBatch does StartBatch's work in tx, for a batch with trigger whose
+// job has week (BatchJob.Week): the batch and the job that runs it are
+// committed together, so a batch is never seen without its job. The caller
+// wakes the job runner once tx has committed and Created is true.
+func (s *Service) startBatch(ctx context.Context, tx *sql.Tx, trigger, week string) (Batch, error) {
 	q := db.New(tx)
 	cur, err := s.activeBatch(ctx, q)
 	if err != nil {
@@ -250,7 +270,7 @@ func (s *Service) startBatch(ctx context.Context, tx *sql.Tx, trigger string) (B
 	if err != nil {
 		return Batch{}, fmt.Errorf("suggest: create batch: %w", err)
 	}
-	jobID, err := s.batchJob.EnqueueTx(ctx, tx, BatchJob{BatchID: row.ID})
+	jobID, err := s.batchJob.EnqueueTx(ctx, tx, BatchJob{BatchID: row.ID, Week: week})
 	if err != nil {
 		return Batch{}, fmt.Errorf("suggest: enqueue batch %s: %w", row.ID, err)
 	}
@@ -439,7 +459,7 @@ func (s *Service) decide(ctx context.Context, id, decision, dinnerStatus, update
 		if left >= ReplenishBelow {
 			return nil
 		}
-		b, err := s.startBatch(ctx, tx, TriggerReplenish)
+		b, err := s.startBatch(ctx, tx, TriggerReplenish, "")
 		if err != nil {
 			return err
 		}

@@ -227,6 +227,16 @@ describe('HomePage', () => {
     expect(screen.queryByText(/min$/)).not.toBeInTheDocument()
   })
 
+  it('reports tonight without a minutes_total rather than showing it as unknown', async () => {
+    const { minutes_total: _, ...tonight } = HOME.tonight
+    renderHome({ ...HOME, tonight })
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('tonight has no minutes_total')
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Tonight' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Regular')).not.toBeInTheDocument()
+  })
+
   it.each([
     ['a missing', undefined],
     ['an empty', ''],
@@ -246,6 +256,27 @@ describe('HomePage', () => {
       'shoppingList label "Week 40 · Sep 28 – Oct 4" is not the week of 2026-10-05',
     )
     expect(screen.queryByRole('link', { name: /Shopping list ready/ })).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['a missing', undefined],
+    ['an empty', ''],
+  ])('reports an unready Supply run with %s label rather than showing the home', async (_, label) => {
+    renderHome({ ...HOME, shoppingList: { ...NOTHING_YET.shoppingList, label } })
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('the unready shoppingList has no label')
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    expect(screen.queryByRole('list', { name: 'Status' })).not.toBeInTheDocument()
+  })
+
+  it('reports an unready Supply run whose label is not its week rather than showing the home', async () => {
+    renderHome({ ...HOME, shoppingList: { ...NOTHING_YET.shoppingList, label: 'Week 41 · Oct 5 – 11' } })
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'shoppingList label "Week 41 · Oct 5 – 11" is not the week of 2026-09-28',
+    )
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    expect(screen.queryByRole('list', { name: 'Status' })).not.toBeInTheDocument()
   })
 
   it('reports a Supply run whose weekStart is not a date rather than showing it', async () => {

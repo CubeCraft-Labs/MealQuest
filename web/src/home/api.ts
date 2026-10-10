@@ -39,7 +39,8 @@ function parseTonight(where: string, body: unknown): Tonight | null {
   if (!isRecord(body) || typeof body.id !== 'string' || typeof body.name !== 'string') {
     throw new Error(`${where}: tonight is not a dinner`)
   }
-  const minutes = body.minutes_total ?? null
+  if (!('minutes_total' in body)) throw new Error(`${where}: tonight has no minutes_total`)
+  const minutes = body.minutes_total
   if (minutes !== null && (!Number.isInteger(minutes) || (minutes as number) <= 0)) {
     throw new Error(`${where}: tonight's minutes_total ${String(minutes)} is not a positive whole number`)
   }
@@ -52,21 +53,19 @@ function parseTonight(where: string, body: unknown): Tonight | null {
   }
 }
 
-// parseShoppingList checks the shoppingList of a GET /api/v1/home body. A
-// ready list must carry the API's label for its week, which must be the
-// label weekStart has, since the status row shows dates from weekStart.
+// parseShoppingList checks the shoppingList of a GET /api/v1/home body. The
+// list, ready or not, must carry the API's label for its week, which must be
+// the label weekStart has, since the status row shows dates from weekStart.
 function parseShoppingList(where: string, list: unknown): ShoppingListStatus {
   if (!isRecord(list) || typeof list.weekStart !== 'string' || typeof list.ready !== 'boolean') {
     throw new Error(`${where}: shoppingList is not a week's Supply run status`)
   }
   const week = weekLabel(list.weekStart)
-  if (list.ready) {
-    if (typeof list.label !== 'string' || list.label === '') {
-      throw new Error(`${where}: the ready shoppingList has no label`)
-    }
-    if (list.label !== `${week.week} · ${week.dates}`) {
-      throw new Error(`${where}: shoppingList label "${list.label}" is not the week of ${list.weekStart}`)
-    }
+  if (typeof list.label !== 'string' || list.label === '') {
+    throw new Error(`${where}: the ${list.ready ? 'ready' : 'unready'} shoppingList has no label`)
+  }
+  if (list.label !== `${week.week} · ${week.dates}`) {
+    throw new Error(`${where}: shoppingList label "${list.label}" is not the week of ${list.weekStart}`)
   }
   return { weekStart: list.weekStart, dates: week.dates.replace(' – ', '–'), ready: list.ready }
 }

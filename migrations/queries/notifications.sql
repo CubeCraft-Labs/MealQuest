@@ -66,3 +66,11 @@ SELECT * FROM notification_prefs;
 UPDATE notification_prefs
 SET push = ?, chat = ?, updated_at = ?
 WHERE event = ?;
+
+-- name: HasNotificationSince :one
+-- Reports whether a notification was stored after since, or at all when
+-- since is NULL.
+SELECT EXISTS (
+	SELECT 1 FROM notification_outbox
+	WHERE CAST(sqlc.narg(since) AS TEXT) IS NULL OR created_at > CAST(sqlc.narg(since) AS TEXT)
+) AS found;

@@ -179,6 +179,9 @@ type Querier interface {
 	// them only when a member edited them while it was grounding. Like
 	// GroundDinner it clears the pasted recipe_url: the recipe replaces the link.
 	GroundPendingDinner(ctx context.Context, arg GroundPendingDinnerParams) (int64, error)
+	// Reports whether a notification was stored after since, or at all when
+	// since is NULL.
+	HasNotificationSince(ctx context.Context, since sql.NullString) (bool, error)
 	// Stores a pending notification for one channel, due at once. A row already
 	// stored for the event key and channel, in any status, is left unchanged and
 	// no row is inserted.

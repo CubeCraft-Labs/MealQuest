@@ -78,7 +78,7 @@ func newIdeaActionsRouter(t *testing.T, model, normalize *llm.Fake, search *reci
 		t.Fatal(err)
 	}
 	h, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t), newTestChat(t),
-		dinnerSvc, newTestSuggest(t), planSvc, newTestShopping(t), newTestGoogle(t), newTestPush(t), ideasSvc, runner, newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
+		dinnerSvc, newTestSuggest(t), planSvc, newTestShopping(t), newTestGoogle(t), newTestPush(t), ideasSvc, newTestHome(t), runner, newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
 	if err != nil {
 		t.Fatal(err)
 	}

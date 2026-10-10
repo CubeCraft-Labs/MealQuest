@@ -1,0 +1,372 @@
+package home_test
+
+import (
+	"context"
+	"database/sql"
+	"encoding/base64"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"testing"
+	"time"
+
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/llm"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/chat"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal/gcaltest"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/home"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify/notifytest"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes/recipestest"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secretbox"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/shopping"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/suggest"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/migrations"
+)
+
+// zone is the household's zone in these tests: not UTC, so a late local
+// evening is already the next day in UTC.
+const zone = "America/Chicago"
+
+// weekDates is the week of 2026-10-12, Monday first.
+var weekDates = []string{"2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16", "2026-10-17", "2026-10-18"}
+
+type env struct {
+	svc      *home.Service
+	st       *store.Store
+	notifier *notify.Service
+	loc      *time.Location
+}
+
+// newEnv returns a home service over a migrated temp database whose
+// household is in zone, reading "now" from a clock set to at.
+func newEnv(t *testing.T) *env {
+	t.Helper()
+	ctx := t.Context()
+	st, err := store.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := store.Migrate(ctx, st.Writer, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+	if err := household.SeedSettings(ctx, st, zone); err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	runner, err := jobs.NewRunner(st, logger, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notifier := notifytest.New(t, st)
+	pub := &url.URL{Scheme: "https", Host: "mealquest.example"}
+
+	box, err := secretbox.New(base64.StdEncoding.EncodeToString(make([]byte, secretbox.KeySize)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	google := gcaltest.New(t, "https://mealquest.example"+gcal.CallbackPath)
+	googleSvc, err := gcal.NewService(st, box, gcal.Config{
+		ClientID: gcaltest.ClientID, ClientSecret: gcaltest.ClientSecret, PublicURL: pub,
+		SecretKey: []byte("server-secret-key"), Endpoint: google.Endpoint(), RevokeURL: google.RevokeURL(),
+		CalendarAPI: google.CalendarAPI(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := func(context.Context, string, skills.WeekRequest) (skills.Week, error) {
+		return skills.Week{}, errors.New("no model in this test")
+	}
+	plans, err := plan.NewService(st, draft, runner, googleSvc, notifier, pub, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := recipestest.NewGrounder(t, st, t.TempDir(), &recipestest.Search{}, &recipestest.Pages{}, &recipestest.Images{}, &llm.Fake{})
+	sideQuests := func(context.Context, string, skills.SideQuestsRequest) (skills.SideQuests, error) {
+		return skills.SideQuests{}, errors.New("no model in this test")
+	}
+	suggestSvc, err := suggest.NewService(st, g, sideQuests, runner, notifier, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chatSvc, err := chat.NewService(st, box, pub, http.DefaultTransport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	title := func(context.Context, string, skills.ArchiveTitleRequest) (skills.ArchiveTitle, error) {
+		return skills.ArchiveTitle{}, errors.New("no model in this test")
+	}
+	shop, err := shopping.NewService(st, title, runner, notifier, chatSvc, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := home.NewService(household.NewSettingsService(st), plans, suggestSvc, shop, notifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loc, err := time.LoadLocation(zone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &env{svc: svc, st: st, notifier: notifier, loc: loc}
+}
+
+// at reads the Home screen with the clock at the household-local wall
+// time "YYYY-MM-DD HH:MM".
+func (e *env) at(t *testing.T, local string) home.Home {
+	t.Helper()
+	now, err := time.ParseInLocation("2006-01-02 15:04", local, e.loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home.SetClock(e.svc, func() time.Time { return now })
+	h, err := e.svc.Get(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+// dinner stores a dinner and returns its id.
+func (e *env) dinner(t *testing.T, name, status, origin string, minutes int64) string {
+	t.Helper()
+	now := store.Now().String()
+	d, err := db.New(e.st.Writer).CreateDinner(t.Context(), db.CreateDinnerParams{
+		ID: store.NewID(), Name: name, NormalizedName: harness.Normalize(name), Status: status, Origin: origin,
+		MinutesTotal:    sql.NullInt64{Int64: minutes, Valid: minutes > 0},
+		GroundingStatus: "manual", CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d.ID
+}
+
+// planWeek stores the plan of the week of 2026-10-12: the dinner named for
+// its date each day, a Regular of 30 minutes, but Wednesday a Side quest of
+// unknown minutes. It returns the plan's id.
+func (e *env) planWeek(t *testing.T) string {
+	t.Helper()
+	ctx := t.Context()
+	q := db.New(e.st.Writer)
+	now := store.Now().String()
+	planID := store.NewID()
+	if err := q.CreateWeekPlan(ctx, db.CreateWeekPlanParams{ID: planID, WeekStart: weekDates[0], CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	for _, date := range weekDates {
+		id := e.dinner(t, "Dinner "+date, "regular", "regular", 30)
+		if date == "2026-10-14" {
+			id = e.dinner(t, "Dinner "+date, "quest_log", "side_quest", 0)
+		}
+		if err := q.PutPlanDay(ctx, db.PutPlanDayParams{ID: store.NewID(), PlanID: planID, Date: date,
+			DinnerID: sql.NullString{String: id, Valid: true}, CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return planID
+}
+
+// Tonight's dinner and the date label follow the household's local
+// midnight, not UTC's: late on Tuesday evening in Chicago it is already
+// Wednesday in UTC, and Home still shows Tuesday's dinner.
+func TestTonightSwitchesAtLocalMidnight(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	e.planWeek(t)
+
+	for _, tc := range []struct {
+		local, label, dinner string
+	}{
+		// 23:59 CDT is 04:59 UTC the next day.
+		{"2026-10-13 23:59", "Tuesday, Oct 13", "Dinner 2026-10-13"},
+		{"2026-10-14 00:00", "Wednesday, Oct 14", "Dinner 2026-10-14"},
+		// 19:00 CDT on Sunday is Monday 00:00 UTC, a week with no plan.
+		{"2026-10-18 19:00", "Sunday, Oct 18", "Dinner 2026-10-18"},
+	} {
+		h := e.at(t, tc.local)
+		if h.DateLabel != tc.label {
+			t.Errorf("at %s: dateLabel = %q, want %q", tc.local, h.DateLabel, tc.label)
+		}
+		if h.Tonight == nil || h.Tonight.Name != tc.dinner {
+			t.Errorf("at %s: tonight = %+v, want %s", tc.local, h.Tonight, tc.dinner)
+		}
+	}
+
+	// Late Sunday evening of the week before, the plan's week has not
+	// begun locally, though in UTC it has.
+	if h := e.at(t, "2026-10-11 23:30"); h.Tonight != nil || h.DateLabel != "Sunday, Oct 11" {
+		t.Errorf("at 2026-10-11 23:30: tonight = %+v, dateLabel = %q, want no dinner on Sunday, Oct 11", h.Tonight, h.DateLabel)
+	}
+}
+
+// Tonight carries the dinner's id, name, photo, origin and minutes.
+func TestTonightDinner(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	e.planWeek(t)
+
+	h := e.at(t, "2026-10-13 18:00")
+	if h.Tonight == nil || h.Tonight.ID == "" || h.Tonight.Origin != "regular" || h.Tonight.Photo != nil ||
+		h.Tonight.MinutesTotal == nil || *h.Tonight.MinutesTotal != 30 {
+		t.Errorf("tonight = %+v, want Tuesday's 30-minute Regular with no photo", h.Tonight)
+	}
+	h = e.at(t, "2026-10-14 18:00")
+	if h.Tonight == nil || h.Tonight.Origin != "side_quest" || h.Tonight.MinutesTotal != nil {
+		t.Errorf("tonight = %+v, want Wednesday's Side quest of unknown minutes", h.Tonight)
+	}
+}
+
+// With no plan, no suggestions, no Supply run and no notifications, Home
+// says so: no dinner tonight, nothing to swipe, the current week's Supply
+// run not ready and nothing unread.
+func TestHomeEmpty(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+
+	h := e.at(t, "2026-10-13 23:59")
+	want := home.Home{
+		DateLabel: "Tuesday, Oct 13",
+		ShoppingList: home.ShoppingStatus{
+			WeekStart: "2026-10-12", Label: "Week 42 · Oct 12 – 18",
+		},
+	}
+	if h != want {
+		t.Errorf("home = %+v, want %+v", h, want)
+	}
+}
+
+// The Side quest count is the pending cards of the deck: a decided
+// suggestion is not counted.
+func TestSideQuestCount(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	ctx := t.Context()
+	q := db.New(e.st.Writer)
+	now := store.Now().String()
+	batch, err := q.CreateSuggestionBatch(ctx, db.CreateSuggestionBatchParams{ID: store.NewID(), Trigger: "manual", CreatedAt: now, UpdatedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.FinishSuggestionBatch(ctx, db.FinishSuggestionBatchParams{Status: "done", UpdatedAt: now, ID: batch.ID}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"Pho", "Ramen", "Tagine"} {
+		id := e.dinner(t, name, "suggested", "side_quest", 0)
+		if err := q.CreateSuggestion(ctx, db.CreateSuggestionParams{
+			ID: store.NewID(), DinnerID: id, BatchID: batch.ID, Name: name, Reason: "Because", CitedRegularIds: "[]",
+			CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if h := e.at(t, "2026-10-13 12:00"); h.SideQuestCount != 3 {
+		t.Errorf("sideQuestCount = %d, want 3", h.SideQuestCount)
+	}
+	if _, err := e.st.Writer.ExecContext(ctx, `UPDATE suggestions SET status = 'declined', decided_at = ? WHERE name = 'Pho'`, now); err != nil {
+		t.Fatal(err)
+	}
+	if h := e.at(t, "2026-10-13 12:00"); h.SideQuestCount != 2 {
+		t.Errorf("sideQuestCount after a Pass = %d, want 2", h.SideQuestCount)
+	}
+}
+
+// The Supply run shown is the upcoming week's when it has one, else the
+// current week's; the weeks are the household's local weeks.
+func TestShoppingStatus(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	ctx := t.Context()
+	planID := e.planWeek(t)
+	list := func(weekStart string, sent sql.NullString) {
+		t.Helper()
+		now := store.Now().String()
+		if _, err := e.st.Writer.ExecContext(ctx,
+			`INSERT INTO shopping_lists (id, week_start, plan_id, status, sent_to_chat_at, created_at, updated_at) VALUES (?, ?, ?, 'current', ?, ?, ?)`,
+			store.NewID(), weekStart, planID, sent, now, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	list("2026-10-12", sql.NullString{})
+	want := home.ShoppingStatus{WeekStart: "2026-10-12", Label: "Week 42 · Oct 12 – 18", Ready: true}
+	if h := e.at(t, "2026-10-16 09:00"); h.ShoppingList != want {
+		t.Errorf("shoppingList = %+v, want %+v", h.ShoppingList, want)
+	}
+
+	sent := "2026-10-17T13:00:00.000Z"
+	list("2026-10-19", sql.NullString{String: sent, Valid: true})
+	h := e.at(t, "2026-10-16 09:00")
+	if s := h.ShoppingList; s.WeekStart != "2026-10-19" || s.Label != "Week 43 · Oct 19 – 25" || !s.Ready || s.SentToChatAt == nil || *s.SentToChatAt != sent {
+		t.Errorf("shoppingList = %+v, want the upcoming week's, sent at %s", s, sent)
+	}
+
+	// Late Sunday evening locally is Monday in UTC: the current week is
+	// still the week of 2026-10-12, so its upcoming week's list shows.
+	if s := e.at(t, "2026-10-18 23:30").ShoppingList; s.WeekStart != "2026-10-19" {
+		t.Errorf("late Sunday: shoppingList week = %s, want 2026-10-19", s.WeekStart)
+	}
+	// On Monday the week of 2026-10-19 is current and has no upcoming
+	// list.
+	if s := e.at(t, "2026-10-19 08:00").ShoppingList; s.WeekStart != "2026-10-19" || !s.Ready {
+		t.Errorf("Monday: shoppingList = %+v, want the current week's", s)
+	}
+	// A week later neither the current nor the upcoming week has a list.
+	want = home.ShoppingStatus{WeekStart: "2026-10-26", Label: "Week 44 · Oct 26 – Nov 1"}
+	if s := e.at(t, "2026-10-26 08:00").ShoppingList; s != want {
+		t.Errorf("no list: shoppingList = %+v, want %+v", s, want)
+	}
+}
+
+// Recent updates are unread when a notification was stored after the
+// household last saw its updates, or ever when it never has.
+func TestRecentUpdatesUnread(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	ctx := t.Context()
+
+	if h := e.at(t, "2026-10-13 12:00"); h.RecentUpdates.Unread {
+		t.Error("unread with no notifications")
+	}
+	if err := e.notifier.Emit(ctx, notify.Event{Type: notify.NewSuggestions, Key: "new_suggestions:1", Title: "New Side quests", URL: "/discover"}); err != nil {
+		t.Fatal(err)
+	}
+	if h := e.at(t, "2026-10-13 12:00"); !h.RecentUpdates.Unread {
+		t.Error("not unread with a notification never seen")
+	}
+	seen := func(at time.Time) {
+		t.Helper()
+		if _, err := e.st.Writer.ExecContext(ctx, `UPDATE household_settings SET updates_seen_at = ?`, store.Timestamp{Time: at.UTC().Truncate(time.Millisecond)}.String()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seen(time.Now().Add(time.Hour))
+	if h := e.at(t, "2026-10-13 12:00"); h.RecentUpdates.Unread {
+		t.Error("unread with every notification seen")
+	}
+	seen(time.Now().Add(-time.Hour))
+	if h := e.at(t, "2026-10-13 12:00"); !h.RecentUpdates.Unread {
+		t.Error("not unread with a notification stored after updates were seen")
+	}
+}
+
+func TestNewServiceRequiresServices(t *testing.T) {
+	t.Parallel()
+	if _, err := home.NewService(nil, nil, nil, nil, nil); err == nil {
+		t.Fatal("NewService accepted nil services")
+	}
+}

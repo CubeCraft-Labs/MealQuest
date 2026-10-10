@@ -189,6 +189,22 @@ func (s *Service) EmitTx(ctx context.Context, tx *sql.Tx, ev Event) error {
 	})
 }
 
+// StoredSince reports whether a notification was stored after since, or
+// at all when since is nil. An event counts once it is stored for any
+// channel, whatever became of its delivery; one whose preference switches
+// every channel off is never stored and never counts.
+func (s *Service) StoredSince(ctx context.Context, since *time.Time) (bool, error) {
+	var after sql.NullString
+	if since != nil {
+		after = sql.NullString{String: timestamp(*since), Valid: true}
+	}
+	found, err := db.New(s.st.Reader).HasNotificationSince(ctx, after)
+	if err != nil {
+		return false, fmt.Errorf("notify: read notifications since %s: %w", after.String, err)
+	}
+	return found, nil
+}
+
 // emitTx stores ev in tx for each channel that channels chooses from the
 // preference of ev's type.
 func (s *Service) emitTx(ctx context.Context, tx *sql.Tx, ev Event, channels func(db.NotificationPref) ([]Channel, error)) error {

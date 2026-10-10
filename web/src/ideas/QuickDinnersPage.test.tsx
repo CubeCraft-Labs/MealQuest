@@ -30,7 +30,9 @@ function idea(name: string, method: string, minutes: number | null, difficulty: 
 
 // The ideas of mock 1j, and more for later pages and the Crock pot tab.
 const ORZO = idea('Lemon garlic shrimp orzo', 'stovetop', 25, 'medium')
-const QUESADILLAS = idea('Chicken quesadillas', 'stovetop', 20, 'easy')
+// QUESADILLAS's source is withheld, as the server sends one whose link
+// could carry a secret: the card shows all the same.
+const QUESADILLAS = { ...idea('Chicken quesadillas', 'stovetop', 20, 'easy'), source_url: null, site_name: null }
 const BROCCOLI = idea('Beef & broccoli', 'stovetop', 30, 'easy')
 const GNOCCHI = idea('Pesto gnocchi & peas', 'stovetop', 15, 'easy')
 const CHILI = idea('Crock pot chili', 'crockpot', 360, 'easy')

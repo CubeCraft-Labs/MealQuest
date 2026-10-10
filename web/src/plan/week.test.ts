@@ -100,4 +100,29 @@ describe('week helpers', () => {
     // The same instant is 13:00 in Tokyo: eleven hours to go.
     expect(untilLocalMidnight('Asia/Tokyo', new Date('2026-10-03T04:00:00Z'))).toBe(11 * 60 * 60 * 1000)
   })
+
+  it('counts a day shortened by the spring clock change as 23 hours', () => {
+    const hour = 60 * 60 * 1000
+    // 01:30 EST on Sunday March 8, 2026: clocks go forward at 02:00, so the
+    // next midnight is 00:00 EDT on March 9 (04:00Z), 21.5 hours away.
+    expect(untilLocalMidnight('America/New_York', new Date('2026-03-08T06:30:00Z'))).toBe(21.5 * hour)
+    // 03:30 EDT, after the change: 20.5 hours to midnight.
+    expect(untilLocalMidnight('America/New_York', new Date('2026-03-08T07:30:00Z'))).toBe(20.5 * hour)
+    // At midnight starting the 23-hour day, the next midnight is 23 hours away.
+    expect(untilLocalMidnight('America/New_York', new Date('2026-03-08T05:00:00Z'))).toBe(23 * hour)
+    // Noon EST the day before: the change is after the coming midnight.
+    expect(untilLocalMidnight('America/New_York', new Date('2026-03-07T17:00:00Z'))).toBe(12 * hour)
+  })
+
+  it('counts a day lengthened by the autumn clock change as 25 hours', () => {
+    const hour = 60 * 60 * 1000
+    // Midnight EDT on Sunday November 1, 2026: clocks go back at 02:00.
+    expect(untilLocalMidnight('America/New_York', new Date('2026-11-01T04:00:00Z'))).toBe(25 * hour)
+  })
+
+  it('starts the next day at the clock change when the clocks skip midnight', () => {
+    // Santiago goes from 24:00 -04 to 01:00 -03 on September 6, 2026 (04:00Z);
+    // at 23:00 -04 on September 5 the next day starts an hour later.
+    expect(untilLocalMidnight('America/Santiago', new Date('2026-09-06T03:00:00Z'))).toBe(60 * 60 * 1000)
+  })
 })

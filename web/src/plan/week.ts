@@ -125,19 +125,38 @@ export function defaultWeek(schedule: { timezone: string; plan_draft_dow: number
   return drafted ? addDays(thisWeek, 7) : thisWeek
 }
 
-// untilLocalMidnight is how many milliseconds after instant now the next
-// midnight comes in IANA zone. It counts from the zone's wall clock at now,
-// so a change of UTC offset before that midnight moves it by the change;
-// offsets change in the small hours, after midnight.
-export function untilLocalMidnight(zone: string, now: Date): number {
+// wallClock is the household-local wall clock at instant t in IANA zone,
+// read as if it were UTC: the zone's UTC offset at t is wallClock - t.
+function wallClock(zone: string, t: number): number {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: zone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
     hourCycle: 'h23',
-  }).formatToParts(now)
+  }).formatToParts(new Date(t))
   const part = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((p) => p.type === type)!.value)
-  const sinceMidnight = ((part('hour') * 60 + part('minute')) * 60 + part('second')) * 1000 + now.getUTCMilliseconds()
-  return DAY_MS - sinceMidnight
+  const wall = Date.UTC(part('year'), part('month') - 1, part('day'), part('hour'), part('minute'), part('second'))
+  return wall + (((t % 1000) + 1000) % 1000)
+}
+
+// untilLocalMidnight is how many milliseconds after instant now the next
+// local day begins in IANA zone. It finds the actual instant of the next
+// day's midnight, so a day shortened or lengthened by a change of UTC offset
+// is counted as it is. The candidates are that midnight at the zone's offset
+// now and at the offset that candidate lands on; the earliest that falls on
+// the next day is its start, which is the offset change itself when the
+// clocks skip midnight.
+export function untilLocalMidnight(zone: string, now: Date): number {
+  const t = now.getTime()
+  const tomorrow = addDays(localNow(zone, now).date, 1)
+  const midnight = midnightUTC(tomorrow).getTime()
+  const first = midnight - (wallClock(zone, t) - t)
+  const second = midnight - (wallClock(zone, first) - first)
+  const starts = [first, second].filter((c) => localNow(zone, new Date(c)).date === tomorrow)
+  if (starts.length === 0) throw new Error(`no start of ${tomorrow} found in ${zone}`)
+  return Math.min(...starts) - t
 }

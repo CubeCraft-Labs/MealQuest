@@ -44,7 +44,10 @@ function Updates({ onOpen }: { onOpen: (url: string) => void }) {
   const updates = useUpdates()
   const markSeen = useMarkUpdatesSeen()
   const { mutate } = markSeen
-  const newest = updates.data?.[0]?.created_at
+  // fresh says this opening's read has come back; until then a list still
+  // held from an earlier opening is neither shown nor marked seen.
+  const fresh = updates.isSuccess && updates.isFetchedAfterMount
+  const newest = fresh ? updates.data[0]?.created_at : undefined
   // The instant the relative times count from, fixed while the sheet is
   // open.
   const [now] = useState(() => new Date())
@@ -58,7 +61,7 @@ function Updates({ onOpen }: { onOpen: (url: string) => void }) {
       <ErrorBanner onRetry={() => void updates.refetch()}>Couldn't load your updates. {updates.error.message}</ErrorBanner>
     )
   }
-  if (updates.isPending) {
+  if (!fresh) {
     return (
       <div aria-busy="true" aria-label="Updates loading" className={styles.rows}>
         {Array.from({ length: 3 }, (_, i) => (

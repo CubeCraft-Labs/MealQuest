@@ -84,6 +84,12 @@ function homeReads(fetchMock: Mock<typeof fetch>) {
     .length
 }
 
+function updatesReads(fetchMock: Mock<typeof fetch>) {
+  return fetchMock.mock.calls.filter(
+    ([input, init]) => String(input) === UPDATES_PATH && (init?.method ?? 'GET') === 'GET',
+  ).length
+}
+
 // Where shows the route a row went to.
 function Where() {
   const location = useLocation()
@@ -199,6 +205,56 @@ describe('Recent updates sheet', () => {
     )
     await waitFor(() => expect(homeReads(fetchMock)).toBe(4))
     expect(screen.queryByTestId('unread-dot')).not.toBeInTheDocument()
+  })
+
+  it('on an immediate reopen waits for that opening’s read, and marks the newer event seen, not the list held from before', async () => {
+    const stored = [...UPDATES.updates]
+    let reads = 0
+    let answer: (() => void) | undefined
+    const fetchMock = stubServer({
+      [`GET ${UPDATES_PATH}`]: () => {
+        const body = { updates: [...stored] }
+        reads++
+        // Every reading after the first is held until the test answers it.
+        if (reads === 1) return jsonResponse(200, body)
+        return new Promise<Response>((resolve) => (answer = () => resolve(jsonResponse(200, body))))
+      },
+    })
+    await renderHome()
+    await rows(await openSheet())
+    await waitFor(() => expect(posts(fetchMock)).toHaveLength(1))
+
+    // Closed and opened again at once, before any cache-collection timer
+    // could run, with a new event stored in between.
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    const reminder = {
+      type: 'day_of_reminder',
+      title: 'Tacos tonight',
+      body: 'Dinner at 6:00.',
+      url: '/plan',
+      created_at: new Date().toISOString(),
+    }
+    stored.unshift(reminder)
+    fireEvent.click(screen.getByRole('button', { name: /^Recent updates/ }))
+    const sheet = screen.getByRole('dialog', { name: 'Recent updates' })
+
+    // The list held from the first opening is neither shown nor marked
+    // seen while this opening's read is in flight.
+    await waitFor(() => expect(updatesReads(fetchMock)).toBe(2))
+    expect(within(sheet).getByLabelText('Updates loading')).toBeInTheDocument()
+    expect(within(sheet).queryByRole('list')).not.toBeInTheDocument()
+    expect(posts(fetchMock)).toHaveLength(1)
+
+    answer!()
+    const listed = await rows(sheet)
+    expect(listed).toHaveLength(4)
+    expect(listed[0]).toHaveTextContent('Tacos tonight')
+    await waitFor(() =>
+      expect(posts(fetchMock)).toEqual([
+        JSON.stringify({ through: UPDATES.updates[0]!.created_at }),
+        JSON.stringify({ through: reminder.created_at }),
+      ]),
+    )
   })
 
   it.each([

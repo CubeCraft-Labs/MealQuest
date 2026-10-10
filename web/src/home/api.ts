@@ -144,16 +144,16 @@ export function parseUpdates(where: string, body: unknown, origin: string): Upda
 }
 
 // useUpdates is the Recent updates (GET /api/v1/updates): the last ten
-// notification events, newest first. The list is dropped as soon as the
-// sheet showing it closes (gcTime 0), so each opening reads it afresh and
-// never shows, or marks seen, a list read before an event stored since.
+// notification events, newest first. Each opening of the sheet reads it
+// afresh (refetchOnMount 'always'), whatever the query client still holds;
+// the sheet shows, and marks seen, only the list that opening read.
 export function useUpdates() {
   const { apiFetch } = useApi()
   return useQuery({
     queryKey: UPDATES_KEY,
     queryFn: async () =>
       parseUpdates(`GET ${UPDATES_PATH}`, await apiFetch<unknown>(UPDATES_PATH), window.location.origin),
-    gcTime: 0,
+    refetchOnMount: 'always',
   })
 }
 

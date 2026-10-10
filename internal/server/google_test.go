@@ -69,7 +69,7 @@ func newGoogleEnv(t *testing.T) *googleEnv {
 	}
 	logger := slog.New(slog.NewJSONHandler(e.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	e.h, err = NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t), newTestChat(t),
-		newTestDinners(t), newTestSuggest(t), newTestPlan(t), newTestShopping(t), svc, newTestPush(t), newTestIdeas(t), newTestRunner(t), newTestPhotos(t),
+		newTestDinners(t), newTestSuggest(t), newTestPlan(t), newTestShopping(t), svc, newTestPush(t), newTestIdeas(t), newTestHome(t), newTestRunner(t), newTestPhotos(t),
 		fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
 	if err != nil {
 		t.Fatal(err)

@@ -1089,6 +1089,34 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
   for any other `by`. A frozen list is read through `GET
   /api/v1/shopping/{weekStart}` with `status` `archived`.
 
+## Home API (Feature 21)
+
+- `GET /api/v1/home` (`home.Service`) aggregates the Home screen from the
+  services that own each value, at "now" in the household's zone (never
+  UTC), and answers:
+
+  ```json
+  {
+    "dateLabel": "Friday, Oct 2",
+    "tonight": {"id": "…", "name": "…", "photo": "/media/…", "origin": "regular", "minutes_total": 40},
+    "sideQuestCount": 10,
+    "shoppingList": {"weekStart": "2026-10-05", "label": "Week 41 · Oct 5 – 11", "ready": true, "sentToChatAt": null},
+    "recentUpdates": {"unread": true}
+  }
+  ```
+
+  `tonight` is today's day of the current week's plan (`plan.Get`), null
+  when the week has no plan; it changes at the household's local
+  midnight. `photo` and `minutes_total` are null when unknown.
+  `sideQuestCount` is the pending cards of the deck (`suggest.Deck`).
+  `shoppingList` is the upcoming week's Supply run when it has one, else
+  the current week's (`shopping.Get`); with neither, it is the current
+  week with `ready` false. `recentUpdates.unread` is true when a
+  notification was stored in `notification_outbox` after
+  `household_settings.updates_seen_at`, or at all while that is null
+  (`notify.StoredSince`); an event whose channels are all switched off is
+  never stored and never counts. Nothing writes `updates_seen_at` yet.
+
 ## Frontend
 
 - React 19, TypeScript, Vite, React Router 7, TanStack Query 5,

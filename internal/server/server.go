@@ -16,6 +16,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/home"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ideas"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
@@ -66,12 +67,12 @@ type RouteMounter interface {
 // /api/v1/settings/notifications/test-push; ideasSvc serves POST
 // /api/v1/ideas/from-ingredients and POST /api/v1/ideas/quick, and with
 // dinnerSvc POST /api/v1/ideas/{jobId}/items/{i}/quest-log and, with
-// planSvc too, /cook-tonight; runner serves
+// planSvc too, /cook-tonight; homeSvc serves GET /api/v1/home; runner serves
 // POST /api/v1/jobs and GET /api/v1/jobs/{id}; photos serves
 // GET /media/photos/{id}-{size}.jpg; assets is the web build
 // served for every other GET. /health, /auth and the web build are public.
 // Requests to /api/v1 other than GET also need the session's CSRF token in CSRFHeader.
-func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, settings *household.SettingsService, search *recipes.SearchSettingsService, ai *aisettings.Service, chatSvc *chat.Service, dinnerSvc *dinners.Service, suggestSvc *suggest.Service, planSvc *plan.Service, shopSvc *shopping.Service, googleSvc *gcal.Service, pushSvc *push.Service, ideasSvc *ideas.Service, runner *jobs.Runner, photos PhotoFiles, assets fs.FS) (http.Handler, error) {
+func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, auth RouteMounter, sessions SessionLookup, settings *household.SettingsService, search *recipes.SearchSettingsService, ai *aisettings.Service, chatSvc *chat.Service, dinnerSvc *dinners.Service, suggestSvc *suggest.Service, planSvc *plan.Service, shopSvc *shopping.Service, googleSvc *gcal.Service, pushSvc *push.Service, ideasSvc *ideas.Service, homeSvc *home.Service, runner *jobs.Runner, photos PhotoFiles, assets fs.FS) (http.Handler, error) {
 	if settings == nil {
 		return nil, errors.New("server: nil household settings service")
 	}
@@ -105,6 +106,9 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	if ideasSvc == nil {
 		return nil, errors.New("server: nil ideas service")
 	}
+	if homeSvc == nil {
+		return nil, errors.New("server: nil home service")
+	}
 	if runner == nil {
 		return nil, errors.New("server: nil job runner")
 	}
@@ -137,6 +141,7 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 		sub.NotFound(notFound)
 	}
 	apiV1.Get("/me", me(logger))
+	apiV1.Get("/home", getHome(logger, homeSvc))
 	apiV1.Get("/settings/household", getHouseholdSettings(logger, settings))
 	apiV1.Patch("/settings/household", patchHouseholdSettings(logger, settings))
 	apiV1.Get("/settings/notifications", getNotificationSettings(logger, settings))

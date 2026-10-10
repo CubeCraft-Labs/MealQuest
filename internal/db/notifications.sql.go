@@ -97,6 +97,22 @@ func (q *Queries) GetNotificationPref(ctx context.Context, event string) (Notifi
 	return i, err
 }
 
+const hasNotificationSince = `-- name: HasNotificationSince :one
+SELECT EXISTS (
+	SELECT 1 FROM notification_outbox
+	WHERE CAST(?1 AS TEXT) IS NULL OR created_at > CAST(?1 AS TEXT)
+) AS found
+`
+
+// Reports whether a notification was stored after since, or at all when
+// since is NULL.
+func (q *Queries) HasNotificationSince(ctx context.Context, since sql.NullString) (bool, error) {
+	row := q.db.QueryRowContext(ctx, hasNotificationSince, since)
+	var found bool
+	err := row.Scan(&found)
+	return found, err
+}
+
 const insertNotification = `-- name: InsertNotification :execrows
 INSERT INTO notification_outbox (
 	id, event_key, channel, payload, status, attempts, next_attempt_at, created_at, updated_at

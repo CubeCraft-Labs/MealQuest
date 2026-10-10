@@ -53,12 +53,18 @@ func newTestRouter(t *testing.T, version string) http.Handler {
 
 func newTestRouterWith(t *testing.T, version string, settings *household.SettingsService, runner *jobs.Runner) http.Handler {
 	t.Helper()
+	return newTestRouterWithHome(t, version, settings, runner, newTestHome(t))
+}
+
+// newTestRouterWithHome is newTestRouterWith serving Home from homeSvc.
+func newTestRouterWithHome(t *testing.T, version string, settings *household.SettingsService, runner *jobs.Runner, homeSvc *home.Service) http.Handler {
+	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	assets := fstest.MapFS{
 		"index.html":             {Data: []byte(fixtureIndex)},
 		"assets/index-AbC123.js": {Data: []byte(fixtureAsset)},
 	}
-	r, err := NewRouter(logger, version, nil, stubAuth{}, stubSessions{}, settings, newTestSearch(t), newTestAI(t), newTestChat(t), newTestDinners(t), newTestSuggest(t), newTestPlan(t), newTestShopping(t), newTestGoogle(t), newTestPush(t), newTestIdeas(t), newTestHome(t), runner, newTestPhotos(t), assets)
+	r, err := NewRouter(logger, version, nil, stubAuth{}, stubSessions{}, settings, newTestSearch(t), newTestAI(t), newTestChat(t), newTestDinners(t), newTestSuggest(t), newTestPlan(t), newTestShopping(t), newTestGoogle(t), newTestPush(t), newTestIdeas(t), homeSvc, runner, newTestPhotos(t), assets)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +271,13 @@ func newTestShopping(t *testing.T) *shopping.Service {
 // connection. One database keeps the routers that never ask for Home cheap.
 func newTestHome(t *testing.T) *home.Service {
 	t.Helper()
-	st := newTestStore(t)
+	return newTestHomeOn(t, newTestStore(t))
+}
+
+// newTestHomeOn returns a home service over st, a migrated database, which
+// it seeds with zone America/New_York and the seed notification preferences.
+func newTestHomeOn(t *testing.T, st *store.Store) *home.Service {
+	t.Helper()
 	if err := household.SeedSettings(context.Background(), st, "America/New_York"); err != nil {
 		t.Fatal(err)
 	}

@@ -182,6 +182,53 @@ func (q *Queries) ListNotificationPrefs(ctx context.Context) ([]NotificationPref
 	return items, nil
 }
 
+const listRecentNotifications = `-- name: ListRecentNotifications :many
+SELECT o.event_key, o.payload, o.created_at FROM notification_outbox o
+WHERE o.id = (
+	SELECT i.id FROM notification_outbox i
+	WHERE i.event_key = o.event_key
+	ORDER BY i.created_at DESC, i.id DESC
+	LIMIT 1
+)
+ORDER BY o.created_at DESC, o.event_key DESC
+LIMIT ?1
+`
+
+type ListRecentNotificationsRow struct {
+	EventKey  string
+	Payload   string
+	CreatedAt string
+}
+
+// Returns the last lim distinct events stored, newest first: one row per
+// event key, the last stored for it whatever its channel, so an event
+// stored for push and Google Chat is one row. The last, because a channel
+// switched on later can store the same event key again, and
+// HasNotificationSince counts that row: an event is as new as its newest
+// row, so marking it seen also covers that row.
+func (q *Queries) ListRecentNotifications(ctx context.Context, lim int64) ([]ListRecentNotificationsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listRecentNotifications, lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRecentNotificationsRow
+	for rows.Next() {
+		var i ListRecentNotificationsRow
+		if err := rows.Scan(&i.EventKey, &i.Payload, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markNotificationSent = `-- name: MarkNotificationSent :execrows
 UPDATE notification_outbox
 SET status = 'sent', attempts = attempts + 1, next_attempt_at = NULL, updated_at = ?1

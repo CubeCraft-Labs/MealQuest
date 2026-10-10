@@ -195,3 +195,54 @@ func (s *Service) unread(ctx context.Context, seenAt *string) (bool, error) {
 	}
 	return unread, nil
 }
+
+// RecentLimit is how many events the Recent updates sheet lists.
+const RecentLimit = 10
+
+// Update is one event in the Recent updates sheet.
+type Update struct {
+	// Type is the event type, e.g. plan_ready.
+	Type  string `json:"type"`
+	Title string `json:"title"`
+	Body  string `json:"body"`
+	// URL is the path-absolute, same-origin path a tap on the update opens.
+	URL string `json:"url"`
+	// CreatedAt is when the event was stored, UTC RFC 3339 with
+	// milliseconds; it is what POST /updates/seen takes back.
+	CreatedAt string `json:"created_at"`
+}
+
+// Updates returns the last RecentLimit distinct notification events, newest
+// first, whatever channels they went to.
+func (s *Service) Updates(ctx context.Context) ([]Update, error) {
+	events, err := s.notifier.Recent(ctx, RecentLimit)
+	if err != nil {
+		return nil, fmt.Errorf("home: %w", err)
+	}
+	out := make([]Update, len(events))
+	for i, ev := range events {
+		out[i] = Update{
+			Type: string(ev.Type), Title: ev.Title, Body: ev.Body, URL: ev.URL,
+			CreatedAt: store.Timestamp{Time: ev.CreatedAt}.String(),
+		}
+	}
+	return out, nil
+}
+
+// ErrSeenInFuture is returned by MarkUpdatesSeen for a time after now.
+var ErrSeenInFuture = errors.New("home: updates cannot be seen through a time after now")
+
+// MarkUpdatesSeen records that the household has seen its updates through
+// through, the created_at of the newest update it was shown, so
+// recentUpdates.unread is false until an event is stored after it. A time
+// before the one already recorded changes nothing; one after now is
+// ErrSeenInFuture, since it would hide events not yet stored.
+func (s *Service) MarkUpdatesSeen(ctx context.Context, through time.Time) error {
+	if through.After(s.now()) {
+		return ErrSeenInFuture
+	}
+	if err := s.settings.MarkUpdatesSeen(ctx, through); err != nil {
+		return fmt.Errorf("home: %w", err)
+	}
+	return nil
+}

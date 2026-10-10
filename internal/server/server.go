@@ -67,7 +67,8 @@ type RouteMounter interface {
 // /api/v1/settings/notifications/test-push; ideasSvc serves POST
 // /api/v1/ideas/from-ingredients and POST /api/v1/ideas/quick, and with
 // dinnerSvc POST /api/v1/ideas/{jobId}/items/{i}/quest-log and, with
-// planSvc too, /cook-tonight; homeSvc serves GET /api/v1/home; runner serves
+// planSvc too, /cook-tonight; homeSvc serves GET /api/v1/home, GET
+// /api/v1/updates and POST /api/v1/updates/seen; runner serves
 // POST /api/v1/jobs and GET /api/v1/jobs/{id}; photos serves
 // GET /media/photos/{id}-{size}.jpg; assets is the web build
 // served for every other GET. /health, /auth and the web build are public.
@@ -142,6 +143,8 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	}
 	apiV1.Get("/me", me(logger))
 	apiV1.Get("/home", getHome(logger, homeSvc))
+	apiV1.Get("/updates", getUpdates(logger, homeSvc))
+	apiV1.Post("/updates/seen", postUpdatesSeen(logger, homeSvc))
 	apiV1.Get("/settings/household", getHouseholdSettings(logger, settings))
 	apiV1.Patch("/settings/household", patchHouseholdSettings(logger, settings))
 	apiV1.Get("/settings/notifications", getNotificationSettings(logger, settings))

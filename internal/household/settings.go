@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
@@ -198,6 +199,21 @@ func (s *SettingsService) Update(ctx context.Context, patch SettingsPatch, updat
 	settings := fromRow(row)
 	s.publish(settings)
 	return settings, nil
+}
+
+// MarkUpdatesSeen records that the household has seen its Recent updates
+// through seenAt: updates_seen_at moves forward to seenAt, and is left as it
+// is when it is already at or after it. It is not a settings edit, so
+// updated_by and updated_at are kept and subscribers are not told.
+func (s *SettingsService) MarkUpdatesSeen(ctx context.Context, seenAt time.Time) error {
+	if seenAt.IsZero() {
+		return errors.New("household: mark updates seen: zero time")
+	}
+	_, err := db.New(s.st.Writer).MarkUpdatesSeen(ctx, store.Timestamp{Time: seenAt.UTC().Truncate(time.Millisecond)}.String())
+	if err != nil {
+		return fmt.Errorf("household: mark updates seen: %w", err)
+	}
+	return nil
 }
 
 // applyPatch applies a validated patch to the household settings row in q's

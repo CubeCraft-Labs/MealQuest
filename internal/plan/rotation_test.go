@@ -335,7 +335,7 @@ func TestOnlyKeepPromotesToRegular(t *testing.T) {
 
 	// Each non-test Go file naming the regular status, and how often.
 	uses := map[string]int{
-		"dinners/dinners.go":      5, // the constant (2), listable, CreateRegular's status and origin
+		"dinners/dinners.go":      6, // the constant (2), listable, CreateRegular's status and origin, AddToQuestLog reusing a Regular as it is
 		"plan/plan.go":            1, // plannable
 		"plan/rotation.go":        1, // decisionStatus[DecisionKeep]
 		"suggest/batch.go":        1, // reads which dinners are Regulars to cite

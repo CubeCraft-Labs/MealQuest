@@ -93,7 +93,9 @@ function syncedAt(where: string, value: unknown): Date | null {
   return at
 }
 
-function parsePlan(where: string, weekStart: string, body: unknown, cached: boolean): Plan {
+// parsePlan checks a body the plans API sends is the plan of the week
+// starting on weekStart; cached says the service worker answered it.
+export function parsePlan(where: string, weekStart: string, body: unknown, cached: boolean): Plan {
   if (
     !isRecord(body) ||
     typeof body.id !== 'string' ||

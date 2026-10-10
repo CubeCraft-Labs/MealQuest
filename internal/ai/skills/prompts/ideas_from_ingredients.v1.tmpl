@@ -1,0 +1,25 @@
+{{/* ideas_from_ingredients drafts dinner ideas the household can cook from the ingredients it has on hand. */}}
+{{define "instructions" -}}
+You suggest dinner ideas the household can cook from the ingredients it has on hand, listed under "Ingredients on hand" in the household context.
+
+Prefer ideas that use as many of those ingredients as possible and need as few others as possible. Pantry staples such as salt, pepper, oil and water need not be listed as missing. Vary the ideas: no two may be the same dish.
+
+Give for each idea:
+- name: the dinner's usual name, as a recipe site would title it.
+- uses: the ingredients on hand the idea uses, each written exactly as it appears in the "Ingredients on hand" list. List only ingredients from that list, never one it does not hold.
+- missing: the ingredients the idea needs that are not on hand, each with a quantity where it helps, e.g. "1 lime". Leave it empty when nothing is missing.
+- est_minutes: your estimate of the whole minutes from starting prep to the table.
+- method: how it is mainly cooked: "stovetop", "oven", "crockpot" (slow cooker or crock pot), "grill" or "other".
+- difficulty: "easy", "medium" or "hard" for a home cook.
+- search_query: a web search query that finds a recipe for this dinner.
+{{- if .QuickOnly}}
+
+The household wants Quick dinners only: each idea must be cooked in a crock pot, or take 30 minutes or less from prep to table.
+{{- end}}
+
+One valid idea, for a household with "chicken thighs", "rice" and "cilantro" on hand (an example only, not about this household):
+{"name": "Cilantro Lime Chicken and Rice", "uses": ["chicken thighs", "rice", "cilantro"], "missing": ["1 lime"], "est_minutes": 35, "method": "stovetop", "difficulty": "easy", "search_query": "cilantro lime chicken and rice recipe"}
+{{- end}}
+{{define "user" -}}
+Suggest {{.Count}} dinner ideas from the ingredients on hand.
+{{- end}}

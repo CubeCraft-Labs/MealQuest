@@ -53,19 +53,22 @@ func (r batchResult) PublicJSON() ([]byte, error) { return json.Marshal(r) }
 // wanted at a time, until BatchSize are kept or none are left. A Side quest
 // no recipe grounds is dropped; any other grounding failure fails the
 // batch, as does suggest_side_quests failing, with no Side quest made up
-// instead. Each round's grounded Side quests are stored before the next
-// round starts, so the deck fills as the batch goes. The batch ends done
-// or failed; Side quests stored before a failure stay in the deck. When
-// recording the batch's end fails, so does the job; when it times out at
-// shutdown, the job is left running and the batch with it, for the next
-// start to fail.
+// instead. The batch ends done or failed. When recording the batch's end
+// fails, so does the job; when it times out at shutdown, the job is left
+// running and the batch with it, for the next start to fail.
 //
-// A scheduled or manual batch emits new_suggestions (see noticeOf) in the
-// transaction that first adds Side quests to the deck, so the
-// household is told of every Side quest stored, whether or not the batch
-// then ends done: a later round, or recording the batch's end, may fail.
-// A replenish batch, which tops up the deck as the household swipes, never
-// notifies. See store.
+// When a batch stores its Side quests depends on whether it notifies (see
+// noticeOf). A scheduled or manual batch notifies: it holds every round's
+// grounded Side quests and, once the last round is done, stores them all
+// in one transaction with one new_suggestions counting and naming every
+// Side quest stored. So the household is told of exactly what the batch
+// added, once; and a batch that fails at any round, including a later
+// round's normalize_recipe, stores nothing and sends nothing, leaving no
+// Side quest in the deck that was never announced. A replenish batch,
+// which tops up the deck as the household swipes and never notifies,
+// stores each round's Side quests before the next round starts, so the
+// deck fills as it goes; those stored before a failure stay in the deck.
+// See store.
 func (s *Service) runBatch(ctx context.Context, p BatchJob, publish func(batchResult) error) (batchResult, error) {
 	batch, err := db.New(s.st.Reader).GetSuggestionBatch(ctx, p.BatchID)
 	if err != nil {
@@ -102,8 +105,9 @@ func (s *Service) runBatch(ctx context.Context, p BatchJob, publish func(batchRe
 }
 
 // fill does runBatch's work for job of a batch with trigger, returning a
-// *jobs.Failure for a failure the household may see. Unless the batch is a
-// replenish one, store emits new_suggestions with the Side quests it adds.
+// *jobs.Failure for a failure the household may see. A batch with a notice
+// is stored once, when its last round is done; any other batch round by
+// round.
 func (s *Service) fill(ctx context.Context, trigger string, job BatchJob, publish func(batchResult) error) (batchResult, error) {
 	batchID := job.BatchID
 	res := batchResult{BatchID: batchID, Stage: StageSuggesting, SuggestionIDs: []string{}}
@@ -131,26 +135,44 @@ func (s *Service) fill(ctx context.Context, trigger string, job BatchJob, publis
 		return batchResult{}, err
 	}
 	left := out.Suggestions
-	for len(res.SuggestionIDs) < BatchSize && len(left) > 0 {
-		round := left[:min(BatchSize-len(res.SuggestionIDs), len(left))]
+	// held are a notifying batch's grounded Side quests, not yet stored.
+	var held []groundedQuest
+	for len(res.SuggestionIDs)+len(held) < BatchSize && len(left) > 0 {
+		round := left[:min(BatchSize-len(res.SuggestionIDs)-len(held), len(left))]
 		left = left[len(round):]
 		grounded, err := s.ground(ctx, round)
 		if err != nil {
 			return batchResult{}, err
 		}
 		res.Dropped += len(round) - len(grounded)
-		ids, err := s.store(ctx, batchID, note, grounded)
-		if err != nil {
+		if note != nil {
+			held = append(held, grounded...)
+		} else if err := s.storeInto(ctx, &res, nil, grounded); err != nil {
 			return batchResult{}, err
 		}
-		res.Dropped += len(grounded) - len(ids)
-		res.SuggestionIDs = append(res.SuggestionIDs, ids...)
 		if err := publish(res); err != nil {
+			return batchResult{}, err
+		}
+	}
+	if note != nil {
+		if err := s.storeInto(ctx, &res, note, held); err != nil {
 			return batchResult{}, err
 		}
 	}
 	res.Stage = StageDone
 	return res, nil
+}
+
+// storeInto stores quests for res's batch with note (see store) and adds
+// the suggestions stored, and the Side quests left out, to res.
+func (s *Service) storeInto(ctx context.Context, res *batchResult, note *notice, quests []groundedQuest) error {
+	ids, err := s.store(ctx, res.BatchID, note, quests)
+	if err != nil {
+		return err
+	}
+	res.Dropped += len(quests) - len(ids)
+	res.SuggestionIDs = append(res.SuggestionIDs, ids...)
+	return nil
 }
 
 // notice is how a batch's new_suggestions is keyed: by id, as
@@ -265,8 +287,9 @@ func (s *Service) ground(ctx context.Context, quests []skills.SideQuest) ([]grou
 // note, counting and naming those stored, is emitted in the same
 // transaction, so the Side quests and their notification commit together
 // or not at all: a notification that cannot be stored fails the store, and
-// the batch with it. The event's key makes the first round to store Side
-// quests the one that notifies; a later round's emit stores nothing.
+// the batch with it. A notifying batch calls store once, with all its
+// Side quests, so the count is the batch's (see runBatch). This is the
+// only place new_suggestions is emitted.
 func (s *Service) store(ctx context.Context, batchID string, note *notice, quests []groundedQuest) ([]string, error) {
 	ids := []string{}
 	var stored []string

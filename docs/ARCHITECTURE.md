@@ -309,20 +309,24 @@ automatic** (D-021).
   `suggest_side_quests` for 5 Side quests (scope: the batch id), then
   grounds the survivors in the model's order with `Grounder.GroundMany`,
   as many as are still wanted at a time, until 5 are kept or none are
-  left. A Side quest no recipe grounds is dropped; each round's grounded
-  ones are stored before the next — a dinner with status `suggested`,
-  origin `side_quest`, grounding_status `grounded` with the recipe's
-  recipe_id, photo_id, method, minutes_total and difficulty and the
-  model's cuisine, and a `pending` suggestion with the name it is
-  suggested under, the reason and `cited_regular_ids` — unless, since the
-  job read its input, a dinner it repeats was added, a suggestion it
-  repeats passed, or a Regular it cites renamed or archived (checked in
-  the storing transaction). The job publishes
-  `{batch_id, stage, suggestion_ids, dropped}` as it goes (`suggesting`,
+  left. A Side quest no recipe grounds is dropped. A `replenish` batch
+  stores each round's grounded ones before the next; a `scheduled` or
+  `manual` batch, which notifies, holds them and stores them all in one
+  transaction once its last round is done. Each is stored as a dinner
+  with status `suggested`, origin `side_quest`, grounding_status
+  `grounded` with the recipe's recipe_id, photo_id, method,
+  minutes_total and difficulty and the model's cuisine, and a `pending`
+  suggestion with the name it is suggested under, the reason and
+  `cited_regular_ids` — unless, since the job read its input, a dinner
+  it repeats was added, a suggestion it repeats passed, or a Regular it
+  cites renamed or archived (checked in the storing transaction). The job
+  publishes `{batch_id, stage, suggestion_ids, dropped}` as it goes (`suggesting`,
   `grounding`, `done`). It fails with `no_regulars`, `ai_failed` (the
   skill or `normalize_recipe` failed; no Side quest is made up instead,
   D-017), `search_not_configured` or `search_failed`, and the batch is set
-  `failed`; Side quests stored before the failure stay in the deck. If
+  `failed`. A failed `scheduled` or `manual` batch has stored nothing; a
+  failed `replenish` batch's Side quests stored before the failure stay
+  in the deck. If
   recording the batch's end fails, its job fails; the job runner retries
   a job's final status write with backoff until it lands, each attempt
   bounded at 5 seconds; at shutdown an attempt that fails or times out is
@@ -833,13 +837,14 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
   - `new_suggestions:{YYYY-Www}` for a `scheduled` batch, the ISO week it
     was scheduled for (carried in its job, so a batch caught up late is
     still keyed by its own week), or `new_suggestions:{batchId}` for a
-    `manual` one (URL `/discover`), when the batch first adds Side quests
-    to the deck, in the transaction storing them, so they are announced
-    even when a later round or recording the batch's end fails. Its title
-    counts that round's Side quests ("3 new Side quests are in") and its
-    body names them; a later round's emit stores nothing. A batch that
-    fails before storing any, as when `suggest_side_quests` fails (the
-    failure is in `ai_runs`), sends nothing. A `replenish` batch never
+    `manual` one (URL `/discover`), once, when the batch's last round is
+    done, in the one transaction that stores all its Side quests, so they
+    and their notification commit together or not at all. Its title
+    counts every Side quest the batch stored ("5 new Side quests are in")
+    and its body names them. A batch that fails at any round, as when
+    `suggest_side_quests` or a later round's `normalize_recipe` fails (the
+    failure is in `ai_runs`), stores no Side quest and sends nothing, so
+    no stored Side quest goes unannounced. A `replenish` batch never
     notifies. This is the only place `new_suggestions` is emitted; the
     `suggestions_weekly` schedule does not emit it itself.
   - `day_of_reminder:{date}` (URL `/dinner/{id}`) through

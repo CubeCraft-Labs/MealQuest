@@ -495,53 +495,58 @@ func TestBatchEmitsNewSuggestions(t *testing.T) {
 	}
 }
 
-// TestBatchNotifiesAsSideQuestsAreStored: new_suggestions is stored with
-// the first round to add Side quests, so a batch whose later round fails
-// still tells the household of those in the deck, once; a later round that
-// succeeds adds no second notification; a replenish batch notifies nothing.
-func TestBatchNotifiesAsSideQuestsAreStored(t *testing.T) {
+// twoRoundBatch scripts a suggest_side_quests reply of BatchSize+1 Side
+// quests, Fajita Dish A to F, whose first round grounds all but B, so a
+// second round grounds F. Unless lastGrounds, normalize_recipe fails for
+// F.
+func (e *env) twoRoundBatch(t *testing.T, lastGrounds bool) {
+	t.Helper()
+	var quests []string
+	for i := range suggest.BatchSize + 1 {
+		name := fmt.Sprintf("Fajita Dish %c", 'A'+i)
+		e.search.Results[name] = nil
+		switch {
+		case i == suggest.BatchSize && !lastGrounds:
+			// A page is found, but no normalize_recipe reply is scripted
+			// for it, so the AI call grounding it fails.
+			slug := strings.ReplaceAll(strings.ToLower(name), " ", "-")
+			page, photo := "https://r.example/"+slug, "https://r.example/"+slug+".jpg"
+			e.search.Results[name] = []recipes.Candidate{{URL: page}}
+			e.pages.Bodies[page] = recipestest.RecipePage(name, "R Kitchen", photo, 35)
+			e.images.JPEGs[photo] = recipestest.JPEG(t, 400, 320, uint8(len(e.images.JPEGs)+1))
+		case i != 1:
+			e.recipe(t, name)
+		}
+		quests = append(quests, sideQuest(name, "Like your Chicken Fajitas.", "Chicken Fajitas"))
+	}
+	e.reply(quests...)
+}
+
+// TestBatchNotifiesOnceWithEverySideQuestStored: a batch that fills across
+// two grounding rounds stores new_suggestions once, when it completes,
+// counting and naming every Side quest it stored, not just the first
+// round's; a replenish batch notifies nothing.
+func TestBatchNotifiesOnceWithEverySideQuestStored(t *testing.T) {
 	for _, tc := range []struct {
-		trigger   string
-		lastFails bool
-		notify    bool
+		trigger string
+		notify  bool
 	}{
-		{suggest.TriggerScheduled, true, true},
-		{suggest.TriggerManual, true, true},
-		{suggest.TriggerManual, false, true},
-		{suggest.TriggerReplenish, true, false},
+		{suggest.TriggerScheduled, true},
+		{suggest.TriggerManual, true},
+		{suggest.TriggerReplenish, false},
 	} {
-		t.Run(fmt.Sprintf("%s last round fails %v", tc.trigger, tc.lastFails), func(t *testing.T) {
+		t.Run(tc.trigger, func(t *testing.T) {
 			e := newEnv(t)
 			e.start(t)
-			// The first round grounds BatchSize Side quests but B; the
-			// second round grounds F.
-			var quests []string
-			for i := range suggest.BatchSize + 1 {
-				name := fmt.Sprintf("Fajita Dish %c", 'A'+i)
-				e.search.Results[name] = nil
-				if i != 1 {
-					e.recipe(t, name)
-				}
-				quests = append(quests, sideQuest(name, "Like your Chicken Fajitas.", "Chicken Fajitas"))
-			}
-			e.reply(quests...)
-			if tc.lastFails {
-				if _, err := e.st.Writer.ExecContext(t.Context(), `CREATE TRIGGER refuse_f BEFORE INSERT ON dinners WHEN NEW.name = 'Fajita Dish F' BEGIN SELECT RAISE(ABORT, 'F refused'); END`); err != nil {
-					t.Fatal(err)
-				}
-			}
+			e.twoRoundBatch(t, true)
 
 			b, key := e.startBatch(t, tc.trigger)
-			job := e.waitJob(t, b.JobID)
-			want, deck := jobs.StatusSucceeded, suggest.BatchSize
-			if tc.lastFails {
-				want, deck = jobs.StatusFailed, suggest.BatchSize-1
+			if job := e.waitJob(t, b.JobID); job.Status != jobs.StatusSucceeded {
+				t.Fatalf("batch job %s, want succeeded", job.Status)
 			}
-			if job.Status != want {
-				t.Fatalf("batch job %s, want %s", job.Status, want)
-			}
-			if got := e.deckNames(t); len(got) != deck {
-				t.Fatalf("deck = %v, want %d Side quests", got, deck)
+			deck := e.deckNames(t)
+			if want := []string{"Fajita Dish A", "Fajita Dish C", "Fajita Dish D", "Fajita Dish E", "Fajita Dish F"}; !slices.Equal(deck, want) {
+				t.Fatalf("deck = %v, want %v", deck, want)
 			}
 			rows := notifytest.Rows(t, e.st, notify.NewSuggestions)
 			if !tc.notify {
@@ -550,9 +555,47 @@ func TestBatchNotifiesAsSideQuestsAreStored(t *testing.T) {
 				}
 				return
 			}
-			if len(rows) != 1 || rows[0].Key != key || rows[0].Payload.Title != "4 new Side quests are in" ||
-				rows[0].Payload.Body != "Fajita Dish A, Fajita Dish C, Fajita Dish D + 1 more" {
-				t.Errorf("new_suggestions rows = %+v, want one keyed %s counting and naming the first round", rows, key)
+			want := fmt.Sprintf("%d new Side quests are in", len(deck))
+			if len(rows) != 1 || rows[0].Key != key || rows[0].Payload.Title != want ||
+				rows[0].Payload.Body != "Fajita Dish A, Fajita Dish C, Fajita Dish D + 2 more" {
+				t.Errorf("new_suggestions rows = %+v, want one keyed %s titled %q", rows, key, want)
+			}
+		})
+	}
+}
+
+// TestBatchFailingInALaterRoundStoresNothing: when normalize_recipe fails
+// in a batch's second grounding round, a scheduled or manual batch stores
+// none of the first round's Side quests and sends no new_suggestions, so
+// no Side quest is left in the deck unannounced; a replenish batch, which
+// never notifies, keeps the first round's in the deck.
+func TestBatchFailingInALaterRoundStoresNothing(t *testing.T) {
+	for _, tc := range []struct {
+		trigger string
+		deck    int
+	}{
+		{suggest.TriggerScheduled, 0},
+		{suggest.TriggerManual, 0},
+		{suggest.TriggerReplenish, suggest.BatchSize - 1},
+	} {
+		t.Run(tc.trigger, func(t *testing.T) {
+			e := newEnv(t)
+			e.start(t)
+			e.twoRoundBatch(t, false)
+
+			b, _ := e.startBatch(t, tc.trigger)
+			job := e.waitJob(t, b.JobID)
+			if job.Status != jobs.StatusFailed || job.Error == nil || *job.Error != suggest.ReasonAIFailed {
+				t.Fatalf("batch job %s, error %+v, want failed %s", job.Status, job.Error, suggest.ReasonAIFailed)
+			}
+			if got := e.batchStatus(t, b.ID); got != suggest.BatchFailed {
+				t.Errorf("batch status = %s, want failed", got)
+			}
+			if got := e.deckNames(t); len(got) != tc.deck {
+				t.Errorf("deck = %v, want %d Side quests", got, tc.deck)
+			}
+			if rows := notifytest.Rows(t, e.st, notify.NewSuggestions); len(rows) != 0 {
+				t.Errorf("new_suggestions rows = %+v, want none", rows)
 			}
 		})
 	}

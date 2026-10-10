@@ -215,4 +215,43 @@ describe('HomePage', () => {
     renderHome({ ...HOME, tonight: { ...HOME.tonight, origin: 'leftovers' } })
     expect(await screen.findByRole('alert')).toHaveTextContent('origin "leftovers" is not one of regular, side_quest')
   })
+
+  it.each([0, -1, 2.5])('reports tonight with minutes_total %s rather than showing it', async (minutes) => {
+    renderHome({ ...HOME, tonight: { ...HOME.tonight, minutes_total: minutes } })
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      `tonight's minutes_total ${minutes} is not a positive whole number`,
+    )
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Tonight' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/min$/)).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['a missing', undefined],
+    ['an empty', ''],
+  ])('reports a ready Supply run with %s label rather than showing it', async (_, label) => {
+    renderHome({ ...HOME, shoppingList: { ...HOME.shoppingList, label } })
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('the ready shoppingList has no label')
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /Shopping list ready/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('list', { name: 'Status' })).not.toBeInTheDocument()
+  })
+
+  it('reports a ready Supply run whose label is not its week rather than showing it', async () => {
+    renderHome({ ...HOME, shoppingList: { ...HOME.shoppingList, label: 'Week 40 · Sep 28 – Oct 4' } })
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'shoppingList label "Week 40 · Sep 28 – Oct 4" is not the week of 2026-10-05',
+    )
+    expect(screen.queryByRole('link', { name: /Shopping list ready/ })).not.toBeInTheDocument()
+  })
+
+  it('reports a Supply run whose weekStart is not a date rather than showing it', async () => {
+    renderHome({ ...HOME, shoppingList: { ...HOME.shoppingList, weekStart: 'Oct 5' } })
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('not a YYYY-MM-DD date')
+    expect(screen.queryByRole('list', { name: 'Status' })).not.toBeInTheDocument()
+  })
 })

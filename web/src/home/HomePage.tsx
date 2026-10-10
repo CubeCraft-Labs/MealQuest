@@ -12,6 +12,7 @@ import { Photo } from '../ui/Photo.tsx'
 import { Skeleton } from '../ui/Skeleton.tsx'
 import { useHome, type Home, type Origin, type Tonight } from './api.ts'
 import styles from './HomePage.module.css'
+import { RotationCheck } from './RotationCheck.tsx'
 import { UpdatesSheet } from './UpdatesSheet.tsx'
 
 const ORIGIN_LABEL: Record<Origin, string> = { regular: 'Regular', side_quest: 'Side quest' }
@@ -108,7 +109,8 @@ function Tiles() {
 // HomePage is mock 1g, Home: today's date over "Tonight's quest" and the
 // Recent updates bell, the Tonight card (or the way to plan the week), the
 // Quick dinner and Cook from what I have tiles, and the status rows, all
-// from GET /api/v1/home.
+// from GET /api/v1/home. Above the tiles is the Rotation check, "Keep it in
+// rotation?", while a tried dinner waits for the household's answer.
 //
 // The bell carries a grape dot while there are unread updates and opens the
 // Recent updates sheet, which marks them seen.
@@ -141,6 +143,7 @@ export function HomePage() {
         <ErrorBanner onRetry={() => void home.refetch()}>Couldn't load tonight's quest. {home.error.message}</ErrorBanner>
       )}
       {data !== undefined && (data.tonight === null ? <NoPlan /> : <TonightCard tonight={data.tonight} />)}
+      <RotationCheck />
       <Tiles />
       {home.isPending && (
         <div className={styles.statuses} aria-hidden="true">

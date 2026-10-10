@@ -88,7 +88,7 @@ describe('App routes', () => {
 
   it('/ renders the Home screen inside the shell', async () => {
     mockViewport(390)
-    stubFetchByPath({ ...SIGNED_IN, '/api/v1/home': () => jsonResponse(200, HOME) })
+    stubFetchByPath({ ...SIGNED_IN, '/api/v1/home': () => jsonResponse(200, HOME), '/api/v1/rotation-reviews': () => jsonResponse(200, { reviews: [] }) })
     renderAt('/')
     const heading = await screen.findByRole('heading', { level: 1, name: "Tonight's quest" })
     expect(screen.getByRole('main')).toContainElement(heading)
@@ -273,7 +273,13 @@ describe('App bootstrap', () => {
 
   it('reports a /me failure with a retry instead of rendering the routes', async () => {
     mockViewport(390)
-    stubFetch(errorResponse(500, 'internal'), jsonResponse(200, ME), jsonResponse(200, HOUSEHOLD_SETTINGS), jsonResponse(200, HOME))
+    const mes = [errorResponse(500, 'internal'), jsonResponse(200, ME)]
+    stubFetchByPath({
+      ...SIGNED_IN,
+      '/api/v1/me': () => mes.shift()!,
+      '/api/v1/home': () => jsonResponse(200, HOME),
+      '/api/v1/rotation-reviews': () => jsonResponse(200, { reviews: [] }),
+    })
     renderAt('/')
 
     expect(await screen.findByRole('alert')).toHaveTextContent('MealQuest could not load: internal message')
@@ -294,7 +300,7 @@ describe('App offline bootstrap', () => {
   // visitOnline is an earlier online visit on this device: /me answers with a
   // member, then the app is closed.
   async function visitOnline() {
-    stubFetchByPath({ ...SIGNED_IN, '/api/v1/home': () => jsonResponse(200, HOME) })
+    stubFetchByPath({ ...SIGNED_IN, '/api/v1/home': () => jsonResponse(200, HOME), '/api/v1/rotation-reviews': () => jsonResponse(200, { reviews: [] }) })
     const { unmount } = renderAt('/')
     expect(await screen.findByRole('heading', { name: 'Pizza night' })).toBeInTheDocument()
     unmount()

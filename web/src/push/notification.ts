@@ -150,6 +150,18 @@ export function planClick<W extends AppWindow>(windows: readonly W[], path: stri
 export type ClickWindow = AppWindow & {
   focus(): Promise<unknown>
   navigate(url: string): Promise<unknown>
+  postMessage(message: NotificationOpened): void
+}
+
+// NotificationOpened is the message a tap posts to an open window it focuses
+// without navigating, because the window is already at url: nothing remounts
+// there, so the screen reads afresh what the notification is about.
+export type NotificationOpened = { type: 'NOTIFICATION_OPENED'; url: string }
+
+// isNotificationOpened reports whether a message from the service worker is
+// NotificationOpened.
+export function isNotificationOpened(message: unknown): message is NotificationOpened {
+  return isRecord(message) && message.type === 'NOTIFICATION_OPENED' && typeof message.url === 'string'
 }
 
 export type ClickClients<W extends ClickWindow> = {
@@ -158,7 +170,8 @@ export type ClickClients<W extends ClickWindow> = {
 }
 
 // openNotification carries out a tap on a notification with data: focus
-// first, while the tap still allows it, then navigate.
+// first, while the tap still allows it, then navigate; a window already at
+// the url is told NotificationOpened instead.
 export async function openNotification<W extends ClickWindow>(
   data: unknown,
   clients: ClickClients<W>,
@@ -171,4 +184,5 @@ export async function openNotification<W extends ClickWindow>(
   }
   await plan.window.focus()
   if (plan.navigate) await plan.window.navigate(plan.url)
+  else plan.window.postMessage({ type: 'NOTIFICATION_OPENED', url: plan.url })
 }

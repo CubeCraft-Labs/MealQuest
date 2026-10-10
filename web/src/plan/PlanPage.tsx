@@ -1,13 +1,13 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { CalendarDays, Check, ChevronLeft, ChevronRight, Plus, RefreshCw, ShoppingCart } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router'
+import { Link, useSearchParams } from 'react-router'
 import { ApiError, useJob } from '../api/index.ts'
 import { QUEST_LOG_KEY } from '../discover/api.ts'
 import { Confirm } from '../settings/LeaveGuard.tsx'
 import { methodLabels } from '../settings/RegularsSettingsPage.tsx'
 import { formatClockTime, useHouseholdSettings } from '../settings/api.ts'
-import { supplyRunScreen, useGenerateSupplyRun, useSupplyRun } from '../shopping/api.ts'
+import { supplyRunScreen, useGenerateSupplyRun, useSupplyRun, WEEK_PARAM } from '../shopping/api.ts'
 import { useBreakpoint, type Breakpoint } from '../shell/useBreakpoint.ts'
 import { Button } from '../ui/Button.tsx'
 import buttonStyles from '../ui/Button.module.css'
@@ -40,6 +40,7 @@ import {
   addDays,
   dayOfMonth,
   defaultWeek,
+  isMonday,
   localNow,
   weekdayKicker,
   weekdayName,
@@ -666,19 +667,28 @@ function PushFailure({ error, cached, onRetry }: { error: Error; cached: boolean
 // PlanPage is the Draft board on the week chosen with the previous / next
 // week buttons: mock 1f on mobile; from tablet up the plan manager, with the
 // Quest log as a strip under the grid on tablet (2c) and the Quest log and
-// Regulars in a right panel on desktop (2d). It opens on next week once this
+// Regulars in a right panel on desktop (2d). It opens on the week chosen by
+// ?week=, as a plan_ready update links it, else on next week once this
 // week's plan_draft time has come in the household's zone, otherwise on this
-// week. The board keeps its place in the tree across layouts, so crossing a
+// week; the week buttons keep ?week= on the week shown. The board keeps its place in the tree across layouts, so crossing a
 // breakpoint keeps a draft being followed. From tablet up a dinner is
 // dragged from the strip or the panel onto a day of the grid to swap it in.
 export function PlanPage() {
   const layout = useBreakpoint()
   const settings = useHouseholdSettings()
-  const [week, setWeek] = useState<string | null>(null)
-  if (week === null && settings.data) setWeek(defaultWeek(settings.data, new Date()))
+  const [params, setParams] = useSearchParams()
+  const chosen = params.get(WEEK_PARAM)
+  // The default week is chosen once, not on every render: the plan_draft
+  // time passing does not move the page to another week.
+  const [opened, setOpened] = useState<string | null>(null)
+  if (opened === null && settings.data) setOpened(defaultWeek(settings.data, new Date()))
+  const week = chosen ?? opened
+  const setWeek = (weekStart: string) => setParams({ [WEEK_PARAM]: weekStart }, { replace: true })
 
   let content
-  if (settings.isError) {
+  if (chosen !== null && !isMonday(chosen)) {
+    content = <ErrorBanner>{`“${chosen}” is not the Monday of a week, as YYYY-MM-DD.`}</ErrorBanner>
+  } else if (settings.isError) {
     content = (
       <ErrorBanner onRetry={() => void settings.refetch()}>Couldn't load the household settings. {settings.error.message}</ErrorBanner>
     )

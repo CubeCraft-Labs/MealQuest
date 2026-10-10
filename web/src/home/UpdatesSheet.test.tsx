@@ -28,7 +28,7 @@ const UPDATES = {
       type: 'plan_ready',
       title: 'Your week is drafted',
       body: 'Take a look at the Draft board.',
-      url: '/plan',
+      url: '/plan?week=2026-10-12',
       created_at: minutesAgo(5),
     },
     { type: 'new_suggestions', title: '5 new Side quests', body: '', url: '/discover', created_at: minutesAgo(3 * 60) },
@@ -311,7 +311,7 @@ describe('Recent updates sheet', () => {
   })
 
   it.each([
-    [0, '/plan'],
+    [0, '/plan?week=2026-10-12'],
     [1, '/discover'],
     [2, '/plan/shopping?week=2026-10-05'],
   ])('row %i goes to %s and closes the sheet', async (i, to) => {

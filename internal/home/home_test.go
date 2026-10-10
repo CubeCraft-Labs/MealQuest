@@ -245,6 +245,7 @@ func TestHomeEmpty(t *testing.T) {
 	h := e.at(t, "2026-10-13 23:59")
 	want := home.Home{
 		DateLabel: "Tuesday, Oct 13",
+		Timezone:  zone,
 		ShoppingList: home.ShoppingStatus{
 			WeekStart: "2026-10-12", Label: "Week 42 · Oct 12 – 18",
 		},
@@ -286,6 +287,32 @@ func TestSideQuestCount(t *testing.T) {
 	}
 	if h := e.at(t, "2026-10-13 12:00"); h.SideQuestCount != 2 {
 		t.Errorf("sideQuestCount after a Pass = %d, want 2", h.SideQuestCount)
+	}
+}
+
+// Reading Home writes nothing: a batch still pending whose job is gone,
+// which a Deck read would fail, is left as it was, and the read succeeds.
+func TestGetDoesNotWriteBatches(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	ctx := t.Context()
+	created := "2026-10-13T12:00:00.000Z"
+	batch, err := db.New(e.st.Writer).CreateSuggestionBatch(ctx, db.CreateSuggestionBatchParams{ID: store.NewID(), Trigger: "manual", CreatedAt: created, UpdatedAt: created})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.Status != "pending" {
+		t.Fatalf("new batch status = %q, want pending", batch.Status)
+	}
+	if h := e.at(t, "2026-10-13 12:00"); h.SideQuestCount != 0 {
+		t.Errorf("sideQuestCount = %d, want 0", h.SideQuestCount)
+	}
+	var status, updatedAt string
+	if err := e.st.Reader.QueryRowContext(ctx, `SELECT status, updated_at FROM suggestion_batches WHERE id = ?`, batch.ID).Scan(&status, &updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if status != "pending" || updatedAt != created {
+		t.Errorf("batch after a Home read = %s at %s, want pending at %s", status, updatedAt, created)
 	}
 }
 

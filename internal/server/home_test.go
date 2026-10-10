@@ -35,6 +35,7 @@ func TestGetHome(t *testing.T) {
 		}
 		body, err := json.Marshal(map[string]any{
 			"dateLabel":      now.In(loc).Format("Monday, Jan 2"),
+			"timezone":       loc.String(),
 			"tonight":        nil,
 			"sideQuestCount": 0,
 			"shoppingList":   map[string]any{"weekStart": week.String(), "label": label, "ready": false, "sentToChatAt": nil},

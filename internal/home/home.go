@@ -50,6 +50,9 @@ func NewService(settings *household.SettingsService, plans *plan.Service, sugges
 type Home struct {
 	// DateLabel is today in the household's zone, e.g. "Friday, Oct 2".
 	DateLabel string `json:"dateLabel"`
+	// Timezone is the household's IANA zone, whose next local midnight
+	// is when Home is read again for the new day.
+	Timezone string `json:"timezone"`
 	// Tonight is the dinner planned for today on the current week's plan;
 	// nil when the week has no plan.
 	Tonight *Dinner `json:"tonight"`
@@ -92,7 +95,8 @@ type RecentUpdates struct {
 	Unread bool `json:"unread"`
 }
 
-// Get reads the Home screen at the service's "now".
+// Get reads the Home screen at the service's "now". It only reads: it
+// writes nothing, not even the batch bookkeeping a Deck read does.
 func (s *Service) Get(ctx context.Context) (Home, error) {
 	settings, err := s.settings.Get(ctx)
 	if err != nil {
@@ -110,7 +114,7 @@ func (s *Service) Get(ctx context.Context) (Home, error) {
 	if err != nil {
 		return Home{}, err
 	}
-	deck, err := s.suggest.Deck(ctx)
+	sideQuests, err := s.suggest.PendingCount(ctx)
 	if err != nil {
 		return Home{}, fmt.Errorf("home: read deck: %w", err)
 	}
@@ -124,8 +128,9 @@ func (s *Service) Get(ctx context.Context) (Home, error) {
 	}
 	return Home{
 		DateLabel:      now.Format("Monday, Jan 2"),
+		Timezone:       settings.Timezone,
 		Tonight:        tonight,
-		SideQuestCount: len(deck.Suggestions),
+		SideQuestCount: sideQuests,
 		ShoppingList:   list,
 		RecentUpdates:  RecentUpdates{Unread: unread},
 	}, nil

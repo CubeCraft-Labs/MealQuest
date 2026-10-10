@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { parseUpdates } from './api.ts'
+import { HOME } from '../test/ApiProviders.tsx'
+import { parseHome, parseUpdates } from './api.ts'
 
 const origin = 'https://mealquest.example'
 const where = 'GET /api/v1/updates'
@@ -34,6 +35,18 @@ describe('parseUpdates', () => {
   ])('refuses an update url with %s', (_, url) => {
     expect(() => parseUpdates(where, body(url), origin)).toThrow(
       `${where}: update url ${JSON.stringify(url)} is not a path on this app`,
+    )
+  })
+})
+
+describe('parseHome', () => {
+  it("keeps the household's zone, and refuses one that is not an IANA zone", () => {
+    expect(parseHome('GET /api/v1/home', HOME).timezone).toBe('America/New_York')
+    expect(() => parseHome('GET /api/v1/home', { ...HOME, timezone: 'Mars/Olympus' })).toThrow(
+      'GET /api/v1/home: timezone "Mars/Olympus" is not an IANA zone',
+    )
+    expect(() => parseHome('GET /api/v1/home', { ...HOME, timezone: undefined })).toThrow(
+      'GET /api/v1/home: timezone undefined is not an IANA zone',
     )
   })
 })

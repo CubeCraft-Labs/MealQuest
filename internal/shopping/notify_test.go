@@ -37,9 +37,9 @@ func TestGenerateEmitsListReadyOnce(t *testing.T) {
 	}
 	for _, r := range rows {
 		p := r.Payload
-		if r.Key != "list_ready:2026-10-12" || p.URL != "/plan/shopping" || p.Week != "2026-10-12" ||
+		if r.Key != "list_ready:2026-10-12" || p.URL != "/plan/shopping?week=2026-10-12" || p.Week != "2026-10-12" ||
 			p.Title != "This week's Supply run is ready" || p.Body != "3 items to buy for 2 dinners" {
-			t.Errorf("%s row = %+v, want list_ready:2026-10-12, 3 items for 2 dinners, /plan/shopping", r.Channel, r)
+			t.Errorf("%s row = %+v, want list_ready:2026-10-12, 3 items for 2 dinners, /plan/shopping?week=2026-10-12", r.Channel, r)
 		}
 	}
 

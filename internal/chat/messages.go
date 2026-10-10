@@ -2,6 +2,7 @@ package chat
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -46,7 +47,7 @@ func PlanReady(week, thisWeek store.LocalDate, dinners []string) notify.Event {
 		Key:   string(notify.PlanReady) + ":" + week.String(),
 		Title: planTitle(week, thisWeek),
 		Body:  nameList(dinners),
-		URL:   "/plan",
+		URL:   "/plan?" + url.Values{"week": {week.String()}}.Encode(),
 		Week:  week,
 	}
 }
@@ -59,7 +60,7 @@ func ListReady(week store.LocalDate, needed, dinners int) notify.Event {
 		Key:   string(notify.ListReady) + ":" + week.String(),
 		Title: "This week's Supply run is ready",
 		Body:  fmt.Sprintf("%s to buy for %s", count(needed, "item", "items"), count(dinners, "dinner", "dinners")),
-		URL:   "/plan/shopping",
+		URL:   "/plan/shopping?" + url.Values{"week": {week.String()}}.Encode(),
 		Week:  week,
 	}
 }

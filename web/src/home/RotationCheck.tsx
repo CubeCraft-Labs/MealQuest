@@ -44,17 +44,12 @@ function RotationCard({ review, disabled, onDecide }: RotationCardProps) {
 // household answers it — nothing is decided for them. An answer is applied
 // at once: Home confirms it and shows the next pending check, if any, while
 // the answer is saved; the answers are locked until it settles. A failed
-// answer puts its check back with an ErrorBanner.
+// answer puts its check back with an ErrorBanner. A failed read shows an
+// ErrorBanner, beside the checks last read: a card already shown stays
+// until it is answered.
 export function RotationCheck() {
   const reviews = useRotationReviews()
   const decide = useDecideRotationReview()
-  if (reviews.isError) {
-    return (
-      <ErrorBanner onRetry={() => void reviews.refetch()}>
-        Couldn't load the Rotation check. {reviews.error.message}
-      </ErrorBanner>
-    )
-  }
   const deciding = decide.isPending ? decide.variables.review.dinner.id : null
   const next = reviews.data?.find((review) => review.dinner.id !== deciding)
   const answered = decide.isPending || decide.isSuccess ? decide.variables : undefined
@@ -64,6 +59,11 @@ export function RotationCheck() {
         <p role="status" className={styles.confirmation}>
           {CONFIRMATION[answered.decision]}
         </p>
+      )}
+      {reviews.isError && (
+        <ErrorBanner onRetry={() => void reviews.refetch()}>
+          Couldn't load the Rotation check. {reviews.error.message}
+        </ErrorBanner>
       )}
       {decide.isError && <ErrorBanner>Couldn't save that answer. {decide.error.message}</ErrorBanner>}
       {next !== undefined && (

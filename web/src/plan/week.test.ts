@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { addDays, dayAndDate, dayOfMonth, defaultWeek, localNow, weekdayKicker, weekdayName, weekLabel, weekStart } from './week.ts'
+import {
+  addDays,
+  dayAndDate,
+  dayOfMonth,
+  defaultWeek,
+  isMonday,
+  localNow,
+  untilLocalMidnight,
+  weekdayKicker,
+  weekdayName,
+  weekLabel,
+  weekStart,
+} from './week.ts'
 
 // SCHEDULE drafts the plan on Fridays (Sunday = 0) at 09:00 in New York.
 const SCHEDULE = { timezone: 'America/New_York', plan_draft_dow: 5, plan_draft_time: '09:00' }
@@ -71,5 +83,21 @@ describe('week helpers', () => {
     const sunday = { ...SCHEDULE, plan_draft_dow: 0, plan_draft_time: '18:00' }
     expect(defaultWeek(sunday, new Date('2026-10-10T16:00:00Z'))).toBe('2026-10-05') // Sat
     expect(defaultWeek(sunday, new Date('2026-10-11T22:00:00Z'))).toBe('2026-10-12') // Sun 18:00
+  })
+
+  it('says whether a date is a real Monday', () => {
+    expect(isMonday('2026-10-05')).toBe(true)
+    expect(isMonday('2026-10-07')).toBe(false)
+    expect(isMonday('2026-02-30')).toBe(false)
+    expect(isMonday('next week')).toBe(false)
+  })
+
+  it('counts the time to the next midnight in the household zone, not UTC', () => {
+    // 23:59:30.250 in New York is already 03:59 the next day in UTC.
+    expect(untilLocalMidnight('America/New_York', new Date('2026-10-03T03:59:30.250Z'))).toBe(29_750)
+    // At midnight itself the next is a day away.
+    expect(untilLocalMidnight('America/New_York', new Date('2026-10-03T04:00:00Z'))).toBe(24 * 60 * 60 * 1000)
+    // The same instant is 13:00 in Tokyo: eleven hours to go.
+    expect(untilLocalMidnight('Asia/Tokyo', new Date('2026-10-03T04:00:00Z'))).toBe(11 * 60 * 60 * 1000)
   })
 })

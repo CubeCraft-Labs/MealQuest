@@ -793,13 +793,13 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
 - Where each event is emitted, with its idempotency key. Each is stored by
   `notify.EmitTx` in the transaction of the change it is about, so the
   change and its notification commit together or not at all:
-  - `plan_ready:{weekStart}` (URL `/plan`) when a draft job stores the
+  - `plan_ready:{weekStart}` (URL `/plan?week={weekStart}`) when a draft job stores the
     AI's draft of a week. Only the first draft of a week notifies: a
     redraft (Rebuild week) has the same key, and a manual swap never
     drafts. Its title is "Next week's plan is ready" (or "This week's",
     or "The plan for the week of Oct 26") and its body the drafted
     dinners Monday to Sunday.
-  - `list_ready:{weekStart}` (URL `/plan/shopping`) when a week's Supply
+  - `list_ready:{weekStart}` (URL `/plan/shopping?week={weekStart}`) when a week's Supply
     run is first created, by `POST /shopping/{weekStart}/generate` or
     after Push to Calendar; remaking it does not notify.
   - `new_suggestions:{batchId}` (URL `/discover`) when a `scheduled` or
@@ -1098,6 +1098,7 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
   ```json
   {
     "dateLabel": "Friday, Oct 2",
+    "timezone": "America/Chicago",
     "tonight": {"id": "…", "name": "…", "photo": "/media/…", "origin": "regular", "minutes_total": 40},
     "sideQuestCount": 10,
     "shoppingList": {"weekStart": "2026-10-05", "label": "Week 41 · Oct 5 – 11", "ready": true, "sentToChatAt": null},
@@ -1107,8 +1108,11 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
 
   `tonight` is today's day of the current week's plan (`plan.Get`), null
   when the week has no plan; it changes at the household's local
-  midnight. `photo` and `minutes_total` are null when unknown.
-  `sideQuestCount` is the pending cards of the deck (`suggest.Deck`).
+  midnight, so the PWA reads Home again at the next local midnight of
+  `timezone`, the household's IANA zone. `photo` and `minutes_total` are
+  null when unknown. `sideQuestCount` is the pending cards of the deck,
+  read without writing (`suggest.PendingCount`): a Home read never fails
+  orphaned batches the way a `suggest.Deck` read does.
   `shoppingList` is the upcoming week's Supply run when it has one, else
   the current week's (`shopping.Get`); with neither, it is the current
   week with `ready` false. `recentUpdates.unread` is true when a
@@ -1123,7 +1127,7 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
   one update):
 
   ```json
-  {"updates": [{"type": "plan_ready", "title": "…", "body": "…", "url": "/plan", "created_at": "2026-10-09T14:00:00.000Z"}]}
+  {"updates": [{"type": "plan_ready", "title": "…", "body": "…", "url": "/plan?week=2026-10-12", "created_at": "2026-10-09T14:00:00.000Z"}]}
   ```
 
   Every field comes from the stored payload, which never holds a webhook

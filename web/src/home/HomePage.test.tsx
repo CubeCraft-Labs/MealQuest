@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiProviders, HOME } from '../test/ApiProviders.tsx'
@@ -20,6 +20,7 @@ const NOTHING_YET = {
 }
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
 })
 
@@ -70,6 +71,31 @@ describe('HomePage', () => {
       '/plan/shopping?week=2026-10-05',
     )
     expect(screen.queryByRole('heading', { name: 'No quest planned tonight' })).not.toBeInTheDocument()
+  })
+
+  it("reads Home again at the household's next local midnight, so a Home left open moves to the new day", async () => {
+    // setTimeout moves with real time, and the test jumps to midnight.
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'], shouldAdvanceTime: true })
+    // 23:58 on Friday Oct 2 in New York, the household's zone.
+    vi.setSystemTime(new Date('2026-10-03T03:58:00Z'))
+    const days = [HOME, { ...HOME, dateLabel: 'Saturday, Oct 3', tonight: null }]
+    let reads = 0
+    stubFetchByPath({
+      [HOME_PATH]: () => jsonResponse(200, days[Math.min(reads++, 1)]),
+      [ROTATION_REVIEWS_PATH]: () => jsonResponse(200, { reviews: [] }),
+    })
+    renderRouter()
+    expect(await screen.findByText('Friday, Oct 2')).toBeInTheDocument()
+    expect(reads).toBe(1)
+
+    // A minute before midnight Home is not read again.
+    await act(() => vi.advanceTimersByTimeAsync(60_000))
+    expect(reads).toBe(1)
+    // At midnight it is, and shows the new day.
+    await act(() => vi.advanceTimersByTimeAsync(60_000))
+    expect(await screen.findByText('Saturday, Oct 3')).toBeInTheDocument()
+    expect(reads).toBe(2)
+    expect(screen.getByRole('heading', { name: 'No quest planned tonight' })).toBeInTheDocument()
   })
 
   it('shows the grape unread dot on the bell when there are unread updates', async () => {

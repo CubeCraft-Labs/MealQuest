@@ -232,6 +232,45 @@ describe('RotationCheck', () => {
     expect(within(await card()).getByText('Last night: Shakshuka')).toBeInTheDocument()
   })
 
+  it('keeps a card already shown, with an ErrorBanner beside it, when reading the checks again fails', async () => {
+    // navigator.serviceWorker is where the worker's postMessage to this
+    // window arrives; a notification tap there reads the checks again.
+    const container = new EventTarget()
+    Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: container })
+    const answers = [jsonResponse(200, { reviews: [SHAKSHUKA] }), errorResponse(500, 'internal')]
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>((input) =>
+        Promise.resolve(
+          String(input) === ME_PATH
+            ? jsonResponse(200, ME)
+            : String(input) === HOME_PATH
+              ? jsonResponse(200, HOME)
+              : answers.shift()!,
+        ),
+      ),
+    )
+    await renderHome()
+    expect(within(await card()).getByText('Last night: Shakshuka')).toBeInTheDocument()
+
+    const origin = 'https://mealquest.test'
+    const win = {
+      url: `${origin}/`,
+      focused: true,
+      focus: vi.fn(async () => {}),
+      navigate: vi.fn(async () => {}),
+      postMessage: (message) => container.dispatchEvent(new MessageEvent('message', { data: message })),
+    } satisfies ClickWindow
+    await act(() =>
+      openNotification({ url: '/' }, { matchAll: async () => [win], openWindow: vi.fn(async () => null) }, origin),
+    )
+
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load the Rotation check. internal message")
+    const shown = screen.getByRole('region', { name: 'Keep it in rotation?' })
+    expect(within(shown).getByText('Last night: Shakshuka')).toBeInTheDocument()
+    expect(within(shown).getByRole('button', { name: 'Keep it' })).toBeEnabled()
+  })
+
   it('opens Home with the card from a rotation_review push notification', async () => {
     stubApi([SHAKSHUKA])
     const origin = 'https://mealquest.test'

@@ -160,16 +160,25 @@ function planReads(fetchMock: Mock<typeof fetch>) {
 }
 
 // renderPage loads /me (for the CSRF token every write needs) and renders
-// the Plan page, over queryClient, with shopping as the Supply run screen.
-async function renderPage(queryClient: QueryClient = createQueryClient(), shopping = <Opened />) {
+// the Plan page at entry, over queryClient, with shopping as the Supply run
+// screen.
+async function renderPage(queryClient: QueryClient = createQueryClient(), shopping = <Opened />, entry = '/plan') {
   const api = createApiClient(fakeLocation('/plan'), createNetworkStatus(window), createVerifiedSession(localStorage))
   await api.loadMe()
   return render(
     <ApiProvider client={api}>
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/plan']}>
+        <MemoryRouter initialEntries={[entry]}>
           <Routes>
-            <Route path="/plan" element={<PlanPage />} />
+            <Route
+              path="/plan"
+              element={
+                <>
+                  <PlanPage />
+                  <Searched />
+                </>
+              }
+            />
             <Route path="/plan/shopping" element={shopping} />
           </Routes>
         </MemoryRouter>
@@ -188,6 +197,11 @@ function Opened() {
       <Link to="/plan">Back to the Plan</Link>
     </>
   )
+}
+
+// Searched shows the Plan's search, the week it keeps in ?week=.
+function Searched() {
+  return <p data-testid="search">{useLocation().search}</p>
 }
 
 // pushesKept counts the pushes of the week of Oct 5 the mutation cache of
@@ -1112,6 +1126,30 @@ describe('PlanPage', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     fireEvent.click(shopping)
     expect(await screen.findByText('Opened /plan/shopping?week=2026-10-05')).toBeInTheDocument()
+  })
+
+  it('opens on the week of ?week=, as a plan_ready update for an older week links it', async () => {
+    stubServer({
+      [`GET ${PREVIOUS_WEEK}`]: () => errorResponse(404, 'not_found'),
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      ...lists,
+    })
+    await renderPage(createQueryClient(), <Opened />, '/plan?week=2026-09-28')
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'Sep 28 – Oct 4' })).toBeInTheDocument()
+    expect(screen.queryByText('Beef tacos')).not.toBeInTheDocument()
+    // The week buttons keep ?week= on the week shown.
+    fireEvent.click(screen.getByRole('button', { name: 'Next week' }))
+    expect(await screen.findByRole('heading', { level: 1, name: 'Oct 5 – 11' })).toBeInTheDocument()
+    expect(screen.getByTestId('search')).toHaveTextContent('?week=2026-10-05')
+  })
+
+  it('says so when ?week= is not a Monday, and reads no plan', async () => {
+    const fetchMock = stubServer({ ...lists })
+    await renderPage(createQueryClient(), <Opened />, '/plan?week=2026-10-07')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('“2026-10-07” is not the Monday of a week, as YYYY-MM-DD.')
+    expect(fetchMock.mock.calls.some(([input]) => String(input).startsWith('/api/v1/plans/'))).toBe(false)
   })
 
   it('moves between weeks with the previous and next week buttons', async () => {

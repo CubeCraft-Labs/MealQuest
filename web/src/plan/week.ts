@@ -35,6 +35,15 @@ export function weekStart(date: string): string {
   return addDays(date, -sinceMonday)
 }
 
+// isMonday says whether date is a real YYYY-MM-DD Monday.
+export function isMonday(date: string): boolean {
+  try {
+    return weekStart(date) === date
+  } catch {
+    return false
+  }
+}
+
 // weekdayKicker is date's day as a tile kicker: "MON" to "SUN".
 export function weekdayKicker(date: string): string {
   return WEEKDAYS[midnightUTC(date).getUTCDay()]!
@@ -114,4 +123,21 @@ export function defaultWeek(schedule: { timezone: string; plan_draft_dow: number
   const draftDay = addDays(thisWeek, (schedule.plan_draft_dow + 6) % 7)
   const drafted = today.date > draftDay || (today.date === draftDay && today.time >= schedule.plan_draft_time)
   return drafted ? addDays(thisWeek, 7) : thisWeek
+}
+
+// untilLocalMidnight is how many milliseconds after instant now the next
+// midnight comes in IANA zone. It counts from the zone's wall clock at now,
+// so a change of UTC offset before that midnight moves it by the change;
+// offsets change in the small hours, after midnight.
+export function untilLocalMidnight(zone: string, now: Date): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: zone,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(now)
+  const part = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((p) => p.type === type)!.value)
+  const sinceMidnight = ((part('hour') * 60 + part('minute')) * 60 + part('second')) * 1000 + now.getUTCMilliseconds()
+  return DAY_MS - sinceMidnight
 }

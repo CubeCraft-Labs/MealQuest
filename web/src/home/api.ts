@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect } from 'react'
 import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { oneOf, photoId } from '../dinners/api.ts'
-import { weekLabel } from '../plan/week.ts'
+import { untilLocalMidnight, weekLabel } from '../plan/week.ts'
 import { appPath } from '../push/notification.ts'
 
 export const HOME_PATH = '/api/v1/home'
@@ -27,11 +28,13 @@ export type Tonight = { id: string; name: string; photo_id: string | undefined; 
 export type ShoppingListStatus = { weekStart: string; dates: string; ready: boolean }
 
 // Home is GET /api/v1/home: dateLabel is today, household-local, "Friday,
-// Oct 2"; tonight is null when today has no plan; sideQuestCount is how
+// Oct 2"; timezone is the household's IANA zone, whose midnight starts the
+// next day; tonight is null when today has no plan; sideQuestCount is how
 // many Side quests wait in the deck; unread says the Recent updates hold
 // something not yet seen.
 export type Home = {
   dateLabel: string
+  timezone: string
   tonight: Tonight | null
   sideQuestCount: number
   shoppingList: ShoppingListStatus
@@ -77,6 +80,9 @@ function parseShoppingList(where: string, list: unknown): ShoppingListStatus {
 // parseHome checks a GET /api/v1/home body.
 export function parseHome(where: string, body: unknown): Home {
   if (!isRecord(body) || typeof body.dateLabel !== 'string') throw new Error(`${where}: response is not the home`)
+  if (typeof body.timezone !== 'string' || !isZone(body.timezone)) {
+    throw new Error(`${where}: timezone ${JSON.stringify(body.timezone)} is not an IANA zone`)
+  }
   if (!Number.isInteger(body.sideQuestCount) || (body.sideQuestCount as number) < 0) {
     throw new Error(`${where}: sideQuestCount is not a count`)
   }
@@ -84,6 +90,7 @@ export function parseHome(where: string, body: unknown): Home {
   if (!isRecord(updates) || typeof updates.unread !== 'boolean') throw new Error(`${where}: recentUpdates has no unread flag`)
   return {
     dateLabel: body.dateLabel,
+    timezone: body.timezone,
     tonight: parseTonight(where, body.tonight),
     sideQuestCount: body.sideQuestCount as number,
     shoppingList: parseShoppingList(where, body.shoppingList),
@@ -91,13 +98,37 @@ export function parseHome(where: string, body: unknown): Home {
   }
 }
 
-// useHome is the Home screen's summary (GET /api/v1/home).
+// isZone says whether zone is an IANA zone this browser knows.
+function isZone(zone: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: zone })
+    return true
+  } catch {
+    return false
+  }
+}
+
+// useHome is the Home screen's summary (GET /api/v1/home). Home is read
+// again at the household's next local midnight, counted from each read, so
+// a Home left open does not keep yesterday's date and dinner.
 export function useHome() {
   const { apiFetch } = useApi()
-  return useQuery({
+  const queryClient = useQueryClient()
+  const home = useQuery({
     queryKey: HOME_KEY,
     queryFn: async () => parseHome(`GET ${HOME_PATH}`, await apiFetch<unknown>(HOME_PATH)),
   })
+  const zone = home.data?.timezone
+  const readAt = home.dataUpdatedAt
+  useEffect(() => {
+    if (zone === undefined) return
+    const timer = setTimeout(
+      () => void queryClient.invalidateQueries({ queryKey: HOME_KEY }),
+      untilLocalMidnight(zone, new Date()),
+    )
+    return () => clearTimeout(timer)
+  }, [queryClient, zone, readAt])
+  return home
 }
 
 export const UPDATE_TYPES = ['plan_ready', 'list_ready', 'day_of_reminder', 'new_suggestions', 'rotation_review'] as const

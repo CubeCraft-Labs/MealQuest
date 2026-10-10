@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { clickPath, parsePushPayload } from '../push/notification.ts'
+import { clickPath, openNotification, parsePushPayload, type ClickWindow } from '../push/notification.ts'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession, ME_PATH } from '../api/index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
@@ -19,6 +19,7 @@ const RAMEN = { dinner: { id: 'd8', name: 'Miso ramen', photo: null }, plan_date
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  Reflect.deleteProperty(navigator, 'serviceWorker')
 })
 
 type Deferred = { resolve: (response: Response) => void; path: string; body: unknown }
@@ -53,7 +54,7 @@ function stubApi(reviews: (typeof SHAKSHUKA | typeof RAMEN)[]) {
     throw new Error(`unexpected fetch: ${init?.method ?? 'GET'} ${path}`)
   })
   vi.stubGlobal('fetch', fetchMock)
-  return { fetchMock, decisions }
+  return { fetchMock, decisions, server }
 }
 
 // decided is the server's answer to a decision on review.
@@ -243,5 +244,38 @@ describe('RotationCheck', () => {
 
     await renderHome(path)
     expect(within(await card()).getByText('Last night: Shakshuka')).toBeInTheDocument()
+  })
+
+  it('shows the card when a rotation_review notification focuses Home already open, without a remount', async () => {
+    // navigator.serviceWorker is where the worker's postMessage to this
+    // window arrives.
+    const container = new EventTarget()
+    Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: container })
+    const { fetchMock, server } = stubApi([])
+    const reads = () => fetchMock.mock.calls.filter(([path]) => path === ROTATION_REVIEWS_PATH).length
+    await renderHome('/')
+    const home = await screen.findByRole('heading', { name: 'Pizza night' })
+    await waitFor(() => expect(reads()).toBe(1))
+    expect(screen.queryByRole('region', { name: 'Keep it in rotation?' })).not.toBeInTheDocument()
+
+    // Within the cached list's staleTime the Rotation check comes due and
+    // its notification is tapped while Home is open at /.
+    server.push(SHAKSHUKA)
+    const origin = 'https://mealquest.test'
+    const win = {
+      url: `${origin}/`,
+      focused: true,
+      focus: vi.fn(async () => {}),
+      navigate: vi.fn(async () => {}),
+      postMessage: (message) => container.dispatchEvent(new MessageEvent('message', { data: message })),
+    } satisfies ClickWindow
+    await act(() =>
+      openNotification({ url: '/' }, { matchAll: async () => [win], openWindow: vi.fn(async () => null) }, origin),
+    )
+
+    expect(win.navigate).not.toHaveBeenCalled()
+    expect(within(await card()).getByText('Last night: Shakshuka')).toBeInTheDocument()
+    expect(reads()).toBe(2)
+    expect(screen.getByRole('heading', { name: 'Pizza night' })).toBe(home)
   })
 })

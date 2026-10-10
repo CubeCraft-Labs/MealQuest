@@ -5,6 +5,7 @@ import {
   GENERIC_NOTICE,
   appPath,
   clickPath,
+  isNotificationOpened,
   openNotification,
   parsePushPayload,
   planClick,
@@ -178,6 +179,7 @@ describe('openNotification', () => {
       focused,
       focus: vi.fn(async () => {}),
       navigate: vi.fn(async () => {}),
+      postMessage: vi.fn(),
     } satisfies ClickWindow
   }
 
@@ -193,6 +195,18 @@ describe('openNotification', () => {
     expect(win.focus).toHaveBeenCalled()
     expect(win.navigate).toHaveBeenCalledWith(`${origin}/plan/shopping`)
     expect(win.focus.mock.invocationCallOrder[0]).toBeLessThan(win.navigate.mock.invocationCallOrder[0]!)
+    expect(win.postMessage).not.toHaveBeenCalled()
+    expect(all.openWindow).not.toHaveBeenCalled()
+  })
+
+  it('focuses a window already at the url and tells it NotificationOpened instead of navigating', async () => {
+    const win = window('/', true)
+    const all = clients([win])
+    await openNotification({ url: '/' }, all, origin)
+    expect(win.focus).toHaveBeenCalled()
+    expect(win.navigate).not.toHaveBeenCalled()
+    expect(win.postMessage).toHaveBeenCalledWith({ type: 'NOTIFICATION_OPENED', url: `${origin}/` })
+    expect(isNotificationOpened(win.postMessage.mock.calls[0]![0])).toBe(true)
     expect(all.openWindow).not.toHaveBeenCalled()
   })
 

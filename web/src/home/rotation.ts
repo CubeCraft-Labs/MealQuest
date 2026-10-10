@@ -1,7 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect } from 'react'
 import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { photoId } from '../dinners/api.ts'
+import { isNotificationOpened } from '../push/notification.ts'
 
 export const ROTATION_REVIEWS_PATH = '/api/v1/rotation-reviews'
 export const ROTATION_REVIEWS_KEY = ['rotation-reviews'] as const
@@ -43,16 +45,29 @@ export function parseRotationReviews(where: string, body: unknown): RotationRevi
 
 // useRotationReviews is the pending Rotation checks (GET
 // /api/v1/rotation-reviews), oldest plan date first. Each mount of Home
-// reads them afresh, so Home opened from a rotation_review notification
-// shows the check it is about.
+// reads them afresh, and so does a notification tap that focuses Home
+// already open (the service worker's NotificationOpened), so Home opened
+// from a rotation_review notification shows the check it is about.
 export function useRotationReviews() {
   const { apiFetch } = useApi()
-  return useQuery({
+  const query = useQuery({
     queryKey: ROTATION_REVIEWS_KEY,
     queryFn: async () =>
       parseRotationReviews(`GET ${ROTATION_REVIEWS_PATH}`, await apiFetch<unknown>(ROTATION_REVIEWS_PATH)),
     refetchOnMount: 'always',
   })
+  const { refetch } = query
+  useEffect(() => {
+    // Without a service worker there are no notifications to tap.
+    if (!('serviceWorker' in navigator)) return
+    const container = navigator.serviceWorker
+    const onMessage = (event: MessageEvent<unknown>) => {
+      if (isNotificationOpened(event.data)) void refetch()
+    }
+    container.addEventListener('message', onMessage)
+    return () => container.removeEventListener('message', onMessage)
+  }, [refetch])
+  return query
 }
 
 // useDecideRotationReview answers "Keep it in rotation?" for a pending

@@ -257,6 +257,57 @@ describe('Recent updates sheet', () => {
     )
   })
 
+  it('closing the sheet while its first read is in flight cancels that read, and a reopen reads afresh', async () => {
+    const stored = [...UPDATES.updates]
+    let firstAborted = false
+    let answerFirst: (() => void) | undefined
+    let reads = 0
+    const fetchMock = stubServer({
+      [`GET ${UPDATES_PATH}`]: (init) => {
+        const body = { updates: [...stored] }
+        reads++
+        if (reads > 1) return jsonResponse(200, body)
+        // The first reading is held open, and fails as fetch does if it is
+        // aborted.
+        return new Promise<Response>((resolve, reject) => {
+          answerFirst = () => resolve(jsonResponse(200, body))
+          init?.signal?.addEventListener('abort', () => {
+            firstAborted = true
+            reject(init.signal!.reason as Error)
+          })
+        })
+      },
+    })
+    await renderHome()
+    await openSheet()
+    await waitFor(() => expect(updatesReads(fetchMock)).toBe(1))
+
+    // Closed before the first read answers, a new event stored, and opened
+    // again at once.
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    const reminder = {
+      type: 'day_of_reminder',
+      title: 'Tacos tonight',
+      body: 'Dinner at 6:00.',
+      url: '/plan',
+      created_at: new Date().toISOString(),
+    }
+    stored.unshift(reminder)
+    fireEvent.click(screen.getByRole('button', { name: /^Recent updates/ }))
+    const sheet = screen.getByRole('dialog', { name: 'Recent updates' })
+
+    // The first read was cancelled, and the reopen sent its own.
+    await waitFor(() => expect(updatesReads(fetchMock)).toBe(2))
+    expect(firstAborted).toBe(true)
+    // Answering the cancelled read changes nothing.
+    answerFirst!()
+
+    const listed = await rows(sheet)
+    expect(listed).toHaveLength(4)
+    expect(listed[0]).toHaveTextContent('Tacos tonight')
+    await waitFor(() => expect(posts(fetchMock)).toEqual([JSON.stringify({ through: reminder.created_at })]))
+  })
+
   it.each([
     [0, '/plan'],
     [1, '/discover'],

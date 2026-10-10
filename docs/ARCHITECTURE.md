@@ -780,7 +780,7 @@ purge are fixed and not configurable.
 | Schedule | When | Does |
 | --- | --- | --- |
 | `suggestions_weekly` | Sunday 08:00 | New batch of Side quests (`suggest.Service.WeeklySchedule`). |
-| `plan_draft` | Friday 09:00 | AI drafts next week's plan. |
+| `plan_draft` | Friday 09:00 | AI drafts next week's plan (`plan.Service.DraftSchedule`). |
 | `shopping_chat_autosend` | Saturday 08:00 | Sends the Supply run to Google Chat. |
 | `day_of_reminder` | Daily 16:30 | Tonight's dinner reminder. |
 | `rotation_check` | Daily 09:00 | Asks "Keep it in rotation?" for tried dinners. |
@@ -814,6 +814,14 @@ Its run calls `StartScheduledBatch(period.Week)`, which starts the same
 batch and job as `POST /api/v1/suggestions/batches` (`StartBatch(manual)`),
 with the `scheduled` trigger, and returns at once; the batch runs as a job. When a
 batch is already pending or running the period starts none and logs it.
+`plan.Service.DraftSchedule()` is `plan_draft`, keyed by the ISO week
+after the fire date (`scheduler.WeeklyForNextWeek`). Its run calls
+`StartScheduledDraft(period.Week)`, which enqueues the same `draft_week`
+job as `POST /api/v1/plans/{weekStart}/draft` without confirm, so a stored
+draft emits `plan_ready:{weekStart}` from the job and a failed one (e.g.
+`ai_failed`, recorded in `ai_runs`) emits nothing. When the week already
+has a plan, in any status, it enqueues nothing; when a draft of the week
+is already queued or running it joins it. Either way it logs it.
 Fake-clock tests of a schedule live in `internal/scheduler`, where
 `SetClock` is visible to tests.
 
@@ -825,8 +833,9 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
 - Where each event is emitted, with its idempotency key. Each is stored by
   `notify.EmitTx` in the transaction of the change it is about, so the
   change and its notification commit together or not at all:
-  - `plan_ready:{weekStart}` (URL `/plan`) when a draft job stores the
-    AI's draft of a week. Only the first draft of a week notifies: a
+  - `plan_ready:{weekStart}` (URL `/plan`) when a draft job, asked for
+    by the API or the `plan_draft` schedule, stores the AI's draft of a
+    week. Only the first draft of a week notifies: a
     redraft (Rebuild week) has the same key, and a manual swap never
     drafts. Its title is "Next week's plan is ready" (or "This week's",
     or "The plan for the week of Oct 26") and its body the drafted

@@ -782,7 +782,7 @@ purge are fixed and not configurable.
 | `suggestions_weekly` | Sunday 08:00 | New batch of Side quests (`suggest.Service.WeeklySchedule`). |
 | `plan_draft` | Friday 09:00 | AI drafts next week's plan (`plan.Service.DraftSchedule`). |
 | `shopping_chat_autosend` | Saturday 08:00 | Sends the Supply run to Google Chat. |
-| `day_of_reminder` | Daily 16:30 | Tonight's dinner reminder. |
+| `day_of_reminder` | Daily 16:30, and 15 minutes before a crock-pot start_by earlier than that | Tonight's dinner reminder and the crock-pot start reminder (`plan.Service.ReminderSchedules`). |
 | `rotation_check` | Daily 09:00 | Asks "Keep it in rotation?" for tried dinners. |
 | `week_rollover` | Monday 00:05 (fixed) | Freezes last week's Supply run into the Supply archive. |
 | `ai_runs` purge | Daily (fixed) | Calls `harness.Purge` to delete `ai_runs` rows past 30-day retention (Feature 20). |
@@ -790,7 +790,7 @@ purge are fixed and not configurable.
 Runs are recorded in `schedule_runs` and executed through `jobs`.
 
 `internal/scheduler` runs them. A schedule registers a name, a rule read
-from the settings (`scheduler.Daily`, `Weekly` or `WeeklyForNextWeek`) and a
+from the settings (`scheduler.Daily`, `Weekly` or `WeeklyForNextWeek`, or `DailyAt` for a time read from data) and a
 run function; settings changes reach it through `SettingsService.Subscribe`
 and move the next fire time without a restart. Each fire time has a period
 key (`Rule.PeriodKey`): the local date for a daily rule, the ISO week of the
@@ -822,6 +822,19 @@ draft emits `plan_ready:{weekStart}` from the job and a failed one (e.g.
 `ai_failed`, recorded in `ai_runs`) emits nothing. When the week already
 has a plan, in any status, it enqueues nothing; when a draft of the week
 is already queued or running it joins it. Either way it logs it.
+`plan.Service.ReminderSchedules()` is `day_of_reminder`, two schedules
+of one name. The first is `Daily(reminder_time)`, period `YYYY-MM-DD`,
+and calls `EmitDayOfReminder(period.Date)`. The second has `Key` `start`,
+so its periods are `start:YYYY-MM-DD`, and a `scheduler.DailyAt` rule:
+for each date it reads the plan and fires 15 minutes
+(`plan.StartReminderLead`) before the day's `start_by` (the same
+computation the plan API shows) when the dinner is a crock-pot dinner
+whose `start_by` is earlier than that day's `reminder_time`; its run
+calls `EmitStartReminder(period.Date)`, which checks the same again. A
+date whose week has no plan emits neither and logs it. A `DailyAt` fire
+time is looked up from the data on every pass, so a plan change moves it
+within an hour (`maxWait`); a lookup that fails is logged and repeated
+every `ClaimRetry`.
 Fake-clock tests of a schedule live in `internal/scheduler`, where
 `SetClock` is visible to tests.
 
@@ -857,9 +870,15 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
     notifies. This is the only place `new_suggestions` is emitted; the
     `suggestions_weekly` schedule does not emit it itself.
   - `day_of_reminder:{date}` (URL `/dinner/{id}`) through
-    `plan.Service.EmitDayOfReminder(date)`, which names the dinner planned
-    on the date and emits nothing for a week with no plan. The scheduler
-    calls it at `reminder_time` (Feature 20).
+    `plan.Service.EmitDayOfReminder(date)`, "Tonight: {dinner} · Recipe →",
+    naming the dinner planned on the date; it emits nothing for a week
+    with no plan. The `day_of_reminder` schedule calls it at
+    `reminder_time`.
+  - `day_of_reminder:start:{date}` (URL `/dinner/{id}`) through
+    `plan.Service.EmitStartReminder(date)`, "Start the crock pot by
+    {time}" with the dinner's name, only for a crock-pot dinner whose
+    `start_by` is earlier than `reminder_time`. The `day_of_reminder`
+    schedule calls it 15 minutes before `start_by`.
 - Delivery goes through `notification_outbox`.
 - Web Push uses VAPID (`webpush-go`). Google Chat uses the stored incoming
   webhook.

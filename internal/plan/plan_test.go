@@ -428,8 +428,8 @@ func TestEmitDayOfReminder(t *testing.T) {
 		t.Fatalf("day_of_reminder rows = %+v, want one on push", rows)
 	}
 	r := rows[0]
-	if r.Key != "day_of_reminder:2026-10-14" || r.Channel != notify.ChannelPush || r.Payload.Title != "Tonight's dinner" ||
-		r.Payload.Body != "Pad Thai" || r.Payload.URL != "/dinner/"+e.ids["Pad Thai"] || r.Payload.Week != "2026-10-12" {
+	if r.Key != "day_of_reminder:2026-10-14" || r.Channel != notify.ChannelPush || r.Payload.Title != "Tonight: Pad Thai · Recipe →" ||
+		r.Payload.Body != "" || r.Payload.URL != "/dinner/"+e.ids["Pad Thai"] || r.Payload.Week != "2026-10-12" {
 		t.Errorf("day_of_reminder row = %+v", r)
 	}
 }

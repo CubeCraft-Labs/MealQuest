@@ -2,6 +2,7 @@ package chat
 
 import (
 	"testing"
+	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
@@ -100,9 +101,19 @@ func TestMessages(t *testing.T) {
 			key:   "day_of_reminder:2026-10-15",
 			url:   "/dinner/01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
 			week:  "2026-10-12",
-			title: "Tonight's dinner",
-			body:  "Tacos",
-			chatT: "Tonight's dinner: Tacos. Open the recipe →",
+			title: "Tonight: Tacos · Recipe →",
+			body:  "",
+			chatT: "Tonight: Tacos · Recipe →",
+		},
+		{
+			name:  "crock-pot start reminder",
+			ev:    StartReminder(mustDate(t, "2026-10-15"), "01J9Z8Y7X6W5V4T3S2R1Q0P9N8", "Beef Chili", time.Date(2026, 10, 15, 9, 30, 0, 0, time.FixedZone("CDT", -5*60*60))),
+			key:   "day_of_reminder:start:2026-10-15",
+			url:   "/dinner/01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+			week:  "2026-10-12",
+			title: "Start the crock pot by 9:30 am",
+			body:  "Beef Chili",
+			chatT: "Start the crock pot by 9:30 am: Beef Chili. Open the recipe →",
 		},
 		{
 			name:  "new suggestions",

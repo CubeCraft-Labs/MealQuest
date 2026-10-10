@@ -198,6 +198,11 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	if err := sched.Register(planSvc.DraftSchedule()); err != nil {
 		return err
 	}
+	for _, sch := range planSvc.ReminderSchedules() {
+		if err := sched.Register(sch); err != nil {
+			return err
+		}
+	}
 
 	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, search, ai, chatSvc, dinnerSvc, suggestSvc, planSvc, shopSvc, googleSvc, pushSvc, ideasSvc, runner, photos, frontend.Assets())
 	if err != nil {

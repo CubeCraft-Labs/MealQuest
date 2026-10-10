@@ -233,10 +233,10 @@ func (s *Service) Get(ctx context.Context, weekStart store.LocalDate) (p Plan, e
 }
 
 // EmitDayOfReminder emits day_of_reminder for date, keyed by the date,
-// naming the dinner planned on it, and reports whether it did: a date whose
-// week has no plan emits nothing. The scheduler calls it at the
-// household's reminder_time (Feature 20); emitting a date again stores no
-// second notification.
+// "Tonight: {dinner} · Recipe →" for the dinner planned on it, and reports
+// whether it did: a date whose week has no plan emits nothing. The
+// day_of_reminder schedule calls it at the household's reminder_time
+// (ReminderSchedules); emitting a date again stores no second notification.
 func (s *Service) EmitDayOfReminder(ctx context.Context, date store.LocalDate) (bool, error) {
 	p, err := s.Get(ctx, household.WeekStart(date))
 	if errors.Is(err, ErrNotFound) {
@@ -245,15 +245,14 @@ func (s *Service) EmitDayOfReminder(ctx context.Context, date store.LocalDate) (
 	if err != nil {
 		return false, err
 	}
-	for _, d := range p.Days {
-		if d.Date == date.String() {
-			if err := s.notifier.Emit(ctx, chat.DayOfReminder(date, d.Dinner.ID, d.Dinner.Name)); err != nil {
-				return false, fmt.Errorf("plan: %w", err)
-			}
-			return true, nil
-		}
+	d, err := p.day(date)
+	if err != nil {
+		return false, err
 	}
-	return false, fmt.Errorf("plan: week %s has no day %s", p.WeekStart, date)
+	if err := s.notifier.Emit(ctx, chat.DayOfReminder(date, d.Dinner.ID, d.Dinner.Name)); err != nil {
+		return false, fmt.Errorf("plan: %w", err)
+	}
+	return true, nil
 }
 
 // readPlan reads the plan of the week starting weekStart through q, with

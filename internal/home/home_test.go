@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -368,5 +370,185 @@ func TestNewServiceRequiresServices(t *testing.T) {
 	t.Parallel()
 	if _, err := home.NewService(nil, nil, nil, nil, nil); err == nil {
 		t.Fatal("NewService accepted nil services")
+	}
+}
+
+// store stores event key of type typ in the outbox at instant at, for each
+// of channels, as notify stores an event.
+func (e *env) store(t *testing.T, typ notify.EventType, key string, at time.Time, channels ...notify.Channel) {
+	t.Helper()
+	payload, err := json.Marshal(notify.Payload{Event: typ, Title: "Title " + key, Body: "Body " + key, URL: "/u/" + key, Tag: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := store.Timestamp{Time: at.UTC().Truncate(time.Millisecond)}.String()
+	for _, ch := range channels {
+		if _, err := db.New(e.st.Writer).InsertNotification(t.Context(), db.InsertNotificationParams{
+			ID: store.NewID(), EventKey: key, Channel: string(ch), Payload: string(payload),
+			NextAttemptAt: sql.NullString{String: ts, Valid: true}, Now: ts,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Updates are the last ten distinct events, newest first: an event stored
+// for push and Google Chat is listed once, whatever became of its delivery.
+func TestUpdates(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	ctx := t.Context()
+
+	got, err := e.svc.Updates(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || len(got) != 0 {
+		t.Errorf("updates with no notifications = %#v, want an empty list", got)
+	}
+
+	base := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	for i := range 12 {
+		key := fmt.Sprintf("plan_ready:%02d", i)
+		e.store(t, notify.PlanReady, key, base.Add(time.Duration(i)*time.Minute), notify.ChannelPush, notify.ChannelChat)
+	}
+	// A delivered and a failed row of one event are still one event.
+	if _, err := e.st.Writer.ExecContext(ctx, `UPDATE notification_outbox SET status = 'sent' WHERE event_key = 'plan_ready:11' AND channel = 'push'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.st.Writer.ExecContext(ctx, `UPDATE notification_outbox SET status = 'failed' WHERE event_key = 'plan_ready:11' AND channel = 'chat'`); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err = e.svc.Updates(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != home.RecentLimit {
+		t.Fatalf("updates = %d, want %d: %+v", len(got), home.RecentLimit, got)
+	}
+	for i, u := range got {
+		n := 11 - i
+		key := fmt.Sprintf("plan_ready:%02d", n)
+		want := home.Update{
+			Type: "plan_ready", Title: "Title " + key, Body: "Body " + key, URL: "/u/" + key,
+			CreatedAt: store.Timestamp{Time: base.Add(time.Duration(n) * time.Minute)}.String(),
+		}
+		if u != want {
+			t.Errorf("updates[%d] = %+v, want %+v", i, u, want)
+		}
+	}
+}
+
+// An event emitted to push and Google Chat is one update.
+func TestUpdatesEmittedToTwoChannels(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	ctx := t.Context()
+	if err := e.notifier.Emit(ctx, notify.Event{Type: notify.PlanReady, Key: "plan_ready:2026-10-12", Title: "Your week is drafted", Body: "Take a look", URL: "/plan"}); err != nil {
+		t.Fatal(err)
+	}
+	var rows int
+	if err := e.st.Reader.QueryRowContext(ctx, `SELECT COUNT(*) FROM notification_outbox`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 2 {
+		t.Fatalf("outbox rows = %d, want push and chat", rows)
+	}
+	got, err := e.svc.Updates(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Type != "plan_ready" || got[0].Title != "Your week is drafted" || got[0].Body != "Take a look" || got[0].URL != "/plan" {
+		t.Errorf("updates = %+v, want the one plan_ready event", got)
+	}
+}
+
+// Marking updates seen through the newest clears unread until a newer event
+// is stored; marking them seen through an older time does not move the
+// mark back, and a time after now is refused.
+func TestMarkUpdatesSeen(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	ctx := t.Context()
+	unread := func() bool {
+		t.Helper()
+		return e.at(t, "2026-10-13 12:00").RecentUpdates.Unread
+	}
+	first := time.Date(2026, 10, 13, 16, 0, 0, 0, time.UTC)
+	e.store(t, notify.NewSuggestions, "new_suggestions:1", first, notify.ChannelPush)
+	if !unread() {
+		t.Fatal("not unread with an event never seen")
+	}
+	if err := e.svc.MarkUpdatesSeen(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if unread() {
+		t.Error("unread after marking the newest event seen")
+	}
+
+	second := first.Add(time.Millisecond)
+	e.store(t, notify.PlanReady, "plan_ready:2", second, notify.ChannelPush, notify.ChannelChat)
+	if !unread() {
+		t.Error("not unread with an event stored after the mark")
+	}
+	// Seen again through the older event, as a sheet opened before the
+	// newer one arrived would: nothing moves, so it stays unread.
+	if err := e.svc.MarkUpdatesSeen(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if !unread() {
+		t.Error("an older mark hid the newer event")
+	}
+	if err := e.svc.MarkUpdatesSeen(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	if unread() {
+		t.Error("unread after marking the newer event seen")
+	}
+	if err := e.svc.MarkUpdatesSeen(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := household.NewSettingsService(e.st).Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (store.Timestamp{Time: second}).String(); settings.UpdatesSeenAt == nil || *settings.UpdatesSeenAt != want {
+		t.Errorf("updates_seen_at = %v, want %s: an older mark moved it back", settings.UpdatesSeenAt, want)
+	}
+	if settings.UpdatedBy != nil {
+		t.Errorf("updated_by = %q, want unset: marking updates seen is not a settings edit", *settings.UpdatedBy)
+	}
+
+	// The clock reads 17:00 UTC.
+	if err := e.svc.MarkUpdatesSeen(ctx, first.Add(2*time.Hour)); !errors.Is(err, home.ErrSeenInFuture) {
+		t.Errorf("mark seen through an hour from now = %v, want ErrSeenInFuture", err)
+	}
+}
+
+// An event stored again for a channel switched on later is as new as that
+// row: the update shows its time, and marking it seen clears unread.
+func TestUpdateStoredAgainForAnotherChannel(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	ctx := t.Context()
+	first := time.Date(2026, 10, 13, 15, 0, 0, 0, time.UTC)
+	later := first.Add(30 * time.Minute)
+	e.store(t, notify.PlanReady, "plan_ready:1", first, notify.ChannelPush)
+	e.store(t, notify.PlanReady, "plan_ready:1", later, notify.ChannelChat)
+
+	got, err := e.svc.Updates(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (store.Timestamp{Time: later}).String(); len(got) != 1 || got[0].CreatedAt != want {
+		t.Fatalf("updates = %+v, want the one event at %s", got, want)
+	}
+	e.at(t, "2026-10-13 12:00")
+	if err := e.svc.MarkUpdatesSeen(ctx, later); err != nil {
+		t.Fatal(err)
+	}
+	if e.at(t, "2026-10-13 12:00").RecentUpdates.Unread {
+		t.Error("unread after the event was marked seen through its listed time")
 	}
 }

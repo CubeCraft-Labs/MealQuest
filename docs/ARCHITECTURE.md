@@ -1115,7 +1115,30 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
   notification was stored in `notification_outbox` after
   `household_settings.updates_seen_at`, or at all while that is null
   (`notify.StoredSince`); an event whose channels are all switched off is
-  never stored and never counts. Nothing writes `updates_seen_at` yet.
+  never stored and never counts.
+- `GET /api/v1/updates` (`home.Service.Updates`, over `notify.Recent`)
+  answers the Recent updates sheet: the last 10 distinct events in
+  `notification_outbox`, newest first, one per event key whatever its
+  channels or delivery status (an event stored for push and Google Chat is
+  one update):
+
+  ```json
+  {"updates": [{"type": "plan_ready", "title": "…", "body": "…", "url": "/plan", "created_at": "2026-10-09T14:00:00.000Z"}]}
+  ```
+
+  Every field comes from the stored payload, which never holds a webhook
+  URL or secret; `url` is the same-origin path the event opens.
+- `POST /api/v1/updates/seen` with `{"through": "<created_at>"}` (CSRF
+  header required) records that the household has seen its updates
+  through the newest one it was shown, and answers 204. The last-seen
+  instant is `household_settings.updates_seen_at` — the one place it is
+  stored. It only moves forward (`MarkUpdatesSeen`), so a `through` older
+  than the stored one is accepted and changes nothing, and an event
+  stored after `through` keeps `unread` true. It is not a settings edit:
+  `updated_by` and `updated_at` are left as they are and settings
+  subscribers are not told. 400 `invalid_request` for a body that is not
+  exactly that object, a `through` that is not RFC 3339, or one after
+  now.
 
 ## Frontend
 

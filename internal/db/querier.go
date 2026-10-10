@@ -212,6 +212,13 @@ type Querier interface {
 	// Every stored subscription with its keys, for the push sender, oldest
 	// first.
 	ListPushSubscriptions(ctx context.Context) ([]ListPushSubscriptionsRow, error)
+	// Returns the last lim distinct events stored, newest first: one row per
+	// event key, the last stored for it whatever its channel, so an event
+	// stored for push and Google Chat is one row. The last, because a channel
+	// switched on later can store the same event key again, and
+	// HasNotificationSince counts that row: an event is as new as its newest
+	// row, so marking it seen also covers that row.
+	ListRecentNotifications(ctx context.Context, lim int64) ([]ListRecentNotificationsRow, error)
 	// Reads for the AI household context block (internal/ai/harness).
 	// The most recent names the household turned down, newest first, as
 	// ListPassedNames has them.
@@ -254,6 +261,10 @@ type Querier interface {
 	// Records list id sent to Google Chat at sent_to_chat_at, its send
 	// confirmed, unless it is frozen into the Supply archive.
 	MarkShoppingListSentToChat(ctx context.Context, arg MarkShoppingListSentToChatParams) (int64, error)
+	// Moves updates_seen_at forward to seen_at; affects no row when it is
+	// already at or after seen_at, so it never moves back. It is not a settings
+	// edit: updated_by and updated_at are left as they are.
+	MarkUpdatesSeen(ctx context.Context, seenAt string) (int64, error)
 	// Records an edit of plan id, raising its revision: a synced plan becomes
 	// changed, any other keeps its status.
 	MarkWeekPlanEdited(ctx context.Context, arg MarkWeekPlanEditedParams) error

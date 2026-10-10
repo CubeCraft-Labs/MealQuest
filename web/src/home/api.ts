@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { oneOf, photoId } from '../dinners/api.ts'
@@ -6,6 +6,9 @@ import { weekLabel } from '../plan/week.ts'
 
 export const HOME_PATH = '/api/v1/home'
 export const HOME_KEY = ['home'] as const
+export const UPDATES_PATH = '/api/v1/updates'
+export const UPDATES_SEEN_PATH = '/api/v1/updates/seen'
+export const UPDATES_KEY = ['updates'] as const
 
 export const ORIGINS = ['regular', 'side_quest'] as const
 export type Origin = (typeof ORIGINS)[number]
@@ -93,5 +96,98 @@ export function useHome() {
   return useQuery({
     queryKey: HOME_KEY,
     queryFn: async () => parseHome(`GET ${HOME_PATH}`, await apiFetch<unknown>(HOME_PATH)),
+  })
+}
+
+export const UPDATE_TYPES = ['plan_ready', 'list_ready', 'day_of_reminder', 'new_suggestions', 'rotation_review'] as const
+export type UpdateType = (typeof UPDATE_TYPES)[number]
+
+// Update is one of the Recent updates: a notification event, whatever
+// channels it went to. url is the same-origin path it opens; created_at is
+// when it was stored, the UTC RFC 3339 instant POST /api/v1/updates/seen
+// takes back.
+export type Update = { type: UpdateType; title: string; body: string; url: string; created_at: string }
+
+// isAppPath says whether url is a path on the app's own origin, as the
+// server only ever stores.
+function isAppPath(url: string): boolean {
+  return url.startsWith('/') && !url.startsWith('//') && !url.includes('\\')
+}
+
+function parseUpdate(where: string, body: unknown): Update {
+  if (
+    !isRecord(body) ||
+    typeof body.title !== 'string' ||
+    typeof body.body !== 'string' ||
+    typeof body.url !== 'string' ||
+    typeof body.created_at !== 'string'
+  ) {
+    throw new Error(`${where}: an update is not a notification event`)
+  }
+  if (!isAppPath(body.url)) throw new Error(`${where}: update url "${body.url}" is not a path on this app`)
+  if (Number.isNaN(Date.parse(body.created_at))) {
+    throw new Error(`${where}: update created_at "${body.created_at}" is not a time`)
+  }
+  return {
+    type: oneOf(where, 'type', UPDATE_TYPES, body.type),
+    title: body.title,
+    body: body.body,
+    url: body.url,
+    created_at: body.created_at,
+  }
+}
+
+// parseUpdates checks a GET /api/v1/updates body: the updates, newest first.
+export function parseUpdates(where: string, body: unknown): Update[] {
+  if (!isRecord(body) || !Array.isArray(body.updates)) throw new Error(`${where}: response is not the updates`)
+  return body.updates.map((update) => parseUpdate(where, update))
+}
+
+// useUpdates is the Recent updates (GET /api/v1/updates): the last ten
+// notification events, newest first.
+export function useUpdates() {
+  const { apiFetch } = useApi()
+  return useQuery({
+    queryKey: UPDATES_KEY,
+    queryFn: async () => parseUpdates(`GET ${UPDATES_PATH}`, await apiFetch<unknown>(UPDATES_PATH)),
+  })
+}
+
+const MARK_SEEN_KEY = ['updates', 'seen'] as const
+
+// useMarkUpdatesSeen records that the household has seen its updates
+// through the created_at of the newest one shown (POST
+// /api/v1/updates/seen). The bell's unread dot clears at once, and a Home
+// read in flight is stopped so it cannot bring it back; if the server
+// refuses, the dot is put back as it was before the first of the marks in
+// flight. Once the last mark in flight settles Home is read again, so the
+// dot shows only for an event stored since.
+export function useMarkUpdatesSeen() {
+  const { apiFetch } = useApi()
+  const queryClient = useQueryClient()
+  // alone says whether this is the only mark in flight; each counts itself
+  // until it has settled.
+  const alone = () => queryClient.isMutating({ mutationKey: MARK_SEEN_KEY }) === 1
+  return useMutation({
+    mutationKey: MARK_SEEN_KEY,
+    mutationFn: async (through: string) => {
+      await apiFetch<unknown>(UPDATES_SEEN_PATH, { method: 'POST', body: { through } })
+    },
+    onMutate: async () => {
+      // A mark sent while another is in flight would snapshot that one's
+      // optimistic answer, so only the first snapshots.
+      const unread = alone() ? queryClient.getQueryData<Home>(HOME_KEY)?.unread : undefined
+      await queryClient.cancelQueries({ queryKey: HOME_KEY })
+      queryClient.setQueryData<Home>(HOME_KEY, (home) => home && { ...home, unread: false })
+      return { unread }
+    },
+    onError: (_error, _through, context) => {
+      if (context?.unread === undefined || !alone()) return
+      const { unread } = context
+      queryClient.setQueryData<Home>(HOME_KEY, (home) => home && { ...home, unread })
+    },
+    onSettled: () => {
+      if (alone()) void queryClient.invalidateQueries({ queryKey: HOME_KEY })
+    },
   })
 }

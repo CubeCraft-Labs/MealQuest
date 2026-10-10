@@ -1,4 +1,5 @@
 import { Bell, ChevronRight, Compass, Search, ShoppingCart, Zap, type LucideIcon } from 'lucide-react'
+import { useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { duration } from '../plan/PlanPage.tsx'
 import { supplyRunScreen } from '../shopping/api.ts'
@@ -11,6 +12,7 @@ import { Photo } from '../ui/Photo.tsx'
 import { Skeleton } from '../ui/Skeleton.tsx'
 import { useHome, type Home, type Origin, type Tonight } from './api.ts'
 import styles from './HomePage.module.css'
+import { UpdatesSheet } from './UpdatesSheet.tsx'
 
 const ORIGIN_LABEL: Record<Origin, string> = { regular: 'Regular', side_quest: 'Side quest' }
 
@@ -108,11 +110,12 @@ function Tiles() {
 // Quick dinner and Cook from what I have tiles, and the status rows, all
 // from GET /api/v1/home.
 //
-// The bell only shows whether there are unread updates; the Recent updates
-// sheet it opens is still to come.
+// The bell carries a grape dot while there are unread updates and opens the
+// Recent updates sheet, which marks them seen.
 export function HomePage() {
   const home = useHome()
   const data = home.data
+  const [updatesOpen, setUpdatesOpen] = useState(false)
   return (
     <div className={styles.page} aria-busy={home.isPending}>
       <header className={styles.header}>
@@ -124,7 +127,11 @@ export function HomePage() {
           )}
           <h1 className={styles.title}>Tonight's quest</h1>
         </div>
-        <IconButton label={data?.unread ? 'Recent updates, unread' : 'Recent updates'} className={styles.bell}>
+        <IconButton
+          label={data?.unread ? 'Recent updates, unread' : 'Recent updates'}
+          className={styles.bell}
+          onClick={() => setUpdatesOpen(true)}
+        >
           <Icon icon={Bell} className={styles.bellIcon} />
           {data?.unread && <span data-testid="unread-dot" className={styles.dot} />}
         </IconButton>
@@ -142,6 +149,7 @@ export function HomePage() {
         </div>
       )}
       {data !== undefined && <StatusRows home={data} />}
+      <UpdatesSheet open={updatesOpen} onClose={() => setUpdatesOpen(false)} />
     </div>
   )
 }

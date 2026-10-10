@@ -722,6 +722,7 @@ func TestRegister(t *testing.T) {
 		{Name: "hourly", Rule: reminder(&rec).Rule, Run: rec.run},
 		{Name: scheduler.DayOfReminder, Run: rec.run},
 		{Name: scheduler.DayOfReminder, Rule: reminder(&rec).Rule},
+		{Name: scheduler.DayOfReminder, Key: "start", PeriodKey: func(p scheduler.Period) string { return p.Key }, Rule: reminder(&rec).Rule, Run: rec.run},
 	}
 	for _, sch := range bad {
 		if err := s.Register(sch); err == nil {

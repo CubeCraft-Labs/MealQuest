@@ -113,7 +113,8 @@ func (s *shopEnv) wantLogged(want string) {
 // TestChatAutosendSendsComingWeek: at the seeded Saturday 08:00 the
 // schedule posts the coming week's Supply run, W43's, to Google Chat
 // through SendToChat, in that week's thread, and records sent_to_chat_at;
-// its period is shopping_chat_autosend:2026-W43. It posts once.
+// its period is claimed in schedule_runs as list_ready:chat:2026-10-19,
+// the coming week's start. It posts once.
 func TestChatAutosendSendsComingWeek(t *testing.T) {
 	e := newEnv(t)
 	s := e.shopping()
@@ -143,13 +144,13 @@ func TestChatAutosendSendsComingWeek(t *testing.T) {
 		t.Error("sent_to_chat_at not recorded")
 	}
 	s.wantLogged("Supply run sent to Google Chat")
-	s.wantLogged("key=list_ready:chat:2026-10-19")
+	s.wantLogged("period=list_ready:chat:2026-10-19")
 
 	r.runUntil(at(2026, 10, 24, 7, 0))
 	if n := len(s.chat.Posts()); n != 1 {
 		t.Errorf("a week on: %d posts, want 1", n)
 	}
-	wantKeys(t, "schedule_runs", e.claimed(scheduler.ShoppingChatAutosend), []string{"2026-W42", "2026-W43"})
+	wantKeys(t, "schedule_runs", e.claimed(scheduler.ShoppingChatAutosend), []string{"list_ready:chat:2026-10-12", "list_ready:chat:2026-10-19"})
 }
 
 // TestChatAutosendFollowsSettings: chat_autosend_dow and
@@ -249,7 +250,7 @@ func TestChatAutosendSkips(t *testing.T) {
 				t.Errorf("sent_to_chat_at = %v, want %v", l.SentToChatAt, sentBefore)
 			}
 			s.wantLogged("Supply run not sent to Google Chat: " + c.reason)
-			wantKeys(t, "schedule_runs", e.claimed(scheduler.ShoppingChatAutosend), []string{"2026-W42", "2026-W43"})
+			wantKeys(t, "schedule_runs", e.claimed(scheduler.ShoppingChatAutosend), []string{"list_ready:chat:2026-10-12", "list_ready:chat:2026-10-19"})
 		})
 	}
 }
@@ -295,7 +296,7 @@ func TestChatAutosendFailureSurfaces(t *testing.T) {
 	if got := logs.String(); !strings.Contains(got, "level=ERROR") || !strings.Contains(got, "scheduler: run failed") || !strings.Contains(got, "schedule=shopping_chat_autosend") {
 		t.Errorf("scheduler logs = %s, want the refused send logged as a failed run", got)
 	}
-	wantKeys(t, "schedule_runs", e.claimed(scheduler.ShoppingChatAutosend), []string{"2026-W42", "2026-W43"})
+	wantKeys(t, "schedule_runs", e.claimed(scheduler.ShoppingChatAutosend), []string{"list_ready:chat:2026-10-12", "list_ready:chat:2026-10-19"})
 }
 
 func equalPtr(a, b *string) bool {

@@ -26,8 +26,9 @@ const (
 )
 
 // AutosendKey identifies the automatic send of the Supply run of the week
-// starting weekStart, list_ready:chat:YYYY-MM-DD, in the schedule's logs.
-// The send itself is recorded in the list's sent_to_chat_at.
+// starting weekStart, list_ready:chat:YYYY-MM-DD: it is the
+// shopping_chat_autosend period key claimed in schedule_runs. The send
+// itself is recorded in the list's sent_to_chat_at.
 func AutosendKey(weekStart store.LocalDate) string {
 	return string(notify.ListReady) + ":" + string(notify.ChannelChat) + ":" + weekStart.String()
 }
@@ -35,8 +36,8 @@ func AutosendKey(weekStart store.LocalDate) string {
 // ChatAutosendSchedule is the shopping_chat_autosend schedule: at the
 // household's chat_autosend_dow and chat_autosend_time it sends the Supply
 // run of the coming week, the week after the fire date's, to Google Chat
-// with Autosend. Its period scheduler.WeeklyForNextWeek keys
-// shopping_chat_autosend:YYYY-Www for that week. A send that fails is the
+// with Autosend. Its period is that week, scheduler.WeeklyForNextWeek's,
+// claimed under AutosendKey of the week's Monday. A send that fails is the
 // period's error and is not retried; the household can still send it from
 // the Supply run.
 func (s *Service) ChatAutosendSchedule() scheduler.Schedule {
@@ -45,12 +46,15 @@ func (s *Service) ChatAutosendSchedule() scheduler.Schedule {
 		Rule: func(settings household.Settings) scheduler.Rule {
 			return scheduler.WeeklyForNextWeek(time.Weekday(settings.ChatAutosendDow), settings.ChatAutosendTime)
 		},
+		PeriodKey: func(p scheduler.Period) string {
+			return AutosendKey(p.Week)
+		},
 		Run: func(ctx context.Context, p scheduler.Period) error {
 			skipped, err := s.Autosend(ctx, p.Week)
 			if err != nil {
 				return err
 			}
-			log := s.logger.With("period", p.Key, "key", AutosendKey(p.Week), "week_start", p.Week.String())
+			log := s.logger.With("period", p.Key, "week_start", p.Week.String())
 			if skipped != "" {
 				log.InfoContext(ctx, "Supply run not sent to Google Chat: "+skipped)
 				return nil

@@ -152,8 +152,8 @@ type Service struct {
 // cal with links under publicURL, tells the household through notifier,
 // which must be over st, and registers the KindDraftWeek job on
 // runner, which must not have started yet. The kind is service-only:
-// StartDraft, which keeps one draft in flight per week, is the only way to
-// enqueue it.
+// StartDraft and StartScheduledDraft, which keep one draft in flight per
+// week, are the only way to enqueue it.
 func NewService(st *store.Store, draft Drafter, runner *jobs.Runner, cal Calendar, notifier *notify.Service, publicURL *url.URL, logger *slog.Logger) (*Service, error) {
 	switch {
 	case st == nil:
@@ -342,10 +342,27 @@ type Draft struct {
 // enqueues nothing. Drafting over a synced or changed plan needs confirm,
 // else it fails with ErrConfirmRequired and enqueues nothing.
 func (s *Service) StartDraft(ctx context.Context, weekStart store.LocalDate, confirm bool) (Draft, error) {
+	d, _, err := s.startDraft(ctx, weekStart, confirm, false)
+	return d, err
+}
+
+// StartScheduledDraft is StartDraft, without confirm, for the plan_draft
+// schedule: it enqueues the same KindDraftWeek job, or returns the one
+// queued or running, only while the week starting weekStart has no plan.
+// A week that has a plan, in any status, is left as it is: nothing is
+// enqueued and planned is true.
+func (s *Service) StartScheduledDraft(ctx context.Context, weekStart store.LocalDate) (d Draft, planned bool, err error) {
+	return s.startDraft(ctx, weekStart, false, true)
+}
+
+// startDraft is StartDraft, and when onlyUnplanned is set it enqueues
+// nothing for a week that has a plan and reports planned true.
+func (s *Service) startDraft(ctx context.Context, weekStart store.LocalDate, confirm, onlyUnplanned bool) (Draft, bool, error) {
 	if _, err := household.WeekDays(weekStart); err != nil {
-		return Draft{}, &InvalidWeekError{Value: weekStart.String()}
+		return Draft{}, false, &InvalidWeekError{Value: weekStart.String()}
 	}
 	var d Draft
+	planned := false
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		q := db.New(tx)
 		cur, err := q.GetWeekPlan(ctx, weekStart.String())
@@ -353,6 +370,9 @@ func (s *Service) StartDraft(ctx context.Context, weekStart store.LocalDate, con
 		case errors.Is(err, sql.ErrNoRows):
 		case err != nil:
 			return fmt.Errorf("plan: read week %s: %w", weekStart, err)
+		case onlyUnplanned:
+			planned = true
+			return nil
 		case cur.Status != StatusDraft && !confirm:
 			return ErrConfirmRequired
 		}
@@ -375,12 +395,12 @@ func (s *Service) StartDraft(ctx context.Context, weekStart store.LocalDate, con
 		return nil
 	})
 	if err != nil {
-		return Draft{}, err
+		return Draft{}, false, err
 	}
 	if d.Created {
 		s.draftJob.Wake()
 	}
-	return d, nil
+	return d, planned, nil
 }
 
 // Swap plans dinnerID on date of the week starting weekStart, marking the

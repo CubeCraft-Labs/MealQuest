@@ -65,12 +65,27 @@ func ListReady(week store.LocalDate, needed, dinners int) notify.Event {
 }
 
 // DayOfReminder is the day_of_reminder event of the dinner dinnerID, named
-// name, planned on date.
+// name, planned on date: "Tonight: Tacos · Recipe →", a title carrying its
+// own call to action.
 func DayOfReminder(date store.LocalDate, dinnerID, name string) notify.Event {
 	return notify.Event{
 		Type:  notify.DayOfReminder,
 		Key:   string(notify.DayOfReminder) + ":" + date.String(),
-		Title: "Tonight's dinner",
+		Title: "Tonight: " + name + " · Recipe →",
+		URL:   "/dinner/" + dinnerID,
+		Week:  household.WeekStart(date),
+	}
+}
+
+// StartReminder is the day_of_reminder event, keyed
+// day_of_reminder:start:{date}, reminding the household to start the
+// crock-pot dinner dinnerID, named name and planned on date, by startBy,
+// a time in the household zone: "Start the crock pot by 9:30 am".
+func StartReminder(date store.LocalDate, dinnerID, name string, startBy time.Time) notify.Event {
+	return notify.Event{
+		Type:  notify.DayOfReminder,
+		Key:   string(notify.DayOfReminder) + ":start:" + date.String(),
+		Title: "Start the crock pot by " + startBy.Format("3:04 pm"),
 		Body:  name,
 		URL:   "/dinner/" + dinnerID,
 		Week:  household.WeekStart(date),
@@ -173,9 +188,13 @@ func planTitle(week, thisWeek store.LocalDate) string {
 }
 
 // Text is the Google Chat message of p: its title, its body after a colon
-// and the event's call to action with an arrow.
+// and the event's call to action with an arrow. A title ending in an arrow,
+// with no body, carries its own call to action and is the message as it is.
 func Text(p notify.Payload) string {
 	text := p.Title
+	if p.Body == "" && strings.HasSuffix(text, "→") {
+		return text
+	}
 	if p.Body != "" {
 		if endsSentence(text) {
 			text += " "

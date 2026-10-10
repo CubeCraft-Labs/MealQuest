@@ -44,6 +44,18 @@
 // occurrence. Either way the period key is that local date's, so the
 // period still runs exactly once.
 //
+// # Fire times from data
+//
+// A DailyAt rule fires at a time read from the household's data rather
+// than the settings: its function gives, for each household-local date,
+// the instant the date's period fires, or none. The period is that date
+// even when the instant falls on another day. The scheduler asks again on
+// every pass, and whoever changes that data calls Wake once the change is
+// committed, so the next pass comes at once and a fire time the change
+// moved fires on time rather than up to maxWait late; the claim still runs
+// a period at most once. A lookup that fails is logged and repeated every
+// ClaimRetry, as a failed claim is.
+//
 // # Settings changes
 //
 // The scheduler subscribes to the household settings and records each change
@@ -59,6 +71,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -102,8 +115,8 @@ const ClaimRetry = time.Minute
 const maxWait = time.Hour
 
 // Rule is when a schedule fires: at household-local Time ("HH:MM") every
-// day, or on Weekday only when Weekly is set. Build one with Daily, Weekly
-// or WeeklyForNextWeek.
+// day, or on Weekday only when Weekly is set, or every day at the instant
+// At gives. Build one with Daily, Weekly, WeeklyForNextWeek or DailyAt.
 type Rule struct {
 	Weekly  bool
 	Weekday time.Weekday
@@ -111,7 +124,14 @@ type Rule struct {
 	// NextWeek keys a weekly period by the ISO week after the fire date,
 	// for work done ahead for the coming week.
 	NextWeek bool
+	// At, instead of Time, gives the instant the period of a
+	// household-local date fires.
+	At FireAt
 }
+
+// FireAt gives the instant the period of household-local date fires, or
+// false when that date's period does not fire.
+type FireAt func(ctx context.Context, date store.LocalDate) (time.Time, bool, error)
 
 // Daily fires every day at hhmm; its period is the local date.
 func Daily(hhmm string) Rule {
@@ -127,6 +147,12 @@ func Weekly(day time.Weekday, hhmm string) Rule {
 // the fire date's.
 func WeeklyForNextWeek(day time.Weekday, hhmm string) Rule {
 	return Rule{Weekly: true, Weekday: day, Time: hhmm, NextWeek: true}
+}
+
+// DailyAt fires at most once a day, at the instant at gives for the date;
+// its period is that date, wherever the instant falls.
+func DailyAt(at FireAt) Rule {
+	return Rule{At: at}
 }
 
 // PeriodKey returns the period key of a fire on household-local date
@@ -151,6 +177,12 @@ func (r Rule) validate() error {
 	if !r.Weekly && (r.Weekday != time.Sunday || r.NextWeek) {
 		return errors.New("a daily rule has no weekday or next week")
 	}
+	if r.At != nil {
+		if r.Weekly || r.Time != "" {
+			return errors.New("a DailyAt rule has no weekday or time")
+		}
+		return nil
+	}
 	// Any date checks the time's form.
 	_, err := household.LocalTime(time.UTC, store.LocalDateOf(time.Unix(0, 0).UTC()), r.Time)
 	return err
@@ -173,6 +205,10 @@ type Period struct {
 type Schedule struct {
 	// Name is one of the schedule name constants.
 	Name string
+	// Key, when set, prefixes the schedule's period keys with Key and a
+	// colon ("start:2026-10-14"), so two schedules of one Name claim
+	// different periods. Name and Key together are unique.
+	Key string
 	// Rule returns when the schedule fires under settings. It is called
 	// again after every settings change.
 	Rule func(settings household.Settings) Rule
@@ -181,6 +217,14 @@ type Schedule struct {
 	// enqueued as a job. ctx is cancelled when the scheduler stops. An
 	// error is logged; the period stays claimed and is not retried.
 	Run func(ctx context.Context, p Period) error
+}
+
+// label names sch in errors and logs: its Name, and its Key if set.
+func (sch Schedule) label() string {
+	if sch.Key == "" {
+		return sch.Name
+	}
+	return sch.Name + ":" + sch.Key
 }
 
 // Settings is the household settings source: *household.SettingsService.
@@ -199,8 +243,9 @@ type Scheduler struct {
 	now   func() time.Time
 	after func(d time.Duration) <-chan time.Time
 
-	// wake holds one token when the settings changed since the loop last
-	// looked; pending is the changes to apply, oldest first.
+	// wake holds one token when the settings or the data a DailyAt rule
+	// reads changed since the loop last looked; pending is the settings
+	// changes to apply, oldest first.
 	wake      chan struct{}
 	pendingMu sync.Mutex
 	pending   []change
@@ -240,19 +285,22 @@ func (s *Scheduler) Register(sch Schedule) error {
 		return fmt.Errorf("scheduler: register: unknown schedule %q", sch.Name)
 	}
 	if sch.Rule == nil {
-		return fmt.Errorf("scheduler: register %s: nil rule", sch.Name)
+		return fmt.Errorf("scheduler: register %s: nil rule", sch.label())
 	}
 	if sch.Run == nil {
-		return fmt.Errorf("scheduler: register %s: nil run", sch.Name)
+		return fmt.Errorf("scheduler: register %s: nil run", sch.label())
+	}
+	if strings.Contains(sch.Key, ":") {
+		return fmt.Errorf("scheduler: register %s: key has a colon", sch.label())
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.started {
-		return fmt.Errorf("scheduler: register %s: already started", sch.Name)
+		return fmt.Errorf("scheduler: register %s: already started", sch.label())
 	}
 	for _, have := range s.schedules {
-		if have.Name == sch.Name {
-			return fmt.Errorf("scheduler: register %s: already registered", sch.Name)
+		if have.Name == sch.Name && have.Key == sch.Key {
+			return fmt.Errorf("scheduler: register %s: already registered", sch.label())
 		}
 	}
 	s.schedules = append(s.schedules, sch)
@@ -310,9 +358,21 @@ func (s *Scheduler) changed(settings household.Settings) {
 	s.pendingMu.Lock()
 	s.pending = append(s.pending, change{at: s.now(), settings: settings})
 	s.pendingMu.Unlock()
+	s.signal()
+}
+
+// Wake makes the scheduler look up its fire times again now rather than at
+// its next timer. Call it after committing a change to the data a DailyAt
+// rule reads, such as tonight's planned dinner. It never blocks.
+func (s *Scheduler) Wake() {
+	s.signal()
+}
+
+// signal leaves one token in wake for the loop.
+func (s *Scheduler) signal() {
 	select {
 	case s.wake <- struct{}{}:
-	default: // the loop already has a token and reads pending then
+	default: // the loop already has a token and looks again then
 	}
 }
 
@@ -346,7 +406,7 @@ func compile(schedules []Schedule, settings household.Settings) (*plan, error) {
 	for i, sch := range schedules {
 		rule := sch.Rule(settings)
 		if err := rule.validate(); err != nil {
-			return nil, fmt.Errorf("scheduler: %s: %w", sch.Name, err)
+			return nil, fmt.Errorf("scheduler: %s: %w", sch.label(), err)
 		}
 		p.items[i] = item{sch: sch, rule: rule}
 	}
@@ -396,7 +456,12 @@ func (s *Scheduler) loop(ctx context.Context, p *plan) {
 		case len(retry) > 0:
 			timeout = s.after(ClaimRetry)
 		case p != nil:
-			if next, ok := p.next(now); ok {
+			next, ok, err := p.next(ctx, now)
+			switch {
+			case err != nil:
+				s.logger.ErrorContext(ctx, "scheduler: look up next fire time failed; retrying", "error", err, "retry_in", ClaimRetry.String())
+				timeout = s.after(ClaimRetry)
+			case ok:
 				timeout = s.after(min(next.Sub(now), maxWait))
 			}
 		}
@@ -423,40 +488,66 @@ func (s *Scheduler) compileChange(ctx context.Context, settings household.Settin
 	return p
 }
 
-// target is one schedule's period, named by the fire time it belongs to.
+// target is one schedule's period, named by the fire time it belongs to
+// and the household-local date of its period. A target whose fire time
+// could not be looked up has lookup set instead, with the stretch
+// (done, until] to look it up in again.
 type target struct {
-	it  item
-	loc *time.Location
-	at  time.Time
+	it   item
+	loc  *time.Location
+	at   time.Time
+	date store.LocalDate
+
+	lookup      bool
+	done, until time.Time
 }
 
 // fire handles, for every schedule, its most recent fire time at or before
 // until if it is after done; now is the current instant. It returns the
-// targets whose claim failed, to be claimed again.
+// targets whose lookup or claim failed, to be handled again.
 func (s *Scheduler) fire(ctx context.Context, p *plan, done, until, now time.Time) []target {
 	var failed []target
 	for _, it := range p.items {
 		if ctx.Err() != nil {
 			return failed
 		}
-		at, due := fireBefore(it.rule, p.loc, until)
-		if !due || !at.After(done) {
-			continue
-		}
-		if t := (target{it: it, loc: p.loc, at: at}); !s.handle(ctx, t, now) {
+		if t, ok := s.fireItem(ctx, it, p.loc, done, until, now); !ok {
 			failed = append(failed, t)
 		}
 	}
 	return failed
 }
 
-// retry handles targets again at now and returns those whose claim still
-// failed.
+// fireItem handles it's most recent fire time at or before until if it is
+// after done. It reports false, with the target to handle again, when the
+// fire time could not be looked up or its period's claim failed.
+func (s *Scheduler) fireItem(ctx context.Context, it item, loc *time.Location, done, until, now time.Time) (target, bool) {
+	f, due, err := fireBefore(ctx, it.rule, loc, until)
+	if err != nil {
+		s.logger.ErrorContext(ctx, "scheduler: look up fire time failed; retrying",
+			"schedule", it.sch.label(), "error", err, "retry_in", ClaimRetry.String())
+		return target{it: it, loc: loc, lookup: true, done: done, until: until}, false
+	}
+	if !due || !f.at.After(done) {
+		return target{}, true
+	}
+	t := target{it: it, loc: loc, at: f.at, date: f.date}
+	return t, s.handle(ctx, t, now)
+}
+
+// retry handles targets again at now and returns those whose lookup or
+// claim still failed.
 func (s *Scheduler) retry(ctx context.Context, targets []target, now time.Time) []target {
 	var failed []target
 	for i, t := range targets {
 		if ctx.Err() != nil {
 			return append(failed, targets[i:]...)
+		}
+		if t.lookup {
+			if again, ok := s.fireItem(ctx, t.it, t.loc, t.done, t.until, now); !ok {
+				failed = append(failed, again)
+			}
+			continue
 		}
 		if !s.handle(ctx, t, now) {
 			failed = append(failed, t)
@@ -469,9 +560,11 @@ func (s *Scheduler) retry(ctx context.Context, targets []target, now time.Time) 
 // its fire time is more than CatchUpWindow before now. It reports false
 // when the claim failed and the period is still unclaimed.
 func (s *Scheduler) handle(ctx context.Context, t target, now time.Time) bool {
-	it, at := t.it, t.at
-	date := household.Today(at, t.loc)
+	it, at, date := t.it, t.at, t.date
 	period := Period{Key: it.rule.PeriodKey(date), FireAt: at, Date: date}
+	if it.sch.Key != "" {
+		period.Key = it.sch.Key + ":" + period.Key
+	}
 	if it.rule.NextWeek {
 		period.Week = household.WeekStart(addDays(date, 7))
 	} else {
@@ -515,16 +608,19 @@ func (s *Scheduler) claim(ctx context.Context, name, key string, now time.Time) 
 }
 
 // next returns the earliest fire time of any schedule after now, or false
-// when there is no schedule.
-func (p *plan) next(now time.Time) (time.Time, bool) {
+// when there is none.
+func (p *plan) next(ctx context.Context, now time.Time) (time.Time, bool, error) {
 	var next time.Time
 	for _, it := range p.items {
-		at, ok := fireAfter(it.rule, p.loc, now)
-		if ok && (next.IsZero() || at.Before(next)) {
-			next = at
+		f, ok, err := fireAfter(ctx, it.rule, p.loc, now)
+		if err != nil {
+			return time.Time{}, false, fmt.Errorf("%s: %w", it.sch.label(), err)
+		}
+		if ok && (next.IsZero() || f.at.Before(next)) {
+			next = f.at
 		}
 	}
-	return next, !next.IsZero()
+	return next, !next.IsZero(), nil
 }
 
 // window is how many days either side of a date fireBefore and fireAfter
@@ -532,46 +628,80 @@ func (p *plan) next(now time.Time) (time.Time, bool) {
 // each side.
 const window = 8
 
+// atWindow is how many days either side of a date fireBefore and fireAfter
+// look up a DailyAt rule's fire times. A period firing further off is
+// looked up on a later pass, which comes within maxWait.
+const atWindow = 2
+
+// fireTime is a fire time and the household-local date of its period.
+type fireTime struct {
+	at   time.Time
+	date store.LocalDate
+}
+
 // fireBefore returns the latest fire time of r in zone loc at or before t.
-func fireBefore(r Rule, loc *time.Location, t time.Time) (time.Time, bool) {
-	var best time.Time
-	for _, at := range fireTimes(r, loc, t) {
-		if !at.After(t) && (best.IsZero() || at.After(best)) {
-			best = at
+func fireBefore(ctx context.Context, r Rule, loc *time.Location, t time.Time) (fireTime, bool, error) {
+	fs, err := fireTimes(ctx, r, loc, t)
+	if err != nil {
+		return fireTime{}, false, err
+	}
+	var best fireTime
+	for _, f := range fs {
+		if !f.at.After(t) && (best.at.IsZero() || f.at.After(best.at)) {
+			best = f
 		}
 	}
-	return best, !best.IsZero()
+	return best, !best.at.IsZero(), nil
 }
 
 // fireAfter returns the earliest fire time of r in zone loc after t.
-func fireAfter(r Rule, loc *time.Location, t time.Time) (time.Time, bool) {
-	var best time.Time
-	for _, at := range fireTimes(r, loc, t) {
-		if at.After(t) && (best.IsZero() || at.Before(best)) {
-			best = at
+func fireAfter(ctx context.Context, r Rule, loc *time.Location, t time.Time) (fireTime, bool, error) {
+	fs, err := fireTimes(ctx, r, loc, t)
+	if err != nil {
+		return fireTime{}, false, err
+	}
+	var best fireTime
+	for _, f := range fs {
+		if f.at.After(t) && (best.at.IsZero() || f.at.Before(best.at)) {
+			best = f
 		}
 	}
-	return best, !best.IsZero()
+	return best, !best.at.IsZero(), nil
 }
 
-// fireTimes returns r's fire times on the local dates within window days
-// of t's. A rule that fails to resolve was validated at compile, so it
-// cannot.
-func fireTimes(r Rule, loc *time.Location, t time.Time) []time.Time {
+// fireTimes returns r's fire times for the local dates within window days
+// of t's, or atWindow days for a DailyAt rule. A Time that fails to
+// resolve was validated at compile, so it cannot; a DailyAt lookup that
+// fails is an error.
+func fireTimes(ctx context.Context, r Rule, loc *time.Location, t time.Time) ([]fireTime, error) {
 	today := household.Today(t, loc)
-	var out []time.Time
-	for i := -window; i <= window; i++ {
+	span := window
+	if r.At != nil {
+		span = atWindow
+	}
+	var out []fireTime
+	for i := -span; i <= span; i++ {
 		d := addDays(today, i)
 		if r.Weekly && weekday(d) != r.Weekday {
+			continue
+		}
+		if r.At != nil {
+			at, ok, err := r.At(ctx, d)
+			if err != nil {
+				return nil, fmt.Errorf("fire time of %s: %w", d, err)
+			}
+			if ok {
+				out = append(out, fireTime{at: at, date: d})
+			}
 			continue
 		}
 		at, err := household.LocalTime(loc, d, r.Time)
 		if err != nil {
 			panic(fmt.Sprintf("scheduler: validated rule %+v: %v", r, err))
 		}
-		out = append(out, at)
+		out = append(out, fireTime{at: at, date: d})
 	}
-	return out
+	return out, nil
 }
 
 // addDays returns d plus n calendar days.

@@ -93,7 +93,7 @@ func newPlansRouterTitled(t *testing.T, title shopping.Titler) plansEnv {
 		t.Fatal(err)
 	}
 	notifier := notifytest.New(t, st)
-	svc, err := plan.NewService(st, fail, runner, googleSvc, notifier, pub, logger)
+	svc, err := plan.NewService(st, fail, runner, googleSvc, notifier, func() {}, pub, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

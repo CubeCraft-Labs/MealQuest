@@ -166,7 +166,7 @@ func newTestDinners(t *testing.T) *dinners.Service {
 		t.Fatal(err)
 	}
 	g := recipestest.NewGrounder(t, st, t.TempDir(), &recipestest.Search{}, &recipestest.Pages{}, &recipestest.Images{}, &llm.Fake{})
-	svc, err := dinners.NewService(st, g, runner, logger)
+	svc, err := dinners.NewService(st, g, runner, func() {}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func newTestPlan(t *testing.T) *plan.Service {
 	fail := func(context.Context, string, skills.WeekRequest) (skills.Week, error) {
 		return skills.Week{}, errors.New("no model in this test")
 	}
-	svc, err := plan.NewService(st, fail, runner, newTestGoogle(t), notifytest.New(t, st), &url.URL{Scheme: "https", Host: "mealquest.example"}, logger)
+	svc, err := plan.NewService(st, fail, runner, newTestGoogle(t), notifytest.New(t, st), func() {}, &url.URL{Scheme: "https", Host: "mealquest.example"}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -204,6 +204,19 @@ func run(cfg config.Config, logger *slog.Logger) error {
 			return err
 		}
 	}
+	if err := sched.Register(shopSvc.ChatAutosendSchedule()); err != nil {
+		return err
+	}
+	if err := sched.Register(shopSvc.RolloverSchedule()); err != nil {
+		return err
+	}
+	purge, err := harness.PurgeSchedule(db, logger)
+	if err != nil {
+		return err
+	}
+	if err := sched.Register(purge); err != nil {
+		return err
+	}
 
 	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, search, ai, chatSvc, dinnerSvc, suggestSvc, planSvc, shopSvc, googleSvc, pushSvc, ideasSvc, runner, photos, frontend.Assets())
 	if err != nil {

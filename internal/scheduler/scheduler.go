@@ -209,6 +209,11 @@ type Schedule struct {
 	// colon ("start:2026-10-14"), so two schedules of one Name claim
 	// different periods. Name and Key together are unique.
 	Key string
+	// PeriodKey, when set, gives the period key claimed for p in place of
+	// the rule's, such as "list_ready:chat:2026-10-19" for the week p.Week;
+	// p.Key is the rule's key. It must give each period its own key. A
+	// schedule sets Key or PeriodKey, not both.
+	PeriodKey func(p Period) string
 	// Rule returns when the schedule fires under settings. It is called
 	// again after every settings change.
 	Rule func(settings household.Settings) Rule
@@ -292,6 +297,9 @@ func (s *Scheduler) Register(sch Schedule) error {
 	}
 	if strings.Contains(sch.Key, ":") {
 		return fmt.Errorf("scheduler: register %s: key has a colon", sch.label())
+	}
+	if sch.Key != "" && sch.PeriodKey != nil {
+		return fmt.Errorf("scheduler: register %s: both key and period key", sch.label())
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -562,13 +570,16 @@ func (s *Scheduler) retry(ctx context.Context, targets []target, now time.Time) 
 func (s *Scheduler) handle(ctx context.Context, t target, now time.Time) bool {
 	it, at, date := t.it, t.at, t.date
 	period := Period{Key: it.rule.PeriodKey(date), FireAt: at, Date: date}
-	if it.sch.Key != "" {
-		period.Key = it.sch.Key + ":" + period.Key
-	}
 	if it.rule.NextWeek {
 		period.Week = household.WeekStart(addDays(date, 7))
 	} else {
 		period.Week = household.WeekStart(date)
+	}
+	switch {
+	case it.sch.Key != "":
+		period.Key = it.sch.Key + ":" + period.Key
+	case it.sch.PeriodKey != nil:
+		period.Key = it.sch.PeriodKey(period)
 	}
 	log := s.logger.With("schedule", it.sch.Name, "period", period.Key, "fire_at", at.Format(time.RFC3339))
 

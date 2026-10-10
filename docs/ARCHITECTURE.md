@@ -537,8 +537,8 @@ automatic** (D-021).
   received.
   `harness.Purge` deletes rows older than `harness.RunRetention` (30 days),
   clearing the `suggestion_batches` and `week_plans` references first. The
-  harness does not call it: the scheduler's daily `ai_runs` purge
-  (Feature 20) must call `harness.Purge` with `now - RunRetention`.
+  daily `ai_runs_purge` schedule (`harness.PurgeSchedule`) calls it with
+  its fire time less `RunRetention`.
 - **Concurrency guards** (`harness.Guard`, one per process): `harness.Run`
   takes a scope key, and concurrent runs of one skill with one scope share a
   single in-flight run and its result, error included (single-flight); runs
@@ -653,7 +653,8 @@ job failed, the freeze finds the list still untitled and makes its own
 `archive_title` attempt before freezing. A job that starts during a freeze
 waits for it, then finds the list titled (that title stands) or frozen
 untitled (the job fails `title_failed`), and stores nothing. The
-`week_rollover` schedule is to call `Freeze` for last week.
+`week_rollover` schedule (`shopping.Service.RolloverSchedule`) calls
+`Freeze` for last week, judging the week ended by its fire time.
 
 ## Recipe grounding
 
@@ -781,11 +782,11 @@ purge are fixed and not configurable.
 | --- | --- | --- |
 | `suggestions_weekly` | Sunday 08:00 | New batch of Side quests (`suggest.Service.WeeklySchedule`). |
 | `plan_draft` | Friday 09:00 | AI drafts next week's plan (`plan.Service.DraftSchedule`). |
-| `shopping_chat_autosend` | Saturday 08:00 | Sends the Supply run to Google Chat. |
+| `shopping_chat_autosend` | Saturday 08:00 | Sends the coming week's Supply run to Google Chat (`shopping.Service.ChatAutosendSchedule`). |
 | `day_of_reminder` | Daily 16:30, and 15 minutes before a crock-pot start_by earlier than that | Tonight's dinner reminder and the crock-pot start reminder (`plan.Service.ReminderSchedules`). |
 | `rotation_check` | Daily 09:00 | Asks "Keep it in rotation?" for tried dinners. |
-| `week_rollover` | Monday 00:05 (fixed) | Freezes last week's Supply run into the Supply archive. |
-| `ai_runs` purge | Daily (fixed) | Calls `harness.Purge` to delete `ai_runs` rows past 30-day retention (Feature 20). |
+| `week_rollover` | Monday 00:05 (fixed) | Freezes last week's Supply run into the Supply archive (`shopping.Service.RolloverSchedule`). |
+| `ai_runs_purge` | Daily 03:00 (fixed) | Calls `harness.Purge` to delete `ai_runs` rows past 30-day retention (`harness.PurgeSchedule`). |
 
 Runs are recorded in `schedule_runs` and executed through `jobs`.
 
@@ -840,6 +841,20 @@ comes at once, so a crock-pot dinner swapped in for tonight is still
 reminded 15 minutes before its `start_by`, not at the next hourly timer
 (`maxWait`); a lookup that fails is logged and repeated every
 `ClaimRetry`.
+`shopping.Service.ChatAutosendSchedule()` is `shopping_chat_autosend`,
+`WeeklyForNextWeek(chat_autosend_dow, chat_autosend_time)`, so its period
+names the coming week. Its run calls `Autosend(period.Week)`, which posts
+with `SendToChat(week, false)`, the household's own send, only when a
+webhook is stored, `list_ready`'s Chat channel is on
+(`notify.Service.ChannelOn`) and the week has a Supply run neither sent
+nor with a send unconfirmed; otherwise it posts nothing and logs why,
+with the key `list_ready:chat:{weekStart}`. It never resends; a send that
+fails is the period's error. `shopping.Service.RolloverSchedule()` is
+`week_rollover`, `Weekly(Monday, 00:05)`; its run freezes the week before
+the fire date's, and a week with no Supply run freezes nothing and logs
+it. `harness.PurgeSchedule(store, logger)` is `ai_runs_purge`,
+`Daily(03:00)`, deleting rows created more than 30 days before the fire
+time.
 Fake-clock tests of a schedule live in `internal/scheduler`, where
 `SetClock` is visible to tests.
 
@@ -1140,7 +1155,7 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
   request. 404 when the week has no Supply run, 409
   `archived` when it is in the Supply archive, 400 `invalid_request` for a
   bad body. `shopping.SendToChat(weekStart, resend)` is what
-  `shopping_chat_autosend` calls (Feature 20).
+  `shopping_chat_autosend` calls, through `Autosend`.
 - `PATCH /api/v1/shopping/items/{id}` takes `{needed}` (a required
   boolean; it sets the flag, it does not flip it) and answers `{id,
   needed, needed_count, total_count}` with the list's counts after the

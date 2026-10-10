@@ -15,13 +15,14 @@
 //
 // # Catch-up
 //
-// When the scheduler starts, and whenever it wakes late, it looks only at
-// each schedule's most recent fire time. If that time passed within
-// CatchUpWindow and the period is unclaimed, the period runs once. If it
-// passed longer ago, the period is claimed without running and logged as
-// missed, so it can never run later, not after a restart and not after a
-// settings change moves the fire time. Fire times before the most recent
-// one are never looked at.
+// When the scheduler starts, and whenever it wakes late, it handles, oldest
+// first, every fire time of each schedule that passed within CatchUpWindow,
+// and the most recent fire time even when it passed longer ago. Each
+// unclaimed period within CatchUpWindow runs once. A most recent one that
+// passed longer ago is claimed without running and logged as missed, so it
+// can never run later, not after a restart and not after a settings change
+// moves the fire time. Other fire times older than CatchUpWindow are never
+// looked at.
 //
 // # Claim failures
 //
@@ -71,6 +72,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -316,7 +318,7 @@ func (s *Scheduler) Register(sch Schedule) error {
 }
 
 // Start reads the settings and starts the scheduler, which first catches
-// up on each schedule's most recent period and then fires schedules as
+// up on each schedule's recent periods and then fires schedules as
 // their times come. Settings whose zone or rules are invalid are an error
 // and nothing starts. The scheduler stops when ctx is cancelled; Wait waits
 // for it.
@@ -496,22 +498,21 @@ func (s *Scheduler) compileChange(ctx context.Context, settings household.Settin
 	return p
 }
 
-// target is one schedule's period, named by the fire time it belongs to
-// and the household-local date of its period. A target whose fire time
-// could not be looked up has lookup set instead, with the stretch
-// (done, until] to look it up in again.
+// target is one schedule's periods still to handle, oldest first, each
+// named by its fire time and the household-local date of its period. A
+// target whose fire times could not be looked up has lookup set instead,
+// with the stretch (done, until] to look them up in again.
 type target struct {
-	it   item
-	loc  *time.Location
-	at   time.Time
-	date store.LocalDate
+	it    item
+	loc   *time.Location
+	fires []fireTime
 
 	lookup      bool
 	done, until time.Time
 }
 
-// fire handles, for every schedule, its most recent fire time at or before
-// until if it is after done; now is the current instant. It returns the
+// fire handles, for every schedule, its catch-up fire times after done and
+// at or before until; now is the current instant. It returns the
 // targets whose lookup or claim failed, to be handled again.
 func (s *Scheduler) fire(ctx context.Context, p *plan, done, until, now time.Time) []target {
 	var failed []target
@@ -526,21 +527,36 @@ func (s *Scheduler) fire(ctx context.Context, p *plan, done, until, now time.Tim
 	return failed
 }
 
-// fireItem handles it's most recent fire time at or before until if it is
-// after done. It reports false, with the target to handle again, when the
-// fire time could not be looked up or its period's claim failed.
+// fireItem handles, oldest first, it's fire times after done and at or
+// before until that passed within CatchUpWindow of now, and the most recent
+// of them even when it passed longer ago. It reports false, with the target
+// to handle again, when the fire times could not be looked up or a period's
+// claim failed.
 func (s *Scheduler) fireItem(ctx context.Context, it item, loc *time.Location, done, until, now time.Time) (target, bool) {
-	f, due, err := fireBefore(ctx, it.rule, loc, until)
+	fs, err := fireBetween(ctx, it.rule, loc, done, until)
 	if err != nil {
 		s.logger.ErrorContext(ctx, "scheduler: look up fire time failed; retrying",
 			"schedule", it.sch.label(), "error", err, "retry_in", ClaimRetry.String())
 		return target{it: it, loc: loc, lookup: true, done: done, until: until}, false
 	}
-	if !due || !f.at.After(done) {
-		return target{}, true
+	i := 0
+	for i < len(fs)-1 && now.Sub(fs[i].at) > CatchUpWindow {
+		i++
 	}
-	t := target{it: it, loc: loc, at: f.at, date: f.date}
-	return t, s.handle(ctx, t, now)
+	return s.handleAll(ctx, target{it: it, loc: loc, fires: fs[i:]}, now)
+}
+
+// handleAll handles the periods of t in order, stopping at the first whose
+// claim failed. It reports false, with that period and those after it,
+// when one did.
+func (s *Scheduler) handleAll(ctx context.Context, t target, now time.Time) (target, bool) {
+	for i, f := range t.fires {
+		if !s.handle(ctx, t.it, f, now) {
+			t.fires = t.fires[i:]
+			return t, false
+		}
+	}
+	return target{}, true
 }
 
 // retry handles targets again at now and returns those whose lookup or
@@ -557,18 +573,18 @@ func (s *Scheduler) retry(ctx context.Context, targets []target, now time.Time) 
 			}
 			continue
 		}
-		if !s.handle(ctx, t, now) {
-			failed = append(failed, t)
+		if again, ok := s.handleAll(ctx, t, now); !ok {
+			failed = append(failed, again)
 		}
 	}
 	return failed
 }
 
-// handle claims the period of t and runs it, or records it as missed when
-// its fire time is more than CatchUpWindow before now. It reports false
+// handle claims the period of it's fire time f and runs it, or records it
+// as missed when f is more than CatchUpWindow before now. It reports false
 // when the claim failed and the period is still unclaimed.
-func (s *Scheduler) handle(ctx context.Context, t target, now time.Time) bool {
-	it, at, date := t.it, t.at, t.date
+func (s *Scheduler) handle(ctx context.Context, it item, f fireTime, now time.Time) bool {
+	at, date := f.at, f.date
 	period := Period{Key: it.rule.PeriodKey(date), FireAt: at, Date: date}
 	if it.rule.NextWeek {
 		period.Week = household.WeekStart(addDays(date, 7))
@@ -634,12 +650,12 @@ func (p *plan) next(ctx context.Context, now time.Time) (time.Time, bool, error)
 	return next, !next.IsZero(), nil
 }
 
-// window is how many days either side of a date fireBefore and fireAfter
+// window is how many days either side of a date fireBetween and fireAfter
 // search: more than a week, so a weekly rule always has a fire time on
 // each side.
 const window = 8
 
-// atWindow is how many days either side of a date fireBefore and fireAfter
+// atWindow is how many days either side of a date fireBetween and fireAfter
 // look up a DailyAt rule's fire times. A period firing further off is
 // looked up on a later pass, which comes within maxWait.
 const atWindow = 2
@@ -650,19 +666,21 @@ type fireTime struct {
 	date store.LocalDate
 }
 
-// fireBefore returns the latest fire time of r in zone loc at or before t.
-func fireBefore(ctx context.Context, r Rule, loc *time.Location, t time.Time) (fireTime, bool, error) {
+// fireBetween returns the fire times of r in zone loc after from and at or
+// before t, oldest first.
+func fireBetween(ctx context.Context, r Rule, loc *time.Location, from, t time.Time) ([]fireTime, error) {
 	fs, err := fireTimes(ctx, r, loc, t)
 	if err != nil {
-		return fireTime{}, false, err
+		return nil, err
 	}
-	var best fireTime
+	var out []fireTime
 	for _, f := range fs {
-		if !f.at.After(t) && (best.at.IsZero() || f.at.After(best.at)) {
-			best = f
+		if f.at.After(from) && !f.at.After(t) {
+			out = append(out, f)
 		}
 	}
-	return best, !best.at.IsZero(), nil
+	slices.SortFunc(out, func(a, b fireTime) int { return a.at.Compare(b.at) })
+	return out, nil
 }
 
 // fireAfter returns the earliest fire time of r in zone loc after t.

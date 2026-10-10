@@ -6,7 +6,7 @@ import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession 
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
 import { HOME } from '../test/ApiProviders.tsx'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
-import { HOME_PATH, UPDATES_PATH, UPDATES_SEEN_PATH } from './api.ts'
+import { HOME_KEY, HOME_PATH, UPDATES_PATH, UPDATES_SEEN_PATH } from './api.ts'
 import { HomePage } from './HomePage.tsx'
 
 afterEach(() => {
@@ -90,7 +90,8 @@ function Where() {
   return <p data-testid="where">{location.pathname + location.search}</p>
 }
 
-// renderHome loads /me (for the CSRF token the POST needs) and renders Home.
+// renderHome loads /me (for the CSRF token the POST needs) and renders Home,
+// answering its query client.
 async function renderHome() {
   const api = createApiClient(fakeLocation('/'), createNetworkStatus(window), createVerifiedSession(localStorage))
   await api.loadMe()
@@ -101,13 +102,15 @@ async function renderHome() {
     ],
     { initialEntries: ['/'] },
   )
+  const queryClient = createQueryClient()
   render(
     <ApiProvider client={api}>
-      <QueryClientProvider client={createQueryClient()}>
+      <QueryClientProvider client={queryClient}>
         <RouterProvider router={router} />
       </QueryClientProvider>
     </ApiProvider>,
   )
+  return queryClient
 }
 
 // openSheet taps the unread bell and answers the open sheet.
@@ -150,6 +153,51 @@ describe('Recent updates sheet', () => {
     await waitFor(() => expect(homeReads(fetchMock)).toBe(2))
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
     expect(await screen.findByRole('button', { name: 'Recent updates' })).toBeInTheDocument()
+    expect(screen.queryByTestId('unread-dot')).not.toBeInTheDocument()
+  })
+
+  it('reads the updates afresh on each opening, so one stored since the last opening is listed and marked seen', async () => {
+    // The server holds the stored events, newest first, and says Home is
+    // unread while the newest is after the time marked seen.
+    const stored = [...UPDATES.updates]
+    let seenThrough = ''
+    const fetchMock = stubServer({
+      [`GET ${HOME_PATH}`]: () => jsonResponse(200, { ...HOME, recentUpdates: { unread: stored[0]!.created_at > seenThrough } }),
+      [`GET ${UPDATES_PATH}`]: () => jsonResponse(200, { updates: stored }),
+      [`POST ${UPDATES_SEEN_PATH}`]: (init) => {
+        seenThrough = (JSON.parse(String(init?.body)) as { through: string }).through
+        return new Response(null, { status: 204 })
+      },
+    })
+    const queryClient = await renderHome()
+    await rows(await openSheet())
+    await waitFor(() => expect(posts(fetchMock)).toHaveLength(1))
+    await waitFor(() => expect(homeReads(fetchMock)).toBe(2))
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+
+    // A new event is stored a moment later, well within the query client's
+    // staleTime, and Home is read again, as on coming back to it.
+    const reminder = {
+      type: 'day_of_reminder',
+      title: 'Tacos tonight',
+      body: 'Dinner at 6:00.',
+      url: '/plan',
+      created_at: new Date().toISOString(),
+    }
+    stored.unshift(reminder)
+    await queryClient.invalidateQueries({ queryKey: HOME_KEY })
+    expect(await screen.findByTestId('unread-dot')).toBeInTheDocument()
+
+    const listed = await rows(await openSheet())
+    expect(listed).toHaveLength(4)
+    expect(listed[0]).toHaveTextContent('Tacos tonight')
+    await waitFor(() =>
+      expect(posts(fetchMock)).toEqual([
+        JSON.stringify({ through: UPDATES.updates[0]!.created_at }),
+        JSON.stringify({ through: reminder.created_at }),
+      ]),
+    )
+    await waitFor(() => expect(homeReads(fetchMock)).toBe(4))
     expect(screen.queryByTestId('unread-dot')).not.toBeInTheDocument()
   })
 

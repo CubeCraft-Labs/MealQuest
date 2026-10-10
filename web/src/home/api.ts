@@ -3,6 +3,7 @@ import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { oneOf, photoId } from '../dinners/api.ts'
 import { weekLabel } from '../plan/week.ts'
+import { appPath } from '../push/notification.ts'
 
 export const HOME_PATH = '/api/v1/home'
 export const HOME_KEY = ['home'] as const
@@ -108,13 +109,10 @@ export type UpdateType = (typeof UPDATE_TYPES)[number]
 // takes back.
 export type Update = { type: UpdateType; title: string; body: string; url: string; created_at: string }
 
-// isAppPath says whether url is a path on the app's own origin, as the
-// server only ever stores.
-function isAppPath(url: string): boolean {
-  return url.startsWith('/') && !url.startsWith('//') && !url.includes('\\')
-}
-
-function parseUpdate(where: string, body: unknown): Update {
+// parseUpdate checks one update. Its url must stay on origin once parsed, as
+// the server only ever stores a path on the app's own origin; url is that
+// path as parsed.
+function parseUpdate(where: string, body: unknown, origin: string): Update {
   if (
     !isRecord(body) ||
     typeof body.title !== 'string' ||
@@ -124,7 +122,8 @@ function parseUpdate(where: string, body: unknown): Update {
   ) {
     throw new Error(`${where}: an update is not a notification event`)
   }
-  if (!isAppPath(body.url)) throw new Error(`${where}: update url "${body.url}" is not a path on this app`)
+  const url = appPath(body.url, origin)
+  if (url === null) throw new Error(`${where}: update url ${JSON.stringify(body.url)} is not a path on this app`)
   if (Number.isNaN(Date.parse(body.created_at))) {
     throw new Error(`${where}: update created_at "${body.created_at}" is not a time`)
   }
@@ -132,24 +131,29 @@ function parseUpdate(where: string, body: unknown): Update {
     type: oneOf(where, 'type', UPDATE_TYPES, body.type),
     title: body.title,
     body: body.body,
-    url: body.url,
+    url,
     created_at: body.created_at,
   }
 }
 
-// parseUpdates checks a GET /api/v1/updates body: the updates, newest first.
-export function parseUpdates(where: string, body: unknown): Update[] {
+// parseUpdates checks a GET /api/v1/updates body, from the app at origin:
+// the updates, newest first.
+export function parseUpdates(where: string, body: unknown, origin: string): Update[] {
   if (!isRecord(body) || !Array.isArray(body.updates)) throw new Error(`${where}: response is not the updates`)
-  return body.updates.map((update) => parseUpdate(where, update))
+  return body.updates.map((update) => parseUpdate(where, update, origin))
 }
 
 // useUpdates is the Recent updates (GET /api/v1/updates): the last ten
-// notification events, newest first.
+// notification events, newest first. The list is dropped as soon as the
+// sheet showing it closes (gcTime 0), so each opening reads it afresh and
+// never shows, or marks seen, a list read before an event stored since.
 export function useUpdates() {
   const { apiFetch } = useApi()
   return useQuery({
     queryKey: UPDATES_KEY,
-    queryFn: async () => parseUpdates(`GET ${UPDATES_PATH}`, await apiFetch<unknown>(UPDATES_PATH)),
+    queryFn: async () =>
+      parseUpdates(`GET ${UPDATES_PATH}`, await apiFetch<unknown>(UPDATES_PATH), window.location.origin),
+    gcTime: 0,
   })
 }
 

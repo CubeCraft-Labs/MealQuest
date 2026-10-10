@@ -45,6 +45,7 @@ var weekDates = []string{"2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15",
 type env struct {
 	svc      *home.Service
 	st       *store.Store
+	settings *household.SettingsService
 	notifier *notify.Service
 	loc      *time.Location
 }
@@ -116,7 +117,8 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := home.NewService(household.NewSettingsService(st), plans, suggestSvc, shop, notifier)
+	settings := household.NewSettingsService(st)
+	svc, err := home.NewService(settings, plans, suggestSvc, shop, notifier)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +126,7 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &env{svc: svc, st: st, notifier: notifier, loc: loc}
+	return &env{svc: svc, st: st, settings: settings, notifier: notifier, loc: loc}
 }
 
 // at reads the Home screen with the clock at the household-local wall
@@ -480,6 +482,15 @@ func TestMarkUpdatesSeen(t *testing.T) {
 	if !unread() {
 		t.Fatal("not unread with an event never seen")
 	}
+	// The settings were last edited well before: marking updates seen must
+	// keep that time and tell no settings subscriber.
+	edited := (store.Timestamp{Time: time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)}).String()
+	if _, err := e.st.Writer.ExecContext(ctx, `UPDATE household_settings SET updated_at = ?`, edited); err != nil {
+		t.Fatal(err)
+	}
+	var notified int
+	unsubscribe := e.settings.Subscribe(func(household.Settings) { notified++ })
+	defer unsubscribe()
 	if err := e.svc.MarkUpdatesSeen(ctx, first); err != nil {
 		t.Fatal(err)
 	}
@@ -509,7 +520,7 @@ func TestMarkUpdatesSeen(t *testing.T) {
 	if err := e.svc.MarkUpdatesSeen(ctx, first); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := household.NewSettingsService(e.st).Get(ctx)
+	settings, err := e.settings.Get(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,6 +529,12 @@ func TestMarkUpdatesSeen(t *testing.T) {
 	}
 	if settings.UpdatedBy != nil {
 		t.Errorf("updated_by = %q, want unset: marking updates seen is not a settings edit", *settings.UpdatedBy)
+	}
+	if settings.UpdatedAt != edited {
+		t.Errorf("updated_at = %s, want %s: marking updates seen is not a settings edit", settings.UpdatedAt, edited)
+	}
+	if notified != 0 {
+		t.Errorf("settings subscribers told %d times, want none: marking updates seen is not a settings edit", notified)
 	}
 
 	// The clock reads 17:00 UTC.

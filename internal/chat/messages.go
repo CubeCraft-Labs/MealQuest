@@ -107,17 +107,17 @@ func NewSuggestions(id string, week store.LocalDate, names []string) notify.Even
 	}
 }
 
-// RotationReview is the rotation_review event asking whether the dinner
-// dinnerID, named name and tried in the week starting on week, becomes a
-// Regular.
-func RotationReview(dinnerID, name string, week store.LocalDate) notify.Event {
+// RotationReview is the rotation_review event, keyed
+// rotation_review:{dinnerID}:{planDate}, of the Rotation check of the
+// dinner dinnerID, named name and tried on planDate: "How was Pho? Keep it
+// in rotation?". It opens Home, where the Rotation check card asks.
+func RotationReview(dinnerID, name string, planDate store.LocalDate) notify.Event {
 	return notify.Event{
 		Type:  notify.RotationReview,
-		Key:   string(notify.RotationReview) + ":" + dinnerID,
-		Title: "Keep it in rotation?",
-		Body:  "You tried " + name + ". Make it a Regular?",
+		Key:   string(notify.RotationReview) + ":" + dinnerID + ":" + planDate.String(),
+		Title: "How was " + name + "? Keep it in rotation?",
 		URL:   "/",
-		Week:  week,
+		Week:  household.WeekStart(planDate),
 	}
 }
 

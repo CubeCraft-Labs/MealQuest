@@ -204,6 +204,9 @@ func run(cfg config.Config, logger *slog.Logger) error {
 			return err
 		}
 	}
+	if err := sched.Register(planSvc.RotationCheckSchedule()); err != nil {
+		return err
+	}
 	if err := sched.Register(shopSvc.ChatAutosendSchedule()); err != nil {
 		return err
 	}

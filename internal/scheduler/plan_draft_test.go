@@ -81,7 +81,23 @@ func (c noCalendar) PushEvents(context.Context, []gcal.Event, func() error) erro
 
 // plans builds a plan service drafting from the dinners ids over e with a
 // started job runner, which stop stops (and the test's end, if not before).
+// Its changes do not wake the scheduler: a draft job's wake would add a
+// pass the fake clock's waits do not expect.
 func (e *env) plans(ids map[string]string) *planEnv {
+	e.t.Helper()
+	return e.newPlans(ids, func() {})
+}
+
+// wakingPlans is plans whose changes wake the scheduler, as in the server.
+// A test using it changes plans only from its own goroutine and waits for
+// the wake's pass with changed.
+func (e *env) wakingPlans(ids map[string]string) *planEnv {
+	e.t.Helper()
+	return e.newPlans(ids, e.wake)
+}
+
+// newPlans is plans whose service calls wake after a plan change.
+func (e *env) newPlans(ids map[string]string, wake func()) *planEnv {
 	e.t.Helper()
 	p := &planEnv{e: e, model: &llm.Fake{}, ids: ids, logs: &syncBuffer{}}
 	guard, err := harness.NewGuard(harness.DefaultMaxCalls)
@@ -102,7 +118,7 @@ func (e *env) plans(ids map[string]string) *planEnv {
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	p.svc, err = plan.NewService(e.st, drafter, runner, noCalendar{e.t}, notifytest.New(e.t, e.st), publicURL, logger)
+	p.svc, err = plan.NewService(e.st, drafter, runner, noCalendar{e.t}, notifytest.New(e.t, e.st), wake, publicURL, logger)
 	if err != nil {
 		e.t.Fatal(err)
 	}

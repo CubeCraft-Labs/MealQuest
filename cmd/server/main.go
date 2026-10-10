@@ -130,7 +130,12 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	dinnerSvc, err := dinners.NewService(db, grounder, runner, logger)
+	// The scheduler is made before the services whose changes wake it.
+	sched, err := scheduler.New(db, settings, logger)
+	if err != nil {
+		return err
+	}
+	dinnerSvc, err := dinners.NewService(db, grounder, runner, sched.Wake, logger)
 	if err != nil {
 		return err
 	}
@@ -152,7 +157,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	planSvc, err := plan.NewService(db, weekDrafter(ai, guard), runner, googleSvc, notifier, cfg.PublicURL, logger)
+	planSvc, err := plan.NewService(db, weekDrafter(ai, guard), runner, googleSvc, notifier, sched.Wake, cfg.PublicURL, logger)
 	if err != nil {
 		return err
 	}
@@ -188,10 +193,6 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	sched, err := scheduler.New(db, settings, logger)
-	if err != nil {
-		return err
-	}
 	if err := sched.Register(suggestSvc.WeeklySchedule()); err != nil {
 		return err
 	}

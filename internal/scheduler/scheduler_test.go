@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -59,10 +60,13 @@ func (c *fakeClock) Now() time.Time {
 	return c.now
 }
 
+// After returns a timer that fires d from now. The scheduler waits on only
+// its latest timer, so this one replaces any still pending: a timer the
+// scheduler gave up on when a wake came first never fires.
 func (c *fakeClock) After(d time.Duration) <-chan time.Time {
 	c.mu.Lock()
 	ch := make(chan time.Time, 1)
-	c.timers = append(c.timers, fakeTimer{deadline: c.now.Add(d), ch: ch})
+	c.timers = []fakeTimer{{deadline: c.now.Add(d), ch: ch}}
 	c.mu.Unlock()
 	c.waits <- struct{}{}
 	return ch
@@ -134,6 +138,16 @@ type env struct {
 	t        *testing.T
 	st       *store.Store
 	settings *household.SettingsService
+	// sched is the scheduler start last started, which wake wakes.
+	sched atomic.Pointer[scheduler.Scheduler]
+}
+
+// wake wakes the scheduler start last started, as the services' wake does
+// in the server; before the first start it does nothing.
+func (e *env) wake() {
+	if s := e.sched.Load(); s != nil {
+		s.Wake()
+	}
 }
 
 func newEnv(t *testing.T) *env {
@@ -214,6 +228,7 @@ func (e *env) start(now time.Time, schedules ...scheduler.Schedule) *running {
 		cancel()
 		e.t.Fatal(err)
 	}
+	e.sched.Store(s)
 	var once sync.Once
 	stop := func() {
 		once.Do(func() {
@@ -255,7 +270,8 @@ func (r *running) runUntil(to time.Time) {
 	}
 }
 
-// changed waits for the scheduler to apply a settings change.
+// changed waits for the scheduler to apply a settings change, or to look
+// again after a wake.
 func (r *running) changed() {
 	r.t.Helper()
 	r.idle()

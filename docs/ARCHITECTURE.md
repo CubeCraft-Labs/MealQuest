@@ -832,9 +832,14 @@ computation the plan API shows) when the dinner is a crock-pot dinner
 whose `start_by` is earlier than that day's `reminder_time`; its run
 calls `EmitStartReminder(period.Date)`, which checks the same again. A
 date whose week has no plan emits neither and logs it. A `DailyAt` fire
-time is looked up from the data on every pass, so a plan change moves it
-within an hour (`maxWait`); a lookup that fails is logged and repeated
-every `ClaimRetry`.
+time is looked up from the data on every pass. A committed change that
+can move a `start_by` calls `Scheduler.Wake` (passed to `plan.NewService`
+and `dinners.NewService` as `wake`): a plan swap or stored draft, and a
+dinner's method or minutes changed by edit or grounding. The next pass
+comes at once, so a crock-pot dinner swapped in for tonight is still
+reminded 15 minutes before its `start_by`, not at the next hourly timer
+(`maxWait`); a lookup that fails is logged and repeated every
+`ClaimRetry`.
 Fake-clock tests of a schedule live in `internal/scheduler`, where
 `SetClock` is visible to tests.
 

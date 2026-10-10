@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify/notifytest"
@@ -264,4 +266,63 @@ func TestDailyAtLookupFailureIsRetried(t *testing.T) {
 	r.runUntil(at(2026, 10, 13, 12, 0))
 	wantKeys(t, "next day", rec.keys(), []string{"start:2026-10-11", "start:2026-10-12", "start:2026-10-13"})
 	wantKeys(t, "schedule_runs", e.claimed(scheduler.DayOfReminder), rec.keys())
+}
+
+// questLog stores name as a Quest-log dinner, a crock-pot dinner of
+// minutes, and returns its id. It is not a Regular.
+func (p *planEnv) questLog(name string, minutes int) string {
+	p.e.t.Helper()
+	now := store.Now().String()
+	d, err := db.New(p.e.st.Writer).CreateDinner(context.Background(), db.CreateDinnerParams{
+		ID:              store.NewID(),
+		Name:            name,
+		NormalizedName:  harness.Normalize(name),
+		Status:          "quest_log",
+		Origin:          "side_quest",
+		GroundingStatus: "manual",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	})
+	if err != nil {
+		p.e.t.Fatal(err)
+	}
+	p.ids[name] = d.ID
+	p.crockPot(name, minutes)
+	return d.ID
+}
+
+// TestStartReminderAfterSwapFiresOnTime: swapping a crock-pot dinner in
+// for tonight wakes the scheduler, so its start reminder fires at start_by
+// minus 15 minutes, 09:15, and not at the next hourly check, 10:00. At
+// 09:00 tonight is Beef Chili, not a crock-pot dinner, and the scheduler's
+// next timer is 10:00; at 09:01 the household swaps in an eight-hour
+// crock-pot Quest-log dinner, start by 09:30. Each reminder fires once.
+func TestStartReminderAfterSwapFiresOnTime(t *testing.T) {
+	e := newEnv(t)
+	p := e.wakingPlans(e.pool())
+	stew := p.questLog("Crock Pot Stew", 480) // start by 09:30
+	p.planWeek(w42)
+
+	r := e.start(at(2026, 10, 12, 8, 0), p.svc.ReminderSchedules()...)
+	r.runUntil(at(2026, 10, 12, 9, 0))
+	if next, _ := r.clock.nextDeadline(); !next.Equal(at(2026, 10, 12, 10, 0)) {
+		t.Fatalf("next wake at 09:00 = %s, want the hourly 10:00", next)
+	}
+
+	r.runUntil(at(2026, 10, 12, 9, 1))
+	if _, err := p.svc.Swap(context.Background(), w42, "2026-10-12", stew); err != nil {
+		t.Fatal(err)
+	}
+	r.changed()
+	r.runUntil(at(2026, 10, 12, 9, 14))
+	wantKeys(t, "before 09:15", e.reminderKeys(), nil)
+
+	r.runUntil(at(2026, 10, 12, 9, 15))
+	wantKeys(t, "at 09:15", e.reminderKeys(), []string{"day_of_reminder:start:2026-10-12"})
+	p.wantReminder("day_of_reminder:start:2026-10-12", "Start the crock pot by 9:30 am", "Crock Pot Stew", "Crock Pot Stew")
+
+	r.runUntil(at(2026, 10, 13, 23, 59))
+	wantKeys(t, "Tuesday", e.reminderKeys(), []string{"day_of_reminder:start:2026-10-12", "day_of_reminder:2026-10-12", "day_of_reminder:2026-10-13"})
+	p.wantReminder("day_of_reminder:2026-10-12", "Tonight: Crock Pot Stew · Recipe →", "", "Crock Pot Stew")
+	wantKeys(t, "schedule_runs", e.claimed(scheduler.DayOfReminder), []string{"2026-10-11", "2026-10-12", "2026-10-13", "start:2026-10-12"})
 }

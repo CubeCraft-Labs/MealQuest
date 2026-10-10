@@ -1102,7 +1102,7 @@ func TestBatchNeverStoresDishPassedWhileRunning(t *testing.T) {
 func TestLaterBatchNeverResuggestsRenamedPass(t *testing.T) {
 	e := newEnv(t) // runner not started: the replenish batch waits for the rename
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	dinnerSvc, err := dinners.NewService(e.st, e.grounder, e.runner, logger)
+	dinnerSvc, err := dinners.NewService(e.st, e.grounder, e.runner, func() {}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1150,14 +1150,14 @@ func TestLaterBatchNeverResuggestsRenamedDrop(t *testing.T) {
 	e := newEnv(t)
 	ctx := t.Context()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	dinnerSvc, err := dinners.NewService(e.st, e.grounder, e.runner, logger)
+	dinnerSvc, err := dinners.NewService(e.st, e.grounder, e.runner, func() {}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fail := func(context.Context, string, skills.WeekRequest) (skills.Week, error) {
 		return skills.Week{}, errors.New("no draft in this test")
 	}
-	planSvc, err := plan.NewService(e.st, fail, e.runner, noCalendar{}, notifytest.New(t, e.st), &url.URL{Scheme: "https", Host: "meals.example.com"}, logger)
+	planSvc, err := plan.NewService(e.st, fail, e.runner, noCalendar{}, notifytest.New(t, e.st), func() {}, &url.URL{Scheme: "https", Host: "meals.example.com"}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

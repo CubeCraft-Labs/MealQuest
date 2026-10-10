@@ -234,6 +234,7 @@ func (s *Service) storeDraft(ctx context.Context, weekStart, thisWeek store.Loca
 		return "", err
 	}
 	s.notifier.Wake()
+	s.wake()
 	return planID, nil
 }
 

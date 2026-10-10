@@ -50,10 +50,11 @@
 // than the settings: its function gives, for each household-local date,
 // the instant the date's period fires, or none. The period is that date
 // even when the instant falls on another day. The scheduler asks again on
-// every pass, so a change to the data moves the fire time by the next pass,
-// at most maxWait after the change; the claim still runs a period at most
-// once. A lookup that fails is logged and repeated every ClaimRetry, as a
-// failed claim is.
+// every pass, and whoever changes that data calls Wake once the change is
+// committed, so the next pass comes at once and a fire time the change
+// moved fires on time rather than up to maxWait late; the claim still runs
+// a period at most once. A lookup that fails is logged and repeated every
+// ClaimRetry, as a failed claim is.
 //
 // # Settings changes
 //
@@ -242,8 +243,9 @@ type Scheduler struct {
 	now   func() time.Time
 	after func(d time.Duration) <-chan time.Time
 
-	// wake holds one token when the settings changed since the loop last
-	// looked; pending is the changes to apply, oldest first.
+	// wake holds one token when the settings or the data a DailyAt rule
+	// reads changed since the loop last looked; pending is the settings
+	// changes to apply, oldest first.
 	wake      chan struct{}
 	pendingMu sync.Mutex
 	pending   []change
@@ -356,9 +358,21 @@ func (s *Scheduler) changed(settings household.Settings) {
 	s.pendingMu.Lock()
 	s.pending = append(s.pending, change{at: s.now(), settings: settings})
 	s.pendingMu.Unlock()
+	s.signal()
+}
+
+// Wake makes the scheduler look up its fire times again now rather than at
+// its next timer. Call it after committing a change to the data a DailyAt
+// rule reads, such as tonight's planned dinner. It never blocks.
+func (s *Scheduler) Wake() {
+	s.signal()
+}
+
+// signal leaves one token in wake for the loop.
+func (s *Scheduler) signal() {
 	select {
 	case s.wake <- struct{}{}:
-	default: // the loop already has a token and reads pending then
+	default: // the loop already has a token and looks again then
 	}
 }
 

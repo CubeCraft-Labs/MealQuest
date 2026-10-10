@@ -516,7 +516,7 @@ func TestGenerateManualRecipe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dsvc, err := dinners.NewService(e.st, grounder, runner, logger)
+	dsvc, err := dinners.NewService(e.st, grounder, runner, func() {}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

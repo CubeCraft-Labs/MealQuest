@@ -137,13 +137,13 @@ func TestMessages(t *testing.T) {
 		},
 		{
 			name:  "rotation review",
-			ev:    RotationReview("01J9DINNER", "Lemon orzo", week),
-			key:   "rotation_review:01J9DINNER",
+			ev:    RotationReview("01J9DINNER", "Lemon orzo", mustDate(t, "2026-10-14")),
+			key:   "rotation_review:01J9DINNER:2026-10-14",
 			url:   "/",
 			week:  "2026-10-12",
-			title: "Keep it in rotation?",
-			body:  "You tried Lemon orzo. Make it a Regular?",
-			chatT: "Keep it in rotation? You tried Lemon orzo. Make it a Regular? Open MealQuest →",
+			title: "How was Lemon orzo? Keep it in rotation?",
+			body:  "",
+			chatT: "How was Lemon orzo? Keep it in rotation? Open MealQuest →",
 		},
 	} {
 		ev := tc.ev

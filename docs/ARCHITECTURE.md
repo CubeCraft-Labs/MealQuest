@@ -484,15 +484,13 @@ automatic** (D-021).
   `changed`, and answers 200 with the plan. A date outside the week is 400 `invalid_date`, an unknown dinner or
   a week with no plan 404, any other dinner 409 `dinner_not_plannable`, and
   a dinner already on another day of the week 409 `dinner_already_planned`.
-- Rotation check (`plan.Service`, D-021). This release provides the
-  `MarkTried` service method and the rotation review read and decide APIs
-  below. The `rotation_check` schedule that is to call `MarkTried` for the
-  household-local day just past is planned (Feature 20, the scheduler) and
-  not wired yet: nothing in production calls `MarkTried`, so no Rotation
-  check opens automatically. `MarkTried(date)` moves every `quest_log` dinner planned on that date, on a plan of any
-  status, to `tried` and opens a `pending` `rotation_reviews` row for it;
-  a dinner already checked for that date is left as it is, so it is
-  idempotent. `GET /api/v1/rotation-reviews` returns `{reviews}`, the
+- Rotation check (`plan.Service`, D-021). The `rotation_check` schedule
+  calls `MarkTried` for the household-local day just past (see Scheduler).
+  `MarkTried(date)` moves every `quest_log` dinner planned on that date, on a plan of any
+  status, to `tried`, opens a `pending` `rotation_reviews` row for it and
+  emits its `rotation_review`, in one transaction;
+  a dinner already checked for that date is left as it is and not
+  notified again, so it is idempotent. `GET /api/v1/rotation-reviews` returns `{reviews}`, the
   pending checks whose dinner is still tried, oldest `plan_date` first,
   each `{dinner: {id, name, photo}, plan_date}`. `POST
   /api/v1/dinners/{id}/rotation-review` takes `{decision}`: `keep` makes
@@ -784,7 +782,7 @@ purge are fixed and not configurable.
 | `plan_draft` | Friday 09:00 | AI drafts next week's plan (`plan.Service.DraftSchedule`). |
 | `shopping_chat_autosend` | Saturday 08:00 | Sends the coming week's Supply run to Google Chat (`shopping.Service.ChatAutosendSchedule`). |
 | `day_of_reminder` | Daily 16:30, and 15 minutes before a crock-pot start_by earlier than that | Tonight's dinner reminder and the crock-pot start reminder (`plan.Service.ReminderSchedules`). |
-| `rotation_check` | Daily 09:00 | Asks "Keep it in rotation?" for tried dinners. |
+| `rotation_check` | Daily 09:00 | Marks yesterday's Quest log dinners tried and asks "Keep it in rotation?" (`plan.Service.RotationCheckSchedule`). |
 | `week_rollover` | Monday 00:05 (fixed) | Freezes last week's Supply run into the Supply archive (`shopping.Service.RolloverSchedule`). |
 | `ai_runs_purge` | Daily 03:00 (fixed) | Calls `harness.Purge` to delete `ai_runs` rows past 30-day retention (`harness.PurgeSchedule`). |
 
@@ -852,7 +850,13 @@ with the key `list_ready:chat:{weekStart}`. It never resends; a send that
 fails is the period's error. `shopping.Service.RolloverSchedule()` is
 `week_rollover`, `Weekly(Monday, 00:05)`; its run freezes the week before
 the fire date's, and a week with no Supply run freezes nothing and logs
-it. `harness.PurgeSchedule(store, logger)` is `ai_runs_purge`,
+it. `plan.Service.RotationCheckSchedule()` is `rotation_check`,
+`Daily(review_time)`, claimed as `rotation_check:YYYY-MM-DD` of the fire
+date (`Schedule.PeriodKey`). Its run calls `MarkTried` for the day before
+the fire date, which emits one `rotation_review` per Rotation check it
+opens; it never makes a dinner a Regular, and a day with no Quest log
+dinner planned opens none and logs the count.
+`harness.PurgeSchedule(store, logger)` is `ai_runs_purge`,
 `Daily(03:00)`, deleting rows created more than 30 days before the fire
 time.
 Fake-clock tests of a schedule live in `internal/scheduler`, where
@@ -899,6 +903,10 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
     {time}" with the dinner's name, only for a crock-pot dinner whose
     `start_by` is earlier than `reminder_time`. The `day_of_reminder`
     schedule calls it 15 minutes before `start_by`.
+  - `rotation_review:{dinnerId}:{planDate}` (URL `/`, where the Home card
+    asks) through `plan.Service.MarkTried(planDate)`, "How was {dinner}?
+    Keep it in rotation?", once per Rotation check it opens. The
+    `rotation_check` schedule calls it at `review_time` for yesterday.
 - Delivery goes through `notification_outbox`.
 - Web Push uses VAPID (`webpush-go`). Google Chat uses the stored incoming
   webhook.

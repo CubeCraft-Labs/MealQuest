@@ -403,6 +403,37 @@ func TestCatchUpOnlyMostRecentPeriod(t *testing.T) {
 	wantKeys(t, "schedule_runs", e.claimed(scheduler.DayOfReminder), []string{"2026-10-09"})
 }
 
+func TestCatchUpEveryPeriodWithin24HoursAcrossSpringForward(t *testing.T) {
+	// Clocks in Chicago jump 02:00 CST → 03:00 CDT on Sunday 2026-03-08,
+	// so 01:30 on Mar 8 and 01:30 on Mar 9 are only 23 hours apart.
+	e := newEnv(t)
+	e.update(household.SettingsPatch{ReviewTime: ptr("01:30")})
+	var rec recorder
+	review := scheduler.Schedule{
+		Name: scheduler.RotationCheck,
+		Rule: func(s household.Settings) scheduler.Rule { return scheduler.Daily(s.ReviewTime) },
+		Run:  rec.run,
+	}
+	// Boot at Mar 9 01:35: Mar 9 01:30 passed 5 minutes ago and Mar 8
+	// 01:30 23h05m ago, so both run, oldest first; Mar 7 01:30, 47h05m
+	// ago, is not looked at.
+	r := e.start(at(2026, 3, 9, 1, 35), review)
+	wantKeys(t, "catch-up", rec.keys(), []string{"2026-03-08", "2026-03-09"})
+	wantFired(t, rec.periods(),
+		time.Date(2026, 3, 8, 7, 30, 0, 0, time.UTC), // 01:30 CST
+		time.Date(2026, 3, 9, 6, 30, 0, 0, time.UTC), // 01:30 CDT
+	)
+	wantKeys(t, "schedule_runs", e.claimed(scheduler.RotationCheck), []string{"2026-03-08", "2026-03-09"})
+	r.stop()
+
+	// A restart within the window finds both periods claimed.
+	var again recorder
+	review.Run = again.run
+	r2 := e.start(at(2026, 3, 9, 1, 40), review)
+	r2.runUntil(at(2026, 3, 9, 23, 0))
+	wantKeys(t, "after restart", again.keys(), nil)
+}
+
 func TestSpringForward(t *testing.T) {
 	// Clocks in Chicago jump 02:00 CST → 03:00 CDT on Sunday 2026-03-08.
 	e := newEnv(t)

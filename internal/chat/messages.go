@@ -77,13 +77,15 @@ func DayOfReminder(date store.LocalDate, dinnerID, name string) notify.Event {
 	}
 }
 
-// NewSuggestions is the new_suggestions event of suggestion batch batchID,
-// made in the week starting on week, naming its Side quests.
-func NewSuggestions(batchID string, week store.LocalDate, names []string) notify.Event {
+// NewSuggestions is the new_suggestions event keyed by id, the ISO week
+// ("2026-W41") of a scheduled suggestion batch or the batch id of a manual
+// one, of the week starting on week: how many new Side quests there are,
+// and their names.
+func NewSuggestions(id string, week store.LocalDate, names []string) notify.Event {
 	return notify.Event{
 		Type:  notify.NewSuggestions,
-		Key:   string(notify.NewSuggestions) + ":" + batchID,
-		Title: "New Side quests are in",
+		Key:   string(notify.NewSuggestions) + ":" + id,
+		Title: count(len(names), "new Side quest is in", "new Side quests are in"),
 		Body:  nameList(names),
 		URL:   "/discover",
 		Week:  week,

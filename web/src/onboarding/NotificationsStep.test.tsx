@@ -5,7 +5,7 @@ import { createApiClient, createVerifiedSession } from '../api/index.ts'
 import App from '../App.tsx'
 import { AuthBootstrap } from '../AuthBootstrap.tsx'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
-import { ApiProviders, HOUSEHOLD_SETTINGS } from '../test/ApiProviders.tsx'
+import { ApiProviders, HOME, HOUSEHOLD_SETTINGS } from '../test/ApiProviders.tsx'
 import { declaredStyle } from '../test/cssRules.ts'
 import { InDataRouter } from '../test/dataRouter.tsx'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
@@ -58,6 +58,7 @@ function stubFirstRunServer(vapidKey: () => Response = () => jsonResponse(200, V
     const path = String(input)
     const method = init?.method ?? 'GET'
     if (method === 'GET' && path === '/api/v1/me') return Promise.resolve(jsonResponse(200, ME))
+    if (method === 'GET' && path === '/api/v1/home') return Promise.resolve(jsonResponse(200, HOME))
     if (method === 'GET' && path === '/api/v1/push/vapid-public-key') return Promise.resolve(vapidKey())
     if (method === 'POST' && path === '/api/v1/push/subscriptions') {
       subscriptions.push(JSON.parse(String(init?.body)))
@@ -110,7 +111,7 @@ async function renderStep(vapidKey?: () => Response) {
         <AuthBootstrap>
           <Routes>
             <Route path="/onboarding/notifications" element={<NotificationsStep />} />
-            <Route path="/" element={<h1>Home</h1>} />
+            <Route path="/" element={<h1>Tonight's quest</h1>} />
             <Route path="/onboarding/regulars" element={<h1>Regulars step</h1>} />
           </Routes>
         </AuthBootstrap>
@@ -134,7 +135,7 @@ async function finishFromResult(server: ReturnType<typeof stubFirstRunServer>) {
   await vi.waitFor(() => expect(server.held).toHaveLength(1))
   expect(server.held[0]!.body).toEqual({ onboarding_completed: true })
   completed(server.held[0]!)
-  expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument()
+  expect(await screen.findByRole('heading', { level: 1, name: "Tonight's quest" })).toBeInTheDocument()
 }
 
 function useIphoneSafariTab() {
@@ -210,7 +211,7 @@ describe('onboarding step 3', () => {
     expect(later()).toBeDisabled()
     completed(server.held[0]!)
 
-    expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: "Tonight's quest" })).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Primary' })).toBeInTheDocument()
     expect(requestPermission).not.toHaveBeenCalled()
   })
@@ -314,7 +315,7 @@ describe('onboarding step 3', () => {
 
     await vi.waitFor(() => expect(server.held).toHaveLength(1))
     completed(server.held[0]!)
-    expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: "Tonight's quest" })).toBeInTheDocument()
     expect(browser.notification.requestPermission).not.toHaveBeenCalled()
     expect(browser.pushManager.subscribe).not.toHaveBeenCalled()
     expect(server.subscriptions).toEqual([])
@@ -358,7 +359,7 @@ describe('onboarding step 3', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     await vi.waitFor(() => expect(server.held).toHaveLength(2))
     completed(server.held[1]!)
-    expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: "Tonight's quest" })).toBeInTheDocument()
   })
 })
 

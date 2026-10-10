@@ -7,6 +7,7 @@ import { createNetworkStatus } from '../pwa/networkStatus.ts'
 import { HOME } from '../test/ApiProviders.tsx'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { HOME_KEY, HOME_PATH, UPDATES_PATH, UPDATES_SEEN_PATH } from './api.ts'
+import { ROTATION_REVIEWS_PATH } from './rotation.ts'
 import { HomePage } from './HomePage.tsx'
 
 afterEach(() => {
@@ -52,6 +53,7 @@ function stubServer(responders: Record<string, Responder> = {}) {
     'GET /api/v1/me': () => jsonResponse(200, ME),
     [`GET ${HOME_PATH}`]: () => jsonResponse(200, { ...HOME, recentUpdates: { unread: !seen } }),
     [`GET ${UPDATES_PATH}`]: () => jsonResponse(200, UPDATES),
+    [`GET ${ROTATION_REVIEWS_PATH}`]: () => jsonResponse(200, { reviews: [] }),
     [`POST ${UPDATES_SEEN_PATH}`]: () => {
       seen = true
       return new Response(null, { status: 204 })

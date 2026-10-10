@@ -3,10 +3,11 @@ import { createMemoryRouter, RouterProvider, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiProviders, HOME } from '../test/ApiProviders.tsx'
 import { declaredStyle } from '../test/cssRules.ts'
-import { errorResponse, jsonResponse, stubFetch, stubFetchByPath } from '../test/fetchStub.ts'
+import { errorResponse, jsonResponse, stubFetchByPath } from '../test/fetchStub.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
 import { HOME_PATH } from './api.ts'
 import { HomePage } from './HomePage.tsx'
+import { ROTATION_REVIEWS_PATH } from './rotation.ts'
 
 // NOTHING_YET is the home of a household with no plan, no Side quests, no
 // Supply run and nothing unread.
@@ -29,7 +30,7 @@ function Where() {
 }
 
 function renderHome(body: unknown) {
-  stubFetchByPath({ [HOME_PATH]: () => jsonResponse(200, body) })
+  stubFetchByPath({ [HOME_PATH]: () => jsonResponse(200, body), [ROTATION_REVIEWS_PATH]: () => jsonResponse(200, { reviews: [] }) })
   return renderRouter()
 }
 
@@ -198,7 +199,11 @@ describe('HomePage', () => {
   })
 
   it('reports a failure with Retry, and no made-up content', async () => {
-    stubFetch(errorResponse(500, 'internal'), jsonResponse(200, HOME))
+    const homes = [errorResponse(500, 'internal'), jsonResponse(200, HOME)]
+    stubFetchByPath({
+      [HOME_PATH]: () => homes.shift()!,
+      [ROTATION_REVIEWS_PATH]: () => jsonResponse(200, { reviews: [] }),
+    })
     renderRouter()
 
     expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load tonight's quest. internal message")

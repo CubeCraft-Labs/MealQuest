@@ -2,6 +2,7 @@ import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApiClient, createVerifiedSession } from './api/index.ts'
 import { createNetworkStatus } from './pwa/networkStatus.ts'
+import { stubAnimate } from './test/animate.ts'
 import { mockViewport } from './test/matchMedia.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME, request, stubFetch, stubFetchByPath } from './test/fetchStub.ts'
 import App, { routes } from './App.tsx'
@@ -12,6 +13,7 @@ import { defaultWeek } from './plan/week.ts'
 
 afterEach(() => {
   Reflect.deleteProperty(window, 'matchMedia')
+  Reflect.deleteProperty(Element.prototype, 'animate')
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
@@ -30,6 +32,7 @@ function renderAppAt(path: string, location = fakeLocation(path)) {
 
 // The routes that render a built screen rather than a placeholder page.
 const SCREENS = {
+  '/': true,
   '/onboarding': true,
   '/plan': true,
   '/plan/shopping': true,
@@ -83,6 +86,28 @@ describe('App routes', () => {
       expect(screen.getByRole('navigation', { name: 'Primary' })).toBeInTheDocument()
     },
   )
+
+  it.each([
+    ['Quick dinner', '/quick', 'Quick dinners'],
+    ['Cook from what I have', '/cook-from-pantry', 'Cook from what I have'],
+  ])('Home links %s to %s', async (link, path, heading) => {
+    mockViewport(390)
+    stubAnimate({ autoFinish: true })
+    // The idea screen's own requests stay pending: this checks only that Home
+    // navigates to it.
+    const fetchMock = vi.fn<typeof fetch>((input) => {
+      const respond = Object.hasOwn(SIGNED_IN, String(input)) ? SIGNED_IN[String(input) as keyof typeof SIGNED_IN] : undefined
+      return respond === undefined ? new Promise<Response>(() => {}) : Promise.resolve(respond())
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    renderAt('/')
+    await screen.findByRole('heading', { level: 1, name: 'Home' })
+    const shortcut = screen.getByRole('link', { name: link })
+    expect(shortcut).toHaveAttribute('href', path)
+    act(() => shortcut.click())
+    expect(await screen.findByRole('heading', { level: 1, name: heading })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { level: 1, name: 'Home' })).not.toBeInTheDocument()
+  })
 
   it('/settings renders the settings home inside the shell', async () => {
     mockViewport(390)

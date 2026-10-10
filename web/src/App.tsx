@@ -8,6 +8,7 @@ import { CookFromPantryPage } from './ideas/CookFromPantryPage.tsx'
 import { QuickDinnersPage } from './ideas/QuickDinnersPage.tsx'
 import { ONBOARDING_PATH, OnboardingGate } from './onboarding/OnboardingGate.tsx'
 import { OnboardingPage } from './onboarding/OnboardingPage.tsx'
+import { HomePage } from './pages/HomePage.tsx'
 import { PlaceholderPage } from './pages/PlaceholderPage.tsx'
 import { PlanPage } from './plan/PlanPage.tsx'
 import { OfflinePill } from './pwa/OfflinePill.tsx'
@@ -43,6 +44,7 @@ export const routes = [
 
 // The screens built so far; every other route shows its placeholder page.
 const screens: Partial<Record<(typeof routes)[number]['path'], ReactNode>> = {
+  '/': <HomePage />,
   '/plan': <PlanPage />,
   '/plan/shopping': <SupplyRunPage />,
   '/plan/shopping/archive': <SupplyArchivePage />,

@@ -196,6 +196,7 @@ func (s *Service) runGroundJob(ctx context.Context, p GroundJob, _ func(groundRe
 	if n == 0 {
 		return s.currentGrounding(ctx, row.ID)
 	}
+	s.wake()
 	return groundResult{DinnerID: row.ID, GroundingStatus: GroundingGrounded}, nil
 }
 
@@ -577,6 +578,7 @@ func (s *Service) Ground(ctx context.Context, id string, f Fix, updatedBy string
 	if err != nil {
 		return Dinner{}, fmt.Errorf("%w: dinner %s: record: %w", ErrGroundFailed, id, err)
 	}
+	s.wake()
 	s.clearOffers(cur.ID, math.MaxInt64)
 	return fromRow(row), nil
 }
@@ -700,6 +702,7 @@ func (s *Service) groundManual(ctx context.Context, id string, m ManualRecipe, u
 	if err != nil {
 		return Dinner{}, fmt.Errorf("%w: dinner %s: %w", ErrGroundFailed, id, err)
 	}
+	s.wake()
 	s.clearOffers(row.ID, math.MaxInt64)
 	return fromRow(row), nil
 }

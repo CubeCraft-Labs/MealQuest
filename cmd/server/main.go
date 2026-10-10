@@ -30,6 +30,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/push"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/scheduler"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secretbox"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/server"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/shopping"
@@ -129,7 +130,12 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	dinnerSvc, err := dinners.NewService(db, grounder, runner, logger)
+	// The scheduler is made before the services whose changes wake it.
+	sched, err := scheduler.New(db, settings, logger)
+	if err != nil {
+		return err
+	}
+	dinnerSvc, err := dinners.NewService(db, grounder, runner, sched.Wake, logger)
 	if err != nil {
 		return err
 	}
@@ -151,7 +157,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	planSvc, err := plan.NewService(db, weekDrafter(ai, guard), runner, googleSvc, notifier, cfg.PublicURL, logger)
+	planSvc, err := plan.NewService(db, weekDrafter(ai, guard), runner, googleSvc, notifier, sched.Wake, cfg.PublicURL, logger)
 	if err != nil {
 		return err
 	}
@@ -187,17 +193,46 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
+	if err := sched.Register(suggestSvc.WeeklySchedule()); err != nil {
+		return err
+	}
+	if err := sched.Register(planSvc.DraftSchedule()); err != nil {
+		return err
+	}
+	for _, sch := range planSvc.ReminderSchedules() {
+		if err := sched.Register(sch); err != nil {
+			return err
+		}
+	}
+	if err := sched.Register(planSvc.RotationCheckSchedule()); err != nil {
+		return err
+	}
+	if err := sched.Register(shopSvc.ChatAutosendSchedule()); err != nil {
+		return err
+	}
+	if err := sched.Register(shopSvc.RolloverSchedule()); err != nil {
+		return err
+	}
+	purge, err := harness.PurgeSchedule(db, logger)
+	if err != nil {
+		return err
+	}
+	if err := sched.Register(purge); err != nil {
+		return err
+	}
+
 	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, search, ai, chatSvc, dinnerSvc, suggestSvc, planSvc, shopSvc, googleSvc, pushSvc, ideasSvc, runner, photos, frontend.Assets())
 	if err != nil {
 		return err
 	}
 
 	// Start fails the jobs a previous process left running before any
-	// worker runs. The job workers and the notification worker stop, and
-	// are waited for, before the database closes.
+	// worker runs. The job workers, the notification worker and the
+	// scheduler stop, and are waited for, before the database closes.
 	workersCtx, stopWorkers := context.WithCancel(ctx)
 	defer func() {
 		stopWorkers()
+		sched.Wait()
 		runner.Wait()
 		notifier.Wait()
 	}()
@@ -211,6 +246,11 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	// queued or running is failed as interrupted, before any request can
 	// create one.
 	if _, err := dinnerSvc.FailInterruptedGroundings(ctx); err != nil {
+		return err
+	}
+	// The scheduler starts last: its catch-up may enqueue jobs and
+	// notifications, so their workers must already run.
+	if err := sched.Start(workersCtx); err != nil {
 		return err
 	}
 	srv := &http.Server{

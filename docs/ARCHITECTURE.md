@@ -309,20 +309,24 @@ automatic** (D-021).
   `suggest_side_quests` for 5 Side quests (scope: the batch id), then
   grounds the survivors in the model's order with `Grounder.GroundMany`,
   as many as are still wanted at a time, until 5 are kept or none are
-  left. A Side quest no recipe grounds is dropped; each round's grounded
-  ones are stored before the next — a dinner with status `suggested`,
-  origin `side_quest`, grounding_status `grounded` with the recipe's
-  recipe_id, photo_id, method, minutes_total and difficulty and the
-  model's cuisine, and a `pending` suggestion with the name it is
-  suggested under, the reason and `cited_regular_ids` — unless, since the
-  job read its input, a dinner it repeats was added, a suggestion it
-  repeats passed, or a Regular it cites renamed or archived (checked in
-  the storing transaction). The job publishes
-  `{batch_id, stage, suggestion_ids, dropped}` as it goes (`suggesting`,
+  left. A Side quest no recipe grounds is dropped. A `replenish` batch
+  stores each round's grounded ones before the next; a `scheduled` or
+  `manual` batch, which notifies, holds them and stores them all in one
+  transaction once its last round is done. Each is stored as a dinner
+  with status `suggested`, origin `side_quest`, grounding_status
+  `grounded` with the recipe's recipe_id, photo_id, method,
+  minutes_total and difficulty and the model's cuisine, and a `pending`
+  suggestion with the name it is suggested under, the reason and
+  `cited_regular_ids` — unless, since the job read its input, a dinner
+  it repeats was added, a suggestion it repeats passed, or a Regular it
+  cites renamed or archived (checked in the storing transaction). The job
+  publishes `{batch_id, stage, suggestion_ids, dropped}` as it goes (`suggesting`,
   `grounding`, `done`). It fails with `no_regulars`, `ai_failed` (the
   skill or `normalize_recipe` failed; no Side quest is made up instead,
   D-017), `search_not_configured` or `search_failed`, and the batch is set
-  `failed`; Side quests stored before the failure stay in the deck. If
+  `failed`. A failed `scheduled` or `manual` batch has stored nothing; a
+  failed `replenish` batch's Side quests stored before the failure stay
+  in the deck. If
   recording the batch's end fails, its job fails; the job runner retries
   a job's final status write with backoff until it lands, each attempt
   bounded at 5 seconds; at shutdown an attempt that fails or times out is
@@ -480,15 +484,13 @@ automatic** (D-021).
   `changed`, and answers 200 with the plan. A date outside the week is 400 `invalid_date`, an unknown dinner or
   a week with no plan 404, any other dinner 409 `dinner_not_plannable`, and
   a dinner already on another day of the week 409 `dinner_already_planned`.
-- Rotation check (`plan.Service`, D-021). This release provides the
-  `MarkTried` service method and the rotation review read and decide APIs
-  below. The `rotation_check` schedule that is to call `MarkTried` for the
-  household-local day just past is planned (Feature 20, the scheduler) and
-  not wired yet: nothing in production calls `MarkTried`, so no Rotation
-  check opens automatically. `MarkTried(date)` moves every `quest_log` dinner planned on that date, on a plan of any
-  status, to `tried` and opens a `pending` `rotation_reviews` row for it;
-  a dinner already checked for that date is left as it is, so it is
-  idempotent. `GET /api/v1/rotation-reviews` returns `{reviews}`, the
+- Rotation check (`plan.Service`, D-021). The `rotation_check` schedule
+  calls `MarkTried` for the household-local day just past (see Scheduler).
+  `MarkTried(date)` moves every `quest_log` dinner planned on that date, on a plan of any
+  status, to `tried`, opens a `pending` `rotation_reviews` row for it and
+  emits its `rotation_review`, in one transaction;
+  a dinner already checked for that date is left as it is and not
+  notified again, so it is idempotent. `GET /api/v1/rotation-reviews` returns `{reviews}`, the
   pending checks whose dinner is still tried, oldest `plan_date` first,
   each `{dinner: {id, name, photo}, plan_date}`. `POST
   /api/v1/dinners/{id}/rotation-review` takes `{decision}`: `keep` makes
@@ -533,8 +535,8 @@ automatic** (D-021).
   received.
   `harness.Purge` deletes rows older than `harness.RunRetention` (30 days),
   clearing the `suggestion_batches` and `week_plans` references first. The
-  harness does not call it: the scheduler's daily `ai_runs` purge
-  (Feature 20) must call `harness.Purge` with `now - RunRetention`.
+  daily `ai_runs_purge` schedule (`harness.PurgeSchedule`) calls it with
+  its fire time less `RunRetention`.
 - **Concurrency guards** (`harness.Guard`, one per process): `harness.Run`
   takes a scope key, and concurrent runs of one skill with one scope share a
   single in-flight run and its result, error included (single-flight); runs
@@ -649,7 +651,8 @@ job failed, the freeze finds the list still untitled and makes its own
 `archive_title` attempt before freezing. A job that starts during a freeze
 waits for it, then finds the list titled (that title stands) or frozen
 untitled (the job fails `title_failed`), and stores nothing. The
-`week_rollover` schedule is to call `Freeze` for last week.
+`week_rollover` schedule (`shopping.Service.RolloverSchedule`) calls
+`Freeze` for last week, judging the week ended by its fire time.
 
 ## Recipe grounding
 
@@ -775,15 +778,89 @@ purge are fixed and not configurable.
 
 | Schedule | When | Does |
 | --- | --- | --- |
-| `suggestions_weekly` | Sunday 08:00 | New batch of Side quests. |
-| `plan_draft` | Friday 09:00 | AI drafts next week's plan. |
-| `shopping_chat_autosend` | Saturday 08:00 | Sends the Supply run to Google Chat. |
-| `day_of_reminder` | Daily 16:30 | Tonight's dinner reminder. |
-| `rotation_check` | Daily 09:00 | Asks "Keep it in rotation?" for tried dinners. |
-| `week_rollover` | Monday 00:05 (fixed) | Freezes last week's Supply run into the Supply archive. |
-| `ai_runs` purge | Daily (fixed) | Calls `harness.Purge` to delete `ai_runs` rows past 30-day retention (Feature 20). |
+| `suggestions_weekly` | Sunday 08:00 | New batch of Side quests (`suggest.Service.WeeklySchedule`). |
+| `plan_draft` | Friday 09:00 | AI drafts next week's plan (`plan.Service.DraftSchedule`). |
+| `shopping_chat_autosend` | Saturday 08:00 | Sends the coming week's Supply run to Google Chat (`shopping.Service.ChatAutosendSchedule`). |
+| `day_of_reminder` | Daily 16:30, and 15 minutes before a crock-pot start_by earlier than that | Tonight's dinner reminder and the crock-pot start reminder (`plan.Service.ReminderSchedules`). |
+| `rotation_check` | Daily 09:00 | Marks yesterday's Quest log dinners tried and asks "Keep it in rotation?" (`plan.Service.RotationCheckSchedule`). |
+| `week_rollover` | Monday 00:05 (fixed) | Freezes last week's Supply run into the Supply archive (`shopping.Service.RolloverSchedule`). |
+| `ai_runs_purge` | Daily 03:00 (fixed) | Calls `harness.Purge` to delete `ai_runs` rows past 30-day retention (`harness.PurgeSchedule`). |
 
 Runs are recorded in `schedule_runs` and executed through `jobs`.
+
+`internal/scheduler` runs them. A schedule registers a name, a rule read
+from the settings (`scheduler.Daily`, `Weekly` or `WeeklyForNextWeek`, or `DailyAt` for a time read from data) and a
+run function; settings changes reach it through `SettingsService.Subscribe`
+and move the next fire time without a restart. Each fire time has a period
+key (`Rule.PeriodKey`): the local date for a daily rule, the ISO week of the
+fire date for a weekly one, or of the week after for `WeeklyForNextWeek`
+(`plan_draft`). Inserting `schedule_runs(schedule, period_key)` is the claim;
+a period already claimed is skipped, so a period runs at most once and a
+failed run is not retried. A claim that fails is not skipped: the pass is
+repeated every `scheduler.ClaimRetry` until the claim succeeds. A settings
+change is recorded with the instant it was saved, and fire times up to that
+instant follow the old rule and later ones the new, however late the
+scheduler applies it. At boot only each schedule's most recent fire
+time is considered: it runs if it passed within 24 hours, and is otherwise
+claimed without running (logged as missed) so it never runs later. DST
+follows `household.LocalTime`: a skipped time fires later by the gap, a
+repeated time fires once, at its first occurrence.
+
+Each schedule is built by the service that does its work, as a
+`scheduler.Schedule` value, and registered in `cmd/server` before the
+scheduler starts: `suggest.Service.WeeklySchedule()` is `suggestions_weekly`.
+Its run calls `StartScheduledBatch(period.Week)`, which starts the same
+batch and job as `POST /api/v1/suggestions/batches` (`StartBatch(manual)`),
+with the `scheduled` trigger, and returns at once; the batch runs as a job. When a
+batch is already pending or running the period starts none and logs it.
+`plan.Service.DraftSchedule()` is `plan_draft`, keyed by the ISO week
+after the fire date (`scheduler.WeeklyForNextWeek`). Its run calls
+`StartScheduledDraft(period.Week)`, which enqueues the same `draft_week`
+job as `POST /api/v1/plans/{weekStart}/draft` without confirm, so a stored
+draft emits `plan_ready:{weekStart}` from the job and a failed one (e.g.
+`ai_failed`, recorded in `ai_runs`) emits nothing. When the week already
+has a plan, in any status, it enqueues nothing; when a draft of the week
+is already queued or running it joins it. Either way it logs it.
+`plan.Service.ReminderSchedules()` is `day_of_reminder`, two schedules
+of one name. The first is `Daily(reminder_time)`, period `YYYY-MM-DD`,
+and calls `EmitDayOfReminder(period.Date)`. The second has `Key` `start`,
+so its periods are `start:YYYY-MM-DD`, and a `scheduler.DailyAt` rule:
+for each date it reads the plan and fires 15 minutes
+(`plan.StartReminderLead`) before the day's `start_by` (the same
+computation the plan API shows) when the dinner is a crock-pot dinner
+whose `start_by` is earlier than that day's `reminder_time`; its run
+calls `EmitStartReminder(period.Date)`, which checks the same again. A
+date whose week has no plan emits neither and logs it. A `DailyAt` fire
+time is looked up from the data on every pass. A committed change that
+can move a `start_by` calls `Scheduler.Wake` (passed to `plan.NewService`
+and `dinners.NewService` as `wake`): a plan swap or stored draft, and a
+dinner's method or minutes changed by edit or grounding. The next pass
+comes at once, so a crock-pot dinner swapped in for tonight is still
+reminded 15 minutes before its `start_by`, not at the next hourly timer
+(`maxWait`); a lookup that fails is logged and repeated every
+`ClaimRetry`.
+`shopping.Service.ChatAutosendSchedule()` is `shopping_chat_autosend`,
+`WeeklyForNextWeek(chat_autosend_dow, chat_autosend_time)`, so its period
+names the coming week. Its run calls `Autosend(period.Week)`, which posts
+with `SendToChat(week, false)`, the household's own send, only when a
+webhook is stored, `list_ready`'s Chat channel is on
+(`notify.Service.ChannelOn`) and the week has a Supply run neither sent
+nor with a send unconfirmed; otherwise it posts nothing and logs why,
+with the key `list_ready:chat:{weekStart}`. It never resends; a send that
+fails is the period's error. `shopping.Service.RolloverSchedule()` is
+`week_rollover`, `Weekly(Monday, 00:05)`; its run freezes the week before
+the fire date's, and a week with no Supply run freezes nothing and logs
+it. `plan.Service.RotationCheckSchedule()` is `rotation_check`,
+`Daily(review_time)`, claimed as `rotation_check:YYYY-MM-DD` of the fire
+date (`Schedule.PeriodKey`). Its run calls `MarkTried` for the day before
+the fire date, which emits one `rotation_review` per Rotation check it
+opens; it never makes a dinner a Regular, and a day with no Quest log
+dinner planned opens none and logs the count.
+`harness.PurgeSchedule(store, logger)` is `ai_runs_purge`,
+`Daily(03:00)`, deleting rows created more than 30 days before the fire
+time.
+Fake-clock tests of a schedule live in `internal/scheduler`, where
+`SetClock` is visible to tests.
 
 ## Notifications
 
@@ -793,8 +870,9 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
 - Where each event is emitted, with its idempotency key. Each is stored by
   `notify.EmitTx` in the transaction of the change it is about, so the
   change and its notification commit together or not at all:
-  - `plan_ready:{weekStart}` (URL `/plan`) when a draft job stores the
-    AI's draft of a week. Only the first draft of a week notifies: a
+  - `plan_ready:{weekStart}` (URL `/plan`) when a draft job, asked for
+    by the API or the `plan_draft` schedule, stores the AI's draft of a
+    week. Only the first draft of a week notifies: a
     redraft (Rebuild week) has the same key, and a manual swap never
     drafts. Its title is "Next week's plan is ready" (or "This week's",
     or "The plan for the week of Oct 26") and its body the drafted
@@ -802,16 +880,33 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
   - `list_ready:{weekStart}` (URL `/plan/shopping`) when a week's Supply
     run is first created, by `POST /shopping/{weekStart}/generate` or
     after Push to Calendar; remaking it does not notify.
-  - `new_suggestions:{batchId}` (URL `/discover`) when a `scheduled` or
-    `manual` suggestion batch first adds Side quests to the deck, in the
-    transaction storing them, so they are announced even when a later
-    round or recording the batch's end fails; it names that round's Side
-    quests, and a later round's emit stores nothing. A `replenish` batch
-    never notifies.
+  - `new_suggestions:{YYYY-Www}` for a `scheduled` batch, the ISO week it
+    was scheduled for (carried in its job, so a batch caught up late is
+    still keyed by its own week), or `new_suggestions:{batchId}` for a
+    `manual` one (URL `/discover`), once, when the batch's last round is
+    done, in the one transaction that stores all its Side quests, so they
+    and their notification commit together or not at all. Its title
+    counts every Side quest the batch stored ("5 new Side quests are in")
+    and its body names them. A batch that fails at any round, as when
+    `suggest_side_quests` or a later round's `normalize_recipe` fails (the
+    failure is in `ai_runs`), stores no Side quest and sends nothing, so
+    no stored Side quest goes unannounced. A `replenish` batch never
+    notifies. This is the only place `new_suggestions` is emitted; the
+    `suggestions_weekly` schedule does not emit it itself.
   - `day_of_reminder:{date}` (URL `/dinner/{id}`) through
-    `plan.Service.EmitDayOfReminder(date)`, which names the dinner planned
-    on the date and emits nothing for a week with no plan. The scheduler
-    calls it at `reminder_time` (Feature 20).
+    `plan.Service.EmitDayOfReminder(date)`, "Tonight: {dinner} · Recipe →",
+    naming the dinner planned on the date; it emits nothing for a week
+    with no plan. The `day_of_reminder` schedule calls it at
+    `reminder_time`.
+  - `day_of_reminder:start:{date}` (URL `/dinner/{id}`) through
+    `plan.Service.EmitStartReminder(date)`, "Start the crock pot by
+    {time}" with the dinner's name, only for a crock-pot dinner whose
+    `start_by` is earlier than `reminder_time`. The `day_of_reminder`
+    schedule calls it 15 minutes before `start_by`.
+  - `rotation_review:{dinnerId}:{planDate}` (URL `/`, where the Home card
+    asks) through `plan.Service.MarkTried(planDate)`, "How was {dinner}?
+    Keep it in rotation?", once per Rotation check it opens. The
+    `rotation_check` schedule calls it at `review_time` for yesterday.
 - Delivery goes through `notification_outbox`.
 - Web Push uses VAPID (`webpush-go`). Google Chat uses the stored incoming
   webhook.
@@ -1068,7 +1163,7 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
   request. 404 when the week has no Supply run, 409
   `archived` when it is in the Supply archive, 400 `invalid_request` for a
   bad body. `shopping.SendToChat(weekStart, resend)` is what
-  `shopping_chat_autosend` calls (Feature 20).
+  `shopping_chat_autosend` calls, through `Autosend`.
 - `PATCH /api/v1/shopping/items/{id}` takes `{needed}` (a required
   boolean; it sets the flag, it does not flip it) and answers `{id,
   needed, needed_count, total_count}` with the list's counts after the

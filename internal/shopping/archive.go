@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
@@ -39,11 +40,17 @@ const (
 // only when no job is running it. A job that runs after the freeze finds
 // the list titled, or frozen untitled, and stores nothing.
 func (s *Service) Freeze(ctx context.Context, weekStart store.LocalDate) error {
+	return s.freeze(ctx, weekStart, s.now())
+}
+
+// freeze is Freeze with the week ended by instant now rather than by the
+// service's clock.
+func (s *Service) freeze(ctx context.Context, weekStart store.LocalDate, now time.Time) error {
 	if _, err := household.WeekDays(weekStart); err != nil {
 		return fmt.Errorf("shopping: freeze: %w", err)
 	}
 	q := db.New(s.st.Writer)
-	thisWeek, err := s.thisWeek(ctx, q)
+	thisWeek, err := weekAt(ctx, q, now)
 	if err != nil {
 		return err
 	}
@@ -73,9 +80,9 @@ func (s *Service) Freeze(ctx context.Context, weekStart store.LocalDate) error {
 		}
 	}
 	// A list frozen meanwhile is left as it is: the freeze is done.
-	now := store.Now().String()
+	stamp := store.Now().String()
 	if _, err := q.FreezeShoppingList(ctx, db.FreezeShoppingListParams{
-		FrozenAt: sql.NullString{String: now, Valid: true}, UpdatedAt: now, ID: list.ID,
+		FrozenAt: sql.NullString{String: stamp, Valid: true}, UpdatedAt: stamp, ID: list.ID,
 	}); err != nil {
 		return fmt.Errorf("shopping: freeze %s: %w", weekStart, err)
 	}
@@ -103,6 +110,12 @@ func freezeTitleJob(ctx context.Context, q *db.Queries, list db.ShoppingList) (T
 // thisWeek returns the Monday of the household's current week, in its
 // time zone, by the service's clock.
 func (s *Service) thisWeek(ctx context.Context, q *db.Queries) (store.LocalDate, error) {
+	return weekAt(ctx, q, s.now())
+}
+
+// weekAt returns the Monday of the household's week at instant t, in its
+// time zone.
+func weekAt(ctx context.Context, q *db.Queries, t time.Time) (store.LocalDate, error) {
 	settings, err := q.GetHouseholdSettings(ctx)
 	if err != nil {
 		return store.LocalDate{}, fmt.Errorf("shopping: read household settings: %w", err)
@@ -111,7 +124,7 @@ func (s *Service) thisWeek(ctx context.Context, q *db.Queries) (store.LocalDate,
 	if err != nil {
 		return store.LocalDate{}, fmt.Errorf("shopping: household settings: %w", err)
 	}
-	return household.WeekStart(household.Today(s.now(), zone)), nil
+	return household.WeekStart(household.Today(t, zone)), nil
 }
 
 // Period is one heading of the Supply archive and its posts, newest first.

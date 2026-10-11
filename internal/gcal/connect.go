@@ -137,10 +137,9 @@ type Service struct {
 	account sync.Mutex
 
 	// pending holds the state of every connect started and not yet
-	// completed, with when it expires. Complete consumes a state once, so a
-	// replayed cookie finds it gone.
-	pendingMu sync.Mutex
-	pending   map[string]time.Time
+	// completed. Complete consumes a state once, so a replayed cookie finds
+	// it gone.
+	pending *auth.PendingStates
 }
 
 // NewService returns the service over st, sealing refresh tokens with box.
@@ -175,7 +174,7 @@ func NewService(st *store.Store, box *secretbox.Box, cfg Config) (*Service, erro
 		cookie:      auth.NewFlowCookie(connectCookieName, connectCookieKeyLabel, connectCookieTTL, cfg.SecretKey),
 		retryDelay:  firstRetryDelay,
 		now:         time.Now,
-		pending:     map[string]time.Time{},
+		pending:     auth.NewPendingStates(connectCookieTTL),
 	}, nil
 }
 
@@ -213,7 +212,7 @@ func (s *Service) Connect(w http.ResponseWriter, session auth.Session) (string, 
 	if err := s.cookie.Set(w, &state, now); err != nil {
 		return "", fmt.Errorf("gcal: set connect cookie: %w", err)
 	}
-	s.addPending(state.State, now)
+	s.pending.Add(state.State, now)
 	return s.oauth.AuthCodeURL(state.State,
 		oauth2.AccessTypeOffline,
 		oauth2.ApprovalForce,
@@ -243,7 +242,7 @@ func (s *Service) Complete(w http.ResponseWriter, r *http.Request, session auth.
 	}
 	// A copy of the cookie verifies until it expires, so the state is
 	// single-use only because it is consumed here.
-	if !s.consumePending(state.State) {
+	if !s.pending.Consume(state.State) {
 		return fmt.Errorf("%w: already used", ErrBadState)
 	}
 	if q.Get("error") != "" {
@@ -274,29 +273,6 @@ func (s *Service) Complete(w http.ResponseWriter, r *http.Request, session auth.
 		return fmt.Errorf("gcal: seal refresh token: %w", err)
 	}
 	return s.store(ctx, sealed)
-}
-
-// addPending records state, started at now, as pending until the connect
-// cookie expires, and forgets expired ones.
-func (s *Service) addPending(state string, now time.Time) {
-	s.pendingMu.Lock()
-	defer s.pendingMu.Unlock()
-	for k, expires := range s.pending {
-		if !now.Before(expires) {
-			delete(s.pending, k)
-		}
-	}
-	s.pending[state] = now.Add(connectCookieTTL)
-}
-
-// consumePending removes state from the pending states, reporting whether
-// it was there.
-func (s *Service) consumePending(state string) bool {
-	s.pendingMu.Lock()
-	defer s.pendingMu.Unlock()
-	_, ok := s.pending[state]
-	delete(s.pending, state)
-	return ok
 }
 
 // checkScopes fails with ErrScopes unless token's granted scopes include

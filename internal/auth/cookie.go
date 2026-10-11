@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -151,6 +152,45 @@ func (c FlowCookie) Read(r *http.Request, v flowValue, now time.Time) error {
 		return fmt.Errorf("%s cookie expired", c.name)
 	}
 	return nil
+}
+
+// PendingStates holds the state of every redirect flow started and not yet
+// completed, until its flow cookie expires. A copy of a flow cookie verifies
+// until it expires, so a flow is single-use only because its callback
+// consumes the state here. The states live in memory — MealQuest runs as one
+// process — so a flow started before a restart fails closed after it.
+type PendingStates struct {
+	ttl    time.Duration
+	mu     sync.Mutex
+	states map[string]time.Time
+}
+
+// NewPendingStates returns an empty set whose states are pending for ttl,
+// the flow cookie's lifetime.
+func NewPendingStates(ttl time.Duration) *PendingStates {
+	return &PendingStates{ttl: ttl, states: map[string]time.Time{}}
+}
+
+// Add records state, started at now, as pending and forgets expired ones.
+func (p *PendingStates) Add(state string, now time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for k, expires := range p.states {
+		if !now.Before(expires) {
+			delete(p.states, k)
+		}
+	}
+	p.states[state] = now.Add(p.ttl)
+}
+
+// Consume removes state from the pending states, reporting whether it was
+// there.
+func (p *PendingStates) Consume(state string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, ok := p.states[state]
+	delete(p.states, state)
+	return ok
 }
 
 // returnPath validates the optional post-login return path. Empty means "/".

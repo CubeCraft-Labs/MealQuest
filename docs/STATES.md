@@ -27,7 +27,9 @@ screen (a Quest log count, a calendar list, a webhook card) use the same
 | Route | Screen | Empty | Loading | Error |
 | --- | --- | --- | --- | --- |
 | `/` | Home | `EmptyState` "No quest planned tonight" with **Plan this week**; rows that do not apply are hidden. | Skeletons for the date, Tonight card and status rows. | "Couldn't load tonight's quest. …" + Retry. |
-| `/onboarding` | Onboarding — Regulars step | "Your regulars · 0" with the Common picks to add; **Next: notifications** stays disabled until enough Regulars are saved. | Skeleton under "Your regulars". | "Your Regulars could not load: …" + Retry. |
+| `/onboarding` | Onboarding — Welcome step | None: the step reads nothing; it shows the welcome and the Regulars, Side quests and Quest log terms with **Let's start**. | None: nothing to read. | None: nothing to read. |
+| `/onboarding/regulars` | Onboarding — Regulars step | "Your regulars · 0" with the Common picks to add; **Next: notifications** stays disabled until enough Regulars are saved. | Skeleton under "Your regulars". | "Your Regulars could not load: …" + Retry. |
+| `/onboarding/notifications` | Onboarding — Notifications step | None: the step reads nothing. | While finishing, **Turn on notifications** and **Maybe later** are disabled. | "Could not finish setting up: …"; the buttons come back to try again, with **Add Regulars** when fewer than three Regulars are saved. |
 | `/plan` | Weekly plan (Draft board) | `EmptyState` "Nothing planned yet" with **Draft this week**. | Seven skeleton tiles ("Plan loading"; "Drafting this week" while the AI drafts). | "Couldn't load this week's plan. …" + Retry. |
 | `/plan/shopping` | Supply run | `EmptyState` "No shopping list yet" with **Make the shopping list**; an archived week with none shows "No shopping list". A list with no ingredients shows "Nothing to buy". | Skeleton title and dinner cards. | "Couldn't load the shopping list. …" + Retry. |
 | `/plan/shopping/archive` | Supply archive | `EmptyState` "Nothing archived yet" — "Each week's Supply run becomes a post here once it's made." | Skeleton posts. | "Couldn't load the Supply archive. …" + Retry. |

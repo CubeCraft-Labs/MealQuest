@@ -113,6 +113,18 @@ async function expectLoading() {
   expect(screen.queryByRole('alert')).not.toBeInTheDocument()
 }
 
+// expectOnlyLoadingBefore checks, once a page's independent sections have
+// settled, that the one skeleton left is the held read's: it sits before
+// next, the first settled section after it, and nothing failed.
+function expectOnlyLoadingBefore(next: Element) {
+  expect(skeletons()).toHaveLength(1)
+  const left = skeletons().item(0)
+  if (left === null) throw new Error('no skeleton left')
+  expect(next.contains(left)).toBe(false)
+  expect(left.compareDocumentPosition(next) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+}
+
 // expectRetry finds the error banner saying said, presses its Retry and
 // waits for recovered.
 async function expectRetry(said: string, recovered: () => Promise<unknown>) {
@@ -160,7 +172,18 @@ describe('/ Home', () => {
   })
 })
 
-describe('/onboarding Regulars step', () => {
+describe('/onboarding Welcome step', () => {
+  it('reads nothing, so it has no empty, loading or error state', async () => {
+    const fetchMock = serve({})
+    await renderRoute('/onboarding', '/onboarding/*', <OnboardingPage />)
+    expect(screen.getByRole('heading', { name: 'Welcome to MealQuest' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: "Let's start" })).toBeEnabled()
+    expect(skeletons()).toHaveLength(0)
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual(['/api/v1/me'])
+  })
+})
+
+describe('/onboarding/regulars Regulars step', () => {
   const page = async (regulars: Responder) => {
     serve({ 'GET /api/v1/dinners?status=regular': regulars })
     await renderRoute('/onboarding/regulars', '/onboarding/*', <OnboardingPage />)
@@ -183,6 +206,27 @@ describe('/onboarding Regulars step', () => {
     await expectRetry('Your Regulars could not load: internal message', () =>
       screen.findByRole('heading', { name: 'Common picks' }),
     )
+  })
+})
+
+describe('/onboarding/notifications Notifications step', () => {
+  const page = async (finish: Responder) => {
+    serve({ 'PATCH /api/v1/settings/household': finish })
+    await renderRoute('/onboarding/notifications', '/onboarding/*', <OnboardingPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Maybe later' }))
+  }
+
+  it("loading: the step's buttons wait while it finishes", async () => {
+    await page(pending)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Maybe later' })).toBeDisabled())
+    expect(screen.getByRole('button', { name: 'Turn on notifications' })).toBeDisabled()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('error: says finishing failed and lets it be tried again', async () => {
+    await page(failThen(pending))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not finish setting up: internal message')
+    expect(screen.getByRole('button', { name: 'Maybe later' })).toBeEnabled()
   })
 })
 
@@ -427,9 +471,15 @@ describe('/settings/notifications Notifications', () => {
     await renderRoute('/settings/notifications', '/settings/notifications', <NotificationsPage />)
   }
 
-  it('loading: skeleton', async () => {
+  it('loading: skeleton for the channel matrix', async () => {
     await page(pending)
-    await expectLoading()
+    // The webhook card and this device's push status read on their own;
+    // once they settle, the one skeleton left is the channel matrix's.
+    await screen.findByRole('button', { name: 'Save webhook' })
+    const device = screen.getByRole('group', { name: 'Notifications on this device' })
+    await waitFor(() => expect(device.querySelectorAll(`.${skeletonStyles.skeleton}`)).toHaveLength(0))
+    expectOnlyLoadingBefore(device)
+    expect(screen.queryByRole('group', { name: 'Notification channels' })).not.toBeInTheDocument()
   })
 
   it('empty: no Google Chat webhook stored', async () => {
@@ -456,9 +506,13 @@ describe('/settings/ai AI assistant', () => {
     await renderRoute('/settings/ai', '/settings/ai', <AISettingsPage />)
   }
 
-  it('loading: skeleton', async () => {
+  it('loading: skeleton for the AI assistant form', async () => {
     await page(pending)
-    await expectLoading()
+    // The Recipe search card reads on its own; once it settles, the one
+    // skeleton left is the AI assistant form's.
+    await screen.findByRole('button', { name: 'Save recipe search' })
+    expectOnlyLoadingBefore(screen.getByRole('region', { name: 'Recipe search' }))
+    expect(screen.queryByText('No key stored')).not.toBeInTheDocument()
   })
 
   it('empty: no key stored, with Add key', async () => {

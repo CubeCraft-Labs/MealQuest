@@ -75,7 +75,20 @@ sudo find deploy/secrets -type f ! -perm 600                       # secrets not
 
 ### 1. Build
 
-Check out the release and build its image. Nothing restarts.
+Record the release production is running now, check out the new release
+and build its image. Nothing restarts.
+
+The rollback target is the version the running service reports on
+`/health`, read before the checkout changes, never the checkout's `HEAD`:
+after a failed or deferred deploy the checkout can be ahead of production.
+The block resolves that version to a commit and prints it as the rollback
+SHA. A running version of `dev` or `*-dirty` names no commit: the block
+fails, and the rollback target must be established by hand before going on.
+
+The checkout must be clean (the same test as the Makefile's `GIT_DIRTY`:
+no modified tracked file outside the generated `internal/frontend/dist`).
+The block computes the image tag exactly as `make docker` does, `-dirty`
+included, and checks that image exists after the build.
 
 ```sh
 cd /home/overseer/mealquest && (
@@ -86,13 +99,24 @@ trap 'st=$?
 if [ "$st" -eq 0 ] && [ -n "$built" ]; then echo "built: $built"
 else [ "$st" -ne 0 ] || st=1; echo "build FAILED (status $st)" >&2; fi
 exit "$st"' EXIT
-echo "previous SHA: $(git rev-parse HEAD)"   # RECORD it for rollback
+bind=$(grep -E '^MEALQUEST_BIND_ADDRESS=' deploy/.env | cut -d = -f 2-)
+[ -n "$bind" ] || fail "deploy/.env sets no MEALQUEST_BIND_ADDRESS"
+running=$(curl -fsS "http://$bind:8090/health" | python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])') \
+  || fail "http://$bind:8090/health did not return a version: no running release to roll back to"
+case "$running" in
+  dev|*-dirty) fail "the running release reports $running, which names no commit" ;;
+esac
 git fetch --tags origin
+rollback=$(git rev-parse --verify --quiet "$running^{commit}") \
+  || fail "running version $running is not a commit in this repository"
+echo "rollback SHA: $rollback (running version $running)"   # RECORD it for rollback
 git checkout --detach origin/main            # or the release tag, e.g. v1.0.0
-v=$(git describe --tags --always)
+dirty=$(git status --porcelain --untracked-files=no -- . ':(exclude)internal/frontend/dist')
+[ -z "$dirty" ] || fail "the checkout has modified tracked files; clean it first:
+$dirty"
+v=$(git describe --tags --always)${dirty:+-dirty}   # the Makefile's VERSION
 make docker
-docker image inspect "mealquest:$v" > /dev/null 2>&1 \
-  || fail "no image mealquest:$v: the checkout is dirty (git status) or the build failed"
+docker image inspect "mealquest:$v" > /dev/null 2>&1 || fail "no image mealquest:$v: the build failed"
 built="mealquest:$v"
 )
 ```
@@ -101,7 +125,7 @@ built="mealquest:$v"
 
 1. **Pre-restart gates.** Run CTXD `RUNBOOKS.MD` "Routine deploy and
    rollback" > "Deploy" step 2 (a verified pre-deploy restore point; record
-   it with the previous SHA) and step 3 (boot-required configuration). The
+   it with the rollback SHA) and step 3 (boot-required configuration). The
    restart applies migrations the previous release refuses, so without that
    restore point there is no rollback. If either fails, do not restart:
    production stays on the previous release.
@@ -184,7 +208,7 @@ want=$v
 - `deployed and verified: <version> (<SHA>)` and `$?` = `0` → open
   `https://mealquest.cubecraftlabs.com` in a browser: sign in and the Home
   screen renders with the household's data. Then record the deployed
-  version and SHA, the previous SHA, the pre-deploy restore point and the
+  version and SHA, the rollback SHA, the pre-deploy restore point and the
   date in the release's Maestro task.
 - `verification FAILED`, any error or a non-zero `$?` → the deploy is not
   done. A version mismatch means the stack runs a different image than the
@@ -198,11 +222,12 @@ compose file and the version check consistent with it.
 
 1. **Check whether the rollback crosses a migration** with CTXD
    `RUNBOOKS.MD` "Routine deploy and rollback" > "Rollback to a previous
-   SHA" (its first block). If it prints versions unknown to the previous
-   SHA, restore the database to the pre-deploy restore point first (CTXD
-   `RUNBOOKS.MD` "Restore the database", with `-timestamp <restore point>`);
-   changes since then are lost, so tell the household.
-2. **Check out the previous SHA and retag its image.** An image built before
+   SHA" (its first block), run against the rollback SHA that deploy step 1
+   recorded. If it prints versions unknown to the rollback SHA, restore the
+   database to the pre-deploy restore point first (CTXD `RUNBOOKS.MD`
+   "Restore the database", with `-timestamp <restore point>`); changes
+   since then are lost, so tell the household.
+2. **Check out the rollback SHA and retag its image.** An image built before
    this runbook was not tagged `mealquest:<version>`; `make docker` builds
    it from the same commit.
 
@@ -210,7 +235,7 @@ compose file and the version check consistent with it.
 cd /home/overseer/mealquest && (
 set -euo pipefail
 fail() { echo "$*" >&2; exit 1; }
-P=<previous SHA>
+P=<rollback SHA>   # recorded by step 1, from the running release's /health
 back=
 trap 'st=$?
 if [ "$st" -eq 0 ] && [ -n "$back" ]; then echo "rolled back to: $back"

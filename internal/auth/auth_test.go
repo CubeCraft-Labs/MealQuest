@@ -497,6 +497,59 @@ func TestCallbackDefaultReturnPath(t *testing.T) {
 	}
 }
 
+// A saved copy of the login cookie still verifies until it expires, so a
+// replay with a second valid code is refused only because the server
+// consumed the state on first use.
+func TestCallbackRefusesReplayedLoginState(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	l := h.login(t, LoginPath)
+	idToken := h.provider.signRS256(h.provider.claims(l.query.Get("nonce")))
+
+	if resp := h.callback(l, l.query.Get("state"), idToken); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("first callback status = %d, want 303", resp.StatusCode)
+	}
+	resp := h.callback(l, l.query.Get("state"), idToken)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("replayed callback status = %d, want 400", resp.StatusCode)
+	}
+	if n := len(h.sessions.started()); n != 1 {
+		t.Errorf("%d sessions started, want 1", n)
+	}
+	assertLoginCookieCleared(t, resp)
+}
+
+// Pending login states live in memory, so a login started before a restart
+// fails closed after it even though its cookie still verifies.
+func TestCallbackRefusesLoginStartedBeforeRestart(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	l := h.login(t, LoginPath)
+
+	restarted, err := New(context.Background(), Config{
+		Issuer:        h.provider.issuer(),
+		ClientID:      testClientID,
+		ClientSecret:  testClientSecret,
+		PublicURL:     testPublicURL,
+		SecretKey:     []byte("server-secret-key"),
+		AllowedGroups: testAllowedGroups,
+	}, h.sessions, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := chi.NewRouter()
+	restarted.Mount(r)
+	h.router = r
+
+	resp := h.callback(l, l.query.Get("state"), h.provider.signRS256(h.provider.claims(l.query.Get("nonce"))))
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("callback after restart status = %d, want 400", resp.StatusCode)
+	}
+	if n := len(h.sessions.started()); n != 0 {
+		t.Errorf("%d sessions started, want none", n)
+	}
+}
+
 func TestCallbackRejected(t *testing.T) {
 	t.Parallel()
 
@@ -816,6 +869,44 @@ func TestLoginCookieExpires(t *testing.T) {
 	}
 	if _, err := c.read(req, now.Add(loginCookieTTL)); err == nil {
 		t.Error("read at expiry succeeded")
+	}
+}
+
+func TestPendingStates(t *testing.T) {
+	t.Parallel()
+	p := NewPendingStates(time.Minute)
+	now := time.Now()
+	if err := p.Add("first", now); err != nil {
+		t.Fatal(err)
+	}
+	if !p.Consume("first") {
+		t.Error("Consume of a pending state = false")
+	}
+	if p.Consume("first") {
+		t.Error("second Consume of a state = true")
+	}
+	if p.Consume("never-added") {
+		t.Error("Consume of an unknown state = true")
+	}
+
+	for i := range maxPendingStates - 1 {
+		if err := p.Add(fmt.Sprint("s", i), now); err != nil {
+			t.Fatalf("Add %d: %v", i, err)
+		}
+	}
+	// "first" was consumed but has not expired, so it still counts.
+	if err := p.Add("over", now); !errors.Is(err, ErrTooManyPending) {
+		t.Errorf("Add past the bound = %v, want ErrTooManyPending", err)
+	}
+	// Once the earlier states expire, they are forgotten and a new one fits.
+	if err := p.Add("later", now.Add(time.Minute)); err != nil {
+		t.Errorf("Add after expiry: %v", err)
+	}
+	if p.Consume("s0") {
+		t.Error("an expired state was still pending")
+	}
+	if !p.Consume("later") {
+		t.Error("the state added after expiry is not pending")
 	}
 }
 

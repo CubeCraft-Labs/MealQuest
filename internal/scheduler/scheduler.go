@@ -378,6 +378,11 @@ func (s *Scheduler) Wake() {
 	s.signal()
 }
 
+// Now is the time on the scheduler's clock, by which its schedules fire.
+func (s *Scheduler) Now() time.Time {
+	return s.now()
+}
+
 // signal leaves one token in wake for the loop.
 func (s *Scheduler) signal() {
 	select {

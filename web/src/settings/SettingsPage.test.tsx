@@ -104,7 +104,10 @@ describe('SettingsPage', () => {
     expect(await screen.findByText('America/New_York · Dinner at 5:30 pm')).toBeInTheDocument()
     expect(within(row('AI assistant')).getByText('Anthropic · Claude Sonnet')).toBeInTheDocument()
     expect(within(row('Household')).getByText('America/New_York · Dinner at 5:30 pm')).toBeInTheDocument()
+    // The rotation count and the hidden Regular dinners sub-tab both read
+    // the Regulars.
     expect(fetchMock.mock.calls.map(([input]) => String(input)).sort()).toEqual([
+      REGULARS_PATH,
       REGULARS_PATH,
       CALENDAR_PATH,
       '/api/v1/settings/ai',
@@ -117,7 +120,7 @@ describe('SettingsPage', () => {
   })
 
   it('shows the not-yet-available states while the server has no endpoint for them', async () => {
-    stubSettings()
+    stubSettings({ [REGULARS_PATH]: () => errorResponse(404, 'not_found') })
     renderSettings()
     expect(await within(row('Regular dinners')).findByText('Rotation count unavailable')).toBeInTheDocument()
     expect(

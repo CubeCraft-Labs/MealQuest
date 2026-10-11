@@ -80,7 +80,10 @@ export function RegularsSettingsPage() {
 // Which sheet is open, for which Regular.
 type Open = { sheet: 'edit' | 'fix'; id: string } | null
 
-function RegularsManager() {
+// RegularsManager lists, adds, edits and fixes the recipes of the
+// household's Regulars: this page's body, and the Settings "Regular
+// dinners" sub-tab at tablet and desktop widths.
+export function RegularsManager() {
   const regulars = useRegulars()
   const add = useAddRegular()
   const remove = useRemoveRegular()

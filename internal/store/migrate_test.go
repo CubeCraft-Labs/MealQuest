@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"reflect"
 	"slices"
@@ -176,8 +177,8 @@ func TestMigrateEmbeddedMigrations(t *testing.T) {
 	if err := Migrate(context.Background(), s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed,0020_site_name_from_page" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed,0020_site_name_from_page", got)
 	}
 }
 
@@ -197,8 +198,8 @@ func TestMigrateBootstrapThenEmbeddedInitApplies(t *testing.T) {
 	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed,0020_site_name_from_page" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed,0020_site_name_from_page", got)
 	}
 	if !tableExists(t, s, "dinners") {
 		t.Error("table from 0001_init was not created")
@@ -920,5 +921,86 @@ func TestMigrateShoppingListChatSendUnconfirmed(t *testing.T) {
 	}
 	if want := "list-1|Noodle week|current|s|NULL|u1"; got != want {
 		t.Errorf("shopping list after 0017 = %s, want %s", got, want)
+	}
+}
+
+// TestMigrateSiteNameFromPage applies 0020 over recipes and idea job
+// results stored when a page naming no site was stored under its host: a
+// stored name that could be a host — one with no space that is dotted, an
+// IP address or spelled in the recipe's own link — is cleared, so every
+// stored name is one a page gave; a name with a space is kept, as is
+// everything else in the rows.
+func TestMigrateSiteNameFromPage(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	migrateBefore(t, s, "0020")
+	sites := []struct {
+		stored any
+		link   string
+		want   any
+	}{
+		{"private-token.example.com", "https://private-token.example.com/stew", nil},
+		{"redirect_token.example.net", "https://kitchen.example/stew", nil},
+		{"bücher.example", "https://kitchen.example/stew", nil},
+		{"Food.com", "https://www.food.com/stew", nil},
+		{"203.0.113.7", "https://203.0.113.7/stew", nil},
+		{"2001:db8::1", "https://[2001:db8::1]/stew", nil},
+		{"TokenHost", "https://www.tokenhost/stew", nil},
+		{"Delish", "https://www.delish.com/stew", nil},
+		{"Delish", "https://kitchen.example/stew", "Delish"},
+		{"Curry House", "https://curry-house.example/stew", "Curry House"},
+		{"Mr. Food Test Kitchen", "https://kitchen.example/stew", "Mr. Food Test Kitchen"},
+		{nil, "https://kitchen.example/stew", nil},
+	}
+	for i, c := range sites {
+		if _, err := s.Writer.ExecContext(ctx, `INSERT INTO recipes (id, source_url, site_name, title, raw_jsonld, fetched_at, created_at, updated_at)
+			VALUES (?, ?, ?, 'Stew', '{}', 'f', 'c', 'u')`, fmt.Sprintf("recipe-%d", i), fmt.Sprintf("%s?row=%d", c.link, i), c.stored); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const (
+		legacy  = `{"stage":"done","ideas":[{"name":"A","site_name":"query-host.example","source_url":"https://query-host.example/a?t=1"},{"name":"B","site_name":"Curry House","source_url":"https://b.example/b"},{"name":"C","site_name":null,"source_url":null},{"name":"D","site_name":"Kitchen","source_url":"https://kitchen.example/d"}],"dropped":1}`
+		cleaned = `{"stage":"done","ideas":[{"name":"A","site_name":null,"source_url":"https://query-host.example/a?t=1"},{"name":"B","site_name":"Curry House","source_url":"https://b.example/b"},{"name":"C","site_name":null,"source_url":null},{"name":"D","site_name":null,"source_url":"https://kitchen.example/d"}],"dropped":1}`
+		other   = `{"ideas":[{"site_name":"host.example"}]}`
+	)
+	for _, j := range [][3]string{
+		{"job-ideas", "ideas_from_ingredients", legacy},
+		{"job-quick", "quick_ideas", legacy},
+		{"job-other", "ground_dinner", other},
+		{"job-empty", "quick_ideas", `{"stage":"searching","ideas":[]}`},
+	} {
+		if _, err := s.Writer.ExecContext(ctx, `INSERT INTO jobs (id, kind, status, payload, result, created_at, updated_at)
+			VALUES (?, ?, 'succeeded', '{}', ?, 'c', 'u')`, j[0], j[1], j[2]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Writer.ExecContext(ctx, `INSERT INTO jobs (id, kind, status, payload, created_at, updated_at)
+		VALUES ('job-running', 'quick_ideas', 'running', '{}', 'c', 'u')`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+
+	for i, c := range sites {
+		var got any
+		var title string
+		if err := s.Reader.QueryRowContext(ctx, `SELECT site_name, title FROM recipes WHERE id = ?`, fmt.Sprintf("recipe-%d", i)).Scan(&got, &title); err != nil {
+			t.Fatal(err)
+		}
+		if got != c.want || title != "Stew" {
+			t.Errorf("recipe stored with site_name %v: site_name %v, title %q after 0020; want %v, Stew", c.stored, got, title, c.want)
+		}
+	}
+	for id, want := range map[string]any{"job-ideas": cleaned, "job-quick": cleaned, "job-other": other,
+		"job-empty": `{"stage":"searching","ideas":[]}`, "job-running": nil} {
+		var got any
+		if err := s.Reader.QueryRowContext(ctx, `SELECT result FROM jobs WHERE id = ?`, id).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("%s result after 0020 = %v, want %v", id, got, want)
+		}
 	}
 }

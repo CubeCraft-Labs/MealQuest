@@ -184,6 +184,51 @@ func TestGetRecipeCandidates(t *testing.T) {
 	}
 }
 
+// TestGetRecipeCandidatesSiteNames: a candidate's site_name follows the
+// recipe detail's rule (dinners.SourceOf), not a hostname fallback of its
+// own: a name the page gave is offered as it stands, even over a link with
+// a token; a page naming no site is named by its link's host only when
+// the link is free of secrets, and is null over a token-bearing link, so
+// nothing of that link reaches the client.
+func TestGetRecipeCandidatesSiteNames(t *testing.T) {
+	t.Parallel()
+	e := newDinnersEnv(t)
+	const (
+		token    = "offer-token-abc123"
+		named    = "https://named.example/curry?access_token=" + token
+		bare     = "https://" + token + ".example.com/curry?print=1"
+		ordinary = "https://www.kitchen.example/recipes/curry"
+	)
+	e.search.Results["Chicken curry"] = []recipes.Candidate{{URL: named}, {URL: bare}, {URL: ordinary}}
+	e.pages.Bodies[named] = recipestest.RecipePage("Named Curry", "Curry House", "https://a.example/curry.jpg", 40)
+	e.pages.Bodies[bare] = recipestest.RecipePage("Bare Curry", "", "https://b.example/curry.jpg", 30)
+	e.pages.Bodies[ordinary] = recipestest.RecipePage("Ordinary Curry", "", "https://c.example/curry.jpg", 25)
+	id := createDinner(t, e.h, `{"name":"Chicken curry"}`) // runner not started: stays pending
+
+	rec, body := callDinners(t, e.h, http.MethodGet, dinnersPath+"/"+id+"/recipe-candidates", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET = %d: %s", rec.Code, rec.Body)
+	}
+	for _, leak := range []string{token, "access_token", "example.com"} {
+		if strings.Contains(rec.Body.String(), leak) {
+			t.Errorf("candidates contain %q: %s", leak, rec.Body)
+		}
+	}
+	want := map[string]any{"Named Curry": "Curry House", "Bare Curry": nil, "Ordinary Curry": "kitchen.example"}
+	list, _ := body["candidates"].([]any)
+	if len(list) != len(want) {
+		t.Fatalf("candidates = %v, want %d", body, len(want))
+	}
+	for _, c := range list {
+		c := c.(map[string]any)
+		title, _ := c["title"].(string)
+		site, ok := c["site_name"]
+		if w, known := want[title]; !known || !ok || site != w {
+			t.Errorf("candidate %q site_name = %#v (present %v), want %#v", title, site, ok, w)
+		}
+	}
+}
+
 func TestGetRecipeCandidatesSearchFails(t *testing.T) {
 	t.Parallel()
 	e := newDinnersEnv(t)

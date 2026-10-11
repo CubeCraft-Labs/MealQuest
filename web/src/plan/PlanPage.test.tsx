@@ -1392,6 +1392,64 @@ describe('PlanPage', () => {
       expect(within(tile('FRI')).getByText('Pizza night')).toBeInTheDocument()
     })
 
+    it("still shows a swap's failure on coming back to the week, through another, and asks for the swap again only on Retry", async () => {
+      const fetchMock = stubServer({
+        [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+        [`GET ${NEXT_WEEK}`]: () => errorResponse(404, 'not_found'),
+        [`GET /api/v1/plans/2026-10-19`]: () => errorResponse(404, 'not_found'),
+        ...lists,
+        [`PUT ${FRIDAY}`]: () => errorResponse(409, 'dinner_not_plannable'),
+      })
+      await renderPage()
+
+      fireEvent.click(await within(await openFriday()).findByRole('button', { name: /Lemon orzo/ }))
+      expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't swap Friday's dinner. dinner_not_plannable message")
+      fireEvent.click(screen.getByRole('button', { name: 'Next week' }))
+      expect(await screen.findByRole('button', { name: 'Draft this week' })).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Next week' }))
+      await waitFor(() => expect(screen.getByTestId('search')).toHaveTextContent('?week=2026-10-19'))
+      expect(await screen.findByRole('button', { name: 'Draft this week' })).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Previous week' }))
+      await waitFor(() => expect(screen.getByTestId('search')).toHaveTextContent('?week=2026-10-12'))
+      fireEvent.click(screen.getByRole('button', { name: 'Previous week' }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't swap Friday's dinner. dinner_not_plannable message")
+      expect(within(tile('FRI')).getByText('Pizza night')).toBeInTheDocument()
+      expect(puts(fetchMock)).toHaveLength(1)
+    })
+
+    it('reads the plan again when the dinner is already on another day, and offers to choose another rather than send it again', async () => {
+      // Meanwhile lemon orzo was planned on Wednesday.
+      let read = planBody('draft')
+      const fetchMock = stubServer({
+        [`GET ${THIS_WEEK}`]: () => jsonResponse(200, read),
+        ...lists,
+        [`PUT ${FRIDAY}`]: () => errorResponse(409, 'dinner_already_planned'),
+      })
+      await renderPage()
+
+      const sheet = await openFriday()
+      read = planBody('draft')
+      read.days[2] = { ...read.days[2]!, dinner: { ...read.days[2]!.dinner, id: 'q1', name: 'Lemon orzo' }, is_new: true }
+      fireEvent.click(await within(sheet).findByRole('button', { name: /Lemon orzo/ }))
+
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent("Couldn't swap Friday's dinner. Lemon orzo is already on another day this week.")
+      expect(within(alert).queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+      await waitFor(() => expect(within(tile('WED · NEW')).getByText('Lemon orzo')).toBeInTheDocument())
+      expect(within(tile('FRI')).getByText('Pizza night')).toBeInTheDocument()
+
+      // Choosing again opens Friday's sheet on the plan read, where lemon
+      // orzo is already this week; nothing is sent again.
+      fireEvent.click(within(alert).getByRole('button', { name: 'Choose another dinner' }))
+      const again = screen.getByRole('dialog', { name: 'Swap Friday' })
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      const orzo = within(within(again).getByRole('list', { name: 'Quest log' })).getByRole('listitem')
+      expect(within(orzo).getByText('Already this week')).toBeInTheDocument()
+      expect(within(orzo).queryByRole('button')).not.toBeInTheDocument()
+      expect(puts(fetchMock)).toHaveLength(1)
+    })
+
     it('waits for a pending swap before Rebuild week, keeping its failure', async () => {
       let refuse!: () => void
       const fetchMock = stubServer({

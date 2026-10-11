@@ -127,6 +127,12 @@ export function ago(at: Date, now: Date): string {
   return days === 1 ? '1 day ago' : `${days} days ago`
 }
 
+// alreadyPlanned says whether a swap was refused because its dinner is
+// already on another day of the week: sending it again cannot succeed.
+function alreadyPlanned(error: Error): boolean {
+  return error instanceof ApiError && error.code === 'dinner_already_planned'
+}
+
 // pushedToCalendar says whether drafting over a plan of this status needs
 // confirm: it was pushed to Calendar.
 function pushedToCalendar(status: PlanStatus): boolean {
@@ -398,9 +404,18 @@ function WeekBoard({
       </ErrorBanner>
     )
   ) : swap.failed !== null ? (
-    <ErrorBanner onRetry={() => swapIn(swap.failed!.swap)}>
-      Couldn't swap {weekdayName(swap.failed.swap.date)}'s dinner. {swap.failed.error.message}
-    </ErrorBanner>
+    alreadyPlanned(swap.failed.error) ? (
+      // The plan is read again (useSwapDay): the household chooses another
+      // dinner from it rather than sending the refused swap again.
+      <ErrorBanner onRetry={() => openSwap(swap.failed!.swap.date)} retryLabel="Choose another dinner">
+        Couldn't swap {weekdayName(swap.failed.swap.date)}'s dinner. {swap.failed.swap.dinner.name} is already on another day
+        this week.
+      </ErrorBanner>
+    ) : (
+      <ErrorBanner onRetry={() => swapIn(swap.failed!.swap)}>
+        Couldn't swap {weekdayName(swap.failed.swap.date)}'s dinner. {swap.failed.error.message}
+      </ErrorBanner>
+    )
   ) : startDraft.isError ? (
     <ErrorBanner onRetry={rebuild}>Couldn't start drafting this week. {startDraft.error.message}</ErrorBanner>
   ) : result.error !== null ? (

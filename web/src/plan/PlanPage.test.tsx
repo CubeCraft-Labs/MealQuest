@@ -237,6 +237,21 @@ function supplyRun(needed: number) {
   }
 }
 
+// makesSupplyRun answers POST /api/v1/shopping/2026-10-05/generate with
+// generate and, as the server does, GET of the week's Supply run with the
+// one made once generate has made it: until then the week has none.
+function makesSupplyRun(generate: () => Response): Record<string, Responder> {
+  let made = false
+  return {
+    'GET /api/v1/shopping/2026-10-05': () => (made ? jsonResponse(200, supplyRun(28)) : errorResponse(404, 'not_found')),
+    'POST /api/v1/shopping/2026-10-05/generate': () => {
+      const response = generate()
+      made ||= response.ok
+      return response
+    },
+  }
+}
+
 // Wednesday Oct 7, noon in New York: before Friday's 09:00 plan_draft, so
 // the page opens on this week.
 beforeEach(() => {
@@ -553,7 +568,7 @@ describe('PlanPage', () => {
     const fetchMock = stubServer({
       [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
       [`POST ${PUSH}`]: () => jsonResponse(200, syncedNow(SUPPLY_RUN_FAILED)),
-      'POST /api/v1/shopping/2026-10-05/generate': () => generate(),
+      ...makesSupplyRun(() => generate()),
     })
     await renderPage()
 
@@ -585,7 +600,7 @@ describe('PlanPage', () => {
     stubServer({
       [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
       [`POST ${PUSH}`]: () => jsonResponse(200, syncedNow(SUPPLY_RUN_FAILED)),
-      'POST /api/v1/shopping/2026-10-05/generate': () => jsonResponse(200, { ...supplyRun(28), skipped: [] }),
+      ...makesSupplyRun(() => jsonResponse(200, { ...supplyRun(28), skipped: [] })),
     })
     await renderPage()
 
@@ -670,7 +685,7 @@ describe('PlanPage', () => {
     stubServer({
       [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
       [`POST ${PUSH}`]: () => jsonResponse(200, syncedNow(SUPPLY_RUN_FAILED)),
-      'POST /api/v1/shopping/2026-10-05/generate': () => jsonResponse(200, { ...supplyRun(28), skipped: [] }),
+      ...makesSupplyRun(() => jsonResponse(200, { ...supplyRun(28), skipped: [] })),
     })
     const queryClient = createQueryClient()
     await renderPage(queryClient, <SupplyRunScreen />)

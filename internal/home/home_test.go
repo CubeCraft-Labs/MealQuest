@@ -94,7 +94,7 @@ func newEnv(t *testing.T) *env {
 	draft := func(context.Context, string, skills.WeekRequest) (skills.Week, error) {
 		return skills.Week{}, errors.New("no model in this test")
 	}
-	plans, err := plan.NewService(st, draft, runner, googleSvc, notifier, func() {}, pub, logger)
+	plans, err := plan.NewService(st, draft, runner, googleSvc, notifier, func() {}, pub, time.Now, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

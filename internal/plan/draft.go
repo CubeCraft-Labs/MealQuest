@@ -96,7 +96,7 @@ func (s *Service) revision(ctx context.Context, weekStart store.LocalDate) (int6
 // the household context, the pool, last week's dinners and the dinner
 // time.
 func (s *Service) request(ctx context.Context, weekStart store.LocalDate) (skills.WeekRequest, error) {
-	hctx, err := harness.BuildContext(ctx, s.st, time.Now(), ContextBudget)
+	hctx, err := harness.BuildContext(ctx, s.st, s.now(), ContextBudget)
 	if err != nil {
 		return skills.WeekRequest{}, fmt.Errorf("plan: %w", err)
 	}

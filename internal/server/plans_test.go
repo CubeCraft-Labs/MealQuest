@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
@@ -93,7 +94,7 @@ func newPlansRouterTitled(t *testing.T, title shopping.Titler) plansEnv {
 		t.Fatal(err)
 	}
 	notifier := notifytest.New(t, st)
-	svc, err := plan.NewService(st, fail, runner, googleSvc, notifier, func() {}, pub, logger)
+	svc, err := plan.NewService(st, fail, runner, googleSvc, notifier, func() {}, pub, time.Now, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -121,6 +121,16 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 `recipes` holds a fetched recipe page; `dinners` holds the household's meal
 record and its lifecycle, optionally linked to a recipe and a photo.
 
+Migration `0018_recipe_item_position_unique` makes position unique per
+recipe and fails, so the service refuses to start, on a database already
+holding a duplicate. Before deploying it, check the database; both queries
+must return no rows:
+
+```sql
+SELECT recipe_id, position FROM recipe_ingredients GROUP BY 1, 2 HAVING count(*) > 1;
+SELECT recipe_id, position FROM recipe_steps GROUP BY 1, 2 HAVING count(*) > 1;
+```
+
 ## Dinner lifecycle
 
 ```

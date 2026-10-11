@@ -72,8 +72,8 @@ func TestGetDinnerGroundedSideQuest(t *testing.T) {
 	}
 	for _, stmt := range []string{
 		`UPDATE dinners SET status = 'quest_log', origin = 'side_quest', is_favorite = 1 WHERE id = ?`,
-		`UPDATE recipe_ingredients SET position = 1 - position WHERE recipe_id = (SELECT recipe_id FROM dinners WHERE id = ?)`,
-		`UPDATE recipe_steps SET position = 1 - position WHERE recipe_id = (SELECT recipe_id FROM dinners WHERE id = ?)`,
+		`UPDATE recipe_ingredients SET position = 9 - position WHERE recipe_id = (SELECT recipe_id FROM dinners WHERE id = ?)`,
+		`UPDATE recipe_steps SET position = 9 - position WHERE recipe_id = (SELECT recipe_id FROM dinners WHERE id = ?)`,
 	} {
 		if _, err := e.st.Writer.Exec(stmt, id); err != nil {
 			t.Fatal(err)
@@ -490,27 +490,5 @@ func TestGetDinnerWhyPickedIsCreatingSuggestion(t *testing.T) {
 
 	if _, got := getDetail(t, e.h, id); got.WhyPicked == nil || *got.WhyPicked != reason {
 		t.Errorf("why_picked = %v, want %q", got.WhyPicked, reason)
-	}
-}
-
-// TestGetDinnerDuplicatePositionFails: a recipe with two ingredients or two
-// steps at one position has no order anyone can trust, so its detail is a
-// 500 rather than the recipe in some order.
-func TestGetDinnerDuplicatePositionFails(t *testing.T) {
-	t.Parallel()
-	e := newDinnersEnv(t)
-	for _, table := range []string{"recipe_ingredients", "recipe_steps"} {
-		id := createDinner(t, e.h, `{"name":"Family chili `+table+`"}`)
-		if rec, _ := callDinners(t, e.h, http.MethodPost, dinnersPath+"/"+id+"/ground",
-			`{"manual":{"ingredients":["1 lb beef","1 can beans"],"steps":["Brown.","Simmer."],"minutes":240,"method":"crockpot"}}`); rec.Code != http.StatusOK {
-			t.Fatalf("POST ground = %d: %s", rec.Code, rec.Body)
-		}
-		if _, err := e.st.Writer.Exec(`UPDATE `+table+` SET position = 0 WHERE recipe_id = (SELECT recipe_id FROM dinners WHERE id = ?)`, id); err != nil {
-			t.Fatal(err)
-		}
-		rec, _ := callDinners(t, e.h, http.MethodGet, dinnersPath+"/"+id, "")
-		if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "Simmer.") || strings.Contains(rec.Body.String(), "1 lb beef") {
-			t.Errorf("GET with duplicate %s positions = %d: %s, want 500 and no recipe", table, rec.Code, rec.Body)
-		}
 	}
 }

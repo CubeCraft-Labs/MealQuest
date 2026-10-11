@@ -422,7 +422,7 @@ func TestArchiveGroups(t *testing.T) {
 	if _, err := e.st.Writer.Exec(`UPDATE shopping_lists SET title = 'Chili, Noodles & Co' WHERE week_start = '2026-12-28'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.st.Writer.Exec(`UPDATE shopping_lists SET status = 'archived', frozen_at = '2027-01-03T11:05:00.000Z' WHERE week_start < '2027-01-04'`); err != nil {
+	if _, err := e.st.Writer.Exec(`UPDATE shopping_lists SET status = 'archived', frozen_at = '2027-01-03T11:05:00.000Z' WHERE week_start < '2027-01-04'; UPDATE shopping_groups SET frozen_dinner_name = (SELECT name FROM dinners WHERE dinners.id = dinner_id) WHERE list_id IN (SELECT id FROM shopping_lists WHERE frozen_at IS NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
 

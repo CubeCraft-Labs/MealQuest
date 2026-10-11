@@ -177,8 +177,8 @@ func TestMigrateEmbeddedMigrations(t *testing.T) {
 	if err := Migrate(context.Background(), s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed,0018_recipe_item_position_unique,0020_site_name_from_page" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed,0018_recipe_item_position_unique,0020_site_name_from_page", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed,0018_recipe_item_position_unique,0019_shopping_group_frozen_name,0020_site_name_from_page" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed,0018_recipe_item_position_unique,0019_shopping_group_frozen_name,0020_site_name_from_page", got)
 	}
 }
 
@@ -198,8 +198,8 @@ func TestMigrateBootstrapThenEmbeddedInitApplies(t *testing.T) {
 	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed,0018_recipe_item_position_unique,0020_site_name_from_page" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed,0018_recipe_item_position_unique,0020_site_name_from_page", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed,0018_recipe_item_position_unique,0019_shopping_group_frozen_name,0020_site_name_from_page" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed,0018_recipe_item_position_unique,0019_shopping_group_frozen_name,0020_site_name_from_page", got)
 	}
 	if !tableExists(t, s, "dinners") {
 		t.Error("table from 0001_init was not created")
@@ -1010,6 +1010,60 @@ func TestMigrateRecipeItemPositionUniqueRefusesDuplicate(t *testing.T) {
 				t.Error("0018 recorded as applied")
 			}
 		})
+	}
+}
+
+// TestMigrateShoppingGroupFrozenName applies 0019 over a frozen list and
+// a current one: the frozen list's group takes its dinner's name now, the
+// current list's group has none, and a frozen name is never empty.
+func TestMigrateShoppingGroupFrozenName(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	migrateBefore(t, s, "0019")
+	for _, stmt := range []string{
+		`INSERT INTO dinners (id, name, normalized_name, status, origin, is_favorite, grounding_status, created_at, updated_at)
+			VALUES ('dinner-1', 'Beef Stew', 'beef stew', 'regular', 'regular', 0, 'manual', 'c', 'u'),
+			       ('dinner-2', 'Lemon Chicken', 'lemon chicken', 'regular', 'regular', 0, 'manual', 'c', 'u')`,
+		`INSERT INTO week_plans (id, week_start, status, created_at, updated_at)
+			VALUES ('plan-1', '2026-10-05', 'synced', 'c', 'u'),
+			       ('plan-2', '2026-10-12', 'synced', 'c', 'u')`,
+		`INSERT INTO shopping_lists (id, week_start, plan_id, status, frozen_at, created_at, updated_at)
+			VALUES ('list-1', '2026-10-05', 'plan-1', 'archived', 'f', 'c', 'u'),
+			       ('list-2', '2026-10-12', 'plan-2', 'current', NULL, 'c', 'u')`,
+		`INSERT INTO shopping_groups (id, list_id, dinner_id, date, position, created_at, updated_at)
+			VALUES ('group-1', 'list-1', 'dinner-1', '2026-10-05', 0, 'c', 'u'),
+			       ('group-2', 'list-2', 'dinner-2', '2026-10-12', 0, 'c', 'u')`,
+	} {
+		if _, err := s.Writer.Exec(stmt); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := s.Reader.QueryContext(ctx, `SELECT id || '|' || COALESCE(frozen_dinner_name, 'NULL') || '|' || updated_at FROM shopping_groups ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var row string
+		if err := rows.Scan(&row); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"group-1|Beef Stew|u", "group-2|NULL|u"}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("shopping groups after 0019 = %v, want %v", got, want)
+	}
+	if _, err := s.Writer.Exec(`UPDATE shopping_groups SET frozen_dinner_name = '' WHERE id = 'group-1'`); err == nil || !strings.Contains(err.Error(), "CHECK constraint failed") {
+		t.Errorf("empty frozen name: error %v, want CHECK constraint failed", err)
 	}
 }
 

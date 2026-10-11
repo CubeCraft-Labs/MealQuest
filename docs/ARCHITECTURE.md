@@ -216,16 +216,17 @@ automatic** (D-021).
   empty (`[]`) with no recipe, as for a dinner whose grounding is
   `pending` or `failed`; a recipe entered by hand has only `raw_text`.
   Two items at one position leave recipe order unknown, so such a recipe
-  is 500 rather than shown out of order. `source` is `{site_name}` of the
-  page the recipe was fetched from, null for a manual recipe or none; it
-  has no `url`, as the page's link may carry a personal token.
-  `site_name` is the name the page gives its site (publisher or
-  `og:site_name`) and null otherwise: a page naming no site is stored
-  under its host, which may be the pasted link's — a token in a
-  subdomain — or a redirect's, so any stored name that could be a host
-  (the link's host, an IP address or a dotted host name, even a real
-  name like "Food.com") is withheld. The detail screen shows "Recipe
-  from {site}" only when `site_name` is not null. `why_picked` is the reason of the
+  is 500 rather than shown out of order. `source` is `{site_name, url}`
+  of the page the recipe was fetched from, null for a manual recipe or
+  none, as `dinners.SourceOf` gives it — the one rule for every fetched
+  recipe's source, also used by idea results and recipe candidates. `url`
+  is the page's link only when it is free of secrets (https, no user,
+  query or fragment), else null. `site_name` is the name the page gives
+  its site (publisher or `og:site_name`), else the link's host without
+  "www." when `url` is shown, else null. Extraction never stores a host
+  as a site name, so a stored name is always the page's; migration 0020
+  cleared the host-shaped names stored before that. The detail screen
+  shows "Recipe from {site}" only when `site_name` is not null. `why_picked` is the reason of the
   suggestion that created the dinner — its pending or accepted one, as
   declining a suggestion archives its dinner — null for one no suggestion
   created; a dinner with more than one such suggestion is 500, as nothing
@@ -262,7 +263,8 @@ automatic** (D-021).
   `GET /api/v1/dinners/{id}/recipe-candidates`
   searches for the dinner's name and returns `{candidates: [{candidate_id,
   title, site_name, photo_url, minutes}]}`, at most 3, ranked as `Ground`
-  ranks them; it fetches pages but downloads no photo and runs no model,
+  ranks them, with `site_name` as the recipe detail's (`dinners.SourceOf`,
+  null when the site cannot be named without leaking the link); it fetches pages but downloads no photo and runs no model,
   so `photo_url` is set only for a page already stored. `candidate_id` is
   an opaque id the server resolves to the page it last offered that dinner
   (kept in memory, so a restart means fetching the candidates again) at

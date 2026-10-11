@@ -60,10 +60,13 @@ type supplyRunItem struct {
 }
 
 // generatedSupplyRun is the POST /shopping/{weekStart}/generate answer:
-// the Supply run as made, and the plan days with nothing to shop for.
+// the Supply run as made, the plan days with nothing to shop for, and the
+// title_job_id of the job titling it, which GET /jobs/{id} reports on;
+// null when the Supply run already has its title.
 type generatedSupplyRun struct {
 	supplyRun
-	Skipped []shopping.SkippedDay `json:"skipped"`
+	Skipped    []shopping.SkippedDay `json:"skipped"`
+	TitleJobID *string               `json:"title_job_id"`
 }
 
 // sendChatRequest is the POST /shopping/{weekStart}/send-chat body:
@@ -108,7 +111,7 @@ func getSupplyRun(logger *slog.Logger, svc *shopping.Service) http.HandlerFunc {
 }
 
 // postSupplyRunGenerate makes, or remakes, the week's Supply run from its
-// plan and answers with it and the plan days it skipped.
+// plan and answers with it, the plan days it skipped and its title job.
 func postSupplyRunGenerate(logger *slog.Logger, svc *shopping.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		week, ok := weekStartOrFail(w, r, logger)
@@ -129,7 +132,7 @@ func postSupplyRunGenerate(logger *slog.Logger, svc *shopping.Service) http.Hand
 		if skipped == nil {
 			skipped = []shopping.SkippedDay{}
 		}
-		writeJSON(w, r, logger, http.StatusOK, generatedSupplyRun{supplyRun: out, Skipped: skipped})
+		writeJSON(w, r, logger, http.StatusOK, generatedSupplyRun{supplyRun: out, Skipped: skipped, TitleJobID: g.TitleJobID})
 	}
 }
 

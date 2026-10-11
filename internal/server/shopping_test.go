@@ -186,7 +186,7 @@ func TestSupplyRunShape(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("generate = %d %v", status, raw)
 	}
-	wantTop := []string{"chat_send_unconfirmed_at", "groups", "label", "needed_count", "sent_to_chat_at", "skipped", "status", "title", "total_count", "weekStart"}
+	wantTop := []string{"chat_send_unconfirmed_at", "groups", "label", "needed_count", "sent_to_chat_at", "skipped", "status", "title", "title_job_id", "total_count", "weekStart"}
 	if got := keys(raw); !reflect.DeepEqual(got, wantTop) {
 		t.Errorf("generate fields = %v, want %v", got, wantTop)
 	}
@@ -199,7 +199,7 @@ func TestSupplyRunShape(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("GET = %d %v", status, raw)
 	}
-	if k := keys(raw); !reflect.DeepEqual(k, slices.DeleteFunc(slices.Clone(wantTop), func(s string) bool { return s == "skipped" })) {
+	if k := keys(raw); !reflect.DeepEqual(k, slices.DeleteFunc(slices.Clone(wantTop), func(s string) bool { return s == "skipped" || s == "title_job_id" })) {
 		t.Errorf("GET fields = %v", k)
 	}
 	group := raw["groups"].([]any)[0].(map[string]any)
@@ -376,8 +376,12 @@ func TestPushPlanMakesSupplyRun(t *testing.T) {
 	if rec.Code != http.StatusOK || body["status"] != "synced" {
 		t.Fatalf("push = %d %s", rec.Code, rec.Body)
 	}
-	if want := map[string]any{"status": "generated", "error": nil}; !reflect.DeepEqual(body["supply_run"], want) {
-		t.Errorf("supply_run = %v, want %v", body["supply_run"], want)
+	run, _ := body["supply_run"].(map[string]any)
+	if k := keys(run); run["status"] != "generated" || run["error"] != nil || !reflect.DeepEqual(k, []string{"error", "status", "title_job_id"}) {
+		t.Errorf("supply_run = %v, want generated with no error", run)
+	}
+	if job := titleJob(t, e, run["title_job_id"]); job["status"] != "queued" {
+		t.Errorf("title job = %v, want queued: no runner in this test", job)
 	}
 	var l supplyRunJSON
 	if status, got := callShopping(t, e, http.MethodGet, shoppingPath+"2026-10-12", "", &l); status != http.StatusOK {
@@ -467,9 +471,11 @@ func TestPushPlanDoesNotWaitForTitle(t *testing.T) {
 	if rec.Code != http.StatusOK || body["status"] != "synced" {
 		t.Fatalf("push = %d %s", rec.Code, rec.Body)
 	}
-	if want := map[string]any{"status": "generated", "error": nil}; !reflect.DeepEqual(body["supply_run"], want) {
-		t.Errorf("supply_run = %v, want %v", body["supply_run"], want)
+	run, _ := body["supply_run"].(map[string]any)
+	if run["status"] != "generated" || run["error"] != nil {
+		t.Errorf("supply_run = %v, want generated with no error", run)
 	}
+	titleJobID, _ := run["title_job_id"].(string)
 	held.waitEntered(t)
 	var l supplyRunJSON
 	callShopping(t, e, http.MethodGet, shoppingPath+"2026-10-12", "", &l)
@@ -478,6 +484,7 @@ func TestPushPlanDoesNotWaitForTitle(t *testing.T) {
 	}
 
 	close(held.release)
+	wantTitleJobSucceeded(t, e, titleJobID)
 	if got := e.waitTitled(t); got != "Chili and Friends" {
 		t.Errorf("title = %q, want the title job's", got)
 	}
@@ -493,7 +500,8 @@ func TestSupplyRunGenerateDoesNotWaitForTitle(t *testing.T) {
 	e.startRunner(t)
 
 	var l supplyRunJSON
-	if status, body := callShopping(t, e, http.MethodPost, shoppingPath+"2026-10-12/generate", "", &l); status != http.StatusOK {
+	status, body := callShopping(t, e, http.MethodPost, shoppingPath+"2026-10-12/generate", "", &l)
+	if status != http.StatusOK {
 		t.Fatalf("generate = %d %v", status, body)
 	}
 	if l.Title != nil {
@@ -502,11 +510,65 @@ func TestSupplyRunGenerateDoesNotWaitForTitle(t *testing.T) {
 	if !reflect.DeepEqual(l.render(), weekLines) {
 		t.Errorf("generated = %v, want %v", l.render(), weekLines)
 	}
+	titleJobID, _ := body["title_job_id"].(string)
 	held.waitEntered(t)
 
 	close(held.release)
+	wantTitleJobSucceeded(t, e, titleJobID)
 	if got := e.waitTitled(t); got != "Chili and Friends" {
 		t.Errorf("title = %q, want the title job's", got)
+	}
+	if _, body := callShopping(t, e, http.MethodPost, shoppingPath+"2026-10-12/generate", "", nil); body["title_job_id"] != nil {
+		t.Errorf("remake title_job_id = %v, want null: the Supply run has its title", body["title_job_id"])
+	}
+}
+
+// TestSupplyRunGenerateTitleJobFails: a title job that cannot title the
+// Supply run is reported failed with title_failed by GET /jobs/{id}, and
+// the week's next generation answers with a new title job.
+func TestSupplyRunGenerateTitleJobFails(t *testing.T) {
+	t.Parallel()
+	e := newPlansRouter(t)
+	e.groundWeek(t)
+	e.startRunner(t)
+
+	_, body := callShopping(t, e, http.MethodPost, shoppingPath+"2026-10-12/generate", "", nil)
+	first := titleJob(t, e, body["title_job_id"])
+	job := waitJob(t, e.h, first["id"].(string))
+	if job["status"] != "failed" || job["error"] != shopping.ReasonTitleFailed {
+		t.Errorf("title job = %v, want failed %s", job, shopping.ReasonTitleFailed)
+	}
+
+	_, body = callShopping(t, e, http.MethodPost, shoppingPath+"2026-10-12/generate", "", nil)
+	if second := titleJob(t, e, body["title_job_id"]); second["id"] == first["id"] {
+		t.Errorf("retry title_job_id = %v, want a new job", second["id"])
+	}
+}
+
+// titleJob returns the title_supply_run job id, as GET /jobs/{id} reports
+// it; id must be a job id string.
+func titleJob(t *testing.T, e plansEnv, id any) map[string]any {
+	t.Helper()
+	s, ok := id.(string)
+	if !ok || s == "" {
+		t.Fatalf("title_job_id = %v, want a job id", id)
+	}
+	rec, job := callDinners(t, e.h, http.MethodGet, "/api/v1/jobs/"+s, "")
+	if rec.Code != http.StatusOK || job["kind"] != shopping.KindTitleSupplyRun {
+		t.Fatalf("GET title job = %d %s, want a %s job", rec.Code, rec.Body, shopping.KindTitleSupplyRun)
+	}
+	return job
+}
+
+// wantTitleJobSucceeded waits for title job id to finish and fails t
+// unless GET /jobs/{id} reports it succeeded with the title written.
+func wantTitleJobSucceeded(t *testing.T, e plansEnv, id string) {
+	t.Helper()
+	titleJob(t, e, id)
+	job := waitJob(t, e.h, id)
+	result, _ := job["result"].(map[string]any)
+	if job["status"] != "succeeded" || result["title"] != "Chili and Friends" {
+		t.Errorf("title job = %v, want succeeded with the title", job)
 	}
 }
 
@@ -546,7 +608,7 @@ func TestPushPlanSupplyRunFails(t *testing.T) {
 		"code":      "supply_run_failed",
 		"message":   "the plan is on Calendar, but its Supply run could not be made; make it again from the Supply run",
 		"retryable": true,
-	}}
+	}, "title_job_id": nil}
 	if !reflect.DeepEqual(body["supply_run"], want) {
 		t.Errorf("supply_run = %v, want %v", body["supply_run"], want)
 	}
@@ -599,7 +661,7 @@ func TestPushPlanEditedBeforeSupplyRun(t *testing.T) {
 		"code":      "plan_changed",
 		"message":   "the plan is on Calendar as pushed, but it was edited before its Supply run was made, so no Supply run was made from it; push again",
 		"retryable": true,
-	}}
+	}, "title_job_id": nil}
 	if !reflect.DeepEqual(body["supply_run"], want) {
 		t.Errorf("supply_run = %v, want %v", body["supply_run"], want)
 	}
@@ -632,7 +694,7 @@ func TestPushPlanLeavesArchivedSupplyRun(t *testing.T) {
 		t.Fatalf("push = %d %s", rec.Code, rec.Body)
 	}
 	run, _ := body["supply_run"].(map[string]any)
-	if apiErr, _ := run["error"].(map[string]any); run["status"] != "archived" || apiErr["code"] != "archived" {
+	if apiErr, _ := run["error"].(map[string]any); run["status"] != "archived" || apiErr["code"] != "archived" || run["title_job_id"] != nil {
 		t.Errorf("supply_run = %v, want archived", body["supply_run"])
 	}
 	var l supplyRunJSON

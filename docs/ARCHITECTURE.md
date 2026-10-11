@@ -1120,7 +1120,10 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
   - The week's Supply run (Feature 17) is made from a pushed plan: after
     a successful `Push`, the handler runs `shopping.GeneratePushed` for
     the week at the plan revision `Push` pushed, and the 200 answer
-    carries `supply_run: {status, error}`. `status` is `generated`;
+    carries `supply_run: {status, error, title_job_id}`. `title_job_id` is
+    the `title_supply_run` job titling a generated list, as for `POST
+    /shopping/{weekStart}/generate`; null when the list already has its
+    title or was not generated. `status` is `generated`;
     `archived` when the week's Supply run is in the Supply archive and was
     left as it was; or `failed` — error `plan_changed` (retryable, logged
     as a warning) when the plan was edited between the push and
@@ -1143,8 +1146,12 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
   when the week has no Supply run, 400 `invalid_week`.
 - `POST /api/v1/shopping/{weekStart}/generate` makes or remakes the list
   through `shopping.Generate` and answers with the same shape plus
-  `skipped: [{date, dinner_id, dinner_name, reason}]`. 404 when the week
-  has no plan, 409 `archived` when its list is in the Supply archive.
+  `skipped: [{date, dinner_id, dinner_name, reason}]` and
+  `title_job_id`, the `title_supply_run` job titling the list, which
+  `GET /api/v1/jobs/{id}` reports on (failed `title_failed` when the title
+  could not be written); null when the list already has its title. 404
+  when the week has no plan, 409 `archived` when its list is in the Supply
+  archive.
 - `POST /api/v1/shopping/{weekStart}/send-chat` (CSRF-checked) takes
   `{}` or `{"resend": true}` and posts the Supply run to Google Chat
   through `chat.PostSupplyRun`, in the week's thread: "Supply run · " and

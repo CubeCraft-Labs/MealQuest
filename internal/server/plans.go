@@ -111,10 +111,13 @@ type pushedPlan struct {
 // plan Calendar does not show and pushing again makes it; or
 // supply_run_failed when it could not be made, and POST
 // /shopping/{weekStart}/generate makes it again. error is null when status
-// is generated.
+// is generated. title_job_id is the job titling a generated Supply run,
+// which GET /jobs/{id} reports on; null when it already has its title or
+// was not generated.
 type pushedSupplyRun struct {
-	Status string    `json:"status"`
-	Error  *apiError `json:"error"`
+	Status     string    `json:"status"`
+	Error      *apiError `json:"error"`
+	TitleJobID *string   `json:"title_job_id"`
 }
 
 // postPlanPush pushes the week's plan to the chosen Google calendar
@@ -143,7 +146,9 @@ func postPlanPush(logger *slog.Logger, svc *plan.Service, shop *shopping.Service
 		// gone.
 		ctx := context.WithoutCancel(r.Context())
 		run := pushedSupplyRun{Status: "generated"}
-		if _, err := shop.GeneratePushed(ctx, week, revision); errors.Is(err, shopping.ErrFrozen) {
+		if g, err := shop.GeneratePushed(ctx, week, revision); err == nil {
+			run.TitleJobID = g.TitleJobID
+		} else if errors.Is(err, shopping.ErrFrozen) {
 			logger.InfoContext(ctx, "Supply run in the Supply archive left as it was after Push to Calendar", "week", week.String())
 			run = pushedSupplyRun{Status: "archived", Error: &apiError{Code: "archived", Message: err.Error()}}
 		} else if errors.Is(err, shopping.ErrPlanChanged) {
@@ -153,7 +158,7 @@ func postPlanPush(logger *slog.Logger, svc *plan.Service, shop *shopping.Service
 				Message:   "the plan is on Calendar as pushed, but it was edited before its Supply run was made, so no Supply run was made from it; push again",
 				Retryable: true,
 			}}
-		} else if err != nil {
+		} else {
 			logger.ErrorContext(ctx, "generate Supply run after Push to Calendar", "week", week.String(), "error", err)
 			run = pushedSupplyRun{Status: "failed", Error: &apiError{
 				Code:      "supply_run_failed",

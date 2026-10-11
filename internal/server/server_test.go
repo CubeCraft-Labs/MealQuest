@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/oauth2"
@@ -240,7 +241,7 @@ func newTestPlan(t *testing.T) *plan.Service {
 	fail := func(context.Context, string, skills.WeekRequest) (skills.Week, error) {
 		return skills.Week{}, errors.New("no model in this test")
 	}
-	svc, err := plan.NewService(st, fail, runner, newTestGoogle(t), notifytest.New(t, st), func() {}, &url.URL{Scheme: "https", Host: "mealquest.example"}, logger)
+	svc, err := plan.NewService(st, fail, runner, newTestGoogle(t), notifytest.New(t, st), func() {}, &url.URL{Scheme: "https", Host: "mealquest.example"}, time.Now, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +304,7 @@ func newTestHomeOn(t *testing.T, st *store.Store) *home.Service {
 	if err != nil {
 		t.Fatal(err)
 	}
-	planSvc, err := plan.NewService(st, draft, runner, googleSvc, notifier, func() {}, pub, logger)
+	planSvc, err := plan.NewService(st, draft, runner, googleSvc, notifier, func() {}, pub, time.Now, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

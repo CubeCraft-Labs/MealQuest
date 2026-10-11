@@ -409,20 +409,26 @@ describe('SupplyArchivePage frozen post', () => {
     expect(screen.queryByText(/Still open/)).not.toBeInTheDocument()
   })
 
-  it('on desktop opens the current week’s post read-only, and with no post open shows this week’s Supply run to change', async () => {
+  it('opens a saved link to a past week’s list not yet frozen in the editable Supply run, not read-only', async () => {
+    stubServer({ 'GET /api/v1/shopping/2026-09-28': () => jsonResponse(200, { ...FROZEN, status: 'current' }) })
+    await renderPage('/plan/shopping/archive?week=2026-09-28', <SupplyRunPage />)
+
+    expect(await screen.findByRole('checkbox', { name: 'Pizza dough' })).toBeEnabled()
+    expect(screen.queryByText('Archived')).not.toBeInTheDocument()
+    expect(screen.getByText("Uncheck anything you already have — it won't be counted.")).toBeInTheDocument()
+  })
+
+  it('on desktop opens a saved link to the current week’s list, not yet frozen, in the editable Supply run, as with no post open', async () => {
     mockViewport(1440)
-    const fetchMock = stubServer({
+    stubServer({
       [`GET ${ARCHIVE('week')}`]: archive('week'),
       'GET /api/v1/shopping/2026-10-05': () => jsonResponse(200, CURRENT),
     })
-    const view = await renderPage('/plan/shopping/archive?week=2026-10-05')
+    const view = await renderPage('/plan/shopping/archive?week=2026-10-05', <SupplyRunPage />)
 
-    expect(await screen.findByText('Archived')).toBeInTheDocument()
-    expect(screen.getByText('Corn tortillas')).toBeInTheDocument()
-    expect(screen.queryAllByRole('checkbox')).toEqual([])
-    expect(screen.queryByText('Send to Google Chat')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByText('Corn tortillas'))
-    expect(fetchMock.mock.calls.filter(([, init]) => init?.method !== undefined && init.method !== 'GET')).toEqual([])
+    expect(await screen.findByRole('checkbox', { name: 'Corn tortillas' })).toBeEnabled()
+    expect(screen.queryByText('Archived')).not.toBeInTheDocument()
+    expect(screen.queryByRole('complementary', { name: 'Supply archive' })).not.toBeInTheDocument()
     view.unmount()
 
     await renderPage()

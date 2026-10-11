@@ -9,7 +9,7 @@ import { Icon } from '../ui/Icon.tsx'
 import { IconButton } from '../ui/IconButton.tsx'
 import { Segmented } from '../ui/Segmented.tsx'
 import { Skeleton } from '../ui/Skeleton.tsx'
-import { useSupplyArchive, WEEK_PARAM, type ArchiveGroup, type ArchivePeriod, type ArchivePost } from './api.ts'
+import { supplyRunScreen, useSupplyArchive, WEEK_PARAM, type ArchiveGroup, type ArchivePeriod, type ArchivePost } from './api.ts'
 import styles from './SupplyArchivePage.module.css'
 import { SUPPLY_ARCHIVE, SUPPLY_RUN, SupplyRunPage } from './SupplyRunPage.tsx'
 
@@ -32,12 +32,6 @@ export function archivePost(weekStart: string): string {
   return `${SUPPLY_ARCHIVE}?${new URLSearchParams({ [WEEK_PARAM]: weekStart })}`
 }
 
-// supplyRun is the Supply run screen on the week starting on Monday
-// weekStart, where a list not yet frozen can still be changed.
-function supplyRun(weekStart: string): string {
-  return `${SUPPLY_RUN}?${new URLSearchParams({ [WEEK_PARAM]: weekStart })}`
-}
-
 function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`
 }
@@ -52,7 +46,7 @@ function PostCard({ post }: { post: ArchivePost }) {
   const rest = post.dinners.length - CHIPS
   return (
     <Link
-      to={post.frozen ? archivePost(post.weekStart) : supplyRun(post.weekStart)}
+      to={post.frozen ? archivePost(post.weekStart) : supplyRunScreen(post.weekStart)}
       className={[styles.post, post.current && styles.current].filter(Boolean).join(' ')}
     >
       <span className={styles.kicker}>
@@ -170,7 +164,8 @@ function SupplyArchive({ panel }: { panel: boolean }) {
 
 // SupplyArchivePage is /plan/shopping/archive. A frozen post opens it on its
 // week (?week=), whose list the Supply run screen shows read-only and tagged
-// Archived; a post not yet frozen opens the Supply run instead. On desktop (mock 2f) the archive is a panel at
+// Archived; a post not yet frozen opens the Supply run instead, as does a
+// ?week= visit to a list not yet frozen. On desktop (mock 2f) the archive is a panel at
 // the right of that list, this week's editable Supply run when no post is
 // open; on mobile and tablet it is the archive or, with a post open, the
 // post's list.

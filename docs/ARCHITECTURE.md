@@ -321,15 +321,22 @@ automatic** (D-021).
   suggestion with the name it is suggested under, the reason and
   `cited_regular_ids` — unless, since the job read its input, a dinner
   it repeats was added, a suggestion it repeats passed, or a Regular it
-  cites renamed or archived (checked in the storing transaction). The job
+  cites renamed or archived (checked in the storing transaction). A
+  notifying batch also rechecks the Side quests it holds after each round
+  and lets go of those no longer eligible, so a later round grounds a
+  spare in place of each; only a change committed between the last
+  recheck and the store can leave it short of 5 with spares unused. The job
   publishes `{batch_id, stage, suggestion_ids, dropped}` as it goes (`suggesting`,
   `grounding`, `done`). It fails with `no_regulars`, `ai_failed` (the
   skill or `normalize_recipe` failed; no Side quest is made up instead,
   D-017), `search_not_configured` or `search_failed`, and the batch is set
-  `failed`. A failed `scheduled` or `manual` batch has stored nothing; a
+  `failed`. A `scheduled` or `manual` batch that fails before its final
+  store (the AI, grounding, or the store itself) has stored nothing; a
   failed `replenish` batch's Side quests stored before the failure stay
   in the deck. If
-  recording the batch's end fails, its job fails; the job runner retries
+  recording the batch's end fails, its job fails, even after the final
+  store committed: a notifying batch's Side quests and their
+  `new_suggestions` then stay; the job runner retries
   a job's final status write with backoff until it lands, each attempt
   bounded at 5 seconds; at shutdown an attempt that fails or times out is
   not retried, and the next start fails the job as interrupted. Recording

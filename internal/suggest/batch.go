@@ -54,7 +54,8 @@ func (r batchResult) PublicJSON() ([]byte, error) { return json.Marshal(r) }
 // no recipe grounds is dropped; any other grounding failure fails the
 // batch, as does suggest_side_quests failing, with no Side quest made up
 // instead. The batch ends done or failed. When recording the batch's end
-// fails, so does the job; when it times out at shutdown, the job is left
+// fails, so does the job, with what the batch stored, and any
+// new_suggestions it emitted, kept; when it times out at shutdown, the job is left
 // running and the batch with it, for the next start to fail.
 //
 // When a batch stores its Side quests depends on whether it notifies (see
@@ -64,7 +65,12 @@ func (r batchResult) PublicJSON() ([]byte, error) { return json.Marshal(r) }
 // Side quest stored. So the household is told of exactly what the batch
 // added, once; and a batch that fails at any round, including a later
 // round's normalize_recipe, stores nothing and sends nothing, leaving no
-// Side quest in the deck that was never announced. A replenish batch,
+// Side quest in the deck that was never announced. After each round it
+// rechecks every Side quest it holds (see eligible) and lets go of those
+// the household's changes made ineligible, so a later round grounds a
+// spare Side quest in place of each; only a change committed between the
+// last recheck and the store can still leave the batch short of
+// BatchSize while spare Side quests remain. A replenish batch,
 // which tops up the deck as the household swipes and never notifies,
 // stores each round's Side quests before the next round starts, so the
 // deck fills as it goes; those stored before a failure stay in the deck.
@@ -146,7 +152,13 @@ func (s *Service) fill(ctx context.Context, trigger string, job BatchJob, publis
 		}
 		res.Dropped += len(round) - len(grounded)
 		if note != nil {
-			held = append(held, grounded...)
+			// Recheck every held Side quest, not just this round's, so
+			// one the household's changes made ineligible while this
+			// round grounded is replaced by a later round, not dropped by
+			// the store once no round is left to replace it.
+			if held, err = s.recheck(ctx, &res, append(held, grounded...)); err != nil {
+				return batchResult{}, err
+			}
 		} else if err := s.storeInto(ctx, &res, nil, grounded); err != nil {
 			return batchResult{}, err
 		}
@@ -161,6 +173,22 @@ func (s *Service) fill(ctx context.Context, trigger string, job BatchJob, publis
 	}
 	res.Stage = StageDone
 	return res, nil
+}
+
+// recheck returns, in order, those of a notifying batch's held Side
+// quests that store would still keep (see eligible), adding those left
+// out to res.Dropped.
+func (s *Service) recheck(ctx context.Context, res *batchResult, held []groundedQuest) ([]groundedQuest, error) {
+	kept, err := s.eligible(ctx, db.New(s.st.Reader), res.BatchID, held)
+	if err != nil {
+		return nil, err
+	}
+	res.Dropped += len(held) - len(kept)
+	out := make([]groundedQuest, len(kept))
+	for i, k := range kept {
+		out[i] = k.groundedQuest
+	}
+	return out, nil
 }
 
 // storeInto stores quests for res's batch with note (see store) and adds
@@ -277,11 +305,11 @@ func (s *Service) ground(ctx context.Context, quests []skills.SideQuest) ([]grou
 // store stores each grounded Side quest of batchID as a dinner with status
 // suggested and origin side_quest, grounded in its recipe, and a pending
 // suggestion citing its Regulars by id, all in one transaction, and
-// returns the suggestion ids. A Side quest is left out when, since
-// suggest_side_quests ran, a dinner it repeats was added, a suggestion it
-// repeats passed or a Rotation check dropped, or a Regular it cites renamed
-// or archived. Passed names are read in the same transaction as the store,
-// so a Pass or drop committed before it is never missed.
+// returns the suggestion ids. A Side quest eligible leaves out is not
+// stored: since suggest_side_quests ran, a dinner it repeats was added, a
+// suggestion it repeats passed or a Rotation check dropped, or a Regular
+// it cites renamed or archived. eligible reads in the same transaction as
+// the store, so a Pass or drop committed before it is never missed.
 //
 // When note is not nil and a Side quest is stored, new_suggestions keyed by
 // note, counting and naming those stored, is emitted in the same
@@ -295,28 +323,13 @@ func (s *Service) store(ctx context.Context, batchID string, note *notice, quest
 	var stored []string
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		q := db.New(tx)
-		existing, err := q.ListUnarchivedDinners(ctx)
+		kept, err := s.eligible(ctx, q, batchID, quests)
 		if err != nil {
-			return fmt.Errorf("suggest: list dinners for dedupe: %w", err)
+			return err
 		}
-		names, err := q.ListPassedNames(ctx)
-		if err != nil {
-			return fmt.Errorf("suggest: list passed names for dedupe: %w", err)
-		}
-		regulars := map[string][]string{}
-		for _, row := range existing {
-			names = append(names, row.Dinner.Name)
-			if row.Dinner.Status == dinners.StatusRegular {
-				regulars[row.Dinner.Name] = append(regulars[row.Dinner.Name], row.Dinner.ID)
-			}
-		}
-		for _, gq := range quests {
-			cited, ok := citedIDs(gq.quest.CitedRegulars, regulars)
-			if !ok || repeats(gq.quest.Name, names) {
-				s.logger.InfoContext(ctx, "suggested dinner dropped: changed while grounding", "batch_id", batchID)
-				continue
-			}
-			citedJSON, err := json.Marshal(cited)
+		for _, k := range kept {
+			gq := k.groundedQuest
+			citedJSON, err := json.Marshal(k.cited)
 			if err != nil {
 				return fmt.Errorf("suggest: encode cited Regulars: %w", err)
 			}
@@ -354,7 +367,6 @@ func (s *Service) store(ctx context.Context, batchID string, note *notice, quest
 			}); err != nil {
 				return fmt.Errorf("suggest: create suggestion: %w", err)
 			}
-			names = append(names, d.Name)
 			ids = append(ids, id)
 			stored = append(stored, d.Name)
 		}
@@ -370,6 +382,50 @@ func (s *Service) store(ctx context.Context, batchID string, note *notice, quest
 		s.notifier.Wake()
 	}
 	return ids, nil
+}
+
+// eligibleQuest is a Side quest store would keep, with the ids of the
+// Regulars it cites.
+type eligibleQuest struct {
+	groundedQuest
+	cited []string
+}
+
+// eligible returns, in order, those of batchID's quests that q's dinners
+// and passed names still allow, each with the ids of the Regulars it
+// cites. A Side quest is left out when a dinner it repeats is unarchived,
+// a suggestion it repeats passed or a Rotation check dropped, a Regular it
+// cites is renamed or archived, or an earlier Side quest of quests kept
+// repeats it. store checks with this in its transaction; a notifying
+// batch checks the Side quests it holds with it after each round (see
+// fill).
+func (s *Service) eligible(ctx context.Context, q *db.Queries, batchID string, quests []groundedQuest) ([]eligibleQuest, error) {
+	existing, err := q.ListUnarchivedDinners(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("suggest: list dinners for dedupe: %w", err)
+	}
+	names, err := q.ListPassedNames(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("suggest: list passed names for dedupe: %w", err)
+	}
+	regulars := map[string][]string{}
+	for _, row := range existing {
+		names = append(names, row.Dinner.Name)
+		if row.Dinner.Status == dinners.StatusRegular {
+			regulars[row.Dinner.Name] = append(regulars[row.Dinner.Name], row.Dinner.ID)
+		}
+	}
+	var kept []eligibleQuest
+	for _, gq := range quests {
+		cited, ok := citedIDs(gq.quest.CitedRegulars, regulars)
+		if !ok || repeats(gq.quest.Name, names) {
+			s.logger.InfoContext(ctx, "suggested dinner dropped: changed while grounding", "batch_id", batchID)
+			continue
+		}
+		names = append(names, gq.quest.Name)
+		kept = append(kept, eligibleQuest{groundedQuest: gq, cited: cited})
+	}
+	return kept, nil
 }
 
 // citedIDs returns the ids of the Regulars named cited, false when one

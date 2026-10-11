@@ -366,6 +366,17 @@ func (s *Service) Deck(ctx context.Context) (Deck, error) {
 	return deck, nil
 }
 
+// PendingCount is how many Side quests are pending on the deck. Unlike
+// Deck it only reads: it does not fail orphaned batches, so a reader such
+// as Home never writes.
+func (s *Service) PendingCount(ctx context.Context) (int, error) {
+	rows, err := db.New(s.st.Reader).ListDeck(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("suggest: list deck: %w", err)
+	}
+	return len(rows), nil
+}
+
 // Decision is a suggestion once decided, with the id of the replenish
 // batch's job when the decision called for one: the batch it started, or
 // the one already pending or running that it joined.

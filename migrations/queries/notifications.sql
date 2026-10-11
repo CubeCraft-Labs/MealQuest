@@ -66,3 +66,28 @@ SELECT * FROM notification_prefs;
 UPDATE notification_prefs
 SET push = ?, chat = ?, updated_at = ?
 WHERE event = ?;
+
+-- name: HasNotificationSince :one
+-- Reports whether a notification was stored after since, or at all when
+-- since is NULL.
+SELECT EXISTS (
+	SELECT 1 FROM notification_outbox
+	WHERE CAST(sqlc.narg(since) AS TEXT) IS NULL OR created_at > CAST(sqlc.narg(since) AS TEXT)
+) AS found;
+
+-- name: ListRecentNotifications :many
+-- Returns the last lim distinct events stored, newest first: one row per
+-- event key, the last stored for it whatever its channel, so an event
+-- stored for push and Google Chat is one row. The last, because a channel
+-- switched on later can store the same event key again, and
+-- HasNotificationSince counts that row: an event is as new as its newest
+-- row, so marking it seen also covers that row.
+SELECT o.event_key, o.payload, o.created_at FROM notification_outbox o
+WHERE o.id = (
+	SELECT i.id FROM notification_outbox i
+	WHERE i.event_key = o.event_key
+	ORDER BY i.created_at DESC, i.id DESC
+	LIMIT 1
+)
+ORDER BY o.created_at DESC, o.event_key DESC
+LIMIT sqlc.arg(lim);

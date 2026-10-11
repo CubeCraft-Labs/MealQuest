@@ -5,7 +5,7 @@ import { createNetworkStatus } from './pwa/networkStatus.ts'
 import { mockViewport } from './test/matchMedia.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME, request, stubFetch, stubFetchByPath } from './test/fetchStub.ts'
 import App, { routes } from './App.tsx'
-import { AI_SETTINGS, HOUSEHOLD_SETTINGS, RECIPE_SEARCH_SETTINGS, SETTINGS_API } from './test/ApiProviders.tsx'
+import { AI_SETTINGS, HOME, HOUSEHOLD_SETTINGS, RECIPE_SEARCH_SETTINGS, SETTINGS_API } from './test/ApiProviders.tsx'
 import { InDataRouter } from './test/dataRouter.tsx'
 import { dinnerBody } from './test/dinners.ts'
 import { defaultWeek } from './plan/week.ts'
@@ -30,6 +30,7 @@ function renderAppAt(path: string, location = fakeLocation(path)) {
 
 // The routes that render a built screen rather than a placeholder page.
 const SCREENS = {
+  '/': true,
   '/onboarding': true,
   '/plan': true,
   '/plan/shopping': true,
@@ -84,6 +85,16 @@ describe('App routes', () => {
       expect(screen.getByRole('navigation', { name: 'Primary' })).toBeInTheDocument()
     },
   )
+
+  it('/ renders the Home screen inside the shell', async () => {
+    mockViewport(390)
+    stubFetchByPath({ ...SIGNED_IN, '/api/v1/home': () => jsonResponse(200, HOME), '/api/v1/rotation-reviews': () => jsonResponse(200, { reviews: [] }) })
+    renderAt('/')
+    const heading = await screen.findByRole('heading', { level: 1, name: "Tonight's quest" })
+    expect(screen.getByRole('main')).toContainElement(heading)
+    expect(await screen.findByRole('heading', { name: 'Pizza night' })).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'Primary' })).toBeInTheDocument()
+  })
 
   it('/settings renders the settings home inside the shell', async () => {
     mockViewport(390)
@@ -262,12 +273,19 @@ describe('App bootstrap', () => {
 
   it('reports a /me failure with a retry instead of rendering the routes', async () => {
     mockViewport(390)
-    stubFetch(errorResponse(500, 'internal'), jsonResponse(200, ME), jsonResponse(200, HOUSEHOLD_SETTINGS))
+    const mes = [errorResponse(500, 'internal'), jsonResponse(200, ME)]
+    stubFetchByPath({
+      ...SIGNED_IN,
+      '/api/v1/me': () => mes.shift()!,
+      '/api/v1/home': () => jsonResponse(200, HOME),
+      '/api/v1/rotation-reviews': () => jsonResponse(200, { reviews: [] }),
+    })
     renderAt('/')
 
     expect(await screen.findByRole('alert')).toHaveTextContent('MealQuest could not load: internal message')
     screen.getByRole('button', { name: 'Retry' }).click()
-    expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: "Tonight's quest" })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Pizza night' })).toBeInTheDocument()
   })
 })
 
@@ -282,9 +300,9 @@ describe('App offline bootstrap', () => {
   // visitOnline is an earlier online visit on this device: /me answers with a
   // member, then the app is closed.
   async function visitOnline() {
-    stubFetchByPath(SIGNED_IN)
+    stubFetchByPath({ ...SIGNED_IN, '/api/v1/home': () => jsonResponse(200, HOME), '/api/v1/rotation-reviews': () => jsonResponse(200, { reviews: [] }) })
     const { unmount } = renderAt('/')
-    expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Pizza night' })).toBeInTheDocument()
     unmount()
   }
 
@@ -295,14 +313,16 @@ describe('App offline bootstrap', () => {
   })
 
   // A test that emits an offline event leaves TanStack Query's online
-  // manager, shared by every test, offline until an online event.
+  // manager, shared by every test, offline until an online event. The
+  // manager listens for it only while a query client is mounted, so the
+  // event goes out before cleanup unmounts the app.
   afterEach(() => {
-    cleanup()
     window.dispatchEvent(new Event('online'))
+    cleanup()
   })
 
   it.each([
-    ['/', 'Home'],
+    ['/', "Tonight's quest"],
     ['/settings/notifications', 'Notifications'],
   ])('an offline reload of %s after an online visit opens the saved page', async (path, title) => {
     await visitOnline()

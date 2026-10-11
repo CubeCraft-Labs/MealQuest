@@ -375,9 +375,9 @@ func TestDraftEmitsPlanReady(t *testing.T) {
 	}
 	for _, r := range rows {
 		p := r.Payload
-		if r.Key != "plan_ready:2026-10-12" || p.Tag != r.Key || p.URL != "/plan" || p.Week != "2026-10-12" ||
+		if r.Key != "plan_ready:2026-10-12" || p.Tag != r.Key || p.URL != "/plan?week=2026-10-12" || p.Week != "2026-10-12" ||
 			p.Title != want.Title || p.Body != "Beef Chili, Pot Roast, Pad Thai + 4 more" {
-			t.Errorf("%s row = %+v, want key plan_ready:2026-10-12, title %q, the drafted dinners and /plan", r.Channel, r, want.Title)
+			t.Errorf("%s row = %+v, want key plan_ready:2026-10-12, title %q, the drafted dinners and /plan?week=2026-10-12", r.Channel, r, want.Title)
 		}
 	}
 

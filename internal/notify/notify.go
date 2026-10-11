@@ -190,6 +190,61 @@ func (s *Service) EmitTx(ctx context.Context, tx *sql.Tx, ev Event) error {
 	})
 }
 
+// StoredSince reports whether a notification was stored after since, or
+// at all when since is nil. An event counts once it is stored for any
+// channel, whatever became of its delivery; one whose preference switches
+// every channel off is never stored and never counts.
+func (s *Service) StoredSince(ctx context.Context, since *time.Time) (bool, error) {
+	var after sql.NullString
+	if since != nil {
+		after = sql.NullString{String: timestamp(*since), Valid: true}
+	}
+	found, err := db.New(s.st.Reader).HasNotificationSince(ctx, after)
+	if err != nil {
+		return false, fmt.Errorf("notify: read notifications since %s: %w", after.String, err)
+	}
+	return found, nil
+}
+
+// Stored is one event as it was stored, whatever channels it went to.
+type Stored struct {
+	Type  EventType
+	Title string
+	Body  string
+	// URL is the path-absolute, same-origin path the event opens.
+	URL string
+	// CreatedAt is when the event was last stored, for any channel: the
+	// instant StoredSince must be given for it not to count.
+	CreatedAt time.Time
+}
+
+// Recent returns the last n distinct events stored, newest first. An event
+// stored for more than one channel is one event, as new as its newest row;
+// one whose preference switches every channel off is never stored and
+// never listed.
+func (s *Service) Recent(ctx context.Context, n int) ([]Stored, error) {
+	if n <= 0 {
+		return nil, fmt.Errorf("notify: list %d recent events: want a positive count", n)
+	}
+	rows, err := db.New(s.st.Reader).ListRecentNotifications(ctx, int64(n))
+	if err != nil {
+		return nil, fmt.Errorf("notify: list recent events: %w", err)
+	}
+	out := make([]Stored, 0, len(rows))
+	for _, r := range rows {
+		var p Payload
+		if err := json.Unmarshal([]byte(r.Payload), &p); err != nil {
+			return nil, fmt.Errorf("notify: decode payload of %s: %w", r.EventKey, err)
+		}
+		created, err := parseTimestamp(r.CreatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("notify: created_at of %s: %w", r.EventKey, err)
+		}
+		out = append(out, Stored{Type: p.Event, Title: p.Title, Body: p.Body, URL: p.URL, CreatedAt: created})
+	}
+	return out, nil
+}
+
 // emitTx stores ev in tx for each channel that channels chooses from the
 // preference of ev's type.
 func (s *Service) emitTx(ctx context.Context, tx *sql.Tx, ev Event, channels func(db.NotificationPref) ([]Channel, error)) error {

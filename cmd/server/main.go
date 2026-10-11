@@ -23,6 +23,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/home"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ideas"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
@@ -177,6 +178,11 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
+	homeSvc, err := home.NewService(settings, planSvc, suggestSvc, shopSvc, notifier)
+	if err != nil {
+		return err
+	}
+
 	sessions, err := auth.NewSessionManager(db, cfg.SessionIdle, cfg.SessionMax)
 	if err != nil {
 		return err
@@ -221,7 +227,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, search, ai, chatSvc, dinnerSvc, suggestSvc, planSvc, shopSvc, googleSvc, pushSvc, ideasSvc, runner, photos, frontend.Assets())
+	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, search, ai, chatSvc, dinnerSvc, suggestSvc, planSvc, shopSvc, googleSvc, pushSvc, ideasSvc, homeSvc, runner, photos, frontend.Assets())
 	if err != nil {
 		return err
 	}

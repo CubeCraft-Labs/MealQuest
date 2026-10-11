@@ -107,7 +107,7 @@ func newPlansRouterTitled(t *testing.T, title shopping.Titler) plansEnv {
 		t.Fatal(err)
 	}
 	h, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t), chatSvc,
-		newTestDinners(t), newTestSuggest(t), svc, shop, googleSvc, newTestPush(t), newTestIdeas(t), runner, newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
+		newTestDinners(t), newTestSuggest(t), svc, shop, googleSvc, newTestPush(t), newTestIdeas(t), newTestHome(t), runner, newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
 	if err != nil {
 		t.Fatal(err)
 	}

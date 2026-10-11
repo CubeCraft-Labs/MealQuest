@@ -61,6 +61,18 @@ export const GOOGLE_NOT_CONNECTED = {
   last_sync_error: null,
 }
 
+// HOME is a GET /api/v1/home body as mock 1g shows it: Pizza night, a
+// Regular, tonight; ten Side quests; next week's Supply run ready; an
+// unread update.
+export const HOME = {
+  dateLabel: 'Friday, Oct 2',
+  timezone: 'America/New_York',
+  tonight: { id: 'd1', name: 'Pizza night', photo: '/media/photos/p1-400.jpg', origin: 'regular', minutes_total: 40 },
+  sideQuestCount: 10,
+  shoppingList: { weekStart: '2026-10-05', label: 'Week 41 · Oct 5 – 11', ready: true, sentToChatAt: null },
+  recentUpdates: { unread: true },
+}
+
 // NOTIFICATION_SETTINGS is a GET /api/v1/settings/notifications body: the
 // seed channels and reminder time.
 export const NOTIFICATION_SETTINGS = {

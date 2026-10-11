@@ -5,6 +5,7 @@ import { ApiProvider, createQueryClient, type ApiClient } from './api/index.ts'
 import { AuthBootstrap } from './AuthBootstrap.tsx'
 import { DinnerDetailPage } from './dinners/DinnerDetailPage.tsx'
 import { DiscoverPage } from './discover/DiscoverPage.tsx'
+import { HomePage } from './home/HomePage.tsx'
 import { CookFromPantryPage } from './ideas/CookFromPantryPage.tsx'
 import { QuickDinnersPage } from './ideas/QuickDinnersPage.tsx'
 import { ONBOARDING_PATH, OnboardingGate } from './onboarding/OnboardingGate.tsx'
@@ -45,6 +46,7 @@ export const routes = [
 
 // The screens built so far; every other route shows its placeholder page.
 const screens: Partial<Record<(typeof routes)[number]['path'], ReactNode>> = {
+  '/': <HomePage />,
   '/plan': <PlanPage />,
   '/plan/shopping': <SupplyRunPage />,
   '/plan/shopping/archive': <SupplyArchivePage />,

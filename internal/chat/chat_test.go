@@ -342,8 +342,8 @@ func TestSendThreadsByWeek(t *testing.T) {
 		t.Errorf("plan text = %q", reqs[0].Body["text"])
 	}
 
-	// The cards' "Open" buttons link under the public URL.
-	for i, wantLink := range map[int]string{0: "https://mealquest.example/plan", 1: "https://mealquest.example/plan/shopping"} {
+	// The cards' "Open" buttons link under the public URL to the event's week.
+	for i, wantLink := range map[int]string{0: "https://mealquest.example/plan?week=2026-10-12", 1: "https://mealquest.example/plan/shopping?week=2026-10-12"} {
 		data, _ := json.Marshal(reqs[i].Body["cardsV2"])
 		var cards []cardV2
 		if err := json.Unmarshal(data, &cards); err != nil || len(cards) != 1 {

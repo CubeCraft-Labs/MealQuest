@@ -800,9 +800,11 @@ failed run is not retried. A claim that fails is not skipped: the pass is
 repeated every `scheduler.ClaimRetry` until the claim succeeds. A settings
 change is recorded with the instant it was saved, and fire times up to that
 instant follow the old rule and later ones the new, however late the
-scheduler applies it. At boot only each schedule's most recent fire
-time is considered: it runs if it passed within 24 hours, and is otherwise
-claimed without running (logged as missed) so it never runs later. DST
+scheduler applies it. At boot, and whenever the scheduler wakes late,
+every unclaimed fire time within 24 hours (`scheduler.CatchUpWindow`) is
+processed oldest first, each running once. A most recent fire time that
+passed longer ago is claimed without running (logged as missed) so it
+never runs later; older ones are not looked at. DST
 follows `household.LocalTime`: a skipped time fires later by the gap, a
 repeated time fires once, at its first occurrence.
 
@@ -870,14 +872,14 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
 - Where each event is emitted, with its idempotency key. Each is stored by
   `notify.EmitTx` in the transaction of the change it is about, so the
   change and its notification commit together or not at all:
-  - `plan_ready:{weekStart}` (URL `/plan`) when a draft job, asked for
+  - `plan_ready:{weekStart}` (URL `/plan?week={weekStart}`) when a draft job, asked for
     by the API or the `plan_draft` schedule, stores the AI's draft of a
     week. Only the first draft of a week notifies: a
     redraft (Rebuild week) has the same key, and a manual swap never
     drafts. Its title is "Next week's plan is ready" (or "This week's",
     or "The plan for the week of Oct 26") and its body the drafted
     dinners Monday to Sunday.
-  - `list_ready:{weekStart}` (URL `/plan/shopping`) when a week's Supply
+  - `list_ready:{weekStart}` (URL `/plan/shopping?week={weekStart}`) when a week's Supply
     run is first created, by `POST /shopping/{weekStart}/generate` or
     after Push to Calendar; remaking it does not notify.
   - `new_suggestions:{YYYY-Www}` for a `scheduled` batch, the ISO week it
@@ -1183,6 +1185,61 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
   `current` true for the household's current week. 400 `invalid_request`
   for any other `by`. A frozen list is read through `GET
   /api/v1/shopping/{weekStart}` with `status` `archived`.
+
+## Home API (Feature 21)
+
+- `GET /api/v1/home` (`home.Service`) aggregates the Home screen from the
+  services that own each value, at "now" in the household's zone (never
+  UTC), and answers:
+
+  ```json
+  {
+    "dateLabel": "Friday, Oct 2",
+    "timezone": "America/Chicago",
+    "tonight": {"id": "…", "name": "…", "photo": "/media/…", "origin": "regular", "minutes_total": 40},
+    "sideQuestCount": 10,
+    "shoppingList": {"weekStart": "2026-10-05", "label": "Week 41 · Oct 5 – 11", "ready": true, "sentToChatAt": null},
+    "recentUpdates": {"unread": true}
+  }
+  ```
+
+  `tonight` is today's day of the current week's plan (`plan.Get`), null
+  when the week has no plan; it changes at the household's local
+  midnight, so the PWA reads Home again at the next local midnight of
+  `timezone`, the household's IANA zone. `photo` and `minutes_total` are
+  null when unknown. `sideQuestCount` is the pending cards of the deck,
+  read without writing (`suggest.PendingCount`): a Home read never fails
+  orphaned batches the way a `suggest.Deck` read does.
+  `shoppingList` is the upcoming week's Supply run when it has one, else
+  the current week's (`shopping.Get`); with neither, it is the current
+  week with `ready` false. `recentUpdates.unread` is true when a
+  notification was stored in `notification_outbox` after
+  `household_settings.updates_seen_at`, or at all while that is null
+  (`notify.StoredSince`); an event whose channels are all switched off is
+  never stored and never counts.
+- `GET /api/v1/updates` (`home.Service.Updates`, over `notify.Recent`)
+  answers the Recent updates sheet: the last 10 distinct events in
+  `notification_outbox`, newest first, one per event key whatever its
+  channels or delivery status (an event stored for push and Google Chat is
+  one update):
+
+  ```json
+  {"updates": [{"type": "plan_ready", "title": "…", "body": "…", "url": "/plan?week=2026-10-12", "created_at": "2026-10-09T14:00:00.000Z"}]}
+  ```
+
+  Every field comes from the stored payload, which never holds a webhook
+  URL or secret; `url` is the same-origin path the event opens.
+- `POST /api/v1/updates/seen` with `{"through": "<created_at>"}` (CSRF
+  header required) records that the household has seen its updates
+  through the newest one it was shown, and answers 204. The last-seen
+  instant is `household_settings.updates_seen_at` — the one place it is
+  stored. It only moves forward (`MarkUpdatesSeen`), so a `through` older
+  than the stored one is accepted and changes nothing, and an event
+  stored after `through` keeps `unread` true. It is not a settings edit:
+  `updated_by` and `updated_at` are left as they are and settings
+  subscribers are not told. 400 `invalid_request` for a body that is not
+  exactly that object, a `through` that is not RFC 3339, or one after
+  now.
 
 ## Frontend
 

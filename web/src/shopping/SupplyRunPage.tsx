@@ -1,7 +1,7 @@
 import { Archive, Check, CloudUpload, MessageSquare } from 'lucide-react'
 import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
-import { defaultWeek, localNow, weekdayKicker, weekLabel, weekStart as weekOf } from '../plan/week.ts'
+import { defaultWeek, isMonday, localNow, weekdayKicker, weekLabel } from '../plan/week.ts'
 import { ApiError } from '../api/errors.ts'
 import { formatClockTime, useHouseholdSettings } from '../settings/api.ts'
 import { useBreakpoint, type Breakpoint } from '../shell/useBreakpoint.ts'
@@ -309,13 +309,4 @@ function ChosenSupplyRun({ readOnly }: { readOnly: boolean }) {
   if (!schedule) return <SkeletonGroups layout={layout} />
   const week = chosen ?? defaultWeek(schedule, new Date())
   return <WeekSupplyRun key={week} weekStart={week} timezone={schedule.timezone} layout={layout} readOnly={readOnly} />
-}
-
-// isMonday says whether date is a real YYYY-MM-DD Monday.
-function isMonday(date: string): boolean {
-  try {
-    return weekOf(date) === date
-  } catch {
-    return false
-  }
 }

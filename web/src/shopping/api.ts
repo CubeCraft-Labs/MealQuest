@@ -194,18 +194,26 @@ export function useSupplyRun(weekStart: string) {
 // /api/v1/shopping/{weekStart}/generate); the Supply run it answers with is
 // the one shown. Once made, from whichever screen, a push of the week whose
 // Supply run was not made is settled (settleUnmadePushes).
+//
+// A read of the week's Supply run still in flight as the answer arrives may
+// have been sent before the Supply run was made: it is cancelled before the
+// answer is written, so it cannot land over it, and the week is then read
+// again from the server.
 export function useGenerateSupplyRun(weekStart: string) {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
+  const key = supplyRunKey(weekStart)
   return useMutation({
     onMutate: () => settleUnmadePushes(queryClient, weekStart),
     mutationFn: async (): Promise<SupplyRun> => {
       const path = `${supplyRunPath(weekStart)}/generate`
       return parseSupplyRun(`POST ${path}`, weekStart, await apiFetch<unknown>(path, { method: 'POST' }))
     },
-    onSuccess: (run, _, settle) => {
-      queryClient.setQueryData<SupplyRun | null>(supplyRunKey(weekStart), run)
+    onSuccess: async (run, _, settle) => {
+      await queryClient.cancelQueries({ queryKey: key })
+      queryClient.setQueryData<SupplyRun | null>(key, run)
       settle()
+      void queryClient.invalidateQueries({ queryKey: key })
     },
   })
 }

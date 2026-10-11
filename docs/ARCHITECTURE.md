@@ -95,8 +95,8 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 | --- | --- |
 | `household_settings` | One row: timezone, dinner_time (17:30), reminder_time (16:30), review_time (09:00), plan_draft day/time (Fri 09:00), suggestions day/time (Sun 08:00), chat_autosend day/time (Sat 08:00), onboarding_completed_at, updates_seen_at. |
 | `recipes` | A real recipe page: source_url (unique), site_name, title, total/prep/cook minutes (the page's JSON-LD), yield, raw_jsonld, fetched_at; and its grounding: photo_id, method, difficulty, minutes_total (normalized prep to table). |
-| `recipe_ingredients` | recipe_id, position, raw_text, name, qty, unit, note. |
-| `recipe_steps` | recipe_id, position, text. |
+| `recipe_ingredients` | recipe_id, position (unique per recipe: the recipe order), raw_text, name, qty, unit, note. |
+| `recipe_steps` | recipe_id, position (unique per recipe: the recipe order), text. |
 | `photos` | source_url, local_path, width, height, sha256, fetched_at. |
 | `dinners` | The meal record and its lifecycle: name, normalized_name, status (`suggested` / `quest_log` / `tried` / `regular` / `archived`), origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, recipe_url (a pasted recipe link awaiting grounding), photo_id, grounding_status (`pending` / `grounded` / `failed` / `manual`), grounding_error (why grounding failed), grounding_revision (raised whenever a dinner is renamed, so only the latest `ground_dinner` job may write it and no candidate offered before the rename grounds it), updated_by. |
 | `suggestion_batches` | trigger, status, ai_run_id. |
@@ -215,10 +215,9 @@ automatic** (D-021).
   raw_text}]` and `steps` the step texts, both in recipe position order and
   empty (`[]`) with no recipe, as for a dinner whose grounding is
   `pending` or `failed`; a recipe entered by hand has only `raw_text`.
-  Two items at one position leave recipe order unknown, so such a recipe
-  is 500 rather than shown out of order. `source` is `{site_name}` of the
-  page the recipe was fetched from, null for a manual recipe or none; it
-  has no `url`, as the page's link may carry a personal token.
+  `source` is `{site_name}` of the page the recipe was fetched from, null
+  for a manual recipe or none; it has no `url`, as the page's link may
+  carry a personal token.
   `site_name` is the name the page gives its site (publisher or
   `og:site_name`) and null otherwise: a page naming no site is stored
   under its host, which may be the pasted link's — a token in a

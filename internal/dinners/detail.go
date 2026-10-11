@@ -157,10 +157,7 @@ func readRecipe(ctx context.Context, q *db.Queries, recipeID string, d *Detail) 
 	if err != nil {
 		return fmt.Errorf("ingredients: %w", err)
 	}
-	for i, ing := range ings {
-		if i > 0 && ing.Position == ings[i-1].Position {
-			return duplicatePosition("ingredient", ing.Position)
-		}
+	for _, ing := range ings {
 		d.Ingredients = append(d.Ingredients, Ingredient{
 			Name:    nullString(ing.Name),
 			Qty:     nullString(ing.Qty),
@@ -173,10 +170,7 @@ func readRecipe(ctx context.Context, q *db.Queries, recipeID string, d *Detail) 
 	if err != nil {
 		return fmt.Errorf("steps: %w", err)
 	}
-	for i, step := range steps {
-		if i > 0 && step.Position == steps[i-1].Position {
-			return duplicatePosition("step", step.Position)
-		}
+	for _, step := range steps {
 		d.Steps = append(d.Steps, step.Text)
 	}
 	return nil
@@ -282,12 +276,4 @@ func browserHost(u *url.URL) bool {
 		return ip != nil && ip.To4() != nil && !strings.Contains(host, ":")
 	}
 	return true
-}
-
-// duplicatePosition is the error for two recipe items of kind at position.
-// Position is the only record of recipe order, and the id that breaks the
-// tie says nothing about it, so a recipe with a duplicate is refused rather
-// than shown in an order nobody can trust.
-func duplicatePosition(kind string, position int64) error {
-	return fmt.Errorf("two %ss at position %d: recipe order is unknown", kind, position)
 }

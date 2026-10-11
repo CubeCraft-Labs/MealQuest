@@ -381,6 +381,9 @@ func postLine(p shopping.Post) string {
 	if p.Current {
 		cur = " | current"
 	}
+	if !p.Frozen {
+		cur += " | open"
+	}
 	return p.WeekStart + " " + p.Label + " | " + title + " | " + strings.Join(p.Dinners, ", ") + " | " +
 		strconv.Itoa(p.Items) + " items, " + strconv.Itoa(p.OnHand) + " on hand" + cur
 }
@@ -427,7 +430,7 @@ func TestArchiveGroups(t *testing.T) {
 	}
 
 	posts := map[string]string{
-		"jan": "2027-01-04 Week 1 · Jan 4 – 10 | - | Pad Thai, Beef Chili | 5 items, 1 on hand | current",
+		"jan": "2027-01-04 Week 1 · Jan 4 – 10 | - | Pad Thai, Beef Chili | 5 items, 1 on hand | current | open",
 		"dec": "2026-12-28 Week 53 · Dec 28 – Jan 3 | Chili, Noodles & Co | Beef Chili, Pad Thai | 5 items, 2 on hand",
 		"d07": "2026-12-07 Week 50 · Dec 7 – 13 | - | Pad Thai | 2 items, 0 on hand",
 		"nov": "2026-11-30 Week 49 · Nov 30 – Dec 6 | - | Pot Roast | 1 items, 1 on hand",

@@ -10,6 +10,7 @@ import { mockViewport } from '../test/matchMedia.ts'
 import type { ArchivePost } from './api.ts'
 import { PAGE, SupplyArchivePage } from './SupplyArchivePage.tsx'
 import styles from './SupplyArchivePage.module.css'
+import { SupplyRunPage } from './SupplyRunPage.tsx'
 
 const ARCHIVE = (by: string) => `/api/v1/shopping/archive?by=${by}`
 
@@ -24,13 +25,14 @@ function post(weekStart: string, label: string, overrides: Partial<ArchivePost> 
     onHandCount: 4,
     dinners: ['Beef tacos', 'Tikka masala', 'Pizza', 'Pot roast', 'Orzo', 'Chili', 'Salmon'],
     current: false,
+    frozen: true,
     ...overrides,
   }
 }
 
 // The posts of mock 1m: this week's titled post, then the weeks across the
 // September–October boundary and the 2025–2026 one, the last untitled.
-const WEEK_41 = post('2026-10-05', 'Week 41 · Oct 5 – 11', { title: 'Tacos, tikka & a salmon finale', current: true })
+const WEEK_41 = post('2026-10-05', 'Week 41 · Oct 5 – 11', { title: 'Tacos, tikka & a salmon finale', current: true, frozen: false })
 const WEEK_40 = post('2026-09-28', 'Week 40 · Sep 28 – Oct 4', { title: 'Pizza, pot roast & the great orzo trial', itemCount: 26 })
 const WEEK_39 = post('2026-09-21', 'Week 39 · Sep 21 – 27', { title: 'Chili season opens', dinnerCount: 1, itemCount: 1, onHandCount: 0, dinners: ['Chili'] })
 const WEEK_1 = post('2025-12-29', 'Week 1 · Dec 29 – Jan 4')
@@ -83,8 +85,9 @@ function stubServer(responders: Record<string, Responder>) {
 }
 
 // renderPage loads /me (for the CSRF token any write would need, so a
-// missing PATCH is not for want of it) and renders the Supply archive at path.
-async function renderPage(path = '/plan/shopping/archive') {
+// missing PATCH is not for want of it) and renders the Supply archive at path,
+// with supplyRun at the Supply run's route.
+async function renderPage(path = '/plan/shopping/archive', supplyRun = <p>Supply run screen</p>) {
   const api = createApiClient(fakeLocation(path), createNetworkStatus(window), createVerifiedSession(localStorage))
   await api.loadMe()
   return render(
@@ -93,7 +96,7 @@ async function renderPage(path = '/plan/shopping/archive') {
         <MemoryRouter initialEntries={[path]}>
           <Routes>
             <Route path="/plan/shopping/archive" element={<SupplyArchivePage />} />
-            <Route path="/plan/shopping" element={<p>Supply run screen</p>} />
+            <Route path="/plan/shopping" element={supplyRun} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>
@@ -137,7 +140,7 @@ describe('SupplyArchivePage', () => {
     expect(within(postCard('Chili season opens')).queryByText(/^\+/)).not.toBeInTheDocument()
 
     expect(screen.getAllByRole('link').map((link) => link.getAttribute('href'))).toEqual([
-      '/plan/shopping/archive?week=2026-10-05',
+      '/plan/shopping?week=2026-10-05',
       '/plan/shopping/archive?week=2026-09-28',
       '/plan/shopping/archive?week=2026-09-21',
       '/plan/shopping/archive?week=2025-12-29',
@@ -154,7 +157,7 @@ describe('SupplyArchivePage', () => {
     for (const period of BY.week) {
       const section = screen.getByRole('region', { name: period.heading })
       expect(within(section).getAllByRole('link').map((link) => link.getAttribute('href'))).toEqual(
-        period.posts.map((p) => `/plan/shopping/archive?week=${p.weekStart}`),
+        period.posts.map((p) => (p.frozen ? `/plan/shopping/archive?week=${p.weekStart}` : `/plan/shopping?week=${p.weekStart}`)),
       )
     }
   })
@@ -182,7 +185,7 @@ describe('SupplyArchivePage', () => {
     for (const period of BY[by]) {
       const section = screen.getByRole('region', { name: period.heading })
       expect(within(section).getAllByRole('link').map((link) => link.getAttribute('href'))).toEqual(
-        period.posts.map((p) => `/plan/shopping/archive?week=${p.weekStart}`),
+        period.posts.map((p) => (p.frozen ? `/plan/shopping/archive?week=${p.weekStart}` : `/plan/shopping?week=${p.weekStart}`)),
       )
     }
   })
@@ -366,38 +369,66 @@ describe('SupplyArchivePage frozen post', () => {
     expect(await screen.findByRole('heading', { level: 1, name: 'Supply archive' })).toBeInTheDocument()
   })
 
-  it('opens the current week’s post read-only too, tagged Archived, with no checkbox, nothing to send and no PATCH', async () => {
-    const fetchMock = stubServer({
+  it('opens the current week’s post, not yet frozen, in the Supply run, where it can still change', async () => {
+    stubServer({
       [`GET ${ARCHIVE('week')}`]: archive('week'),
       'GET /api/v1/shopping/2026-10-05': () => jsonResponse(200, CURRENT),
     })
-    await renderPage()
+    await renderPage('/plan/shopping/archive', <SupplyRunPage />)
 
     fireEvent.click(await screen.findByText('Tacos, tikka & a salmon finale'))
 
-    expect(await screen.findByText('Archived')).toBeInTheDocument()
-    expect(screen.getByText("This week's list as it stands, read-only in the Supply archive.")).toBeInTheDocument()
-    expect(screen.getByText('Corn tortillas')).toBeInTheDocument()
-    expect(screen.queryAllByRole('checkbox')).toEqual([])
-    fireEvent.click(screen.getByText('Corn tortillas'))
-    fireEvent.click(screen.getByText('Limes'))
-    expect(fetchMock.mock.calls.filter(([, init]) => init?.method !== undefined && init.method !== 'GET')).toEqual([])
+    expect(await screen.findByRole('checkbox', { name: 'Corn tortillas' })).toBeEnabled()
+    expect(screen.queryByText('Archived')).not.toBeInTheDocument()
   })
 
-  it('on desktop opens the current week’s post read-only, and with no post open shows this week’s Supply run to change', async () => {
+  it('marks a past week’s post not yet frozen Still open and opens it in the Supply run, where it can still change', async () => {
+    const open = { ...WEEK_40, frozen: false }
+    stubServer({
+      [`GET ${ARCHIVE('week')}`]: () => jsonResponse(200, { by: 'week', periods: [{ key: '2026-W40', heading: open.label, posts: [open] }] }),
+      'GET /api/v1/shopping/2026-09-28': () => jsonResponse(200, { ...FROZEN, status: 'current' }),
+    })
+    await renderPage('/plan/shopping/archive', <SupplyRunPage />)
+
+    await screen.findByText('Pizza, pot roast & the great orzo trial')
+    const card = postCard('Pizza, pot roast & the great orzo trial')
+    expect(within(card).getByText('Week 40 · Sep 28 – Oct 4 · Still open')).toHaveClass(styles.kicker!)
+    expect(card).not.toHaveClass(styles.current!)
+    expect(card).toHaveAttribute('href', '/plan/shopping?week=2026-09-28')
+
+    fireEvent.click(card)
+
+    expect(await screen.findByRole('checkbox', { name: 'Pizza dough' })).toBeEnabled()
+    expect(screen.queryByText('Archived')).not.toBeInTheDocument()
+  })
+
+  it('marks no frozen post Still open', async () => {
+    stubServer({ [`GET ${ARCHIVE('week')}`]: archive('week') })
+    await renderPage()
+    await screen.findByText('Chili season opens')
+    expect(screen.queryByText(/Still open/)).not.toBeInTheDocument()
+  })
+
+  it('opens a saved link to a past week’s list not yet frozen in the editable Supply run, not read-only', async () => {
+    stubServer({ 'GET /api/v1/shopping/2026-09-28': () => jsonResponse(200, { ...FROZEN, status: 'current' }) })
+    await renderPage('/plan/shopping/archive?week=2026-09-28', <SupplyRunPage />)
+
+    expect(await screen.findByRole('checkbox', { name: 'Pizza dough' })).toBeEnabled()
+    expect(screen.queryByText('Archived')).not.toBeInTheDocument()
+    expect(screen.getByText("Uncheck anything you already have — it won't be counted.")).toBeInTheDocument()
+  })
+
+  it('on desktop opens a saved link to the current week’s list, not yet frozen, in the editable Supply run, as with no post open', async () => {
     mockViewport(1440)
-    const fetchMock = stubServer({
+    stubServer({
       [`GET ${ARCHIVE('week')}`]: archive('week'),
       'GET /api/v1/shopping/2026-10-05': () => jsonResponse(200, CURRENT),
     })
-    const view = await renderPage('/plan/shopping/archive?week=2026-10-05')
+    const view = await renderPage('/plan/shopping/archive?week=2026-10-05', <SupplyRunPage />)
 
-    expect(await screen.findByText('Archived')).toBeInTheDocument()
-    expect(screen.getByText('Corn tortillas')).toBeInTheDocument()
-    expect(screen.queryAllByRole('checkbox')).toEqual([])
-    expect(screen.queryByText('Send to Google Chat')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByText('Corn tortillas'))
-    expect(fetchMock.mock.calls.filter(([, init]) => init?.method !== undefined && init.method !== 'GET')).toEqual([])
+    expect(await screen.findByRole('checkbox', { name: 'Corn tortillas' })).toBeEnabled()
+    expect(screen.queryByText('Archived')).not.toBeInTheDocument()
+    expect(screen.queryByRole('complementary', { name: 'Supply archive' })).not.toBeInTheDocument()
     view.unmount()
 
     await renderPage()

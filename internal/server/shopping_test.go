@@ -720,6 +720,7 @@ type archiveJSON struct {
 			OnHandCount int      `json:"onHandCount"`
 			Dinners     []string `json:"dinners"`
 			Current     bool     `json:"current"`
+			Frozen      bool     `json:"frozen"`
 		} `json:"posts"`
 	} `json:"periods"`
 }
@@ -798,7 +799,7 @@ func TestSupplyArchive(t *testing.T) {
 	if k := keys(period); !reflect.DeepEqual(k, []string{"heading", "key", "posts"}) {
 		t.Errorf("period fields = %v", k)
 	}
-	wantPost := []string{"current", "dinnerCount", "dinners", "itemCount", "label", "onHandCount", "title", "weekStart"}
+	wantPost := []string{"current", "dinnerCount", "dinners", "frozen", "itemCount", "label", "onHandCount", "title", "weekStart"}
 	if k := keys(period["posts"].([]any)[0].(map[string]any)); !reflect.DeepEqual(k, wantPost) {
 		t.Errorf("post fields = %v, want %v", k, wantPost)
 	}
@@ -815,13 +816,13 @@ func TestSupplyArchive(t *testing.T) {
 			if post.Label != label || post.Title != nil {
 				t.Errorf("post %s: label %q title %v, want %q and null", post.WeekStart, post.Label, post.Title, label)
 			}
-			posts = append(posts, fmt.Sprintf("%s %d dinners %d items %d on hand %v current=%t",
-				post.WeekStart, post.DinnerCount, post.ItemCount, post.OnHandCount, post.Dinners, post.Current))
+			posts = append(posts, fmt.Sprintf("%s %d dinners %d items %d on hand %v current=%t frozen=%t",
+				post.WeekStart, post.DinnerCount, post.ItemCount, post.OnHandCount, post.Dinners, post.Current, post.Frozen))
 		}
 	}
 	want := []string{
-		thisWeek.String() + " 1 dinners 2 items 0 on hand [Lemon Chicken] current=true",
-		lastWeek.String() + " 1 dinners 3 items 1 on hand [Beef Stew] current=false",
+		thisWeek.String() + " 1 dinners 2 items 0 on hand [Lemon Chicken] current=true frozen=false",
+		lastWeek.String() + " 1 dinners 3 items 1 on hand [Beef Stew] current=false frozen=true",
 	}
 	if got.By != "week" || !reflect.DeepEqual(posts, want) {
 		t.Errorf("archive by %s =\n  %s\nwant\n  %s", got.By, strings.Join(posts, "\n  "), strings.Join(want, "\n  "))
@@ -849,6 +850,70 @@ func TestSupplyArchive(t *testing.T) {
 	}
 	if frozen.Status != "archived" || frozen.NeededCount != 2 || frozen.TotalCount != 3 || !reflect.DeepEqual(frozen.render(), wantLines) {
 		t.Errorf("frozen list = %s %d/%d %v, want archived 2/3 %v", frozen.Status, frozen.NeededCount, frozen.TotalCount, frozen.render(), wantLines)
+	}
+}
+
+// TestSupplyArchiveUnfrozenPastWeek: a past week's Supply run that
+// week_rollover has not frozen is in the Supply archive as not frozen for
+// as long as the Supply run route can still change it, and as frozen once
+// it cannot.
+func TestSupplyArchiveUnfrozenPastWeek(t *testing.T) {
+	t.Parallel()
+	e := newPlansRouter(t)
+	if _, err := e.st.Writer.ExecContext(t.Context(), `DELETE FROM plan_days; DELETE FROM week_plans`); err != nil {
+		t.Fatal(err)
+	}
+	zone, err := household.LoadZone("America/New_York") // the env's household zone
+	if err != nil {
+		t.Fatal(err)
+	}
+	thisWeek := household.WeekStart(household.Today(time.Now(), zone))
+	y, m, d := thisWeek.Date()
+	lastWeek := store.LocalDateOf(time.Date(y, m, d-7, 0, 0, 0, 0, time.UTC))
+	last := e.weekSupplyRun(t, lastWeek, "Beef Stew", shopIng{"stewing beef", "2", "lb"}, shopIng{"carrots", "4", ""})
+
+	// post is last week's post in the Supply archive.
+	post := func() (frozen bool) {
+		t.Helper()
+		var got archiveJSON
+		if status, raw := callShopping(t, e, http.MethodGet, shoppingPath+"archive?by=week", "", &got); status != http.StatusOK {
+			t.Fatalf("GET archive = %d %v", status, raw)
+		}
+		for _, p := range got.Periods {
+			for _, post := range p.Posts {
+				if post.WeekStart == lastWeek.String() {
+					if post.Current {
+						t.Errorf("last week's post is current")
+					}
+					return post.Frozen
+				}
+			}
+		}
+		t.Fatalf("archive %+v has no post for %s", got, lastWeek)
+		return false
+	}
+	// change marks carrots and reports whether the Supply run route took it.
+	change := func(needed bool) bool {
+		t.Helper()
+		status, body := callShopping(t, e, http.MethodPatch, shoppingPath+"items/"+last.itemID(t, "carrots"), fmt.Sprintf(`{"needed":%t}`, needed), nil)
+		switch {
+		case status == http.StatusOK:
+			return true
+		case status == http.StatusConflict && errorCode(body) == "archived":
+			return false
+		}
+		t.Fatalf("PATCH = %d %v, want 200 or 409 archived", status, body)
+		return false
+	}
+
+	if frozen, changed := post(), change(false); frozen || !changed {
+		t.Errorf("unfrozen past week: post frozen=%t, PATCH changed=%t; want a post not frozen for a list that changes", frozen, changed)
+	}
+	if err := e.shop.Freeze(t.Context(), lastWeek); err != nil {
+		t.Fatal(err)
+	}
+	if frozen, changed := post(), change(true); !frozen || changed {
+		t.Errorf("frozen past week: post frozen=%t, PATCH changed=%t; want a frozen post for a list that cannot change", frozen, changed)
 	}
 }
 

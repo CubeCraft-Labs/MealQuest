@@ -1218,7 +1218,7 @@ func TestLaterBatchNeverResuggestsRenamedDrop(t *testing.T) {
 	fail := func(context.Context, string, skills.WeekRequest) (skills.Week, error) {
 		return skills.Week{}, errors.New("no draft in this test")
 	}
-	planSvc, err := plan.NewService(e.st, fail, e.runner, noCalendar{}, notifytest.New(t, e.st), func() {}, &url.URL{Scheme: "https", Host: "meals.example.com"}, logger)
+	planSvc, err := plan.NewService(e.st, fail, e.runner, noCalendar{}, notifytest.New(t, e.st), func() {}, &url.URL{Scheme: "https", Host: "meals.example.com"}, time.Now, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

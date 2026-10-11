@@ -661,37 +661,44 @@ func TestBatchKeepsAtMostBatchSize(t *testing.T) {
 }
 
 // TestBatchReplacesSideQuestMadeIneligibleWhileHeld: a notifying batch
-// holds its first round's Side quests until its last round is done; when
-// the household adds a dinner one of them repeats while that round grounds,
-// the batch lets it go and grounds a spare Side quest in its place, so it
-// still stores BatchSize and announces them once.
+// holds each round's Side quests until its last round is done; when the
+// household adds a dinner repeating one held from an earlier round while a
+// later round grounds, the batch lets it go and grounds a spare Side quest
+// in its place, so it still stores BatchSize and announces them once.
 func TestBatchReplacesSideQuestMadeIneligibleWhileHeld(t *testing.T) {
 	for _, trigger := range []string{suggest.TriggerScheduled, suggest.TriggerManual} {
 		t.Run(trigger, func(t *testing.T) {
 			e := newEnv(t)
 			e.start(t)
+			// Fajita Dish B is ungroundable, so the first round holds
+			// BatchSize-1 and a second round grounds the next; the last is
+			// the spare a third round grounds in place of Fajita Dish A.
 			var quests, want []string
-			for i := range suggest.BatchSize + 1 {
+			for i := range suggest.BatchSize + 2 {
 				name := fmt.Sprintf("Fajita Dish %c", 'A'+i)
-				e.recipe(t, name)
+				e.search.Results[name] = nil
+				if i != 1 {
+					e.recipe(t, name)
+				}
 				quests = append(quests, sideQuest(name, "Like your Chicken Fajitas.", "Chicken Fajitas"))
-				if i != 0 {
+				if i > 1 {
 					want = append(want, name)
 				}
 			}
 			e.reply(quests...)
-			// The first round's last search waits, so the household adds a
-			// dinner repeating Fajita Dish A while that round grounds.
-			last := fmt.Sprintf("Fajita Dish %c", 'A'+suggest.BatchSize-1)
+			// The second round's search waits, so the household adds a
+			// dinner repeating Fajita Dish A, held from the first round,
+			// while that round grounds.
+			second := fmt.Sprintf("Fajita Dish %c", 'A'+suggest.BatchSize)
 			gate := make(chan struct{})
-			e.search.Gates = map[string]chan struct{}{last: gate}
+			e.search.Gates = map[string]chan struct{}{second: gate}
 
 			b, key := e.startBatch(t, trigger)
 			deadline := time.Now().Add(10 * time.Second)
-			for !slices.Contains(e.search.Queries(), last) {
+			for !slices.Contains(e.search.Queries(), second) {
 				if time.Now().After(deadline) {
 					close(gate)
-					t.Fatalf("search for %s never ran", last)
+					t.Fatalf("search for %s never ran", second)
 				}
 				time.Sleep(5 * time.Millisecond)
 			}
@@ -706,8 +713,8 @@ func TestBatchReplacesSideQuestMadeIneligibleWhileHeld(t *testing.T) {
 			if err := json.Unmarshal(job.Result, &res); err != nil {
 				t.Fatal(err)
 			}
-			if len(res.SuggestionIDs) != suggest.BatchSize || res.Dropped != 1 {
-				t.Errorf("batch result = %+v, want %d stored and 1 dropped", res, suggest.BatchSize)
+			if len(res.SuggestionIDs) != suggest.BatchSize || res.Dropped != 2 {
+				t.Errorf("batch result = %+v, want %d stored and 2 dropped", res, suggest.BatchSize)
 			}
 			if got := e.deckNames(t); !slices.Equal(got, want) {
 				t.Errorf("deck = %v, want %v", got, want)

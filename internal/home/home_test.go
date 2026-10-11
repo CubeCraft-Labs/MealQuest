@@ -222,16 +222,44 @@ func TestTonightSwitchesAtLocalMidnight(t *testing.T) {
 func TestTonightDinner(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	e.planWeek(t)
+	ctx := t.Context()
+	planID := e.planWeek(t)
+	planned := func(date string) string {
+		t.Helper()
+		var id string
+		if err := e.st.Reader.QueryRowContext(ctx, `SELECT dinner_id FROM plan_days WHERE plan_id = ? AND date = ?`, planID, date).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
 
 	h := e.at(t, "2026-10-13 18:00")
-	if h.Tonight == nil || h.Tonight.ID == "" || h.Tonight.Origin != "regular" || h.Tonight.Photo != nil ||
+	if h.Tonight == nil || h.Tonight.ID != planned("2026-10-13") || h.Tonight.Origin != "regular" || h.Tonight.Photo != nil ||
 		h.Tonight.MinutesTotal == nil || *h.Tonight.MinutesTotal != 30 {
-		t.Errorf("tonight = %+v, want Tuesday's 30-minute Regular with no photo", h.Tonight)
+		t.Errorf("tonight = %+v, want Tuesday's 30-minute Regular %s with no photo", h.Tonight, planned("2026-10-13"))
 	}
 	h = e.at(t, "2026-10-14 18:00")
-	if h.Tonight == nil || h.Tonight.Origin != "side_quest" || h.Tonight.MinutesTotal != nil {
-		t.Errorf("tonight = %+v, want Wednesday's Side quest of unknown minutes", h.Tonight)
+	if h.Tonight == nil || h.Tonight.ID != planned("2026-10-14") || h.Tonight.Origin != "side_quest" || h.Tonight.MinutesTotal != nil {
+		t.Errorf("tonight = %+v, want Wednesday's Side quest %s of unknown minutes", h.Tonight, planned("2026-10-14"))
+	}
+
+	// Thursday's dinner has a photo: Home serves its list-sized copy.
+	now := store.Now().String()
+	photo, err := db.New(e.st.Writer).CreatePhoto(ctx, db.CreatePhotoParams{
+		ID: store.NewID(), SourceUrl: "https://example.com/thursday.jpg", LocalPath: "photos/thursday.jpg",
+		Width: 800, Height: 600, Sha256: "thursday", FetchedAt: now, CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thursday := planned("2026-10-15")
+	if _, err := e.st.Writer.ExecContext(ctx, `UPDATE dinners SET photo_id = ? WHERE id = ?`, photo.ID, thursday); err != nil {
+		t.Fatal(err)
+	}
+	h = e.at(t, "2026-10-15 18:00")
+	wantPhoto := "/media/photos/" + photo.ID + "-400.jpg"
+	if h.Tonight == nil || h.Tonight.ID != thursday || h.Tonight.Photo == nil || *h.Tonight.Photo != wantPhoto {
+		t.Errorf("tonight = %+v, want Thursday's dinner %s with photo %s", h.Tonight, thursday, wantPhoto)
 	}
 }
 

@@ -200,7 +200,9 @@ func (p *PendingStates) Add(state string, now time.Time) error {
 		expired++
 	}
 	p.order = p.order[expired:]
-	if len(p.states) >= maxPendingStates {
+	// The bound counts every unexpired state, consumed or not: a consumed
+	// state leaves states at once but order only when it expires.
+	if len(p.order) >= maxPendingStates {
 		return ErrTooManyPending
 	}
 	expires := now.Add(p.ttl)

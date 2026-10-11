@@ -889,11 +889,12 @@ func TestPendingStates(t *testing.T) {
 		t.Error("Consume of an unknown state = true")
 	}
 
-	for i := range maxPendingStates {
+	for i := range maxPendingStates - 1 {
 		if err := p.Add(fmt.Sprint("s", i), now); err != nil {
 			t.Fatalf("Add %d: %v", i, err)
 		}
 	}
+	// "first" was consumed but has not expired, so it still counts.
 	if err := p.Add("over", now); !errors.Is(err, ErrTooManyPending) {
 		t.Errorf("Add past the bound = %v, want ErrTooManyPending", err)
 	}

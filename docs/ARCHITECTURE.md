@@ -105,7 +105,7 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 | `plan_days` | plan_id, date (unique per plan), dinner_id, is_new, calendar_event_id (set while the chosen calendar shows the day as planned; cleared when its dinner changes, another calendar is chosen or Google Calendar is disconnected). |
 | `rotation_reviews` | dinner_id + plan_date (unique), status, decision (`keep` / `drop` / `not_made`), name (set only by a drop: the dinner's name when dropped, kept whatever it is later renamed, so a drop stays among the passed names), decided_at, updated_by. |
 | `shopping_lists` | week_start (unique), plan_id, title (the AI-written post title; NULL until written or when the AI fails, when the week label is shown instead; never empty), status (`current` / `archived`), sent_to_chat_at, chat_send_unconfirmed_at (a send to Google Chat recorded as begun before posting and cleared once its outcome is known; left set when it may or may not have posted), frozen_at. |
-| `shopping_groups` / `shopping_items` | One group per plan day with ingredients: dinner_id, date, position (by date). Item name, qty (the display quantity, NULL when the recipe gives none), needed (bool), position. Made by `shopping.Generate` from the plan, with no model call: an item is a grounded recipe ingredient's normalized name with qty and unit joined ("2 cups"), or a manual recipe's line as typed with no qty. Regenerating keeps the id and needed flag of an item whose (dinner_id, name) is unchanged. |
+| `shopping_groups` / `shopping_items` | One group per plan day with ingredients: dinner_id, date, position (by date), frozen_dinner_name (the dinner's name when its list was frozen into the Supply archive, kept whatever it is later renamed; NULL while the list is current, which shows its dinners' names now; never empty). Item name, qty (the display quantity, NULL when the recipe gives none), needed (bool), position. Made by `shopping.Generate` from the plan, with no model call: an item is a grounded recipe ingredient's normalized name with qty and unit joined ("2 cups"), or a manual recipe's line as typed with no qty. Regenerating keeps the id and needed flag of an item whose (dinner_id, name) is unchanged. |
 | `ai_settings` | One row: provider, base_url, model, temperature, system_prompt, api_key_ct, api_key_last4, key_verified_at. |
 | `recipe_search_settings` | One row: provider (`searxng` / `brave`), base_url (the SearXNG instance), api_key_ct and api_key_last4 (Brave). |
 | `integrations_google` | One row: refresh_token_ct, calendar_id, calendar_name, connected_at, last_sync_error. |
@@ -635,7 +635,10 @@ automatic** (D-021).
 
 `shopping.Freeze(weekStart)` moves a week's Supply run into the Supply
 archive: `status` becomes `archived` and `frozen_at` is set, after which
-generating the list or changing an item is 409 `archived`. It freezes only
+generating the list or changing an item is 409 `archived`. In the same
+transaction each group keeps its dinner's name as `frozen_dinner_name`, so
+the frozen list and its post show the names they had when frozen, whatever
+a dinner is renamed later. It freezes only
 a week that has ended in the household's time zone (its Monday is before
 the Monday of the household's current week), so a week not yet ended is
 `ErrWeekNotEnded` and a week with no list `ErrListNotFound`; freezing a
@@ -1187,7 +1190,8 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
   Monday is a household-local date, so the week of Monday 28 December
   is in December. `label` is the week label ("Week 41 · Oct 5 – 11"; the
   UI sets it in capitals), `title` null while untitled, `dinners` the
-  list's dinners in day order and `dinnerCount` their number,
+  list's dinners in day order (as named when the list was frozen; the
+  current week's as named now) and `dinnerCount` their number,
   `itemCount` all items, `onHandCount` the items marked "have it", and
   `current` true for the household's current week. 400 `invalid_request`
   for any other `by`. A frozen list is read through `GET

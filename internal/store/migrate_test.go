@@ -926,35 +926,41 @@ func TestMigrateShoppingListChatSendUnconfirmed(t *testing.T) {
 
 // TestMigrateSiteNameFromPage applies 0020 over recipes and idea job
 // results stored when a page naming no site was stored under its host: a
-// stored name that could be a host — a dotted host name or an IP address —
-// is cleared, so every stored name is one a page gave; any other name,
-// including a dotted one with spaces, is kept, as is everything else in
-// the rows.
+// stored name that could be a host — one with no space that is dotted, an
+// IP address or spelled in the recipe's own link — is cleared, so every
+// stored name is one a page gave; a name with a space is kept, as is
+// everything else in the rows.
 func TestMigrateSiteNameFromPage(t *testing.T) {
 	ctx := context.Background()
 	s := openTestStore(t)
 	migrateBefore(t, s, "0020")
 	sites := []struct {
-		stored, want any
+		stored any
+		link   string
+		want   any
 	}{
-		{"private-token.example.com", nil},
-		{"Food.com", nil},
-		{"203.0.113.7", nil},
-		{"2001:db8::1", nil},
-		{"Curry House", "Curry House"},
-		{"Delish", "Delish"},
-		{"Mr. Food Test Kitchen", "Mr. Food Test Kitchen"},
-		{nil, nil},
+		{"private-token.example.com", "https://private-token.example.com/stew", nil},
+		{"redirect_token.example.net", "https://kitchen.example/stew", nil},
+		{"bücher.example", "https://kitchen.example/stew", nil},
+		{"Food.com", "https://www.food.com/stew", nil},
+		{"203.0.113.7", "https://203.0.113.7/stew", nil},
+		{"2001:db8::1", "https://[2001:db8::1]/stew", nil},
+		{"TokenHost", "https://www.tokenhost/stew", nil},
+		{"Delish", "https://www.delish.com/stew", nil},
+		{"Delish", "https://kitchen.example/stew", "Delish"},
+		{"Curry House", "https://curry-house.example/stew", "Curry House"},
+		{"Mr. Food Test Kitchen", "https://kitchen.example/stew", "Mr. Food Test Kitchen"},
+		{nil, "https://kitchen.example/stew", nil},
 	}
 	for i, c := range sites {
 		if _, err := s.Writer.ExecContext(ctx, `INSERT INTO recipes (id, source_url, site_name, title, raw_jsonld, fetched_at, created_at, updated_at)
-			VALUES (?, ?, ?, 'Stew', '{}', 'f', 'c', 'u')`, fmt.Sprintf("recipe-%d", i), fmt.Sprintf("https://r%d.example/stew", i), c.stored); err != nil {
+			VALUES (?, ?, ?, 'Stew', '{}', 'f', 'c', 'u')`, fmt.Sprintf("recipe-%d", i), fmt.Sprintf("%s?row=%d", c.link, i), c.stored); err != nil {
 			t.Fatal(err)
 		}
 	}
 	const (
-		legacy  = `{"stage":"done","ideas":[{"name":"A","site_name":"query-host.example","source_url":"https://query-host.example/a?t=1"},{"name":"B","site_name":"Curry House","source_url":"https://b.example/b"},{"name":"C","site_name":null,"source_url":null}],"dropped":1}`
-		cleaned = `{"stage":"done","ideas":[{"name":"A","site_name":null,"source_url":"https://query-host.example/a?t=1"},{"name":"B","site_name":"Curry House","source_url":"https://b.example/b"},{"name":"C","site_name":null,"source_url":null}],"dropped":1}`
+		legacy  = `{"stage":"done","ideas":[{"name":"A","site_name":"query-host.example","source_url":"https://query-host.example/a?t=1"},{"name":"B","site_name":"Curry House","source_url":"https://b.example/b"},{"name":"C","site_name":null,"source_url":null},{"name":"D","site_name":"Kitchen","source_url":"https://kitchen.example/d"}],"dropped":1}`
+		cleaned = `{"stage":"done","ideas":[{"name":"A","site_name":null,"source_url":"https://query-host.example/a?t=1"},{"name":"B","site_name":"Curry House","source_url":"https://b.example/b"},{"name":"C","site_name":null,"source_url":null},{"name":"D","site_name":null,"source_url":"https://kitchen.example/d"}],"dropped":1}`
 		other   = `{"ideas":[{"site_name":"host.example"}]}`
 	)
 	for _, j := range [][3]string{

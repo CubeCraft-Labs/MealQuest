@@ -222,8 +222,9 @@ type archivePeriod struct {
 }
 
 // archivePost is one week's Supply run in the Supply archive. label is
-// the week label, which stands in for title while it is null, and
-// onHandCount counts the items marked "have it".
+// the week label, which stands in for title while it is null,
+// onHandCount counts the items marked "have it", and frozen is false
+// while the list can still be changed from the Supply run.
 type archivePost struct {
 	WeekStart   string   `json:"weekStart"`
 	Label       string   `json:"label"`
@@ -233,6 +234,7 @@ type archivePost struct {
 	OnHandCount int      `json:"onHandCount"`
 	Dinners     []string `json:"dinners"`
 	Current     bool     `json:"current"`
+	Frozen      bool     `json:"frozen"`
 }
 
 // getSupplyArchive answers GET /shopping/archive?by=week|month|year with
@@ -262,6 +264,7 @@ func getSupplyArchive(logger *slog.Logger, svc *shopping.Service) http.HandlerFu
 					OnHandCount: post.OnHand,
 					Dinners:     post.Dinners,
 					Current:     post.Current,
+					Frozen:      post.Frozen,
 				}
 			}
 			out.Periods[i] = archivePeriod{Key: p.Key, Heading: p.Heading, Posts: posts}

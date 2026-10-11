@@ -537,7 +537,9 @@ export type ArchivePeriod = (typeof ARCHIVE_PERIODS)[number]
 // ArchivePost is one week's Supply run in the Supply archive: label is the
 // week label, "Week 41 · Oct 5 – 11", which stands in for title while it is
 // null; onHandCount counts the items marked "have it", and dinners names the
-// dinners in day order. current is true for the household's current week.
+// dinners in day order. current is true for the household's current week,
+// and frozen once the list is frozen into the Supply archive: until then it
+// can still be changed from the Supply run.
 export type ArchivePost = {
   weekStart: string
   label: string
@@ -547,6 +549,7 @@ export type ArchivePost = {
   onHandCount: number
   dinners: string[]
   current: boolean
+  frozen: boolean
 }
 
 // ArchiveGroup is one period of the Supply archive — a week, a month
@@ -561,7 +564,8 @@ function parsePost(where: string, body: unknown): ArchivePost {
     (body.title !== null && typeof body.title !== 'string') ||
     !Array.isArray(body.dinners) ||
     !body.dinners.every((name) => typeof name === 'string') ||
-    typeof body.current !== 'boolean'
+    typeof body.current !== 'boolean' ||
+    typeof body.frozen !== 'boolean'
   ) {
     throw new Error(`${where}: response has a post that is not a Supply archive post`)
   }
@@ -574,6 +578,7 @@ function parsePost(where: string, body: unknown): ArchivePost {
     onHandCount: count(where, 'onHandCount', body.onHandCount),
     dinners: body.dinners as string[],
     current: body.current,
+    frozen: body.frozen,
   }
 }
 

@@ -152,6 +152,11 @@ type Post struct {
 	Items, OnHand int
 	// Current is true for the household's current week.
 	Current bool
+	// Frozen is true once the list is frozen into the Supply archive and
+	// can no longer change. A list not yet frozen — the current week's, or
+	// a past week's that week_rollover has not frozen — can still be
+	// changed from the Supply run.
+	Frozen bool
 }
 
 // Archive returns the Supply archive: the Supply run of every week up to
@@ -208,7 +213,7 @@ func (s *Service) Archive(ctx context.Context, by string) (out []Period, err err
 		if err != nil {
 			return nil, err
 		}
-		p, err := postOf(monday, l, monday == thisWeek)
+		p, err := postOf(monday, l, monday == thisWeek, frozen(row))
 		if err != nil {
 			return nil, err
 		}
@@ -223,7 +228,7 @@ func (s *Service) Archive(ctx context.Context, by string) (out []Period, err err
 
 // postOf is l, the Supply run of the week starting monday, as a post in
 // the Supply archive.
-func postOf(monday store.LocalDate, l List, current bool) (Post, error) {
+func postOf(monday store.LocalDate, l List, current, isFrozen bool) (Post, error) {
 	label, err := household.WeekLabel(monday)
 	if err != nil {
 		return Post{}, fmt.Errorf("shopping: Supply run %s: %w", l.ID, err)
@@ -241,5 +246,6 @@ func postOf(monday store.LocalDate, l List, current bool) (Post, error) {
 		Items:     c.Total,
 		OnHand:    c.Total - c.Needed,
 		Current:   current,
+		Frozen:    isFrozen,
 	}, nil
 }

@@ -11,7 +11,7 @@ import { Segmented } from '../ui/Segmented.tsx'
 import { Skeleton } from '../ui/Skeleton.tsx'
 import { useSupplyArchive, WEEK_PARAM, type ArchiveGroup, type ArchivePeriod, type ArchivePost } from './api.ts'
 import styles from './SupplyArchivePage.module.css'
-import { SUPPLY_ARCHIVE, SupplyRunPage } from './SupplyRunPage.tsx'
+import { SUPPLY_ARCHIVE, SUPPLY_RUN, SupplyRunPage } from './SupplyRunPage.tsx'
 
 // PAGE is how many posts the Supply archive shows at first, and how many
 // more each "Load older" shows.
@@ -32,21 +32,32 @@ export function archivePost(weekStart: string): string {
   return `${SUPPLY_ARCHIVE}?${new URLSearchParams({ [WEEK_PARAM]: weekStart })}`
 }
 
+// supplyRun is the Supply run screen on the week starting on Monday
+// weekStart, where a list not yet frozen can still be changed.
+function supplyRun(weekStart: string): string {
+  return `${SUPPLY_RUN}?${new URLSearchParams({ [WEEK_PARAM]: weekStart })}`
+}
+
 function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`
 }
 
 // PostCard is one week's Supply run (mock 1m): the week label as its kicker,
 // the AI's title — the week label while it has none — the counts and its
-// first dinners as chips. The current week's post is ringed in grape. It
-// opens the week's list, read-only.
+// first dinners as chips. The current week's post is ringed in grape. A
+// frozen post opens the week's list here, read-only; a post not yet frozen —
+// this week's, or a past week's the week rollover has not frozen — is marked
+// Current or Still open and opens the Supply run, where it can still change.
 function PostCard({ post }: { post: ArchivePost }) {
   const rest = post.dinners.length - CHIPS
   return (
-    <Link to={archivePost(post.weekStart)} className={[styles.post, post.current && styles.current].filter(Boolean).join(' ')}>
+    <Link
+      to={post.frozen ? archivePost(post.weekStart) : supplyRun(post.weekStart)}
+      className={[styles.post, post.current && styles.current].filter(Boolean).join(' ')}
+    >
       <span className={styles.kicker}>
         {post.label}
-        {post.current && ' · Current'}
+        {post.current ? ' · Current' : !post.frozen && ' · Still open'}
       </span>
       <span className={styles.postTitle}>{post.title ?? post.label}</span>
       <span className={styles.meta}>
@@ -145,7 +156,7 @@ function SupplyArchive({ panel }: { panel: boolean }) {
     <div className={styles.archive}>
       <header className={styles.header}>
         {!panel && (
-          <IconButton label="Back to the Supply run" onClick={() => void navigate('/plan/shopping')}>
+          <IconButton label="Back to the Supply run" onClick={() => void navigate(SUPPLY_RUN)}>
             <Icon icon={ChevronLeft} size="nav" />
           </IconButton>
         )}
@@ -157,10 +168,9 @@ function SupplyArchive({ panel }: { panel: boolean }) {
   )
 }
 
-// SupplyArchivePage is /plan/shopping/archive. A post opens it on its week
-// (?week=), whose list the Supply run screen shows read-only and tagged
-// Archived, whatever its status: even the current week's post is only
-// viewed here, never changed. On desktop (mock 2f) the archive is a panel at
+// SupplyArchivePage is /plan/shopping/archive. A frozen post opens it on its
+// week (?week=), whose list the Supply run screen shows read-only and tagged
+// Archived; a post not yet frozen opens the Supply run instead. On desktop (mock 2f) the archive is a panel at
 // the right of that list, this week's editable Supply run when no post is
 // open; on mobile and tablet it is the archive or, with a post open, the
 // post's list.

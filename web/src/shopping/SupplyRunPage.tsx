@@ -26,6 +26,9 @@ import {
 import { keep, savedSchedule, useSavedProblem } from './offline.ts'
 import styles from './SupplyRunPage.module.css'
 
+// SUPPLY_RUN is the Supply run screen.
+export const SUPPLY_RUN = '/plan/shopping'
+
 // SUPPLY_ARCHIVE is the Supply archive screen.
 export const SUPPLY_ARCHIVE = '/plan/shopping/archive'
 

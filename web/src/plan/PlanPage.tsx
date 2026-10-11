@@ -8,7 +8,7 @@ import { Confirm } from '../settings/LeaveGuard.tsx'
 import { methodLabels } from '../settings/RegularsSettingsPage.tsx'
 import { formatClockTime, useHouseholdSettings } from '../settings/api.ts'
 import { supplyRunScreen, useGenerateSupplyRun, useSupplyRun, WEEK_PARAM } from '../shopping/api.ts'
-import { useBreakpoint, type Breakpoint } from '../shell/useBreakpoint.ts'
+import { useBreakpoint, useOrientation, type Breakpoint } from '../shell/useBreakpoint.ts'
 import { Button } from '../ui/Button.tsx'
 import buttonStyles from '../ui/Button.module.css'
 import { EmptyState } from '../ui/EmptyState.tsx'
@@ -673,8 +673,10 @@ function PushFailure({ error, cached, onRetry }: { error: Error; cached: boolean
 // week; the week buttons keep ?week= on the week shown. The board keeps its place in the tree across layouts, so crossing a
 // breakpoint keeps a draft being followed. From tablet up a dinner is
 // dragged from the strip or the panel onto a day of the grid to swap it in.
+// An upright tablet lays the week out four days over three.
 export function PlanPage() {
   const layout = useBreakpoint()
+  const orientation = useOrientation()
   const settings = useHouseholdSettings()
   const [params, setParams] = useSearchParams()
   const chosen = params.get(WEEK_PARAM)
@@ -699,7 +701,11 @@ export function PlanPage() {
   }
   return (
     <PlanDragProvider>
-      <div className={`${styles.page} ${styles[`${layout}Page`]}`}>
+      <div
+        className={[styles.page, styles[`${layout}Page`], layout === 'tablet' && orientation === 'portrait' && styles.portraitPage]
+          .filter(Boolean)
+          .join(' ')}
+      >
         <div className={styles.board}>
           {content}
           {layout === 'tablet' && <QuestLogStrip />}

@@ -410,6 +410,12 @@
   list-style: none;
 }
 
+/* An upright tablet's week: four days over three, every column wide enough
+   that nothing scrolls sideways. */
+.portraitPage .week {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .column {
   min-width: 0;
   display: flex;

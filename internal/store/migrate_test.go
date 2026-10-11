@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"reflect"
 	"slices"
@@ -176,8 +177,8 @@ func TestMigrateEmbeddedMigrations(t *testing.T) {
 	if err := Migrate(context.Background(), s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed,0018_recipe_item_position_unique,0019_shopping_group_frozen_name,0020_site_name_from_page" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed,0018_recipe_item_position_unique,0019_shopping_group_frozen_name,0020_site_name_from_page", got)
 	}
 }
 
@@ -197,8 +198,8 @@ func TestMigrateBootstrapThenEmbeddedInitApplies(t *testing.T) {
 	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed,0018_recipe_item_position_unique,0019_shopping_group_frozen_name,0020_site_name_from_page" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed,0018_recipe_item_position_unique,0019_shopping_group_frozen_name,0020_site_name_from_page", got)
 	}
 	if !tableExists(t, s, "dinners") {
 		t.Error("table from 0001_init was not created")
@@ -920,5 +921,229 @@ func TestMigrateShoppingListChatSendUnconfirmed(t *testing.T) {
 	}
 	if want := "list-1|Noodle week|current|s|NULL|u1"; got != want {
 		t.Errorf("shopping list after 0017 = %s, want %s", got, want)
+	}
+}
+
+// seedRecipeItems inserts two recipes, each with an ingredient and a step
+// at position 0, then the extra statements.
+func seedRecipeItems(t *testing.T, s *Store, extra ...string) {
+	t.Helper()
+	stmts := []string{
+		`INSERT INTO recipes (id, source_url, title, raw_jsonld, fetched_at, created_at, updated_at)
+			VALUES ('recipe-1', 'https://example.com/chili', 'Chili', '{}', 'f', 'c', 'u')`,
+		`INSERT INTO recipes (id, source_url, title, raw_jsonld, fetched_at, created_at, updated_at)
+			VALUES ('recipe-2', 'https://example.com/curry', 'Curry', '{}', 'f', 'c', 'u')`,
+		`INSERT INTO recipe_ingredients (id, recipe_id, position, raw_text, created_at, updated_at)
+			VALUES ('ing-1', 'recipe-1', 0, '1 onion', 'c', 'u'), ('ing-2', 'recipe-2', 0, '1 lime', 'c', 'u')`,
+		`INSERT INTO recipe_steps (id, recipe_id, position, text, created_at, updated_at)
+			VALUES ('step-1', 'recipe-1', 0, 'Chop.', 'c', 'u'), ('step-2', 'recipe-2', 0, 'Squeeze.', 'c', 'u')`,
+	}
+	for _, stmt := range append(stmts, extra...) {
+		if _, err := s.Writer.Exec(stmt); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+}
+
+// TestMigrateRecipeItemPositionUnique applies 0018 over two recipes with
+// items at the same position: each recipe keeps its items, and a second
+// ingredient or step at a position its recipe already uses is refused.
+func TestMigrateRecipeItemPositionUnique(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	migrateBefore(t, s, "0018")
+	seedRecipeItems(t, s)
+
+	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+
+	var got string
+	if err := s.Reader.QueryRowContext(ctx, `SELECT
+		(SELECT group_concat(id || '@' || recipe_id || ':' || position, ',') FROM (SELECT * FROM recipe_ingredients ORDER BY id)) || ' / ' ||
+		(SELECT group_concat(id || '@' || recipe_id || ':' || position, ',') FROM (SELECT * FROM recipe_steps ORDER BY id))`).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if want := "ing-1@recipe-1:0,ing-2@recipe-2:0 / step-1@recipe-1:0,step-2@recipe-2:0"; got != want {
+		t.Errorf("recipe items after 0018 = %s, want %s", got, want)
+	}
+
+	for _, tc := range []struct{ name, stmt string }{
+		{"second ingredient at a position", `INSERT INTO recipe_ingredients (id, recipe_id, position, raw_text, created_at, updated_at)
+			VALUES ('ing-3', 'recipe-1', 0, '2 onions', 'c', 'u')`},
+		{"second step at a position", `INSERT INTO recipe_steps (id, recipe_id, position, text, created_at, updated_at)
+			VALUES ('step-3', 'recipe-1', 0, 'Dice.', 'c', 'u')`},
+		{"ingredient moved onto another's position", `UPDATE recipe_ingredients SET recipe_id = 'recipe-1' WHERE id = 'ing-2'`},
+		{"step moved onto another's position", `UPDATE recipe_steps SET recipe_id = 'recipe-1' WHERE id = 'step-2'`},
+	} {
+		if _, err := s.Writer.Exec(tc.stmt); err == nil || !strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			t.Errorf("%s: error %v, want UNIQUE constraint failed", tc.name, err)
+		}
+	}
+}
+
+// TestMigrateRecipeItemPositionUniqueRefusesDuplicate applies 0018 over a
+// recipe already holding two ingredients, or two steps, at one position:
+// its order is unknown, so the migration fails and is not recorded.
+func TestMigrateRecipeItemPositionUniqueRefusesDuplicate(t *testing.T) {
+	for _, tc := range []struct{ table, stmt string }{
+		{"recipe_ingredients", `INSERT INTO recipe_ingredients (id, recipe_id, position, raw_text, created_at, updated_at)
+			VALUES ('ing-3', 'recipe-1', 0, '2 onions', 'c', 'u')`},
+		{"recipe_steps", `INSERT INTO recipe_steps (id, recipe_id, position, text, created_at, updated_at)
+			VALUES ('step-3', 'recipe-1', 0, 'Dice.', 'c', 'u')`},
+	} {
+		t.Run(tc.table, func(t *testing.T) {
+			ctx := context.Background()
+			s := openTestStore(t)
+			migrateBefore(t, s, "0018")
+			seedRecipeItems(t, s, tc.stmt)
+
+			err := Migrate(ctx, s.Writer, migrations.FS)
+			if err == nil || !strings.Contains(err.Error(), "UNIQUE constraint failed: "+tc.table+".recipe_id, "+tc.table+".position") {
+				t.Fatalf("Migrate = %v, want the duplicate position refused", err)
+			}
+			var n int
+			if err := s.Reader.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations WHERE version = '0018_recipe_item_position_unique'`).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n != 0 {
+				t.Error("0018 recorded as applied")
+			}
+		})
+	}
+}
+
+// TestMigrateShoppingGroupFrozenName applies 0019 over a frozen list and
+// a current one: the frozen list's group takes its dinner's name now, the
+// current list's group has none, and a frozen name is never empty.
+func TestMigrateShoppingGroupFrozenName(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	migrateBefore(t, s, "0019")
+	for _, stmt := range []string{
+		`INSERT INTO dinners (id, name, normalized_name, status, origin, is_favorite, grounding_status, created_at, updated_at)
+			VALUES ('dinner-1', 'Beef Stew', 'beef stew', 'regular', 'regular', 0, 'manual', 'c', 'u'),
+			       ('dinner-2', 'Lemon Chicken', 'lemon chicken', 'regular', 'regular', 0, 'manual', 'c', 'u')`,
+		`INSERT INTO week_plans (id, week_start, status, created_at, updated_at)
+			VALUES ('plan-1', '2026-10-05', 'synced', 'c', 'u'),
+			       ('plan-2', '2026-10-12', 'synced', 'c', 'u')`,
+		`INSERT INTO shopping_lists (id, week_start, plan_id, status, frozen_at, created_at, updated_at)
+			VALUES ('list-1', '2026-10-05', 'plan-1', 'archived', 'f', 'c', 'u'),
+			       ('list-2', '2026-10-12', 'plan-2', 'current', NULL, 'c', 'u')`,
+		`INSERT INTO shopping_groups (id, list_id, dinner_id, date, position, created_at, updated_at)
+			VALUES ('group-1', 'list-1', 'dinner-1', '2026-10-05', 0, 'c', 'u'),
+			       ('group-2', 'list-2', 'dinner-2', '2026-10-12', 0, 'c', 'u')`,
+	} {
+		if _, err := s.Writer.Exec(stmt); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := s.Reader.QueryContext(ctx, `SELECT id || '|' || COALESCE(frozen_dinner_name, 'NULL') || '|' || updated_at FROM shopping_groups ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var row string
+		if err := rows.Scan(&row); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"group-1|Beef Stew|u", "group-2|NULL|u"}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("shopping groups after 0019 = %v, want %v", got, want)
+	}
+	if _, err := s.Writer.Exec(`UPDATE shopping_groups SET frozen_dinner_name = '' WHERE id = 'group-1'`); err == nil || !strings.Contains(err.Error(), "CHECK constraint failed") {
+		t.Errorf("empty frozen name: error %v, want CHECK constraint failed", err)
+	}
+}
+
+// TestMigrateSiteNameFromPage applies 0020 over recipes and idea job
+// results stored when a page naming no site was stored under its host: a
+// stored name that could be a host — one with no space that is dotted, an
+// IP address or spelled in the recipe's own link — is cleared, so every
+// stored name is one a page gave; a name with a space is kept, as is
+// everything else in the rows.
+func TestMigrateSiteNameFromPage(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	migrateBefore(t, s, "0020")
+	sites := []struct {
+		stored any
+		link   string
+		want   any
+	}{
+		{"private-token.example.com", "https://private-token.example.com/stew", nil},
+		{"redirect_token.example.net", "https://kitchen.example/stew", nil},
+		{"bücher.example", "https://kitchen.example/stew", nil},
+		{"Food.com", "https://www.food.com/stew", nil},
+		{"203.0.113.7", "https://203.0.113.7/stew", nil},
+		{"2001:db8::1", "https://[2001:db8::1]/stew", nil},
+		{"TokenHost", "https://www.tokenhost/stew", nil},
+		{"Delish", "https://www.delish.com/stew", nil},
+		{"Delish", "https://kitchen.example/stew", "Delish"},
+		{"Curry House", "https://curry-house.example/stew", "Curry House"},
+		{"Mr. Food Test Kitchen", "https://kitchen.example/stew", "Mr. Food Test Kitchen"},
+		{nil, "https://kitchen.example/stew", nil},
+	}
+	for i, c := range sites {
+		if _, err := s.Writer.ExecContext(ctx, `INSERT INTO recipes (id, source_url, site_name, title, raw_jsonld, fetched_at, created_at, updated_at)
+			VALUES (?, ?, ?, 'Stew', '{}', 'f', 'c', 'u')`, fmt.Sprintf("recipe-%d", i), fmt.Sprintf("%s?row=%d", c.link, i), c.stored); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const (
+		legacy  = `{"stage":"done","ideas":[{"name":"A","site_name":"query-host.example","source_url":"https://query-host.example/a?t=1"},{"name":"B","site_name":"Curry House","source_url":"https://b.example/b"},{"name":"C","site_name":null,"source_url":null},{"name":"D","site_name":"Kitchen","source_url":"https://kitchen.example/d"}],"dropped":1}`
+		cleaned = `{"stage":"done","ideas":[{"name":"A","site_name":null,"source_url":"https://query-host.example/a?t=1"},{"name":"B","site_name":"Curry House","source_url":"https://b.example/b"},{"name":"C","site_name":null,"source_url":null},{"name":"D","site_name":null,"source_url":"https://kitchen.example/d"}],"dropped":1}`
+		other   = `{"ideas":[{"site_name":"host.example"}]}`
+	)
+	for _, j := range [][3]string{
+		{"job-ideas", "ideas_from_ingredients", legacy},
+		{"job-quick", "quick_ideas", legacy},
+		{"job-other", "ground_dinner", other},
+		{"job-empty", "quick_ideas", `{"stage":"searching","ideas":[]}`},
+	} {
+		if _, err := s.Writer.ExecContext(ctx, `INSERT INTO jobs (id, kind, status, payload, result, created_at, updated_at)
+			VALUES (?, ?, 'succeeded', '{}', ?, 'c', 'u')`, j[0], j[1], j[2]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Writer.ExecContext(ctx, `INSERT INTO jobs (id, kind, status, payload, created_at, updated_at)
+		VALUES ('job-running', 'quick_ideas', 'running', '{}', 'c', 'u')`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+
+	for i, c := range sites {
+		var got any
+		var title string
+		if err := s.Reader.QueryRowContext(ctx, `SELECT site_name, title FROM recipes WHERE id = ?`, fmt.Sprintf("recipe-%d", i)).Scan(&got, &title); err != nil {
+			t.Fatal(err)
+		}
+		if got != c.want || title != "Stew" {
+			t.Errorf("recipe stored with site_name %v: site_name %v, title %q after 0020; want %v, Stew", c.stored, got, title, c.want)
+		}
+	}
+	for id, want := range map[string]any{"job-ideas": cleaned, "job-quick": cleaned, "job-other": other,
+		"job-empty": `{"stage":"searching","ideas":[]}`, "job-running": nil} {
+		var got any
+		if err := s.Reader.QueryRowContext(ctx, `SELECT result FROM jobs WHERE id = ?`, id).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("%s result after 0020 = %v, want %v", id, got, want)
+		}
 	}
 }

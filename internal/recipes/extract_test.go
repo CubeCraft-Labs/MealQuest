@@ -251,10 +251,10 @@ func TestExtractShapes(t *testing.T) {
 			},
 		},
 		{
-			name: "site name from host without publisher or og:site_name",
+			name: "no site name without publisher or og:site_name, never the host",
 			html: page("", `{"@type":"Recipe","name":"Stew"}`),
 			check: func(t *testing.T, r Recipe) {
-				if r.SiteName != "example.com" {
+				if r.SiteName != "" {
 					t.Errorf("SiteName = %q", r.SiteName)
 				}
 			},

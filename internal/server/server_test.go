@@ -168,7 +168,12 @@ func newTestSearch(t *testing.T) *recipes.SearchSettingsService {
 // with its own unstarted job runner and a grounder that finds nothing.
 func newTestDinners(t *testing.T) *dinners.Service {
 	t.Helper()
-	st := newTestStore(t)
+	return newTestDinnersOn(t, newTestStore(t))
+}
+
+// newTestDinnersOn is newTestDinners over st.
+func newTestDinnersOn(t *testing.T, st *store.Store) *dinners.Service {
+	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	runner, err := jobs.NewRunner(st, logger, 1)
 	if err != nil {

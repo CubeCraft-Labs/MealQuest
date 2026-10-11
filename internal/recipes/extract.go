@@ -28,8 +28,10 @@ var (
 type Recipe struct {
 	// Title is the recipe's name.
 	Title string
-	// SiteName is the publisher's name, else the page's og:site_name, else
-	// HostSiteName of the page's URL.
+	// SiteName is the name the page gives its site: the publisher's name,
+	// else the page's og:site_name; empty when it names none. It is never
+	// taken from the page's URL, whose host may carry a personal token, so
+	// a stored site name is always one a page gave (see dinners.SourceOf).
 	SiteName string
 	// ImageURL is the largest image, absolute; empty when the recipe has
 	// none.
@@ -173,7 +175,7 @@ func recipeFrom(n map[string]any, g graph, base *url.URL, ogSiteName string) (Re
 	if r.Title = cleanText(name); !ok || r.Title == "" {
 		return Recipe{}, errors.New("name is missing")
 	}
-	if r.SiteName, err = siteName(n["publisher"], g, ogSiteName, base); err != nil {
+	if r.SiteName, err = siteName(n["publisher"], g, ogSiteName); err != nil {
 		return Recipe{}, err
 	}
 	if r.ImageURL, err = imageURL(n["image"], g, base); err != nil {
@@ -213,7 +215,7 @@ func cleanText(s string) string {
 	return strings.TrimSpace(html.UnescapeString(s))
 }
 
-func siteName(publisher any, g graph, ogSiteName string, base *url.URL) (string, error) {
+func siteName(publisher any, g graph, ogSiteName string) (string, error) {
 	pubs, ok := publisher.([]any)
 	if !ok {
 		pubs = []any{publisher}
@@ -229,16 +231,7 @@ func siteName(publisher any, g graph, ogSiteName string, base *url.URL) (string,
 			}
 		}
 	}
-	if ogSiteName != "" {
-		return ogSiteName, nil
-	}
-	return HostSiteName(base), nil
-}
-
-// HostSiteName is the site name of a page that names none: its host
-// without a leading "www.".
-func HostSiteName(u *url.URL) string {
-	return strings.TrimPrefix(u.Hostname(), "www.")
+	return ogSiteName, nil
 }
 
 // imageURL picks the largest of the recipe's images by width × height;

@@ -75,7 +75,7 @@ func (e plansEnv) groundWeek(t *testing.T) {
 func (e plansEnv) archive(t *testing.T) {
 	t.Helper()
 	if _, err := e.st.Writer.ExecContext(t.Context(),
-		`UPDATE shopping_lists SET status = 'archived', frozen_at = '2026-10-19T04:05:00Z'`); err != nil {
+		`UPDATE shopping_lists SET status = 'archived', frozen_at = '2026-10-19T04:05:00Z'; UPDATE shopping_groups SET frozen_dinner_name = (SELECT name FROM dinners WHERE dinners.id = dinner_id) WHERE list_id IN (SELECT id FROM shopping_lists WHERE frozen_at IS NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -914,6 +914,73 @@ func TestSupplyArchiveUnfrozenPastWeek(t *testing.T) {
 	}
 	if frozen, changed := post(), change(true); !frozen || changed {
 		t.Errorf("frozen past week: post frozen=%t, PATCH changed=%t; want a frozen post for a list that cannot change", frozen, changed)
+	}
+}
+
+// TestSupplyArchiveKeepsFrozenNames freezes last week's Supply run, then
+// renames its dinner and this week's through the dinners API: the frozen
+// post and list keep the name the dinner had when frozen, while this
+// week's list, not frozen, shows the new name.
+func TestSupplyArchiveKeepsFrozenNames(t *testing.T) {
+	t.Parallel()
+	e := newPlansRouter(t)
+	if _, err := e.st.Writer.ExecContext(t.Context(), `DELETE FROM plan_days; DELETE FROM week_plans`); err != nil {
+		t.Fatal(err)
+	}
+	zone, err := household.LoadZone("America/New_York") // the env's household zone
+	if err != nil {
+		t.Fatal(err)
+	}
+	thisWeek := household.WeekStart(household.Today(time.Now(), zone))
+	y, m, d := thisWeek.Date()
+	lastWeek := store.LocalDateOf(time.Date(y, m, d-7, 0, 0, 0, 0, time.UTC))
+
+	last := e.weekSupplyRun(t, lastWeek, "Beef Stew", shopIng{"stewing beef", "2", "lb"})
+	current := e.weekSupplyRun(t, thisWeek, "Lemon Chicken", shopIng{"lemon", "1", ""})
+	if err := e.shop.Freeze(t.Context(), lastWeek); err != nil {
+		t.Fatal(err)
+	}
+	for id, name := range map[string]string{
+		last.Groups[0].Dinner.ID:    "Sunday Beef Stew",
+		current.Groups[0].Dinner.ID: "Lemon Garlic Chicken",
+	} {
+		if status, body := callShopping(t, e, http.MethodPatch, dinnersPath+"/"+id, `{"name":"`+name+`"}`, nil); status != http.StatusOK {
+			t.Fatalf("PATCH dinner %s = %d %v", id, status, body)
+		}
+	}
+
+	var got archiveJSON
+	if status, raw := callShopping(t, e, http.MethodGet, shoppingPath+"archive?by=week", "", &got); status != http.StatusOK {
+		t.Fatalf("GET archive = %d %v", status, raw)
+	}
+	var posts []string
+	for _, p := range got.Periods {
+		for _, post := range p.Posts {
+			posts = append(posts, fmt.Sprintf("%s %v current=%t", post.WeekStart, post.Dinners, post.Current))
+		}
+	}
+	want := []string{
+		thisWeek.String() + " [Lemon Garlic Chicken] current=true",
+		lastWeek.String() + " [Beef Stew] current=false",
+	}
+	if !reflect.DeepEqual(posts, want) {
+		t.Errorf("archive after rename =\n  %s\nwant\n  %s", strings.Join(posts, "\n  "), strings.Join(want, "\n  "))
+	}
+
+	for _, tc := range []struct {
+		week store.LocalDate
+		want string
+	}{
+		{lastWeek, "Monday " + lastWeek.String() + " Beef Stew: stewing beef [2 lb] needed"},
+		{thisWeek, "Monday " + thisWeek.String() + " Lemon Garlic Chicken: lemon [1] needed"},
+	} {
+		var l supplyRunJSON
+		if status, body := callShopping(t, e, http.MethodGet, shoppingPath+tc.week.String(), "", &l); status != http.StatusOK {
+			t.Fatalf("GET %s = %d %v", tc.week, status, body)
+		}
+		if got := l.render(); !reflect.DeepEqual(got, []string{tc.want}) {
+			t.Errorf("list %s after rename = %v, want [%s]", tc.week, got, tc.want)
+		}
 	}
 }
 

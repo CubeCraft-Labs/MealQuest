@@ -152,7 +152,7 @@ func TestSendToChatFailuresRecordNothing(t *testing.T) {
 		t.Errorf("after failed sends sent_to_chat_at = %v, chat_send_unconfirmed_at = %v, %v, want both unset", l.SentToChatAt, l.ChatSendUnconfirmedAt, err)
 	}
 
-	if _, err := e.st.Writer.Exec(`UPDATE shopping_lists SET status = 'archived', frozen_at = '2026-10-19T04:05:00Z'`); err != nil {
+	if _, err := e.st.Writer.Exec(`UPDATE shopping_lists SET status = 'archived', frozen_at = '2026-10-19T04:05:00Z'; UPDATE shopping_groups SET frozen_dinner_name = (SELECT name FROM dinners WHERE dinners.id = dinner_id) WHERE list_id IN (SELECT id FROM shopping_lists WHERE frozen_at IS NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	posts := len(e.chat.Posts())

@@ -54,7 +54,9 @@ export type RecipeFix = { candidate_id: string } | { recipe_url: string } | { ma
 export type RecipeCandidate = {
   candidate_id: string
   title: string
-  site_name: string
+  // site_name is null when the server cannot name the page's site without
+  // leaking its link (dinners.SourceOf).
+  site_name: string | null
   photo_id: string | undefined
   minutes: number | null
 }
@@ -130,7 +132,7 @@ function parseCandidate(where: string, body: unknown): RecipeCandidate {
     !isRecord(body) ||
     typeof body.candidate_id !== 'string' ||
     typeof body.title !== 'string' ||
-    typeof body.site_name !== 'string'
+    (body.site_name !== null && typeof body.site_name !== 'string')
   ) {
     throw new Error(`${where}: response is not a recipe candidate`)
   }

@@ -220,7 +220,7 @@ func (q *Queries) GetRecipeBySourceURL(ctx context.Context, sourceUrl string) (R
 const listRecipeIngredients = `-- name: ListRecipeIngredients :many
 SELECT id, recipe_id, position, raw_text, name, qty, unit, note, created_at, updated_at FROM recipe_ingredients
 WHERE recipe_id = ?
-ORDER BY position, id
+ORDER BY position
 `
 
 func (q *Queries) ListRecipeIngredients(ctx context.Context, recipeID string) ([]RecipeIngredient, error) {
@@ -260,7 +260,7 @@ func (q *Queries) ListRecipeIngredients(ctx context.Context, recipeID string) ([
 const listRecipeSteps = `-- name: ListRecipeSteps :many
 SELECT id, recipe_id, position, text, created_at, updated_at FROM recipe_steps
 WHERE recipe_id = ?
-ORDER BY position, id
+ORDER BY position
 `
 
 func (q *Queries) ListRecipeSteps(ctx context.Context, recipeID string) ([]RecipeStep, error) {

@@ -95,8 +95,8 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 | --- | --- |
 | `household_settings` | One row: timezone, dinner_time (17:30), reminder_time (16:30), review_time (09:00), plan_draft day/time (Fri 09:00), suggestions day/time (Sun 08:00), chat_autosend day/time (Sat 08:00), onboarding_completed_at, updates_seen_at. |
 | `recipes` | A real recipe page: source_url (unique), site_name, title, total/prep/cook minutes (the page's JSON-LD), yield, raw_jsonld, fetched_at; and its grounding: photo_id, method, difficulty, minutes_total (normalized prep to table). |
-| `recipe_ingredients` | recipe_id, position, raw_text, name, qty, unit, note. |
-| `recipe_steps` | recipe_id, position, text. |
+| `recipe_ingredients` | recipe_id, position (unique per recipe: the recipe order), raw_text, name, qty, unit, note. |
+| `recipe_steps` | recipe_id, position (unique per recipe: the recipe order), text. |
 | `photos` | source_url, local_path, width, height, sha256, fetched_at. |
 | `dinners` | The meal record and its lifecycle: name, normalized_name, status (`suggested` / `quest_log` / `tried` / `regular` / `archived`), origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, recipe_url (a pasted recipe link awaiting grounding), photo_id, grounding_status (`pending` / `grounded` / `failed` / `manual`), grounding_error (why grounding failed), grounding_revision (raised whenever a dinner is renamed, so only the latest `ground_dinner` job may write it and no candidate offered before the rename grounds it), updated_by. |
 | `suggestion_batches` | trigger, status, ai_run_id. |
@@ -120,6 +120,16 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 
 `recipes` holds a fetched recipe page; `dinners` holds the household's meal
 record and its lifecycle, optionally linked to a recipe and a photo.
+
+Migration `0018_recipe_item_position_unique` makes position unique per
+recipe and fails, so the service refuses to start, on a database already
+holding a duplicate. Before deploying it, check the database; both queries
+must return no rows:
+
+```sql
+SELECT recipe_id, position FROM recipe_ingredients GROUP BY 1, 2 HAVING count(*) > 1;
+SELECT recipe_id, position FROM recipe_steps GROUP BY 1, 2 HAVING count(*) > 1;
+```
 
 ## Dinner lifecycle
 
@@ -215,17 +225,17 @@ automatic** (D-021).
   raw_text}]` and `steps` the step texts, both in recipe position order and
   empty (`[]`) with no recipe, as for a dinner whose grounding is
   `pending` or `failed`; a recipe entered by hand has only `raw_text`.
-  Two items at one position leave recipe order unknown, so such a recipe
-  is 500 rather than shown out of order. `source` is `{site_name}` of the
-  page the recipe was fetched from, null for a manual recipe or none; it
-  has no `url`, as the page's link may carry a personal token.
-  `site_name` is the name the page gives its site (publisher or
-  `og:site_name`) and null otherwise: a page naming no site is stored
-  under its host, which may be the pasted link's — a token in a
-  subdomain — or a redirect's, so any stored name that could be a host
-  (the link's host, an IP address or a dotted host name, even a real
-  name like "Food.com") is withheld. The detail screen shows "Recipe
-  from {site}" only when `site_name` is not null. `why_picked` is the reason of the
+  `source` is `{site_name, url}` of the page the recipe was fetched from,
+  null for a manual recipe or none, as `dinners.SourceOf` gives it — the
+  one rule for every fetched recipe's source, also used by idea results
+  and recipe candidates. `url`
+  is the page's link only when it is free of secrets (https, no user,
+  query or fragment), else null. `site_name` is the name the page gives
+  its site (publisher or `og:site_name`), else the link's host without
+  "www." when `url` is shown, else null. Extraction never stores a host
+  as a site name, so a stored name is always the page's; migration 0020
+  cleared the host-shaped names stored before that. The detail screen
+  shows "Recipe from {site}" only when `site_name` is not null. `why_picked` is the reason of the
   suggestion that created the dinner — its pending or accepted one, as
   declining a suggestion archives its dinner — null for one no suggestion
   created; a dinner with more than one such suggestion is 500, as nothing
@@ -262,7 +272,8 @@ automatic** (D-021).
   `GET /api/v1/dinners/{id}/recipe-candidates`
   searches for the dinner's name and returns `{candidates: [{candidate_id,
   title, site_name, photo_url, minutes}]}`, at most 3, ranked as `Ground`
-  ranks them; it fetches pages but downloads no photo and runs no model,
+  ranks them, with `site_name` as the recipe detail's (`dinners.SourceOf`,
+  null when the site cannot be named without leaking the link); it fetches pages but downloads no photo and runs no model,
   so `photo_url` is set only for a page already stored. `candidate_id` is
   an opaque id the server resolves to the page it last offered that dinner
   (kept in memory, so a restart means fetching the candidates again) at
@@ -319,15 +330,22 @@ automatic** (D-021).
   suggestion with the name it is suggested under, the reason and
   `cited_regular_ids` — unless, since the job read its input, a dinner
   it repeats was added, a suggestion it repeats passed, or a Regular it
-  cites renamed or archived (checked in the storing transaction). The job
+  cites renamed or archived (checked in the storing transaction). A
+  notifying batch also rechecks the Side quests it holds after each round
+  and lets go of those no longer eligible, so a later round grounds a
+  spare in place of each; only a change committed between the last
+  recheck and the store can leave it short of 5 with spares unused. The job
   publishes `{batch_id, stage, suggestion_ids, dropped}` as it goes (`suggesting`,
   `grounding`, `done`). It fails with `no_regulars`, `ai_failed` (the
   skill or `normalize_recipe` failed; no Side quest is made up instead,
   D-017), `search_not_configured` or `search_failed`, and the batch is set
-  `failed`. A failed `scheduled` or `manual` batch has stored nothing; a
+  `failed`. A `scheduled` or `manual` batch that fails before its final
+  store (the AI, grounding, or the store itself) has stored nothing; a
   failed `replenish` batch's Side quests stored before the failure stay
   in the deck. If
-  recording the batch's end fails, its job fails; the job runner retries
+  recording the batch's end fails, its job fails, even after the final
+  store committed: a notifying batch's Side quests and their
+  `new_suggestions` then stay; the job runner retries
   a job's final status write with backoff until it lands, each attempt
   bounded at 5 seconds; at shutdown an attempt that fails or times out is
   not retried, and the next start fails the job as interrupted. Recording

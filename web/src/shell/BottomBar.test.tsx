@@ -182,6 +182,18 @@ describe('BottomBar', () => {
     ])
   })
 
+  it('rings a focused item in on-accent ink, which shows on the dark bar', async () => {
+    await renderAt('/')
+    const item = link('Plan')
+    // A key press makes the next focus a keyboard one, which :focus-visible
+    // matches; earlier tests' clicks would leave it a pointer one.
+    fireEvent.keyDown(document.body, { key: 'Tab' })
+    item.focus()
+    expect(item).toHaveFocus()
+    expect(item.matches(':focus-visible')).toBe(true)
+    expect(declaredStyle(item).getPropertyValue('outline-color')).toBe('var(--on-accent)')
+  })
+
   it('does not animate when the active item stays the same', async () => {
     await renderAt('/plan')
     fireEvent.click(link('Plan'))

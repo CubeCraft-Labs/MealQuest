@@ -341,6 +341,13 @@
   box-shadow: none;
 }
 
+/* The pill clips anything outside it, so the focus ring sits inside the
+   size, drawn in on-accent ink: only the chosen size takes focus. */
+.readingHeader .textSize > :focus-visible {
+  outline-color: var(--on-accent);
+  outline-offset: -4px;
+}
+
 .readingHeader .textSize > :nth-child(1) {
   font-size: 13px;
 }
@@ -433,7 +440,7 @@
 }
 
 .setOut {
-  color: var(--color-neutral-600);
+  color: var(--color-neutral-700);
   text-decoration: line-through;
 }
 
@@ -515,7 +522,7 @@
 }
 
 .stepDone {
-  color: var(--color-neutral-600);
+  color: var(--color-neutral-700);
 }
 
 .stepCurrent {

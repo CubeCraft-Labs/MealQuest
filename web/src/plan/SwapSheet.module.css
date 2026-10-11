@@ -40,7 +40,7 @@
 
 /* A dinner already this week: shown, muted, and not a button. */
 .already {
-  color: var(--color-neutral-600);
+  color: var(--color-neutral-700);
 }
 
 .skeletonRow {

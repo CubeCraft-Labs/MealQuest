@@ -1,6 +1,7 @@
 import { useIsMutating, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
+import type { DinnerDetail } from './detail.ts'
 
 export const DINNERS_PATH = '/api/v1/dinners'
 export const REGULARS_PATH = `${DINNERS_PATH}?status=regular`
@@ -12,7 +13,7 @@ export const GROUNDING_POLL_MS = 3000
 // Methods and Difficulties are the values the dinners API allows.
 export const METHODS = ['stovetop', 'oven', 'crockpot', 'grill', 'other'] as const
 export const DIFFICULTIES = ['easy', 'medium', 'hard'] as const
-const GROUNDING_STATUSES = ['pending', 'grounded', 'failed', 'manual'] as const
+export const GROUNDING_STATUSES = ['pending', 'grounded', 'failed', 'manual'] as const
 
 export type Method = (typeof METHODS)[number]
 export type Difficulty = (typeof DIFFICULTIES)[number]
@@ -146,6 +147,11 @@ export function dinnerPath(id: string): string {
   return `${DINNERS_PATH}/${encodeURIComponent(id)}`
 }
 
+// dinnerDetailKey is the query of dinner id with its recipe (useDinnerDetail).
+export function dinnerDetailKey(id: string) {
+  return ['dinners', 'detail', id] as const
+}
+
 // useRegulars is the household's Regulars, in the server's order. While any
 // of them is still finding its recipe it is read again every
 // GROUNDING_POLL_MS, except while any change is in flight (whose settling
@@ -275,28 +281,43 @@ export function useEditRegular() {
   })
 }
 
-// useToggleFavorite toggles a Regular's favorite heart (POST
-// /api/v1/dinners/{id}/favorite). The heart changes at once and changes
-// back if the server refuses.
+// Favorite is the dinner whose heart is toggled, as it was before the toggle.
+export type Favorite = { id: string; is_favorite: boolean }
+
+// setFavorite shows dinner id's heart as is_favorite wherever it is cached:
+// in the Regulars and in its detail. A cache not yet read is left unread.
+function setFavorite(queryClient: QueryClient, id: string, is_favorite: boolean) {
+  queryClient.setQueryData<CachedRegular[]>(REGULARS_LIST_KEY, (list) =>
+    list?.map((r) => (r.id === id ? { ...r, is_favorite } : r)),
+  )
+  queryClient.setQueryData<DinnerDetail>(dinnerDetailKey(id), (dinner) => dinner && { ...dinner, is_favorite })
+}
+
+// useToggleFavorite toggles a dinner's favorite heart (POST
+// /api/v1/dinners/{id}/favorite), a Regular's or any dinner's on its detail
+// screen. The heart changes at once and changes back if the server refuses.
+// The server answers with the dinner as the dinners list sends it, which
+// replaces the Regular; the detail keeps its recipe and takes only the heart.
 export function useToggleFavorite() {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
-  const set = (id: string, is_favorite: boolean) =>
-    setRegulars(queryClient, (list) => list.map((r) => (r.id === id ? { ...r, is_favorite } : r)))
   return useMutation({
     mutationKey: REGULARS_MUTATION_KEY,
-    mutationFn: async (regular: Regular) =>
+    mutationFn: async (dinner: Favorite) =>
       parseDinner(
         `POST ${DINNERS_PATH}/{id}/favorite`,
-        await apiFetch<unknown>(`${dinnerPath(regular.id)}/favorite`, { method: 'POST' }),
+        await apiFetch<unknown>(`${dinnerPath(dinner.id)}/favorite`, { method: 'POST' }),
       ),
-    onMutate: async (regular) => {
-      await changeOptimistically(queryClient, (list) =>
-        list.map((r) => (r.id === regular.id ? { ...r, is_favorite: !regular.is_favorite } : r)),
-      )
+    onMutate: async (dinner) => {
+      await queryClient.cancelQueries({ queryKey: dinnerDetailKey(dinner.id) })
+      await queryClient.cancelQueries({ queryKey: REGULARS_LIST_KEY })
+      setFavorite(queryClient, dinner.id, !dinner.is_favorite)
     },
-    onSuccess: (dinner) => replace(queryClient, dinner),
-    onError: (_error, regular) => set(regular.id, regular.is_favorite),
+    onSuccess: (dinner) => {
+      queryClient.setQueryData<CachedRegular[]>(REGULARS_LIST_KEY, (list) => list?.map((r) => (r.id === dinner.id ? dinner : r)))
+      queryClient.setQueryData<DinnerDetail>(dinnerDetailKey(dinner.id), (detail) => detail && { ...detail, is_favorite: dinner.is_favorite })
+    },
+    onError: (_error, dinner) => setFavorite(queryClient, dinner.id, dinner.is_favorite),
     onSettled: () => settle(queryClient),
   })
 }

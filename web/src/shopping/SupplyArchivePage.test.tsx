@@ -308,6 +308,7 @@ const FROZEN = {
   title: 'Pizza, pot roast & the great orzo trial',
   status: 'archived',
   sent_to_chat_at: null,
+  chat_send_unconfirmed_at: null,
   needed_count: 1,
   total_count: 2,
   groups: [

@@ -5,17 +5,24 @@ import { createApiClient, createVerifiedSession } from '../api/index.ts'
 import App from '../App.tsx'
 import { AuthBootstrap } from '../AuthBootstrap.tsx'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
-import { ApiProviders, HOUSEHOLD_SETTINGS } from '../test/ApiProviders.tsx'
+import { ApiProviders, HOME, HOUSEHOLD_SETTINGS } from '../test/ApiProviders.tsx'
 import { declaredStyle } from '../test/cssRules.ts'
 import { InDataRouter } from '../test/dataRouter.tsx'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
 import { mockViewport } from '../test/matchMedia.ts'
-import { NotificationsStep, notificationsUnavailable, type EnableNotifications } from './NotificationsStep.tsx'
+import { PUSH_ENDPOINT, restorePushEnvironment, stubPushEnvironment, VAPID_PUBLIC_KEY } from '../test/push.ts'
+import { NotificationsStep } from './NotificationsStep.tsx'
 import styles from './Onboarding.module.css'
 
 const IPHONE_SAFARI =
   'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1'
+
+const IPHONE_CHROME =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/138.0.7204.119 Mobile/15E148 Safari/604.1'
+
+const IOS_UNSUPPORTED =
+  "Notifications aren't on: on iPhone and iPad they only work once MealQuest is on the Home Screen. Tap Share, then Add to Home Screen, open MealQuest from there, and turn them on in Settings under Notifications."
 
 const COMPLETED_AT = '2026-10-06T21:30:00.000Z'
 
@@ -29,6 +36,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  restorePushEnvironment()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
   Reflect.deleteProperty(navigator, 'maxTouchPoints')
@@ -41,13 +49,21 @@ type Held = { body: unknown; answer: (response: Response) => void }
 
 // stubFirstRunServer stands in for the server on first run: signed in,
 // onboarding not finished. Each PATCH of the household settings is held in
-// `held` until the test answers it.
-function stubFirstRunServer() {
+// `held` until the test answers it. It hands out the VAPID public key with
+// vapidKey and stores push subscriptions in `subscriptions`.
+function stubFirstRunServer(vapidKey: () => Response = () => jsonResponse(200, VAPID_PUBLIC_KEY)) {
   const held: Held[] = []
+  const subscriptions: unknown[] = []
   const fetchMock = vi.fn<typeof fetch>((input, init) => {
     const path = String(input)
     const method = init?.method ?? 'GET'
     if (method === 'GET' && path === '/api/v1/me') return Promise.resolve(jsonResponse(200, ME))
+    if (method === 'GET' && path === '/api/v1/home') return Promise.resolve(jsonResponse(200, HOME))
+    if (method === 'GET' && path === '/api/v1/push/vapid-public-key') return Promise.resolve(vapidKey())
+    if (method === 'POST' && path === '/api/v1/push/subscriptions') {
+      subscriptions.push(JSON.parse(String(init?.body)))
+      return Promise.resolve(jsonResponse(200, { id: 'sub-1', endpoint: PUSH_ENDPOINT }))
+    }
     if (method === 'GET' && path === '/api/v1/settings/household') {
       return Promise.resolve(jsonResponse(200, { ...HOUSEHOLD_SETTINGS, onboarding_completed_at: null }))
     }
@@ -59,7 +75,7 @@ function stubFirstRunServer() {
     throw new Error(`unexpected fetch: ${method} ${path}`)
   })
   vi.stubGlobal('fetch', fetchMock)
-  return { fetchMock, held }
+  return { fetchMock, held, subscriptions }
 }
 
 function completed(request: Held) {
@@ -85,21 +101,17 @@ async function renderApp() {
   return server
 }
 
-// renderStep renders step 3 alone with the given enableNotifications, and a
-// Home that says it was reached. AuthBootstrap reads /api/v1/me for the CSRF
-// token every write needs.
-async function renderStep(enableNotifications?: EnableNotifications) {
-  const server = stubFirstRunServer()
+// renderStep renders step 3 alone, and a Home that says it was reached.
+// AuthBootstrap reads /api/v1/me for the CSRF token every write needs.
+async function renderStep(vapidKey?: () => Response) {
+  const server = stubFirstRunServer(vapidKey)
   render(
     <InDataRouter path="/onboarding/notifications">
       <ApiProviders>
         <AuthBootstrap>
           <Routes>
-            <Route
-              path="/onboarding/notifications"
-              element={<NotificationsStep enableNotifications={enableNotifications} />}
-            />
-            <Route path="/" element={<h1>Home</h1>} />
+            <Route path="/onboarding/notifications" element={<NotificationsStep />} />
+            <Route path="/" element={<h1>Tonight's quest</h1>} />
             <Route path="/onboarding/regulars" element={<h1>Regulars step</h1>} />
           </Routes>
         </AuthBootstrap>
@@ -108,6 +120,33 @@ async function renderStep(enableNotifications?: EnableNotifications) {
   )
   await screen.findByRole('heading', { level: 1, name: 'Stay in the loop' })
   return server
+}
+
+// finishFromResult taps "Finish setting up", the only action once a result
+// shows, and expects onboarding finished and Home reached.
+async function finishFromResult(server: ReturnType<typeof stubFirstRunServer>) {
+  expect(screen.queryByRole('button', { name: 'Turn on notifications' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Maybe later' })).not.toBeInTheDocument()
+  const finish = screen.getByRole('button', { name: 'Finish setting up' })
+  expectMinHitArea(finish)
+  // Not a silent success: onboarding is not finished behind the household's back.
+  expect(server.held).toHaveLength(0)
+  fireEvent.click(finish)
+  await vi.waitFor(() => expect(server.held).toHaveLength(1))
+  expect(server.held[0]!.body).toEqual({ onboarding_completed: true })
+  completed(server.held[0]!)
+  expect(await screen.findByRole('heading', { level: 1, name: "Tonight's quest" })).toBeInTheDocument()
+}
+
+function useIphoneSafariTab() {
+  useIphoneTab(IPHONE_SAFARI)
+}
+
+function useIphoneTab(userAgent: string) {
+  vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(userAgent)
+  Object.defineProperty(navigator, 'maxTouchPoints', { configurable: true, value: 5 })
+  Object.defineProperty(navigator, 'standalone', { configurable: true, value: false })
+  vi.stubGlobal('matchMedia', (query: string) => ({ matches: false, media: query }) as MediaQueryList)
 }
 
 function turnOn() {
@@ -157,10 +196,7 @@ describe('onboarding step 3', () => {
   })
 
   it('shows the install hint in an iOS Safari tab', async () => {
-    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(IPHONE_SAFARI)
-    Object.defineProperty(navigator, 'maxTouchPoints', { configurable: true, value: 5 })
-    Object.defineProperty(navigator, 'standalone', { configurable: true, value: false })
-    vi.stubGlobal('matchMedia', (query: string) => ({ matches: false, media: query }) as MediaQueryList)
+    useIphoneSafariTab()
     await renderStep()
     expect(screen.getByRole('note')).toHaveTextContent('Tap Share, then Add to Home Screen to get notifications')
   })
@@ -175,94 +211,138 @@ describe('onboarding step 3', () => {
     expect(later()).toBeDisabled()
     completed(server.held[0]!)
 
-    expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: "Tonight's quest" })).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Primary' })).toBeInTheDocument()
     expect(requestPermission).not.toHaveBeenCalled()
   })
 
-  it('"Turn on notifications" says plainly that nothing was turned on while notifications are unavailable', async () => {
+  it('"Turn on notifications" asks permission from the tap, subscribes this device and says it is on', async () => {
+    const browser = stubPushEnvironment({ permission: 'default', answer: 'granted' })
+    const server = await renderStep()
+    expect(browser.notification.requestPermission).not.toHaveBeenCalled()
+
+    fireEvent.click(turnOn())
+    expect(browser.notification.requestPermission).toHaveBeenCalledOnce()
+    expect(turnOn()).toBeDisabled()
+    expect(later()).toBeDisabled()
+
+    expect(await screen.findByRole('status')).toHaveTextContent('Notifications are on for this device.')
+    expect(browser.pushManager.subscribe).toHaveBeenCalledOnce()
+    expect(server.subscriptions).toEqual([expect.objectContaining({ endpoint: PUSH_ENDPOINT })])
+    await finishFromResult(server)
+    expect(browser.notification.requestPermission).toHaveBeenCalledOnce()
+  })
+
+  it('"Turn on notifications" says the browser blocked them, and how to allow them later', async () => {
+    const browser = stubPushEnvironment({ permission: 'default', answer: 'denied' })
+    const server = await renderStep()
+    fireEvent.click(turnOn())
+
+    const status = await screen.findByRole('status')
+    expect(status).toHaveTextContent("Notifications aren't on: this browser blocked them.")
+    expect(status).toHaveTextContent("allow notifications for this site in the browser's site settings")
+    expect(status).toHaveTextContent('turn them on in Settings under Notifications')
+    expect(browser.pushManager.subscribe).not.toHaveBeenCalled()
+    expect(server.subscriptions).toEqual([])
+    await finishFromResult(server)
+  })
+
+  it('"Turn on notifications" says blocked without asking again when the browser already denied them', async () => {
+    const browser = stubPushEnvironment({ permission: 'denied' })
+    const server = await renderStep()
+    fireEvent.click(turnOn())
+
+    expect(await screen.findByRole('status')).toHaveTextContent("Notifications aren't on: this browser blocked them.")
+    expect(browser.notification.requestPermission).not.toHaveBeenCalled()
+    await finishFromResult(server)
+  })
+
+  it('"Turn on notifications" says plainly that a browser without Web Push turned nothing on', async () => {
+    // The app as a whole: jsdom has no service worker or PushManager.
     const server = await renderApp()
     fireEvent.click(turnOn())
 
     expect(await screen.findByRole('status')).toHaveTextContent(
-      "Notifications aren't on yet: MealQuest can't send them until the notification feature ships, so nothing was turned on.",
+      "Notifications aren't on: this browser can't receive them, so nothing was turned on.",
     )
-    // Not a silent success: onboarding is not finished behind the household's back.
-    expect(server.held).toHaveLength(0)
     expect(screen.getByRole('heading', { level: 1, name: 'Stay in the loop' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Turn on notifications' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Maybe later' })).not.toBeInTheDocument()
-
-    const finish = screen.getByRole('button', { name: 'Finish setting up' })
-    expectMinHitArea(finish)
-    fireEvent.click(finish)
-    await vi.waitFor(() => expect(server.held).toHaveLength(1))
-    expect(server.held[0]!.body).toEqual({ onboarding_completed: true })
-    completed(server.held[0]!)
-
-    expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument()
+    await finishFromResult(server)
     expect(screen.getByRole('navigation', { name: 'Primary' })).toBeInTheDocument()
     expect(requestPermission).not.toHaveBeenCalled()
   })
 
-  it('"Turn on notifications" says the browser blocked them when denied, then finishes on request', async () => {
-    const server = await renderStep(() => Promise.resolve('denied'))
+  it('"Turn on notifications" in an iOS Safari tab says to add MealQuest to the Home Screen first', async () => {
+    useIphoneSafariTab()
+    const server = await renderStep()
     fireEvent.click(turnOn())
 
-    expect(await screen.findByRole('status')).toHaveTextContent("Notifications aren't on: this browser blocked them.")
-    expect(server.held).toHaveLength(0)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Finish setting up' }))
-    await vi.waitFor(() => expect(server.held).toHaveLength(1))
-    completed(server.held[0]!)
-    expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument()
+    expect(await screen.findByRole('status')).toHaveTextContent(IOS_UNSUPPORTED)
+    expect(screen.getByRole('note')).toHaveTextContent('Tap Share, then Add to Home Screen to get notifications')
+    expect(requestPermission).not.toHaveBeenCalled()
+    await finishFromResult(server)
   })
 
-  it('"Turn on notifications" asks the injected enableNotifications first, then finishes', async () => {
-    let answer: (result: 'enabled') => void = () => {}
-    const enable = vi.fn<EnableNotifications>(
-      () =>
-        new Promise((resolve) => {
-          answer = resolve
-        }),
+  it('"Turn on notifications" in another iOS browser also says to add MealQuest to the Home Screen first', async () => {
+    useIphoneTab(IPHONE_CHROME)
+    const server = await renderStep()
+    fireEvent.click(turnOn())
+
+    expect(await screen.findByRole('status')).toHaveTextContent(IOS_UNSUPPORTED)
+    expect(requestPermission).not.toHaveBeenCalled()
+    await finishFromResult(server)
+  })
+
+  it('"Turn on notifications" can ask again after the prompt is dismissed', async () => {
+    const browser = stubPushEnvironment({ permission: 'default', answer: 'default' })
+    const server = await renderStep()
+    fireEvent.click(turnOn())
+
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      'The permission prompt was closed without an answer, so notifications are still off.',
     )
-    const server = await renderStep(enable)
-    expect(enable).not.toHaveBeenCalled()
+    expect(server.held).toHaveLength(0)
+    await vi.waitFor(() => expect(turnOn()).toBeEnabled())
+    expect(later()).toBeEnabled()
 
     fireEvent.click(turnOn())
-    expect(enable).toHaveBeenCalledOnce()
-    expect(turnOn()).toBeDisabled()
-    expect(later()).toBeDisabled()
-    // Onboarding is not finished until enableNotifications has answered.
-    await Promise.resolve()
-    expect(server.held).toHaveLength(0)
-
-    answer('enabled')
-    await vi.waitFor(() => expect(server.held).toHaveLength(1))
-    expect(server.held[0]!.body).toEqual({ onboarding_completed: true })
-    completed(server.held[0]!)
-    expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument()
+    await vi.waitFor(() => expect(browser.notification.requestPermission).toHaveBeenCalledTimes(2))
   })
 
-  it('"Maybe later" does not ask the injected enableNotifications', async () => {
-    const enable = vi.fn<EnableNotifications>(() => Promise.resolve('enabled'))
-    const server = await renderStep(enable)
+  it('"Maybe later" finishes without asking for permission or subscribing', async () => {
+    const browser = stubPushEnvironment({ permission: 'default', answer: 'granted' })
+    const server = await renderStep()
     fireEvent.click(later())
 
     await vi.waitFor(() => expect(server.held).toHaveLength(1))
     completed(server.held[0]!)
-    expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument()
-    expect(enable).not.toHaveBeenCalled()
+    expect(await screen.findByRole('heading', { level: 1, name: "Tonight's quest" })).toBeInTheDocument()
+    expect(browser.notification.requestPermission).not.toHaveBeenCalled()
+    expect(browser.pushManager.subscribe).not.toHaveBeenCalled()
+    expect(server.subscriptions).toEqual([])
   })
 
-  it('says why and stays when enableNotifications fails', async () => {
-    const server = await renderStep(() => Promise.reject(new Error('push service down')))
+  it('says why and stays when turning on fails', async () => {
+    stubPushEnvironment({ permission: 'granted' })
+    const server = await renderStep(() => errorResponse(503, 'push_unavailable'))
     fireEvent.click(turnOn())
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Could not turn on notifications: push service down')
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not turn on notifications: push_unavailable message')
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
     expect(server.held).toHaveLength(0)
     expect(turnOn()).toBeEnabled()
     expect(screen.getByRole('heading', { level: 1, name: 'Stay in the loop' })).toBeInTheDocument()
+  })
+
+  it('refuses to ask for permission outside a tap, and says so', async () => {
+    const browser = stubPushEnvironment({ permission: 'default' })
+    Object.defineProperty(navigator, 'userActivation', { configurable: true, value: { isActive: false } })
+    await renderStep()
+    fireEvent.click(turnOn())
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not turn on notifications: subscribePush: notification permission can only be asked for from a tap on a button',
+    )
+    expect(browser.notification.requestPermission).not.toHaveBeenCalled()
   })
 
   it('says why and stays when the server refuses to finish onboarding, then finishes on retry', async () => {
@@ -279,7 +359,7 @@ describe('onboarding step 3', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     await vi.waitFor(() => expect(server.held).toHaveLength(2))
     completed(server.held[1]!)
-    expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: "Tonight's quest" })).toBeInTheDocument()
   })
 })
 
@@ -315,12 +395,5 @@ describe('onboarding step 3 with too few Regulars', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not finish setting up: internal message')
     expect(screen.queryByRole('button', { name: 'Add Regulars' })).not.toBeInTheDocument()
-  })
-})
-
-describe('notificationsUnavailable', () => {
-  it('answers "unavailable" without asking for permission', async () => {
-    await expect(notificationsUnavailable()).resolves.toBe('unavailable')
-    expect(requestPermission).not.toHaveBeenCalled()
   })
 })

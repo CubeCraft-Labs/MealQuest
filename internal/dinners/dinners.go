@@ -138,6 +138,9 @@ type Service struct {
 	grounder  *recipes.Grounder
 	logger    *slog.Logger
 	groundJob *jobs.Kind[GroundJob]
+	// wake is called after every committed change to a dinner's method or
+	// minutes, which can move its crock-pot start reminder.
+	wake func()
 
 	// groundingsMu guards groundings: the KindGroundDinner jobs running,
 	// by dinner id, so archiving or renaming a dinner can stop them.
@@ -157,10 +160,11 @@ type Service struct {
 	offerSearches map[string]map[*offerSearch]struct{}
 }
 
-// NewService returns a service over st that grounds dinners with grounder
-// and registers the KindGroundDinner job on runner, which must not have
-// started yet.
-func NewService(st *store.Store, grounder *recipes.Grounder, runner *jobs.Runner, logger *slog.Logger) (*Service, error) {
+// NewService returns a service over st that grounds dinners with grounder,
+// calls wake (the scheduler's Wake) after every committed change to a
+// dinner's method or minutes, and registers the KindGroundDinner job on
+// runner, which must not have started yet.
+func NewService(st *store.Store, grounder *recipes.Grounder, runner *jobs.Runner, wake func(), logger *slog.Logger) (*Service, error) {
 	switch {
 	case st == nil:
 		return nil, errors.New("dinners: nil store")
@@ -168,10 +172,12 @@ func NewService(st *store.Store, grounder *recipes.Grounder, runner *jobs.Runner
 		return nil, errors.New("dinners: nil grounder")
 	case runner == nil:
 		return nil, errors.New("dinners: nil job runner")
+	case wake == nil:
+		return nil, errors.New("dinners: nil wake")
 	case logger == nil:
 		return nil, errors.New("dinners: nil logger")
 	}
-	s := &Service{st: st, grounder: grounder, logger: logger, groundings: make(map[string]map[*runningGrounding]struct{}), offerKey: make([]byte, 32), offers: make(map[string]*offerSet), offerSearches: make(map[string]map[*offerSearch]struct{})}
+	s := &Service{st: st, grounder: grounder, wake: wake, logger: logger, groundings: make(map[string]map[*runningGrounding]struct{}), offerKey: make([]byte, 32), offers: make(map[string]*offerSet), offerSearches: make(map[string]map[*offerSearch]struct{})}
 	rand.Read(s.offerKey) // never fails: it crashes the program instead
 	kind, err := jobs.Register(runner, KindGroundDinner, s.runGroundJob, Reasons...)
 	if err != nil {
@@ -502,6 +508,9 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 	if err != nil {
 		return Dinner{}, err
 	}
+	if p.Method != nil || p.MinutesTotal != nil {
+		s.wake()
+	}
 	if renamed {
 		updateCommitted()
 		s.clearOffers(row.ID, row.GroundingRevision)
@@ -669,7 +678,12 @@ func findRepeat(ctx context.Context, q *db.Queries, self, name string, recipeURL
 
 // PhotoURL is where the API serves a list-sized copy of photo id.
 func PhotoURL(id string) string {
-	return fmt.Sprintf("/media/photos/%s-%d.jpg", id, photoListWidth)
+	return photoURL(id, photoListWidth)
+}
+
+// photoURL is where the API serves photo id at stored width size.
+func photoURL(id string, size int) string {
+	return fmt.Sprintf("/media/photos/%s-%d.jpg", id, size)
 }
 
 func fromRow(r db.Dinner) Dinner {

@@ -27,10 +27,12 @@ import (
 	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/chat"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 )
 
@@ -80,6 +82,12 @@ var ErrItemNotFound = errors.New("no Supply run has that item")
 // the household's time zone.
 var ErrWeekNotEnded = errors.New("the week has not ended")
 
+// ErrSendUnconfirmed is a send to Google Chat whose outcome is not known:
+// Google Chat did not answer, or accepted the post but recording it failed.
+// The post may have been made, so the Supply run keeps the send as
+// unconfirmed and is posted again only with resend.
+var ErrSendUnconfirmed = errors.New("the shopping list may have reached Google Chat, but that could not be confirmed; check the space before sending again")
+
 // ErrInvalidPeriod is an Archive grouping other than ByWeek, ByMonth and
 // ByYear.
 var ErrInvalidPeriod = errors.New("by must be week, month or year")
@@ -95,6 +103,8 @@ type Service struct {
 	st       *store.Store
 	title    Titler
 	titleJob *jobs.Kind[TitleJob]
+	notifier *notify.Service
+	chat     *chat.Service
 	logger   *slog.Logger
 	// now is the clock weeks are ended and current on; tests replace it.
 	now func() time.Time
@@ -104,12 +114,17 @@ type Service struct {
 	// waits for the title jobs in flight to store their titles or fail,
 	// and no title job runs archive_title while a freeze is under way.
 	titling sync.RWMutex
+	// sending serializes SendToChat, so a week is posted to Google Chat
+	// once however many sends race.
+	sending sync.Mutex
 }
 
 // NewService returns a service over st that titles Supply runs with title
-// in KindTitleSupplyRun jobs, which it registers on runner, and logs to
-// logger. runner must not have started yet.
-func NewService(st *store.Store, title Titler, runner *jobs.Runner, logger *slog.Logger) (*Service, error) {
+// in KindTitleSupplyRun jobs, which it registers on runner, tells the
+// household through notifier, which must be over st, sends Supply runs to
+// Google Chat through chatSvc, and logs to logger. runner must not have
+// started yet.
+func NewService(st *store.Store, title Titler, runner *jobs.Runner, notifier *notify.Service, chatSvc *chat.Service, logger *slog.Logger) (*Service, error) {
 	switch {
 	case st == nil:
 		return nil, errors.New("shopping: nil store")
@@ -117,10 +132,14 @@ func NewService(st *store.Store, title Titler, runner *jobs.Runner, logger *slog
 		return nil, errors.New("shopping: nil titler")
 	case runner == nil:
 		return nil, errors.New("shopping: nil job runner")
+	case notifier == nil:
+		return nil, errors.New("shopping: nil notifier")
+	case chatSvc == nil:
+		return nil, errors.New("shopping: nil chat service")
 	case logger == nil:
 		return nil, errors.New("shopping: nil logger")
 	}
-	s := &Service{st: st, title: title, logger: logger, now: time.Now}
+	s := &Service{st: st, title: title, notifier: notifier, chat: chatSvc, logger: logger, now: time.Now}
 	kind, err := jobs.Register(runner, KindTitleSupplyRun, s.runTitleJob, ReasonTitleFailed)
 	if err != nil {
 		return nil, err
@@ -145,7 +164,11 @@ type List struct {
 	// SentToChatAt is when the list was sent to Google Chat; nil until it
 	// is.
 	SentToChatAt *string `json:"sent_to_chat_at"`
-	Groups       []Group `json:"groups"`
+	// ChatSendUnconfirmedAt is when a send to Google Chat whose outcome is
+	// not known began: one under way, or one that may or may not have been
+	// posted. nil when there is none.
+	ChatSendUnconfirmedAt *string `json:"chat_send_unconfirmed_at"`
+	Groups                []Group `json:"groups"`
 }
 
 // Counts are how many items of a Supply run are still needed and how many
@@ -272,6 +295,7 @@ func (s *Service) generate(ctx context.Context, weekStart store.LocalDate, check
 		return Generated{}, fmt.Errorf("shopping: generate: %w", err)
 	}
 	var out Generated
+	notified := false
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		q := db.New(tx)
 		plan, err := q.GetWeekPlan(ctx, weekStart.String())
@@ -293,8 +317,9 @@ func (s *Service) generate(ctx context.Context, weekStart store.LocalDate, check
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("shopping: read list: %w", err)
 		}
+		created := err != nil
 		switch {
-		case err != nil: // no list yet
+		case created: // no list yet
 			list = db.ShoppingList{ID: store.NewID(), WeekStart: weekStart.String(), PlanID: plan.ID, Status: StatusCurrent}
 			err = q.CreateShoppingList(ctx, db.CreateShoppingListParams{
 				ID: list.ID, WeekStart: list.WeekStart, PlanID: list.PlanID, CreatedAt: now, UpdatedAt: now,
@@ -313,6 +338,13 @@ func (s *Service) generate(ctx context.Context, weekStart store.LocalDate, check
 			return err
 		}
 		out = Generated{List: listOf(list, groups), Skipped: skipped}
+		if created {
+			ev := chat.ListReady(weekStart, out.List.Counts().Needed, len(groups))
+			if err := s.notifier.EmitTx(ctx, tx, ev); err != nil {
+				return fmt.Errorf("shopping: %w", err)
+			}
+			notified = true
+		}
 		if list.Title.Valid {
 			return nil
 		}
@@ -330,6 +362,9 @@ func (s *Service) generate(ctx context.Context, weekStart store.LocalDate, check
 	}
 	if out.TitleJobID != nil {
 		s.titleJob.Wake()
+	}
+	if notified {
+		s.notifier.Wake()
 	}
 	return out, nil
 }
@@ -538,13 +573,14 @@ func frozen(list db.ShoppingList) bool {
 // listOf is list with groups.
 func listOf(list db.ShoppingList, groups []Group) List {
 	return List{
-		ID:           list.ID,
-		WeekStart:    list.WeekStart,
-		PlanID:       list.PlanID,
-		Title:        nullString(list.Title),
-		Status:       list.Status,
-		SentToChatAt: nullString(list.SentToChatAt),
-		Groups:       groups,
+		ID:                    list.ID,
+		WeekStart:             list.WeekStart,
+		PlanID:                list.PlanID,
+		Title:                 nullString(list.Title),
+		Status:                list.Status,
+		SentToChatAt:          nullString(list.SentToChatAt),
+		ChatSendUnconfirmedAt: nullString(list.ChatSendUnconfirmedAt),
+		Groups:                groups,
 	}
 }
 

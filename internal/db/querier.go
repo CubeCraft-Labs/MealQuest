@@ -12,15 +12,29 @@ import (
 type Querier interface {
 	// An unknown id returns sql.ErrNoRows.
 	ArchiveDinner(ctx context.Context, arg ArchiveDinnerParams) (Dinner, error)
+	// Records a send of list id to Google Chat begun at
+	// chat_send_unconfirmed_at, before it is posted, unless the list is frozen
+	// into the Supply archive.
+	BeginShoppingListChatSend(ctx context.Context, arg BeginShoppingListChatSendParams) (int64, error)
+	// Leases the pending notification due longest ago by moving its
+	// next_attempt_at to lease_until, and returns it. A claimed row is not due
+	// again until the lease ends, so no other claim takes it while it is being
+	// delivered. Returns sql.ErrNoRows when none is due.
+	ClaimDueNotification(ctx context.Context, arg ClaimDueNotificationParams) (NotificationOutbox, error)
 	// Marks the oldest queued job running and returns it. Returns sql.ErrNoRows
 	// when no job is queued.
 	ClaimNextJob(ctx context.Context, now sql.NullString) (Job, error)
+	// Claims one period of a schedule. The insert is the claim: 1 row means
+	// this caller owns the period, 0 rows means it was already claimed.
+	ClaimScheduleRun(ctx context.Context, arg ClaimScheduleRunParams) (int64, error)
 	// Clears every day's calendar event id: none is on the chosen calendar.
 	ClearCalendarEvents(ctx context.Context, updatedAt string) error
 	// Records that Google refuses the stored grant: clears the refresh token and
 	// sets last_sync_error, keeping the chosen calendar. Affects no row when
 	// nothing is connected.
 	ClearIntegrationsGoogleToken(ctx context.Context, arg ClearIntegrationsGoogleTokenParams) (int64, error)
+	// Clears the send of list id begun, once Google Chat refused it.
+	ClearShoppingListChatSend(ctx context.Context, arg ClearShoppingListChatSendParams) (int64, error)
 	// Drops references to the runs created before the cutoff, so the purge
 	// can delete them.
 	ClearSuggestionBatchAIRunsBefore(ctx context.Context, cutoff string) (int64, error)
@@ -62,11 +76,17 @@ type Querier interface {
 	DecideSuggestion(ctx context.Context, arg DecideSuggestionParams) (int64, error)
 	DeleteAIRunsBefore(ctx context.Context, cutoff string) (int64, error)
 	DeleteIntegrationsGoogle(ctx context.Context) error
+	DeletePushSubscription(ctx context.Context, endpoint string) (int64, error)
+	// Removes a subscription the push service reports gone (404 or 410).
+	DeletePushSubscriptionByID(ctx context.Context, id string) error
 	DeleteRecipeIngredients(ctx context.Context, recipeID string) error
 	DeleteRecipeSteps(ctx context.Context, recipeID string) error
 	DeleteShoppingGroup(ctx context.Context, id string) error
 	DeleteShoppingItem(ctx context.Context, id string) error
 	FailJob(ctx context.Context, arg FailJobParams) (int64, error)
+	// Gives up on a notification. attempts counts the delivery attempt that
+	// failed, if one was made. The lease must still be the claim's.
+	FailNotification(ctx context.Context, arg FailNotificationParams) (int64, error)
 	// Fails every unarchived dinner still pending whose grounding job for its
 	// current grounding_revision is no longer queued or running: the process
 	// stopped before the job, or before its handler recorded a result. An
@@ -103,6 +123,13 @@ type Querier interface {
 	// Returns sql.ErrNoRows until the row exists.
 	GetChatSettings(ctx context.Context) (ChatSetting, error)
 	GetDinner(ctx context.Context, id string) (Dinner, error)
+	// The reason of each suggestion of dinner_id that can have created it,
+	// none for a dinner no suggestion created. A suggestion is only ever
+	// created with a new dinner, and declining one archives its dinner, so a
+	// live dinner's creating suggestion is pending (the dinner still
+	// suggested) or accepted; a declined one did not create it. More than one
+	// row means nothing records which did.
+	GetDinnerSuggestionReasons(ctx context.Context, dinnerID string) ([]string, error)
 	// Returns sql.ErrNoRows until the row exists.
 	GetHouseholdSettings(ctx context.Context) (HouseholdSetting, error)
 	// Returns sql.ErrNoRows until the row exists.
@@ -111,6 +138,7 @@ type Querier interface {
 	// The newest batch, whatever its status. Returns sql.ErrNoRows when there
 	// is none.
 	GetLatestSuggestionBatch(ctx context.Context) (SuggestionBatch, error)
+	GetNotificationPref(ctx context.Context, event string) (NotificationPref, error)
 	// The pending Rotation check of dinner_id. MarkTried makes one only for a
 	// dinner in the Quest log, which it moves to tried, so a dinner has at
 	// most one. Returns sql.ErrNoRows when there is none.
@@ -131,6 +159,8 @@ type Querier interface {
 	GetShoppingList(ctx context.Context, weekStart string) (ShoppingList, error)
 	// A suggestion with its dinner. Returns sql.ErrNoRows for an unknown id.
 	GetSuggestion(ctx context.Context, id string) (GetSuggestionRow, error)
+	// Batch id. Returns sql.ErrNoRows when there is none.
+	GetSuggestionBatch(ctx context.Context, id string) (SuggestionBatch, error)
 	// The id of the job that runs batch batch_id.
 	GetSuggestionBatchJobID(ctx context.Context, arg GetSuggestionBatchJobIDParams) (string, error)
 	// The plan of the week starting week_start. Returns sql.ErrNoRows when
@@ -152,6 +182,13 @@ type Querier interface {
 	// them only when a member edited them while it was grounding. Like
 	// GroundDinner it clears the pasted recipe_url: the recipe replaces the link.
 	GroundPendingDinner(ctx context.Context, arg GroundPendingDinnerParams) (int64, error)
+	// Reports whether a notification was stored after since, or at all when
+	// since is NULL.
+	HasNotificationSince(ctx context.Context, since sql.NullString) (bool, error)
+	// Stores a pending notification for one channel, due at once. A row already
+	// stored for the event key and channel, in any status, is left unchanged and
+	// no row is inserted.
+	InsertNotification(ctx context.Context, arg InsertNotificationParams) (int64, error)
 	// The pending suggestions whose dinner is still suggested, oldest first,
 	// with their dinners.
 	ListDeck(ctx context.Context) ([]ListDeckRow, error)
@@ -160,6 +197,7 @@ type Querier interface {
 	// Regular, and every Quest log dinner no other plan for the week starting
 	// from_week_start or later has on any day.
 	ListDraftPool(ctx context.Context, arg ListDraftPoolParams) ([]Dinner, error)
+	ListNotificationPrefs(ctx context.Context) ([]NotificationPref, error)
 	// Every name the household turned down, oldest decision first: the name
 	// each declined suggestion was suggested under, which renaming its dinner
 	// does not change, and the name each dinner a Rotation check dropped
@@ -174,6 +212,16 @@ type Querier interface {
 	// The planned dinners dated from from_date up to but not including
 	// to_date, oldest first. Days with no dinner are left out.
 	ListPlannedDinners(ctx context.Context, arg ListPlannedDinnersParams) ([]ListPlannedDinnersRow, error)
+	// Every stored subscription with its keys, for the push sender, oldest
+	// first.
+	ListPushSubscriptions(ctx context.Context) ([]ListPushSubscriptionsRow, error)
+	// Returns the last lim distinct events stored, newest first: one row per
+	// event key, the last stored for it whatever its channel, so an event
+	// stored for push and Google Chat is one row. The last, because a channel
+	// switched on later can store the same event key again, and
+	// HasNotificationSince counts that row: an event is as new as its newest
+	// row, so marking it seen also covers that row.
+	ListRecentNotifications(ctx context.Context, lim int64) ([]ListRecentNotificationsRow, error)
 	// Reads for the AI household context block (internal/ai/harness).
 	// The most recent names the household turned down, newest first, as
 	// ListPassedNames has them.
@@ -210,6 +258,16 @@ type Querier interface {
 	// Moves a dinner still in the Quest log to tried; a dinner with any other
 	// status is left as it is (0 rows).
 	MarkDinnerTried(ctx context.Context, arg MarkDinnerTriedParams) (int64, error)
+	// Records a delivered notification; updated_at is when it was sent. The
+	// lease must still be the claim's.
+	MarkNotificationSent(ctx context.Context, arg MarkNotificationSentParams) (int64, error)
+	// Records list id sent to Google Chat at sent_to_chat_at, its send
+	// confirmed, unless it is frozen into the Supply archive.
+	MarkShoppingListSentToChat(ctx context.Context, arg MarkShoppingListSentToChatParams) (int64, error)
+	// Moves updates_seen_at forward to seen_at; affects no row when it is
+	// already at or after seen_at, so it never moves back. It is not a settings
+	// edit: updated_by and updated_at are left as they are.
+	MarkUpdatesSeen(ctx context.Context, seenAt string) (int64, error)
 	// Records an edit of plan id, raising its revision: a synced plan becomes
 	// changed, any other keeps its status.
 	MarkWeekPlanEdited(ctx context.Context, arg MarkWeekPlanEditedParams) error
@@ -229,17 +287,31 @@ type Querier interface {
 	// by a Rotation check decision, recording updated_by; its origin is kept.
 	// A dinner no longer tried is left as it is (0 rows).
 	MoveTriedDinner(ctx context.Context, arg MoveTriedDinnerParams) (int64, error)
+	// Returns when the next pending notification is due. Returns sql.ErrNoRows
+	// when none is pending.
+	NextNotificationDue(ctx context.Context) (sql.NullString, error)
 	// Stores a partial result of a running job.
 	PublishJobResult(ctx context.Context, arg PublishJobResultParams) (int64, error)
 	// Plans dinner_id on date of plan_id. An existing day keeps its calendar
 	// event id while its dinner stays the same; a new dinner clears it, since
 	// Calendar no longer shows the day as planned.
 	PutPlanDay(ctx context.Context, arg PutPlanDayParams) error
+	// Records the outcome of a test message sent to the webhook sealed in
+	// webhook_url_ct; affects no row when the webhook has been replaced or
+	// removed since the test began.
+	RecordChatTest(ctx context.Context, arg RecordChatTestParams) (int64, error)
+	// Counts a delivery to a subscription that the push service did not accept.
+	RecordPushFailure(ctx context.Context, id string) error
+	// Records that the push service accepted a notification for a subscription.
+	RecordPushSuccess(ctx context.Context, arg RecordPushSuccessParams) error
 	// Records a new draft over plan id: its status and note, raising its
 	// revision.
 	RedraftWeekPlan(ctx context.Context, arg RedraftWeekPlanParams) error
 	// Records a generation of list id from plan plan_id.
 	RegenerateShoppingList(ctx context.Context, arg RegenerateShoppingListParams) error
+	// Records a failed delivery and when to try again. The lease must still be
+	// the claim's.
+	RetryNotification(ctx context.Context, arg RetryNotificationParams) (int64, error)
 	// An unknown id returns sql.ErrNoRows.
 	SetDinnerFavorite(ctx context.Context, arg SetDinnerFavoriteParams) (Dinner, error)
 	// Sets the chosen calendar; affects no row when nothing is connected.
@@ -264,6 +336,9 @@ type Querier interface {
 	ToggleDinnerFavorite(ctx context.Context, arg ToggleDinnerFavoriteParams) (Dinner, error)
 	// An unknown id returns sql.ErrNoRows.
 	UpdateDinner(ctx context.Context, arg UpdateDinnerParams) (Dinner, error)
+	// Sets which channels an event goes to; affects no row when the event has
+	// no preference row.
+	UpdateNotificationPref(ctx context.Context, arg UpdateNotificationPrefParams) (int64, error)
 	// Creates the single row (id 1) or replaces every column except id and
 	// created_at.
 	UpsertAISettings(ctx context.Context, arg UpsertAISettingsParams) (AiSetting, error)
@@ -276,6 +351,10 @@ type Querier interface {
 	// Creates the single row (id 1) or replaces every column except id and
 	// created_at.
 	UpsertIntegrationsGoogle(ctx context.Context, arg UpsertIntegrationsGoogleParams) (IntegrationsGoogle, error)
+	// Stores a browser's push subscription, keyed by its endpoint. Subscribing
+	// an endpoint already stored replaces its keys and user agent and clears
+	// its failure count, keeping its id, created_at and last_success_at.
+	UpsertPushSubscription(ctx context.Context, arg UpsertPushSubscriptionParams) (PushSubscription, error)
 	// A recipe is keyed by source_url: re-fetching the same URL updates the
 	// existing row and keeps its id and created_at, which the returned row
 	// carries. Replace its ingredients and steps in the same transaction with

@@ -10,8 +10,10 @@ import (
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/chat"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
@@ -20,6 +22,9 @@ import (
 // BatchJob is the KindSuggestionBatch payload: the batch to run.
 type BatchJob struct {
 	BatchID string `json:"batch_id"`
+	// Week is the YYYY-MM-DD Monday of the ISO week a scheduled batch is
+	// for, which keys its new_suggestions; empty for any other trigger.
+	Week string `json:"week,omitempty"`
 }
 
 // Batch stages, as the job's result reports them.
@@ -48,13 +53,27 @@ func (r batchResult) PublicJSON() ([]byte, error) { return json.Marshal(r) }
 // wanted at a time, until BatchSize are kept or none are left. A Side quest
 // no recipe grounds is dropped; any other grounding failure fails the
 // batch, as does suggest_side_quests failing, with no Side quest made up
-// instead. Each round's grounded Side quests are stored before the next
-// round starts, so the deck fills as the batch goes. The batch ends done
-// or failed; Side quests stored before a failure stay in the deck. When
-// recording the batch's end fails, so does the job; when it times out at
-// shutdown, the job is left running and the batch with it, for the next
-// start to fail.
+// instead. The batch ends done or failed. When recording the batch's end
+// fails, so does the job; when it times out at shutdown, the job is left
+// running and the batch with it, for the next start to fail.
+//
+// When a batch stores its Side quests depends on whether it notifies (see
+// noticeOf). A scheduled or manual batch notifies: it holds every round's
+// grounded Side quests and, once the last round is done, stores them all
+// in one transaction with one new_suggestions counting and naming every
+// Side quest stored. So the household is told of exactly what the batch
+// added, once; and a batch that fails at any round, including a later
+// round's normalize_recipe, stores nothing and sends nothing, leaving no
+// Side quest in the deck that was never announced. A replenish batch,
+// which tops up the deck as the household swipes and never notifies,
+// stores each round's Side quests before the next round starts, so the
+// deck fills as it goes; those stored before a failure stay in the deck.
+// See store.
 func (s *Service) runBatch(ctx context.Context, p BatchJob, publish func(batchResult) error) (batchResult, error) {
+	batch, err := db.New(s.st.Reader).GetSuggestionBatch(ctx, p.BatchID)
+	if err != nil {
+		return batchResult{}, fmt.Errorf("suggest: read batch %s: %w", p.BatchID, err)
+	}
 	n, err := db.New(s.st.Writer).StartSuggestionBatch(ctx, db.StartSuggestionBatchParams{
 		UpdatedAt: store.Now().String(),
 		ID:        p.BatchID,
@@ -65,7 +84,7 @@ func (s *Service) runBatch(ctx context.Context, p BatchJob, publish func(batchRe
 	if n == 0 {
 		return batchResult{}, fmt.Errorf("suggest: batch %s is not pending", p.BatchID)
 	}
-	res, err := s.fill(ctx, p.BatchID, publish)
+	res, err := s.fill(ctx, batch.Trigger, p, publish)
 	if err == nil {
 		if err := s.finishBatch(ctx, p.BatchID, BatchDone); err != nil {
 			return batchResult{}, err
@@ -85,14 +104,21 @@ func (s *Service) runBatch(ctx context.Context, p BatchJob, publish func(batchRe
 	return batchResult{}, errors.Join(err, finishErr)
 }
 
-// fill does runBatch's work, returning a *jobs.Failure for a failure the
-// household may see.
-func (s *Service) fill(ctx context.Context, batchID string, publish func(batchResult) error) (batchResult, error) {
+// fill does runBatch's work for job of a batch with trigger, returning a
+// *jobs.Failure for a failure the household may see. A batch with a notice
+// is stored once, when its last round is done; any other batch round by
+// round.
+func (s *Service) fill(ctx context.Context, trigger string, job BatchJob, publish func(batchResult) error) (batchResult, error) {
+	batchID := job.BatchID
 	res := batchResult{BatchID: batchID, Stage: StageSuggesting, SuggestionIDs: []string{}}
 	if err := publish(res); err != nil {
 		return batchResult{}, err
 	}
 	in, err := s.request(ctx)
+	if err != nil {
+		return batchResult{}, err
+	}
+	note, err := noticeOf(trigger, job, in.Context.Today)
 	if err != nil {
 		return batchResult{}, err
 	}
@@ -109,26 +135,78 @@ func (s *Service) fill(ctx context.Context, batchID string, publish func(batchRe
 		return batchResult{}, err
 	}
 	left := out.Suggestions
-	for len(res.SuggestionIDs) < BatchSize && len(left) > 0 {
-		round := left[:min(BatchSize-len(res.SuggestionIDs), len(left))]
+	// held are a notifying batch's grounded Side quests, not yet stored.
+	var held []groundedQuest
+	for len(res.SuggestionIDs)+len(held) < BatchSize && len(left) > 0 {
+		round := left[:min(BatchSize-len(res.SuggestionIDs)-len(held), len(left))]
 		left = left[len(round):]
 		grounded, err := s.ground(ctx, round)
 		if err != nil {
 			return batchResult{}, err
 		}
 		res.Dropped += len(round) - len(grounded)
-		ids, err := s.store(ctx, batchID, grounded)
-		if err != nil {
+		if note != nil {
+			held = append(held, grounded...)
+		} else if err := s.storeInto(ctx, &res, nil, grounded); err != nil {
 			return batchResult{}, err
 		}
-		res.Dropped += len(grounded) - len(ids)
-		res.SuggestionIDs = append(res.SuggestionIDs, ids...)
 		if err := publish(res); err != nil {
+			return batchResult{}, err
+		}
+	}
+	if note != nil {
+		if err := s.storeInto(ctx, &res, note, held); err != nil {
 			return batchResult{}, err
 		}
 	}
 	res.Stage = StageDone
 	return res, nil
+}
+
+// storeInto stores quests for res's batch with note (see store) and adds
+// the suggestions stored, and the Side quests left out, to res.
+func (s *Service) storeInto(ctx context.Context, res *batchResult, note *notice, quests []groundedQuest) error {
+	ids, err := s.store(ctx, res.BatchID, note, quests)
+	if err != nil {
+		return err
+	}
+	res.Dropped += len(quests) - len(ids)
+	res.SuggestionIDs = append(res.SuggestionIDs, ids...)
+	return nil
+}
+
+// notice is how a batch's new_suggestions is keyed: by id, as
+// new_suggestions:{id}, for the week starting on week.
+type notice struct {
+	id   string
+	week store.LocalDate
+}
+
+// noticeOf returns the notice of job, run for a batch with trigger on
+// household-local date today, or nil for a replenish batch, which never
+// notifies. A scheduled batch is keyed by the ISO week it was scheduled
+// for ("2026-W41"), not the week it happens to run in, so each week's
+// schedule tells the household once even when its batch runs late; a
+// manual batch is keyed by its batch id, for the week of today. A job
+// whose week does not fit its trigger is an error.
+func noticeOf(trigger string, job BatchJob, today store.LocalDate) (*notice, error) {
+	if trigger != TriggerScheduled {
+		if job.Week != "" {
+			return nil, fmt.Errorf("suggest: %s batch %s has a week", trigger, job.BatchID)
+		}
+		if trigger == TriggerReplenish {
+			return nil, nil
+		}
+		return &notice{id: job.BatchID, week: household.WeekStart(today)}, nil
+	}
+	week, err := store.ParseLocalDate(job.Week)
+	if err != nil {
+		return nil, fmt.Errorf("suggest: scheduled batch %s week: %w", job.BatchID, err)
+	}
+	if household.WeekStart(week) != week {
+		return nil, fmt.Errorf("suggest: scheduled batch %s week %s is not a Monday", job.BatchID, week)
+	}
+	return &notice{id: household.PeriodKey(week), week: week}, nil
 }
 
 // request reads what suggest_side_quests is given: the household context,
@@ -204,8 +282,17 @@ func (s *Service) ground(ctx context.Context, quests []skills.SideQuest) ([]grou
 // repeats passed or a Rotation check dropped, or a Regular it cites renamed
 // or archived. Passed names are read in the same transaction as the store,
 // so a Pass or drop committed before it is never missed.
-func (s *Service) store(ctx context.Context, batchID string, quests []groundedQuest) ([]string, error) {
+//
+// When note is not nil and a Side quest is stored, new_suggestions keyed by
+// note, counting and naming those stored, is emitted in the same
+// transaction, so the Side quests and their notification commit together
+// or not at all: a notification that cannot be stored fails the store, and
+// the batch with it. A notifying batch calls store once, with all its
+// Side quests, so the count is the batch's (see runBatch). This is the
+// only place new_suggestions is emitted.
+func (s *Service) store(ctx context.Context, batchID string, note *notice, quests []groundedQuest) ([]string, error) {
 	ids := []string{}
+	var stored []string
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		q := db.New(tx)
 		existing, err := q.ListUnarchivedDinners(ctx)
@@ -269,11 +356,18 @@ func (s *Service) store(ctx context.Context, batchID string, quests []groundedQu
 			}
 			names = append(names, d.Name)
 			ids = append(ids, id)
+			stored = append(stored, d.Name)
 		}
-		return nil
+		if note == nil || len(stored) == 0 {
+			return nil
+		}
+		return s.notifier.EmitTx(ctx, tx, chat.NewSuggestions(note.id, note.week, stored))
 	})
 	if err != nil {
 		return nil, err
+	}
+	if note != nil && len(stored) > 0 {
+		s.notifier.Wake()
 	}
 	return ids, nil
 }

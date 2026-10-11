@@ -14,7 +14,23 @@ import (
 	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/vapid"
 )
+
+// writeVAPIDKey writes a new VAPID key pair's private key to dir/name, as
+// cmd/vapidgen tells the operator to, and returns the pair.
+func writeVAPIDKey(t *testing.T, dir, name string) (vapid.KeyPair, string) {
+	t.Helper()
+	pair, err := vapid.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(pair.PrivateKey+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return pair, path
+}
 
 func TestLoad(t *testing.T) {
 	t.Parallel()
@@ -37,6 +53,16 @@ func TestLoad(t *testing.T) {
 	if err := os.WriteFile(emptyPath, []byte("\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	vapidPair, vapidKeyPath := writeVAPIDKey(t, dir, "vapid_private_key")
+	otherPair, otherKeyPath := writeVAPIDKey(t, dir, "other_vapid_private_key")
+	pemKeyPath := filepath.Join(dir, "vapid_private_key.pem")
+	if err := os.WriteFile(pemKeyPath, []byte("-----BEGIN EC PRIVATE KEY-----\nMHcCAQEEIA==\n-----END EC PRIVATE KEY-----\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	paddedKeyPath := filepath.Join(dir, "padded_vapid_private_key")
+	if err := os.WriteFile(paddedKeyPath, []byte(vapidPair.PrivateKey+"=\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	valid := func() map[string]string {
 		return map[string]string{
@@ -53,6 +79,10 @@ func TestLoad(t *testing.T) {
 
 			EnvGoogleClientID:         "mealquest.apps.googleusercontent.com",
 			EnvGoogleClientSecretFile: googleSecretPath,
+
+			EnvVAPIDPublicKey:      vapidPair.PublicKey,
+			EnvVAPIDPrivateKeyFile: vapidKeyPath,
+			EnvVAPIDSubject:        "mailto:owner@example.com",
 		}
 	}
 	with := func(changes map[string]string, unset ...string) map[string]string {
@@ -102,7 +132,107 @@ func TestLoad(t *testing.T) {
 				EnvHTTPAddr, EnvPublicURL, EnvDataDir, EnvShutdownTimeout, EnvSecretKeyFile,
 				EnvOIDCIssuer, EnvOIDCClientID, EnvOIDCClientSecretFile, EnvOIDCAllowedGroups,
 				EnvGoogleClientID, EnvGoogleClientSecretFile,
+				EnvVAPIDPublicKey, EnvVAPIDPrivateKeyFile, EnvVAPIDSubject,
 			},
+		},
+		{
+			name:    "VAPID public key missing",
+			env:     with(nil, EnvVAPIDPublicKey),
+			badVars: []string{EnvVAPIDPublicKey},
+		},
+		{
+			name:    "VAPID private key file missing",
+			env:     with(nil, EnvVAPIDPrivateKeyFile),
+			badVars: []string{EnvVAPIDPrivateKeyFile},
+		},
+		{
+			name:    "VAPID subject missing",
+			env:     with(nil, EnvVAPIDSubject),
+			badVars: []string{EnvVAPIDSubject},
+		},
+		{
+			name:    "only the VAPID public key set",
+			env:     with(nil, EnvVAPIDPrivateKeyFile, EnvVAPIDSubject),
+			badVars: []string{EnvVAPIDPrivateKeyFile, EnvVAPIDSubject},
+		},
+		{
+			name:    "no VAPID variable set",
+			env:     with(nil, EnvVAPIDPublicKey, EnvVAPIDPrivateKeyFile, EnvVAPIDSubject),
+			badVars: []string{EnvVAPIDPublicKey, EnvVAPIDPrivateKeyFile, EnvVAPIDSubject},
+		},
+		{
+			name:    "VAPID private key file unreadable",
+			env:     with(map[string]string{EnvVAPIDPrivateKeyFile: unreadablePath}),
+			badVars: []string{EnvVAPIDPrivateKeyFile},
+		},
+		{
+			name:    "VAPID private key file empty",
+			env:     with(map[string]string{EnvVAPIDPrivateKeyFile: emptyPath}),
+			badVars: []string{EnvVAPIDPrivateKeyFile},
+		},
+		{
+			name:    "inline VAPID private key rejected",
+			env:     with(map[string]string{"MEALQUEST_VAPID_PRIVATE_KEY": vapidPair.PrivateKey}),
+			badVars: []string{"MEALQUEST_VAPID_PRIVATE_KEY"},
+		},
+		{
+			name:    "VAPID private key as PEM",
+			env:     with(map[string]string{EnvVAPIDPrivateKeyFile: pemKeyPath}),
+			badVars: []string{EnvVAPIDPrivateKeyFile},
+		},
+		{
+			name:    "padded VAPID private key",
+			env:     with(map[string]string{EnvVAPIDPrivateKeyFile: paddedKeyPath}),
+			badVars: []string{EnvVAPIDPrivateKeyFile},
+		},
+		{
+			name:    "VAPID private key from another pair",
+			env:     with(map[string]string{EnvVAPIDPrivateKeyFile: otherKeyPath}),
+			badVars: []string{EnvVAPIDPrivateKeyFile},
+		},
+		{
+			name:    "VAPID public key from another pair",
+			env:     with(map[string]string{EnvVAPIDPublicKey: otherPair.PublicKey}),
+			badVars: []string{EnvVAPIDPrivateKeyFile},
+		},
+		{
+			name:    "VAPID public key malformed",
+			env:     with(map[string]string{EnvVAPIDPublicKey: "not-a-key"}),
+			badVars: []string{EnvVAPIDPublicKey},
+		},
+		{
+			name:    "VAPID public key padded",
+			env:     with(map[string]string{EnvVAPIDPublicKey: vapidPair.PublicKey + "="}),
+			badVars: []string{EnvVAPIDPublicKey},
+		},
+		{
+			name:    "VAPID private key given as the public key",
+			env:     with(map[string]string{EnvVAPIDPublicKey: vapidPair.PrivateKey}),
+			badVars: []string{EnvVAPIDPublicKey},
+		},
+		{
+			name: "VAPID https subject",
+			env:  with(map[string]string{EnvVAPIDSubject: "https://meals.example.com/contact"}),
+		},
+		{
+			name:    "VAPID subject without mailto:",
+			env:     with(map[string]string{EnvVAPIDSubject: "owner@example.com"}),
+			badVars: []string{EnvVAPIDSubject},
+		},
+		{
+			name:    "VAPID mailto: subject without an address",
+			env:     with(map[string]string{EnvVAPIDSubject: "mailto:owner"}),
+			badVars: []string{EnvVAPIDSubject},
+		},
+		{
+			name:    "VAPID mailto: subject with a display name",
+			env:     with(map[string]string{EnvVAPIDSubject: "mailto:Owner <owner@example.com>"}),
+			badVars: []string{EnvVAPIDSubject},
+		},
+		{
+			name:    "VAPID plain http subject",
+			env:     with(map[string]string{EnvVAPIDSubject: "http://meals.example.com"}),
+			badVars: []string{EnvVAPIDSubject},
 		},
 		{
 			name:    "invalid duration",
@@ -446,6 +576,7 @@ func TestLoadValues(t *testing.T) {
 	if err := os.WriteFile(googleSecretPath, []byte("google-s3cret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	vapidPair, vapidKeyPath := writeVAPIDKey(t, dir, "vapid_private_key")
 	env := map[string]string{
 		EnvHTTPAddr:        "127.0.0.1:9000",
 		EnvPublicURL:       "http://localhost:9000",
@@ -460,6 +591,10 @@ func TestLoadValues(t *testing.T) {
 
 		EnvGoogleClientID:         "mealquest.apps.googleusercontent.com",
 		EnvGoogleClientSecretFile: googleSecretPath,
+
+		EnvVAPIDPublicKey:      vapidPair.PublicKey,
+		EnvVAPIDPrivateKeyFile: vapidKeyPath,
+		EnvVAPIDSubject:        "mailto:owner@example.com",
 
 		EnvDefaultTZ: "Europe/London",
 
@@ -500,6 +635,9 @@ func TestLoadValues(t *testing.T) {
 	if cfg.GoogleClientSecret.Reveal() != "google-s3cret" {
 		t.Errorf("GoogleClientSecret.Reveal() = %q", cfg.GoogleClientSecret.Reveal())
 	}
+	if want := (VAPID{PublicKey: vapidPair.PublicKey, PrivateKey: Secret{value: vapidPair.PrivateKey}, Subject: "mailto:owner@example.com"}); cfg.VAPID != want {
+		t.Errorf("VAPID = %+v, want public key, trimmed private key and subject", cfg.VAPID)
+	}
 	if want := []string{"mealquest-admin", "family"}; !slices.Equal(cfg.OIDCAllowedGroups, want) {
 		t.Errorf("OIDCAllowedGroups = %q, want %q", cfg.OIDCAllowedGroups, want)
 	}
@@ -538,11 +676,43 @@ func TestSecretRedacted(t *testing.T) {
 
 	s := Secret{value: "s3cret-value"}
 	for _, format := range []string{"%v", "%s", "%+v", "%#v"} {
-		cfg := Config{SecretKey: s, OIDCClientSecret: s, GoogleClientSecret: s}
+		cfg := Config{SecretKey: s, OIDCClientSecret: s, GoogleClientSecret: s, VAPID: VAPID{PrivateKey: s}}
 		for _, out := range []string{fmt.Sprintf(format, s), fmt.Sprintf(format, cfg)} {
 			if strings.Contains(out, "s3cret-value") {
 				t.Errorf("format %s leaked secret: %s", format, out)
 			}
+		}
+	}
+}
+
+// TestVAPIDErrorsNeverQuoteThePrivateKey checks every VAPID private key
+// problem names the variable without echoing the file's contents.
+func TestVAPIDErrorsNeverQuoteThePrivateKey(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pair, _ := writeVAPIDKey(t, dir, "unused")
+	other, err := vapid.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, contents := range map[string]string{
+		"mismatched": other.PrivateKey,
+		"padded":     pair.PrivateKey + "=",
+		"truncated":  pair.PrivateKey[:40],
+	} {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(contents+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		env := map[string]string{EnvVAPIDPublicKey: pair.PublicKey, EnvVAPIDPrivateKeyFile: path, EnvVAPIDSubject: "mailto:owner@example.com"}
+		_, err := load(func(k string) (string, bool) { v, ok := env[k]; return v, ok })
+		var cerr *Error
+		if !errors.As(err, &cerr) || !slices.ContainsFunc(cerr.Problems, func(p Problem) bool { return p.Var == EnvVAPIDPrivateKeyFile }) {
+			t.Errorf("%s: error = %v, want problem for %s", name, err, EnvVAPIDPrivateKeyFile)
+		}
+		if err != nil && (strings.Contains(err.Error(), contents) || strings.Contains(err.Error(), contents[:16])) {
+			t.Errorf("%s: error quotes the private key: %v", name, err)
 		}
 	}
 }

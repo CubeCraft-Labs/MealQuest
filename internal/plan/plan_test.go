@@ -20,11 +20,14 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/llm"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/chat"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal/gcaltest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify/notifytest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secretbox"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
@@ -143,7 +146,7 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.svc, err = plan.NewService(st, drafter, e.runner, e.gcal, publicURL, logger)
+	e.svc, err = plan.NewService(st, drafter, e.runner, e.gcal, notifytest.New(t, st), func() {}, publicURL, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,6 +352,85 @@ func TestDraftCreatesPlan(t *testing.T) {
 	}
 	if in.WeekStart != week || in.DinnerTime != "17:30" || len(in.LastWeek) != 0 {
 		t.Errorf("request week %s dinner time %s last week %v", in.WeekStart, in.DinnerTime, in.LastWeek)
+	}
+}
+
+// TestDraftEmitsPlanReady: the AI's first draft of a week stores plan_ready
+// keyed by the week, on push and Google Chat, naming the dinners Monday to
+// Sunday; a redraft (Rebuild week) and a manual swap store nothing more.
+func TestDraftEmitsPlanReady(t *testing.T) {
+	e := newEnv(t)
+	e.start(t)
+	e.reply("", fullWeek...)
+	e.mustDraft(t, false)
+
+	zone, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := chat.PlanReady(week, household.WeekStart(household.Today(time.Now(), zone)), fullWeek)
+	rows := notifytest.Rows(t, e.st, notify.PlanReady)
+	if len(rows) != 2 || rows[0].Channel != notify.ChannelChat || rows[1].Channel != notify.ChannelPush {
+		t.Fatalf("plan_ready rows = %+v, want one on chat and one on push", rows)
+	}
+	for _, r := range rows {
+		p := r.Payload
+		if r.Key != "plan_ready:2026-10-12" || p.Tag != r.Key || p.URL != "/plan?week=2026-10-12" || p.Week != "2026-10-12" ||
+			p.Title != want.Title || p.Body != "Beef Chili, Pot Roast, Pad Thai + 4 more" {
+			t.Errorf("%s row = %+v, want key plan_ready:2026-10-12, title %q, the drafted dinners and /plan?week=2026-10-12", r.Channel, r, want.Title)
+		}
+	}
+
+	reversed := slices.Clone(fullWeek)
+	slices.Reverse(reversed)
+	e.reply("", reversed...)
+	e.mustDraft(t, false)
+	e.ids["Fish Tacos"] = e.dinner(t, "Fish Tacos", "regular", "stovetop", 25)
+	if _, err := e.svc.Swap(t.Context(), week, "2026-10-14", e.ids["Fish Tacos"]); err != nil {
+		t.Fatal(err)
+	}
+	if again := notifytest.Rows(t, e.st, notify.PlanReady); !slices.Equal(again, rows) {
+		t.Errorf("plan_ready rows after a redraft and a swap = %+v, want the first draft's only", again)
+	}
+}
+
+// TestFailedDraftEmitsNothing: a draft that stores no plan notifies no one.
+func TestFailedDraftEmitsNothing(t *testing.T) {
+	e := newEnv(t)
+	e.start(t)
+	e.model.QueueGenerate(llm.GenerateResult{Err: errors.New("provider down")})
+	if job := e.draft(t, false); job.Status != jobs.StatusFailed {
+		t.Fatalf("job %s, want failed", job.Status)
+	}
+	if rows := notifytest.Rows(t, e.st, notify.PlanReady); len(rows) != 0 {
+		t.Errorf("plan_ready rows = %+v, want none", rows)
+	}
+}
+
+// TestEmitDayOfReminder: the reminder of a planned date names its dinner,
+// keyed by the date; a date with no plan emits nothing, and a date emitted
+// again stores nothing more.
+func TestEmitDayOfReminder(t *testing.T) {
+	e := newEnv(t)
+	e.start(t)
+	if ok, err := e.svc.EmitDayOfReminder(t.Context(), mustDate("2026-10-14")); ok || err != nil {
+		t.Fatalf("EmitDayOfReminder with no plan = %v, %v, want false", ok, err)
+	}
+	e.reply("", fullWeek...)
+	e.mustDraft(t, false)
+	for range 2 {
+		if ok, err := e.svc.EmitDayOfReminder(t.Context(), mustDate("2026-10-14")); !ok || err != nil {
+			t.Fatalf("EmitDayOfReminder = %v, %v, want true", ok, err)
+		}
+	}
+	rows := notifytest.Rows(t, e.st, notify.DayOfReminder)
+	if len(rows) != 1 {
+		t.Fatalf("day_of_reminder rows = %+v, want one on push", rows)
+	}
+	r := rows[0]
+	if r.Key != "day_of_reminder:2026-10-14" || r.Channel != notify.ChannelPush || r.Payload.Title != "Tonight: Pad Thai · Recipe →" ||
+		r.Payload.Body != "" || r.Payload.URL != "/dinner/"+e.ids["Pad Thai"] || r.Payload.Week != "2026-10-12" {
+		t.Errorf("day_of_reminder row = %+v", r)
 	}
 }
 

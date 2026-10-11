@@ -3,11 +3,14 @@ package shopping_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"reflect"
 	"strings"
 	"sync"
@@ -17,10 +20,14 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/llm"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/chat"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/chat/chattest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify/notifytest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes/recipestest"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secretbox"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/shopping"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/migrations"
@@ -61,6 +68,10 @@ type env struct {
 	beforeModel func(llm.Request)
 	// log holds what the service logged.
 	log *syncBuffer
+	// chat is the fake Google Chat endpoint chatSvc posts to; no webhook
+	// is stored until a test stores one.
+	chat    *chattest.Chat
+	chatSvc *chat.Service
 }
 
 // syncBuffer is a bytes.Buffer safe for concurrent use.
@@ -122,7 +133,18 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.svc, err = shopping.NewService(st, title, e.runner, logger)
+	key := make([]byte, secretbox.KeySize)
+	rand.Read(key)
+	box, err := secretbox.New(base64.StdEncoding.EncodeToString(key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.chat = chattest.New(t)
+	e.chatSvc, err = chat.NewService(st, box, &url.URL{Scheme: "https", Host: "meals.example.com"}, e.chat.Transport())
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.svc, err = shopping.NewService(st, title, e.runner, notifytest.New(t, st), e.chatSvc, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -494,7 +516,7 @@ func TestGenerateManualRecipe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dsvc, err := dinners.NewService(e.st, grounder, runner, logger)
+	dsvc, err := dinners.NewService(e.st, grounder, runner, func() {}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

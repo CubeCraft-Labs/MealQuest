@@ -1,7 +1,7 @@
 import type { ComponentPropsWithRef } from 'react'
 import styles from './IconButton.module.css'
 
-export type IconButtonSize = 40 | 62
+export type IconButtonSize = 40 | 52 | 62
 export type IconButtonTone = 'surface' | 'neutral' | 'accent' | 'teal'
 
 export type IconButtonProps = Omit<ComponentPropsWithRef<'button'>, 'aria-label'> & {
@@ -15,7 +15,8 @@ export type IconButtonProps = Omit<ComponentPropsWithRef<'button'>, 'aria-label'
 }
 
 // Round icon button, named by its label and showing it only with showLabel.
-// The 40 px size keeps a 44 px hit box (see the CSS); the 62 px size is the
+// The 40 px size keeps a 44 px hit box (see the CSS); the 52 px size sits
+// beside a 52 px pill button, as the recipe's heart; the 62 px size is the
 // round action button with --shadow-md.
 export function IconButton({
   label,

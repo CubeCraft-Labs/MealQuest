@@ -86,13 +86,19 @@ func newDinnersEnv(t *testing.T) *dinnersEnv {
 		t.Fatal(err)
 	}
 	e.runner = runner
-	g := recipestest.NewGrounder(t, st, t.TempDir(), e.search, e.pages, e.images, e.model)
-	svc, err := dinners.NewService(st, g, runner, logger)
+	// The router serves the photos the grounder caches.
+	dataDir := t.TempDir()
+	g := recipestest.NewGrounder(t, st, dataDir, e.search, e.pages, e.images, e.model)
+	photos, err := recipes.NewPhotoCache(e.images, st, dataDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.h, err = NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t),
-		svc, newTestSuggest(t), newTestPlan(t), newTestShopping(t), newTestGoogle(t), newTestIdeas(t), runner, newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
+	svc, err := dinners.NewService(st, g, runner, func() {}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.h, err = NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t), newTestChat(t),
+		svc, newTestSuggest(t), newTestPlan(t), newTestShopping(t), newTestGoogle(t), newTestPush(t), newTestIdeas(t), newTestHome(t), runner, photos, fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
 	if err != nil {
 		t.Fatal(err)
 	}

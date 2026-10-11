@@ -2,18 +2,16 @@ import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApiClient, createVerifiedSession } from './api/index.ts'
 import { createNetworkStatus } from './pwa/networkStatus.ts'
-import { stubAnimate } from './test/animate.ts'
 import { mockViewport } from './test/matchMedia.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME, request, stubFetch, stubFetchByPath } from './test/fetchStub.ts'
 import App, { routes } from './App.tsx'
-import { AI_SETTINGS, HOUSEHOLD_SETTINGS, RECIPE_SEARCH_SETTINGS, SETTINGS_API } from './test/ApiProviders.tsx'
+import { AI_SETTINGS, HOME, HOUSEHOLD_SETTINGS, RECIPE_SEARCH_SETTINGS, SETTINGS_API } from './test/ApiProviders.tsx'
 import { InDataRouter } from './test/dataRouter.tsx'
 import { dinnerBody } from './test/dinners.ts'
 import { defaultWeek } from './plan/week.ts'
 
 afterEach(() => {
   Reflect.deleteProperty(window, 'matchMedia')
-  Reflect.deleteProperty(Element.prototype, 'animate')
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
@@ -40,6 +38,7 @@ const SCREENS = {
   '/discover': true,
   '/quick': true,
   '/cook-from-pantry': true,
+  '/dinner/:id': true,
   '/settings': true,
   '/settings/ai': true,
   '/settings/household': true,
@@ -87,26 +86,14 @@ describe('App routes', () => {
     },
   )
 
-  it.each([
-    ['Quick dinner', '/quick', 'Quick dinners'],
-    ['Cook from what I have', '/cook-from-pantry', 'Cook from what I have'],
-  ])('Home links %s to %s', async (link, path, heading) => {
+  it('/ renders the Home screen inside the shell', async () => {
     mockViewport(390)
-    stubAnimate({ autoFinish: true })
-    // The idea screen's own requests stay pending: this checks only that Home
-    // navigates to it.
-    const fetchMock = vi.fn<typeof fetch>((input) => {
-      const respond = Object.hasOwn(SIGNED_IN, String(input)) ? SIGNED_IN[String(input) as keyof typeof SIGNED_IN] : undefined
-      return respond === undefined ? new Promise<Response>(() => {}) : Promise.resolve(respond())
-    })
-    vi.stubGlobal('fetch', fetchMock)
+    stubFetchByPath({ ...SIGNED_IN, '/api/v1/home': () => jsonResponse(200, HOME), '/api/v1/rotation-reviews': () => jsonResponse(200, { reviews: [] }) })
     renderAt('/')
-    await screen.findByRole('heading', { level: 1, name: 'Home' })
-    const shortcut = screen.getByRole('link', { name: link })
-    expect(shortcut).toHaveAttribute('href', path)
-    act(() => shortcut.click())
-    expect(await screen.findByRole('heading', { level: 1, name: heading })).toBeInTheDocument()
-    expect(screen.queryByRole('heading', { level: 1, name: 'Home' })).not.toBeInTheDocument()
+    const heading = await screen.findByRole('heading', { level: 1, name: "Tonight's quest" })
+    expect(screen.getByRole('main')).toContainElement(heading)
+    expect(await screen.findByRole('heading', { name: 'Pizza night' })).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'Primary' })).toBeInTheDocument()
   })
 
   it('/settings renders the settings home inside the shell', async () => {
@@ -147,6 +134,7 @@ describe('App routes', () => {
           title: null,
           status: 'current',
           sent_to_chat_at: null,
+          chat_send_unconfirmed_at: null,
           needed_count: 1,
           total_count: 1,
           groups: [{ dinner: { id: 'd1', name: 'Beef tacos' }, date: week, day: 'Monday', items: [{ id: 'i1', name: 'Ground beef', qty: '1 lb', needed: true }] }],
@@ -285,12 +273,19 @@ describe('App bootstrap', () => {
 
   it('reports a /me failure with a retry instead of rendering the routes', async () => {
     mockViewport(390)
-    stubFetch(errorResponse(500, 'internal'), jsonResponse(200, ME), jsonResponse(200, HOUSEHOLD_SETTINGS))
+    const mes = [errorResponse(500, 'internal'), jsonResponse(200, ME)]
+    stubFetchByPath({
+      ...SIGNED_IN,
+      '/api/v1/me': () => mes.shift()!,
+      '/api/v1/home': () => jsonResponse(200, HOME),
+      '/api/v1/rotation-reviews': () => jsonResponse(200, { reviews: [] }),
+    })
     renderAt('/')
 
     expect(await screen.findByRole('alert')).toHaveTextContent('MealQuest could not load: internal message')
     screen.getByRole('button', { name: 'Retry' }).click()
-    expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: "Tonight's quest" })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Pizza night' })).toBeInTheDocument()
   })
 })
 
@@ -305,9 +300,9 @@ describe('App offline bootstrap', () => {
   // visitOnline is an earlier online visit on this device: /me answers with a
   // member, then the app is closed.
   async function visitOnline() {
-    stubFetchByPath(SIGNED_IN)
+    stubFetchByPath({ ...SIGNED_IN, '/api/v1/home': () => jsonResponse(200, HOME), '/api/v1/rotation-reviews': () => jsonResponse(200, { reviews: [] }) })
     const { unmount } = renderAt('/')
-    expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Pizza night' })).toBeInTheDocument()
     unmount()
   }
 
@@ -318,15 +313,17 @@ describe('App offline bootstrap', () => {
   })
 
   // A test that emits an offline event leaves TanStack Query's online
-  // manager, shared by every test, offline until an online event.
+  // manager, shared by every test, offline until an online event. The
+  // manager listens for it only while a query client is mounted, so the
+  // event goes out before cleanup unmounts the app.
   afterEach(() => {
-    cleanup()
     window.dispatchEvent(new Event('online'))
+    cleanup()
   })
 
   it.each([
+    ['/', "Tonight's quest"],
     ['/settings/notifications', 'Notifications'],
-    ['/dinner/01J9ZK', 'Dinner'],
   ])('an offline reload of %s after an online visit opens the saved page', async (path, title) => {
     await visitOnline()
     goOffline()

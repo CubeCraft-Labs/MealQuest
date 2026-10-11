@@ -4,12 +4,20 @@ import { Route, Routes, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
-import { AI_SETTINGS, GOOGLE_NOT_CONNECTED, HOUSEHOLD_SETTINGS, SETTINGS_API } from '../test/ApiProviders.tsx'
+import {
+  AI_SETTINGS,
+  CHAT_WEBHOOK,
+  CHAT_WEBHOOK_NONE,
+  GOOGLE_NOT_CONNECTED,
+  HOUSEHOLD_SETTINGS,
+  SETTINGS_API,
+} from '../test/ApiProviders.tsx'
 import { declaredStyle } from '../test/cssRules.ts'
 import { InDataRouter } from '../test/dataRouter.tsx'
 import { errorResponse, fakeLocation, jsonResponse, stubFetchByPath } from '../test/fetchStub.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
 import { mockViewport } from '../test/matchMedia.ts'
+import { restorePushEnvironment, stubPushEnvironment } from '../test/push.ts'
 import { formatClockTime, modelDisplayName } from './api.ts'
 import { SettingsPage } from './SettingsPage.tsx'
 
@@ -18,12 +26,14 @@ const AI = AI_SETTINGS
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  restorePushEnvironment()
   Reflect.deleteProperty(window, 'matchMedia')
 })
 
 const REGULARS_PATH = '/api/v1/dinners?status=regular'
 const CALENDAR_PATH = '/api/v1/integrations/google'
 const NOTIFICATIONS_PATH = '/api/v1/settings/notifications'
+const CHAT_WEBHOOK_PATH = '/api/v1/settings/chat-webhook'
 
 // stubSettings answers as today's server does (see SETTINGS_API), with
 // overrides for the paths a test changes.
@@ -99,6 +109,7 @@ describe('SettingsPage', () => {
       CALENDAR_PATH,
       '/api/v1/settings/ai',
       '/api/v1/settings/ai/models',
+      CHAT_WEBHOOK_PATH,
       '/api/v1/settings/household',
       NOTIFICATIONS_PATH,
       '/api/v1/settings/recipe-search',
@@ -120,8 +131,9 @@ describe('SettingsPage', () => {
       [REGULARS_PATH]: () => jsonResponse(200, { dinners: Array.from({ length: 7 }, (_, i) => ({ id: `d${i}` })) }),
       [CALENDAR_PATH]: () =>
         jsonResponse(200, { ...GOOGLE_NOT_CONNECTED, status: 'connected', calendar_id: 'c1', calendar_name: 'Dinners calendar' }),
-      [NOTIFICATIONS_PATH]: () => jsonResponse(200, { push: true, chat_space: 'Dinner Crew space' }),
+      [CHAT_WEBHOOK_PATH]: () => jsonResponse(200, CHAT_WEBHOOK),
     })
+    stubPushEnvironment({ permission: 'granted', subscribed: true })
     renderSettings()
     expect(await within(row('Regular dinners')).findByText('7 on rotation')).toBeInTheDocument()
     expect(await within(row('Google Calendar')).findByText('Connected · Dinners calendar')).toBeInTheDocument()
@@ -134,7 +146,7 @@ describe('SettingsPage', () => {
     stubSettings({
       [REGULARS_PATH]: () => jsonResponse(200, { dinners: [] }),
       [CALENDAR_PATH]: () => jsonResponse(200, GOOGLE_NOT_CONNECTED),
-      [NOTIFICATIONS_PATH]: () => jsonResponse(200, { push: false, chat_space: null }),
+      [CHAT_WEBHOOK_PATH]: () => jsonResponse(200, CHAT_WEBHOOK_NONE),
     })
     renderSettings()
     expect(await within(row('Regular dinners')).findByText('None on rotation yet')).toBeInTheDocument()

@@ -1,0 +1,289 @@
+/* Notifications & Google Chat, handoff mock 1n; its cards also sit in the
+   desktop settings' left column (mock 2e). */
+.page {
+  box-sizing: border-box;
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding-top: 6px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 32px;
+  font-weight: 400;
+}
+
+.loading {
+  height: 260px;
+  border-radius: var(--radius-lg);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.cardTitle {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 22px;
+  font-weight: 400;
+}
+
+.cardLoading {
+  height: 120px;
+  border-radius: var(--radius-lg);
+}
+
+/* Event | PUSH | CHAT, the channel columns 46 px wide. */
+.matrix {
+  display: grid;
+  grid-template-columns: 1fr 46px 46px;
+  align-items: center;
+  row-gap: 18px;
+}
+
+.head {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-neutral-700);
+}
+
+.head:not(:first-child) {
+  justify-self: center;
+}
+
+.event {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.eventName {
+  font-family: var(--font-body);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.toggle {
+  justify-self: center;
+}
+
+/* The reminder time: tappable text with a 44 px hit box. */
+.time {
+  min-width: 44px;
+  min-height: 44px;
+  margin: -10px 0 -12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-neutral-700);
+  font-family: var(--font-body);
+  font-size: 14px;
+  text-align: left;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.time:disabled {
+  cursor: not-allowed;
+}
+
+.permission {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.permissionRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-height: 52px;
+  padding: 6px 6px 6px 18px;
+  border-radius: 20px;
+  background: var(--color-neutral-100);
+}
+
+.permissionText {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 14px;
+}
+
+.permissionRow button {
+  min-height: 44px;
+}
+
+.statusSkeleton {
+  display: inline-block;
+  width: 3em;
+  height: 1em;
+  vertical-align: middle;
+}
+
+.input {
+  background: var(--color-bg);
+}
+
+.mono {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The status shares its line with Send test, wrapping its own text first. */
+.webhookRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.webhookRow .connected {
+  flex: 1;
+  min-width: 0;
+}
+
+.webhookRow button {
+  flex: none;
+}
+
+.webhookRow button,
+.webhookActions button {
+  min-height: 48px;
+}
+
+.webhookActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.connected,
+.testOk {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-accent-2-800);
+}
+
+.note,
+.error {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.note {
+  color: var(--color-neutral-700);
+}
+
+.error {
+  font-weight: 700;
+  color: var(--color-accent-700);
+}
+
+.link {
+  align-self: flex-start;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--color-accent-700);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* The webhook form while its save is pending; it lays out as if it were
+   not there. */
+.lock {
+  display: contents;
+}
+
+.preview {
+  display: flex;
+  gap: 12px;
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 20px;
+  background: var(--color-neutral-100);
+}
+
+.avatar {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+  color: var(--on-accent);
+  font-family: var(--font-heading);
+  font-size: 16px;
+}
+
+.previewText {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+.sheetTitle {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 22px;
+  font-weight: 400;
+}
+
+.sheetText {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--color-neutral-700);
+}
+
+.sheetActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.sheetActions button {
+  min-height: 48px;
+}

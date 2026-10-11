@@ -369,7 +369,7 @@ func TestStartQuickRunsTheJob(t *testing.T) {
 	if res.Stage != StageDone || res.Kind != skills.QuickCrockpot || !reflect.DeepEqual(res.Exclude, []string{"Beef Stew"}) || len(res.Ideas) != 1 {
 		t.Fatalf("result = %+v", res)
 	}
-	if got := res.Ideas[0]; got.Name != "Pulled Pork" || got.Method != "crockpot" || got.SiteName != "R Kitchen" {
+	if got := res.Ideas[0]; got.Name != "Pulled Pork" || got.Method != "crockpot" || got.SiteName == nil || *got.SiteName != "R Kitchen" {
 		t.Errorf("idea = %+v", got)
 	}
 }

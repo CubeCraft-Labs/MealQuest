@@ -10,6 +10,49 @@ import (
 	"database/sql"
 )
 
+const beginShoppingListChatSend = `-- name: BeginShoppingListChatSend :execrows
+UPDATE shopping_lists
+SET chat_send_unconfirmed_at = ?, updated_at = ?
+WHERE id = ? AND status = 'current' AND frozen_at IS NULL
+`
+
+type BeginShoppingListChatSendParams struct {
+	ChatSendUnconfirmedAt sql.NullString
+	UpdatedAt             string
+	ID                    string
+}
+
+// Records a send of list id to Google Chat begun at
+// chat_send_unconfirmed_at, before it is posted, unless the list is frozen
+// into the Supply archive.
+func (q *Queries) BeginShoppingListChatSend(ctx context.Context, arg BeginShoppingListChatSendParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, beginShoppingListChatSend, arg.ChatSendUnconfirmedAt, arg.UpdatedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const clearShoppingListChatSend = `-- name: ClearShoppingListChatSend :execrows
+UPDATE shopping_lists
+SET chat_send_unconfirmed_at = NULL, updated_at = ?
+WHERE id = ?
+`
+
+type ClearShoppingListChatSendParams struct {
+	UpdatedAt string
+	ID        string
+}
+
+// Clears the send of list id begun, once Google Chat refused it.
+func (q *Queries) ClearShoppingListChatSend(ctx context.Context, arg ClearShoppingListChatSendParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, clearShoppingListChatSend, arg.UpdatedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const createShoppingGroup = `-- name: CreateShoppingGroup :exec
 INSERT INTO shopping_groups (id, list_id, dinner_id, date, position, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -135,7 +178,7 @@ func (q *Queries) FreezeShoppingList(ctx context.Context, arg FreezeShoppingList
 }
 
 const getShoppingItemList = `-- name: GetShoppingItemList :one
-SELECT shopping_lists.id, shopping_lists.week_start, shopping_lists.plan_id, shopping_lists.title, shopping_lists.status, shopping_lists.sent_to_chat_at, shopping_lists.frozen_at, shopping_lists.created_at, shopping_lists.updated_at
+SELECT shopping_lists.id, shopping_lists.week_start, shopping_lists.plan_id, shopping_lists.title, shopping_lists.status, shopping_lists.sent_to_chat_at, shopping_lists.frozen_at, shopping_lists.created_at, shopping_lists.updated_at, shopping_lists.chat_send_unconfirmed_at
 FROM shopping_items
 JOIN shopping_groups ON shopping_groups.id = shopping_items.group_id
 JOIN shopping_lists ON shopping_lists.id = shopping_groups.list_id
@@ -161,12 +204,13 @@ func (q *Queries) GetShoppingItemList(ctx context.Context, id string) (GetShoppi
 		&i.ShoppingList.FrozenAt,
 		&i.ShoppingList.CreatedAt,
 		&i.ShoppingList.UpdatedAt,
+		&i.ShoppingList.ChatSendUnconfirmedAt,
 	)
 	return i, err
 }
 
 const getShoppingList = `-- name: GetShoppingList :one
-SELECT id, week_start, plan_id, title, status, sent_to_chat_at, frozen_at, created_at, updated_at FROM shopping_lists
+SELECT id, week_start, plan_id, title, status, sent_to_chat_at, frozen_at, created_at, updated_at, chat_send_unconfirmed_at FROM shopping_lists
 WHERE week_start = ?
 `
 
@@ -185,6 +229,7 @@ func (q *Queries) GetShoppingList(ctx context.Context, weekStart string) (Shoppi
 		&i.FrozenAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ChatSendUnconfirmedAt,
 	)
 	return i, err
 }
@@ -322,7 +367,7 @@ func (q *Queries) ListShoppingItems(ctx context.Context, listID string) ([]ListS
 }
 
 const listShoppingListsThrough = `-- name: ListShoppingListsThrough :many
-SELECT id, week_start, plan_id, title, status, sent_to_chat_at, frozen_at, created_at, updated_at FROM shopping_lists
+SELECT id, week_start, plan_id, title, status, sent_to_chat_at, frozen_at, created_at, updated_at, chat_send_unconfirmed_at FROM shopping_lists
 WHERE week_start <= ?
 ORDER BY week_start DESC
 `
@@ -348,6 +393,7 @@ func (q *Queries) ListShoppingListsThrough(ctx context.Context, weekStart string
 			&i.FrozenAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ChatSendUnconfirmedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -360,6 +406,28 @@ func (q *Queries) ListShoppingListsThrough(ctx context.Context, weekStart string
 		return nil, err
 	}
 	return items, nil
+}
+
+const markShoppingListSentToChat = `-- name: MarkShoppingListSentToChat :execrows
+UPDATE shopping_lists
+SET sent_to_chat_at = ?, chat_send_unconfirmed_at = NULL, updated_at = ?
+WHERE id = ? AND status = 'current' AND frozen_at IS NULL
+`
+
+type MarkShoppingListSentToChatParams struct {
+	SentToChatAt sql.NullString
+	UpdatedAt    string
+	ID           string
+}
+
+// Records list id sent to Google Chat at sent_to_chat_at, its send
+// confirmed, unless it is frozen into the Supply archive.
+func (q *Queries) MarkShoppingListSentToChat(ctx context.Context, arg MarkShoppingListSentToChatParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markShoppingListSentToChat, arg.SentToChatAt, arg.UpdatedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const moveShoppingGroup = `-- name: MoveShoppingGroup :exec

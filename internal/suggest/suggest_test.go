@@ -23,6 +23,8 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify/notifytest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes/recipestest"
@@ -121,7 +123,7 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.svc, err = suggest.NewService(st, g, suggester, e.runner, logger)
+	e.svc, err = suggest.NewService(st, g, suggester, e.runner, notifytest.New(t, st), logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,6 +300,45 @@ func (e *env) runBatch(t *testing.T) batchResult {
 	return res
 }
 
+// scheduledWeek is the week the tests' scheduled batches are for: the
+// Monday of 2026-W41.
+var scheduledWeek = mustDate("2026-10-05")
+
+func mustDate(s string) store.LocalDate {
+	d, err := store.ParseLocalDate(s)
+	if err != nil {
+		panic(err)
+	}
+	return d
+}
+
+func mustZone(t *testing.T, name string) *time.Location {
+	t.Helper()
+	loc, err := household.LoadZone(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return loc
+}
+
+// startBatch starts a batch with trigger, a scheduled one for
+// scheduledWeek, and returns it with the key its new_suggestions has.
+func (e *env) startBatch(t *testing.T, trigger string) (suggest.Batch, string) {
+	t.Helper()
+	if trigger == suggest.TriggerScheduled {
+		b, err := e.svc.StartScheduledBatch(t.Context(), scheduledWeek)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b, "new_suggestions:2026-W41"
+	}
+	b, err := e.svc.StartBatch(t.Context(), trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b, "new_suggestions:" + b.ID
+}
+
 func (e *env) batchStatus(t *testing.T, id string) string {
 	t.Helper()
 	var status string
@@ -398,6 +439,193 @@ func TestBatchStoresGroundedSideQuests(t *testing.T) {
 	}
 	if dinners != 0 {
 		t.Errorf("%d dropped Side quests stored as dinners, want none", dinners)
+	}
+}
+
+// TestBatchEmitsNewSuggestions: a scheduled or manual batch that adds Side
+// quests stores new_suggestions counting and naming them, keyed by the
+// scheduled ISO week or the manual batch, for that week or the current
+// one; a replenish batch, or one that adds none, stores nothing.
+func TestBatchEmitsNewSuggestions(t *testing.T) {
+	for _, tc := range []struct {
+		trigger string
+		grounds bool
+		notify  bool
+	}{
+		{suggest.TriggerScheduled, true, true},
+		{suggest.TriggerManual, true, true},
+		{suggest.TriggerReplenish, true, false},
+		{suggest.TriggerManual, false, false},
+	} {
+		t.Run(fmt.Sprintf("%s grounds %v", tc.trigger, tc.grounds), func(t *testing.T) {
+			e := newEnv(t)
+			e.start(t)
+			if tc.grounds {
+				e.recipe(t, "Chicken Shawarma Bowls")
+				e.recipe(t, "Chili Verde")
+			}
+			e.reply(
+				sideQuest("Chicken Shawarma Bowls", "Spiced chicken, like your Chicken Fajitas.", "Chicken Fajitas"),
+				sideQuest("Chili Verde", "Your Beef Chili gone green.", "Beef Chili"),
+			)
+			b, key := e.startBatch(t, tc.trigger)
+			if job := e.waitJob(t, b.JobID); job.Status != jobs.StatusSucceeded {
+				t.Fatalf("batch job %s", job.Status)
+			}
+			rows := notifytest.Rows(t, e.st, notify.NewSuggestions)
+			if !tc.notify {
+				if len(rows) != 0 {
+					t.Errorf("new_suggestions rows = %+v, want none", rows)
+				}
+				return
+			}
+			if len(rows) != 1 {
+				t.Fatalf("new_suggestions rows = %+v, want one on push", rows)
+			}
+			r := rows[0]
+			week := household.WeekStart(store.LocalDateOf(time.Now().In(mustZone(t, "America/New_York")))).String()
+			if tc.trigger == suggest.TriggerScheduled {
+				week = scheduledWeek.String()
+			}
+			if r.Key != key || r.Channel != notify.ChannelPush || r.Payload.URL != "/discover" ||
+				r.Payload.Title != "2 new Side quests are in" || r.Payload.Body != "Chicken Shawarma Bowls, Chili Verde" || r.Payload.Week != week {
+				t.Errorf("new_suggestions row = %+v, want key %s counting and naming the Side quests, week %s, /discover", r, key, week)
+			}
+		})
+	}
+}
+
+// twoRoundBatch scripts a suggest_side_quests reply of BatchSize+1 Side
+// quests, Fajita Dish A to F, whose first round grounds all but B, so a
+// second round grounds F. Unless lastGrounds, normalize_recipe fails for
+// F.
+func (e *env) twoRoundBatch(t *testing.T, lastGrounds bool) {
+	t.Helper()
+	var quests []string
+	for i := range suggest.BatchSize + 1 {
+		name := fmt.Sprintf("Fajita Dish %c", 'A'+i)
+		e.search.Results[name] = nil
+		switch {
+		case i == suggest.BatchSize && !lastGrounds:
+			// A page is found, but no normalize_recipe reply is scripted
+			// for it, so the AI call grounding it fails.
+			slug := strings.ReplaceAll(strings.ToLower(name), " ", "-")
+			page, photo := "https://r.example/"+slug, "https://r.example/"+slug+".jpg"
+			e.search.Results[name] = []recipes.Candidate{{URL: page}}
+			e.pages.Bodies[page] = recipestest.RecipePage(name, "R Kitchen", photo, 35)
+			e.images.JPEGs[photo] = recipestest.JPEG(t, 400, 320, uint8(len(e.images.JPEGs)+1))
+		case i != 1:
+			e.recipe(t, name)
+		}
+		quests = append(quests, sideQuest(name, "Like your Chicken Fajitas.", "Chicken Fajitas"))
+	}
+	e.reply(quests...)
+}
+
+// TestBatchNotifiesOnceWithEverySideQuestStored: a batch that fills across
+// two grounding rounds stores new_suggestions once, when it completes,
+// counting and naming every Side quest it stored, not just the first
+// round's; a replenish batch notifies nothing.
+func TestBatchNotifiesOnceWithEverySideQuestStored(t *testing.T) {
+	for _, tc := range []struct {
+		trigger string
+		notify  bool
+	}{
+		{suggest.TriggerScheduled, true},
+		{suggest.TriggerManual, true},
+		{suggest.TriggerReplenish, false},
+	} {
+		t.Run(tc.trigger, func(t *testing.T) {
+			e := newEnv(t)
+			e.start(t)
+			e.twoRoundBatch(t, true)
+
+			b, key := e.startBatch(t, tc.trigger)
+			if job := e.waitJob(t, b.JobID); job.Status != jobs.StatusSucceeded {
+				t.Fatalf("batch job %s, want succeeded", job.Status)
+			}
+			deck := e.deckNames(t)
+			if want := []string{"Fajita Dish A", "Fajita Dish C", "Fajita Dish D", "Fajita Dish E", "Fajita Dish F"}; !slices.Equal(deck, want) {
+				t.Fatalf("deck = %v, want %v", deck, want)
+			}
+			rows := notifytest.Rows(t, e.st, notify.NewSuggestions)
+			if !tc.notify {
+				if len(rows) != 0 {
+					t.Errorf("new_suggestions rows = %+v, want none", rows)
+				}
+				return
+			}
+			want := fmt.Sprintf("%d new Side quests are in", len(deck))
+			if len(rows) != 1 || rows[0].Key != key || rows[0].Payload.Title != want ||
+				rows[0].Payload.Body != "Fajita Dish A, Fajita Dish C, Fajita Dish D + 2 more" {
+				t.Errorf("new_suggestions rows = %+v, want one keyed %s titled %q", rows, key, want)
+			}
+		})
+	}
+}
+
+// TestBatchFailingInALaterRoundStoresNothing: when normalize_recipe fails
+// in a batch's second grounding round, a scheduled or manual batch stores
+// none of the first round's Side quests and sends no new_suggestions, so
+// no Side quest is left in the deck unannounced; a replenish batch, which
+// never notifies, keeps the first round's in the deck.
+func TestBatchFailingInALaterRoundStoresNothing(t *testing.T) {
+	for _, tc := range []struct {
+		trigger string
+		deck    int
+	}{
+		{suggest.TriggerScheduled, 0},
+		{suggest.TriggerManual, 0},
+		{suggest.TriggerReplenish, suggest.BatchSize - 1},
+	} {
+		t.Run(tc.trigger, func(t *testing.T) {
+			e := newEnv(t)
+			e.start(t)
+			e.twoRoundBatch(t, false)
+
+			b, _ := e.startBatch(t, tc.trigger)
+			job := e.waitJob(t, b.JobID)
+			if job.Status != jobs.StatusFailed || job.Error == nil || *job.Error != suggest.ReasonAIFailed {
+				t.Fatalf("batch job %s, error %+v, want failed %s", job.Status, job.Error, suggest.ReasonAIFailed)
+			}
+			if got := e.batchStatus(t, b.ID); got != suggest.BatchFailed {
+				t.Errorf("batch status = %s, want failed", got)
+			}
+			if got := e.deckNames(t); len(got) != tc.deck {
+				t.Errorf("deck = %v, want %d Side quests", got, tc.deck)
+			}
+			if rows := notifytest.Rows(t, e.st, notify.NewSuggestions); len(rows) != 0 {
+				t.Errorf("new_suggestions rows = %+v, want none", rows)
+			}
+		})
+	}
+}
+
+// TestBatchFailsWhenItsNotificationCannotBeStored: Side quests are stored
+// only with their notification, so a notification that cannot be stored
+// fails the batch with an empty deck rather than leaving Side quests the
+// household is never told of.
+func TestBatchFailsWhenItsNotificationCannotBeStored(t *testing.T) {
+	e := newEnv(t)
+	e.start(t)
+	e.recipe(t, "Chili Verde")
+	e.reply(sideQuest("Chili Verde", "Your Beef Chili gone green.", "Beef Chili"))
+	if _, err := e.st.Writer.ExecContext(t.Context(), `CREATE TRIGGER refuse_outbox BEFORE INSERT ON notification_outbox BEGIN SELECT RAISE(ABORT, 'outbox refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	b, err := e.svc.StartBatch(t.Context(), suggest.TriggerManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job := e.waitJob(t, b.JobID); job.Status != jobs.StatusFailed {
+		t.Fatalf("batch job %s, want failed", job.Status)
+	}
+	if got := e.batchStatus(t, b.ID); got != suggest.BatchFailed {
+		t.Errorf("batch status = %s, want failed", got)
+	}
+	if got := e.deckNames(t); len(got) != 0 {
+		t.Errorf("deck = %v with no notification stored, want empty", got)
 	}
 }
 
@@ -874,7 +1102,7 @@ func TestBatchNeverStoresDishPassedWhileRunning(t *testing.T) {
 func TestLaterBatchNeverResuggestsRenamedPass(t *testing.T) {
 	e := newEnv(t) // runner not started: the replenish batch waits for the rename
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	dinnerSvc, err := dinners.NewService(e.st, e.grounder, e.runner, logger)
+	dinnerSvc, err := dinners.NewService(e.st, e.grounder, e.runner, func() {}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -922,14 +1150,14 @@ func TestLaterBatchNeverResuggestsRenamedDrop(t *testing.T) {
 	e := newEnv(t)
 	ctx := t.Context()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	dinnerSvc, err := dinners.NewService(e.st, e.grounder, e.runner, logger)
+	dinnerSvc, err := dinners.NewService(e.st, e.grounder, e.runner, func() {}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fail := func(context.Context, string, skills.WeekRequest) (skills.Week, error) {
 		return skills.Week{}, errors.New("no draft in this test")
 	}
-	planSvc, err := plan.NewService(e.st, fail, e.runner, noCalendar{}, &url.URL{Scheme: "https", Host: "meals.example.com"}, logger)
+	planSvc, err := plan.NewService(e.st, fail, e.runner, noCalendar{}, notifytest.New(t, e.st), func() {}, &url.URL{Scheme: "https", Host: "meals.example.com"}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1151,6 +1379,10 @@ func TestBatchJobFailsWhenRecordingItsEndFails(t *testing.T) {
 	if got := e.batchStatus(t, b.ID); got != suggest.BatchFailed {
 		t.Errorf("batch status = %s with its job failed, want failed", got)
 	}
+	// Its Side quests stay in the deck, and the household was told of them.
+	if rows := notifytest.Rows(t, e.st, notify.NewSuggestions); len(rows) != 1 || rows[0].Key != "new_suggestions:"+b.ID || rows[0].Payload.Title != "1 new Side quest is in" || rows[0].Payload.Body != "Chili Verde" {
+		t.Errorf("new_suggestions rows of a batch whose end was not recorded = %+v, want one naming Chili Verde", rows)
+	}
 }
 
 func TestBatchRecoversWhenRecordingItsEndAndItsJobsEndFail(t *testing.T) {
@@ -1284,7 +1516,7 @@ func TestBlockedBatchEndDoesNotHoldShutdown(t *testing.T) {
 	refuse := func(context.Context, string, skills.SideQuestsRequest) (skills.SideQuests, error) {
 		return skills.SideQuests{}, errors.New("not wanted")
 	}
-	svc, err := suggest.NewService(e.st, e.grounder, refuse, next, logger)
+	svc, err := suggest.NewService(e.st, e.grounder, refuse, next, notifytest.New(t, e.st), logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1320,6 +1552,47 @@ func TestStartBatchRefusesUnknownTrigger(t *testing.T) {
 	e := newEnv(t)
 	if _, err := e.svc.StartBatch(t.Context(), "whenever"); err == nil {
 		t.Fatal("unknown trigger accepted")
+	}
+}
+
+// TestScheduledBatchNeedsItsWeek: a scheduled batch is started only by
+// StartScheduledBatch, for a Monday.
+func TestScheduledBatchNeedsItsWeek(t *testing.T) {
+	e := newEnv(t)
+	if _, err := e.svc.StartBatch(t.Context(), suggest.TriggerScheduled); err == nil {
+		t.Error("StartBatch started a scheduled batch with no week")
+	}
+	for _, week := range []store.LocalDate{{}, mustDate("2026-10-06")} {
+		if _, err := e.svc.StartScheduledBatch(t.Context(), week); err == nil {
+			t.Errorf("StartScheduledBatch(%q) accepted a week that is not a Monday", week)
+		}
+	}
+	if n := e.activeBatches(t); n != 0 {
+		t.Errorf("%d active batches, want none", n)
+	}
+}
+
+// TestScheduledBatchKeyedByItsWeekWhenRunLate: a scheduled batch's
+// new_suggestions is keyed by the week it was scheduled for, not the week
+// it runs in, so a batch caught up after its week ended still tells the
+// household of that week's Side quests and leaves the next week's key free.
+func TestScheduledBatchKeyedByItsWeekWhenRunLate(t *testing.T) {
+	e := newEnv(t)
+	e.start(t)
+	e.recipe(t, "Chili Verde")
+	e.reply(sideQuest("Chili Verde", "Your Beef Chili gone green.", "Beef Chili"))
+	// A week long past: the batch runs today, weeks later.
+	b, err := e.svc.StartScheduledBatch(t.Context(), mustDate("2026-01-05"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job := e.waitJob(t, b.JobID); job.Status != jobs.StatusSucceeded {
+		t.Fatalf("batch job %s", job.Status)
+	}
+	rows := notifytest.Rows(t, e.st, notify.NewSuggestions)
+	if len(rows) != 1 || rows[0].Key != "new_suggestions:2026-W02" || rows[0].Payload.Week != "2026-01-05" ||
+		rows[0].Payload.Title != "1 new Side quest is in" {
+		t.Errorf("new_suggestions rows = %+v, want one keyed new_suggestions:2026-W02 for 2026-01-05", rows)
 	}
 }
 

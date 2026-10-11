@@ -1,15 +1,15 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { CalendarDays, Check, ChevronLeft, ChevronRight, Plus, RefreshCw, ShoppingCart } from 'lucide-react'
-import { useEffect, useId, useMemo, useState, type ReactNode } from 'react'
-import { Link } from 'react-router'
+import { useEffect, useMemo, useState } from 'react'
+import { Link, useSearchParams } from 'react-router'
 import { ApiError, useJob } from '../api/index.ts'
 import { QUEST_LOG_KEY } from '../discover/api.ts'
 import { Confirm } from '../settings/LeaveGuard.tsx'
 import { methodLabels } from '../settings/RegularsSettingsPage.tsx'
 import { formatClockTime, useHouseholdSettings } from '../settings/api.ts'
-import { supplyRunScreen, useGenerateSupplyRun, useSupplyRun } from '../shopping/api.ts'
+import { supplyRunScreen, useGenerateSupplyRun, useSupplyRun, WEEK_PARAM } from '../shopping/api.ts'
 import { useBreakpoint, type Breakpoint } from '../shell/useBreakpoint.ts'
-import { Button, type ButtonVariant } from '../ui/Button.tsx'
+import { Button } from '../ui/Button.tsx'
 import buttonStyles from '../ui/Button.module.css'
 import { EmptyState } from '../ui/EmptyState.tsx'
 import { ErrorBanner } from '../ui/ErrorBanner.tsx'
@@ -23,9 +23,8 @@ import {
   parseDraftResult,
   planKey,
   usePlan,
-  usePushToCalendar,
   useStartDraft,
-  useSwapDay,
+  useWeekSwap,
   type DraftResult,
   type Plan,
   type PlanDay,
@@ -41,6 +40,7 @@ import {
   addDays,
   dayOfMonth,
   defaultWeek,
+  isMonday,
   localNow,
   weekdayKicker,
   weekdayName,
@@ -266,8 +266,7 @@ function WeekBoard({
   const [jobId, setJobId] = useState<string | null>(null)
   const job = useJob<unknown>(DRAFT_JOB_KIND, jobId)
   const [confirming, setConfirming] = useState(false)
-  const swap = useSwapDay(weekStart)
-  const push = usePushToCalendar(weekStart)
+  const { swap, push, refused, swapIn: sendSwap } = useWeekSwap(weekStart)
   const run = useSupplyRun(weekStart)
   // Makes the week's Supply run again after a push could not make it.
   const generate = useGenerateSupplyRun(weekStart)
@@ -431,25 +430,18 @@ function WeekBoard({
     <ErrorBanner onRetry={() => void run.refetch()}>Couldn't load this week's shopping list. {run.error.message}</ErrorBanner>
   )
 
-  // swapIn sends the swap chosen in the sheet and closes it.
+  // swapIn sends the swap chosen in the sheet, dropped on a day or retried
+  // (useWeekSwap) and closes the sheet. The Supply run made again on the
+  // Plan after a push is left behind with the push.
   function swapIn(chosen: Swap) {
     setSwappingDate(null)
-    push.reset()
     generate.reset()
-    swap.mutate(chosen)
+    sendSwap(chosen)
   }
-  // dropIn swaps in a dinner dragged onto a day. A drag is not picked up,
-  // nor dropped, while a swap of the week is pending.
-  function dropIn(chosen: Swap) {
-    swap.dismiss()
-    swapIn(chosen)
-  }
-  // openSwap opens the swap sheet on a day. One swap of the week is sent at
-  // a time, even across leaving the week and coming back: the plan the
-  // server answers it with must not overwrite another still pending. Nor is
-  // one sent while the week is being pushed to Calendar.
+  // openSwap opens the swap sheet on a day, unless a swap is refused now
+  // (useWeekSwap). A drag is not picked up, nor dropped, then either.
   function openSwap(date: string) {
-    if (swap.pending || pushing) return
+    if (refused) return
     swap.dismiss()
     setSwappingDate(date)
   }
@@ -488,7 +480,7 @@ function WeekBoard({
     body =
       layout !== 'mobile' ? (
         <>
-          <DropBoard days={days} pending={swap.pending || pushing} drop={dropIn} />
+          <DropBoard days={days} pending={refused} drop={swapIn} />
           <ul className={`${styles.week} ${styles[layout]}`} aria-label="Dinners this week">
             {days.map((day) => (
               <DayColumn
@@ -672,56 +664,31 @@ function PushFailure({ error, cached, onRetry }: { error: Error; cached: boolean
   )
 }
 
-// Unavailable is an action with nothing behind it yet (Send to Google
-// Chat): it stays focusable, so a tap or focus shows the tooltip saying
-// why, above it or, at the top of the page, below.
-export function Unavailable({
-  hint,
-  variant = 'primary',
-  below = false,
-  className,
-  children,
-}: {
-  hint: string
-  variant?: ButtonVariant
-  below?: boolean
-  className?: string
-  children: ReactNode
-}) {
-  const hintId = useId()
-  return (
-    <div className={[styles.unavailable, below && styles.below].filter(Boolean).join(' ')}>
-      <Button
-        variant={variant}
-        className={[className, styles[variant]].filter(Boolean).join(' ')}
-        aria-disabled="true"
-        aria-describedby={hintId}
-      >
-        {children}
-      </Button>
-      <span id={hintId} role="tooltip" className={styles.hint}>
-        {hint}
-      </span>
-    </div>
-  )
-}
-
 // PlanPage is the Draft board on the week chosen with the previous / next
 // week buttons: mock 1f on mobile; from tablet up the plan manager, with the
 // Quest log as a strip under the grid on tablet (2c) and the Quest log and
-// Regulars in a right panel on desktop (2d). It opens on next week once this
+// Regulars in a right panel on desktop (2d). It opens on the week chosen by
+// ?week=, as a plan_ready update links it, else on next week once this
 // week's plan_draft time has come in the household's zone, otherwise on this
-// week. The board keeps its place in the tree across layouts, so crossing a
+// week; the week buttons keep ?week= on the week shown. The board keeps its place in the tree across layouts, so crossing a
 // breakpoint keeps a draft being followed. From tablet up a dinner is
 // dragged from the strip or the panel onto a day of the grid to swap it in.
 export function PlanPage() {
   const layout = useBreakpoint()
   const settings = useHouseholdSettings()
-  const [week, setWeek] = useState<string | null>(null)
-  if (week === null && settings.data) setWeek(defaultWeek(settings.data, new Date()))
+  const [params, setParams] = useSearchParams()
+  const chosen = params.get(WEEK_PARAM)
+  // The default week is chosen once, not on every render: the plan_draft
+  // time passing does not move the page to another week.
+  const [opened, setOpened] = useState<string | null>(null)
+  if (opened === null && settings.data) setOpened(defaultWeek(settings.data, new Date()))
+  const week = chosen ?? opened
+  const setWeek = (weekStart: string) => setParams({ [WEEK_PARAM]: weekStart }, { replace: true })
 
   let content
-  if (settings.isError) {
+  if (chosen !== null && !isMonday(chosen)) {
+    content = <ErrorBanner>{`“${chosen}” is not the Monday of a week, as YYYY-MM-DD.`}</ErrorBanner>
+  } else if (settings.isError) {
     content = (
       <ErrorBanner onRetry={() => void settings.refetch()}>Couldn't load the household settings. {settings.error.message}</ErrorBanner>
     )

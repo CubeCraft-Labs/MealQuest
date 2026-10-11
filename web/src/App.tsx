@@ -3,12 +3,13 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { Route, Routes } from 'react-router'
 import { ApiProvider, createQueryClient, type ApiClient } from './api/index.ts'
 import { AuthBootstrap } from './AuthBootstrap.tsx'
+import { DinnerDetailPage } from './dinners/DinnerDetailPage.tsx'
 import { DiscoverPage } from './discover/DiscoverPage.tsx'
+import { HomePage } from './home/HomePage.tsx'
 import { CookFromPantryPage } from './ideas/CookFromPantryPage.tsx'
 import { QuickDinnersPage } from './ideas/QuickDinnersPage.tsx'
 import { ONBOARDING_PATH, OnboardingGate } from './onboarding/OnboardingGate.tsx'
 import { OnboardingPage } from './onboarding/OnboardingPage.tsx'
-import { HomePage } from './pages/HomePage.tsx'
 import { PlaceholderPage } from './pages/PlaceholderPage.tsx'
 import { PlanPage } from './plan/PlanPage.tsx'
 import { OfflinePill } from './pwa/OfflinePill.tsx'
@@ -16,6 +17,7 @@ import { UpdatePrompt, type UpdateContainer } from './pwa/UpdatePrompt.tsx'
 import { AISettingsPage } from './settings/AISettingsPage.tsx'
 import { CalendarSettingsPage } from './settings/CalendarSettingsPage.tsx'
 import { HouseholdSettingsPage } from './settings/HouseholdSettingsPage.tsx'
+import { NotificationsPage } from './settings/NotificationsPage.tsx'
 import { RegularsSettingsPage } from './settings/RegularsSettingsPage.tsx'
 import { SettingsPage } from './settings/SettingsPage.tsx'
 import { AppShell } from './shell/AppShell.tsx'
@@ -51,7 +53,9 @@ const screens: Partial<Record<(typeof routes)[number]['path'], ReactNode>> = {
   '/discover': <DiscoverPage />,
   '/quick': <QuickDinnersPage />,
   '/cook-from-pantry': <CookFromPantryPage />,
+  '/dinner/:id': <DinnerDetailPage />,
   '/settings': <SettingsPage />,
+  '/settings/notifications': <NotificationsPage />,
   '/settings/ai': <AISettingsPage />,
   '/settings/household': <HouseholdSettingsPage />,
   '/settings/regulars': <RegularsSettingsPage />,

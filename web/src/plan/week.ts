@@ -35,6 +35,15 @@ export function weekStart(date: string): string {
   return addDays(date, -sinceMonday)
 }
 
+// isMonday says whether date is a real YYYY-MM-DD Monday.
+export function isMonday(date: string): boolean {
+  try {
+    return weekStart(date) === date
+  } catch {
+    return false
+  }
+}
+
 // weekdayKicker is date's day as a tile kicker: "MON" to "SUN".
 export function weekdayKicker(date: string): string {
   return WEEKDAYS[midnightUTC(date).getUTCDay()]!
@@ -50,6 +59,13 @@ const weekday = new Intl.DateTimeFormat('en-US', { weekday: 'long', timeZone: 'U
 // weekdayName is date's day in full: "Monday" to "Sunday".
 export function weekdayName(date: string): string {
   return weekday.format(midnightUTC(date))
+}
+
+const longDay = new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC' })
+
+// dayAndDate is date's day in full with its month and day: "Saturday, Oct 10".
+export function dayAndDate(date: string): string {
+  return longDay.format(midnightUTC(date))
 }
 
 // monday reads start as midnight UTC, or throws when it is not a Monday.
@@ -107,4 +123,40 @@ export function defaultWeek(schedule: { timezone: string; plan_draft_dow: number
   const draftDay = addDays(thisWeek, (schedule.plan_draft_dow + 6) % 7)
   const drafted = today.date > draftDay || (today.date === draftDay && today.time >= schedule.plan_draft_time)
   return drafted ? addDays(thisWeek, 7) : thisWeek
+}
+
+// wallClock is the household-local wall clock at instant t in IANA zone,
+// read as if it were UTC: the zone's UTC offset at t is wallClock - t.
+function wallClock(zone: string, t: number): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: zone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date(t))
+  const part = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((p) => p.type === type)!.value)
+  const wall = Date.UTC(part('year'), part('month') - 1, part('day'), part('hour'), part('minute'), part('second'))
+  return wall + (((t % 1000) + 1000) % 1000)
+}
+
+// untilLocalMidnight is how many milliseconds after instant now the next
+// local day begins in IANA zone. It finds the actual instant of the next
+// day's midnight, so a day shortened or lengthened by a change of UTC offset
+// is counted as it is. The candidates are that midnight at the zone's offset
+// now and at the offset that candidate lands on; the earliest that falls on
+// the next day is its start, which is the offset change itself when the
+// clocks skip midnight.
+export function untilLocalMidnight(zone: string, now: Date): number {
+  const t = now.getTime()
+  const tomorrow = addDays(localNow(zone, now).date, 1)
+  const midnight = midnightUTC(tomorrow).getTime()
+  const first = midnight - (wallClock(zone, t) - t)
+  const second = midnight - (wallClock(zone, first) - first)
+  const starts = [first, second].filter((c) => localNow(zone, new Date(c)).date === tomorrow)
+  if (starts.length === 0) throw new Error(`no start of ${tomorrow} found in ${zone}`)
+  return Math.min(...starts) - t
 }

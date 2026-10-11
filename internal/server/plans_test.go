@@ -17,11 +17,14 @@ import (
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/chat"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/chat/chattest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal/gcaltest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify/notifytest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/shopping"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
@@ -44,6 +47,10 @@ type plansEnv struct {
 	// unconnected.
 	google *gcaltest.Google
 	gcal   *gcal.Service
+	// chat is the fake Google Chat endpoint chatSvc posts to; no webhook
+	// is stored until a test stores one.
+	chat    *chattest.Chat
+	chatSvc *chat.Service
 	// logs holds every log line the router writes.
 	logs *bytes.Buffer
 }
@@ -85,16 +92,22 @@ func newPlansRouterTitled(t *testing.T, title shopping.Titler) plansEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := plan.NewService(st, fail, runner, googleSvc, pub, logger)
+	notifier := notifytest.New(t, st)
+	svc, err := plan.NewService(st, fail, runner, googleSvc, notifier, func() {}, pub, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
-	shop, err := shopping.NewService(st, title, runner, logger)
+	fakeChat := chattest.New(t)
+	chatSvc, err := chat.NewService(st, newTestBox(t), pub, fakeChat.Transport())
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t),
-		newTestDinners(t), newTestSuggest(t), svc, shop, googleSvc, newTestIdeas(t), runner, newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
+	shop, err := shopping.NewService(st, title, runner, notifier, chatSvc, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t), chatSvc,
+		newTestDinners(t), newTestSuggest(t), svc, shop, googleSvc, newTestPush(t), newTestIdeas(t), newTestHome(t), runner, newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +142,7 @@ func newPlansRouterTitled(t *testing.T, title shopping.Titler) plansEnv {
 		}
 	}
 	return plansEnv{h: h, st: st, svc: svc, shop: shop, runner: runner, questLog: dinner("Pad Thai", "quest_log", "stovetop", 35),
-		google: google, gcal: googleSvc, logs: logs}
+		google: google, gcal: googleSvc, chat: fakeChat, chatSvc: chatSvc, logs: logs}
 }
 
 func (e plansEnv) setStatus(t *testing.T, status string) {

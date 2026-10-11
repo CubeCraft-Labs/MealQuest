@@ -104,7 +104,7 @@ func newUnstartedEnvOn(t *testing.T, st *store.Store, dataDir string) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := dinners.NewService(st, g, runner, logger)
+	svc, err := dinners.NewService(st, g, runner, func() {}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

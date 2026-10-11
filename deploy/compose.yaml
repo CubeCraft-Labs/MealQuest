@@ -31,11 +31,13 @@ services:
       MEALQUEST_SECRET_KEY_FILE: /run/secrets/secret_key
       MEALQUEST_OIDC_CLIENT_SECRET_FILE: /run/secrets/oidc_client_secret
       MEALQUEST_GOOGLE_CLIENT_SECRET_FILE: /run/secrets/google_client_secret
+      MEALQUEST_VAPID_PRIVATE_KEY_FILE: /run/secrets/vapid_private_key
       MEALQUEST_SEARXNG_URL: http://searxng:8080
     secrets:
       - secret_key
       - oidc_client_secret
       - google_client_secret
+      - vapid_private_key
     volumes:
       - mealquest-data:/data
     ports:
@@ -130,6 +132,8 @@ secrets:
     file: ./secrets/oidc_client_secret
   google_client_secret:
     file: ./secrets/google_client_secret
+  vapid_private_key:
+    file: ./secrets/vapid_private_key
 
 volumes:
   mealquest-data:

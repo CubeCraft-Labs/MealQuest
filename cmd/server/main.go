@@ -17,16 +17,21 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/auth"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/chat"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/config"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/forwarded"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/frontend"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/home"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ideas"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/push"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/scheduler"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secretbox"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/server"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/shopping"
@@ -107,11 +112,35 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	dinnerSvc, err := dinners.NewService(db, grounder, runner, logger)
+	notifier, err := notify.NewService(db, logger)
 	if err != nil {
 		return err
 	}
-	suggestSvc, err := suggest.NewService(db, grounder, sideQuests(ai, guard), runner, logger)
+	pushSender, err := push.NewSender(db, logger, cfg.VAPID.PublicKey, cfg.VAPID.PrivateKey.Reveal(), cfg.VAPID.Subject)
+	if err != nil {
+		return err
+	}
+	if err := notifier.Register(notify.ChannelPush, pushSender); err != nil {
+		return err
+	}
+	chatSvc, err := chat.NewService(db, box, cfg.PublicURL, http.DefaultTransport)
+	if err != nil {
+		return err
+	}
+	if err := notifier.Register(notify.ChannelChat, chatSvc); err != nil {
+		return err
+	}
+
+	// The scheduler is made before the services whose changes wake it.
+	sched, err := scheduler.New(db, settings, logger)
+	if err != nil {
+		return err
+	}
+	dinnerSvc, err := dinners.NewService(db, grounder, runner, sched.Wake, logger)
+	if err != nil {
+		return err
+	}
+	suggestSvc, err := suggest.NewService(db, grounder, sideQuests(ai, guard), runner, notifier, logger)
 	if err != nil {
 		return err
 	}
@@ -129,17 +158,27 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	planSvc, err := plan.NewService(db, weekDrafter(ai, guard), runner, googleSvc, cfg.PublicURL, logger)
+	planSvc, err := plan.NewService(db, weekDrafter(ai, guard), runner, googleSvc, notifier, sched.Wake, cfg.PublicURL, logger)
 	if err != nil {
 		return err
 	}
 
-	shopSvc, err := shopping.NewService(db, archiveTitler(ai, guard), runner, logger)
+	shopSvc, err := shopping.NewService(db, archiveTitler(ai, guard), runner, notifier, chatSvc, logger)
+	if err != nil {
+		return err
+	}
+
+	pushSvc, err := push.NewService(db, cfg.VAPID.PublicKey, notifier)
 	if err != nil {
 		return err
 	}
 
 	ideasSvc, err := ideas.NewService(db, grounder, ideaFinder(ai, guard), quickIdeaFinder(ai, guard), runner, logger)
+	if err != nil {
+		return err
+	}
+
+	homeSvc, err := home.NewService(settings, planSvc, suggestSvc, shopSvc, notifier)
 	if err != nil {
 		return err
 	}
@@ -160,26 +199,64 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, search, ai, dinnerSvc, suggestSvc, planSvc, shopSvc, googleSvc, ideasSvc, runner, photos, frontend.Assets())
+	if err := sched.Register(suggestSvc.WeeklySchedule()); err != nil {
+		return err
+	}
+	if err := sched.Register(planSvc.DraftSchedule()); err != nil {
+		return err
+	}
+	for _, sch := range planSvc.ReminderSchedules() {
+		if err := sched.Register(sch); err != nil {
+			return err
+		}
+	}
+	if err := sched.Register(planSvc.RotationCheckSchedule()); err != nil {
+		return err
+	}
+	if err := sched.Register(shopSvc.ChatAutosendSchedule()); err != nil {
+		return err
+	}
+	if err := sched.Register(shopSvc.RolloverSchedule()); err != nil {
+		return err
+	}
+	purge, err := harness.PurgeSchedule(db, logger)
+	if err != nil {
+		return err
+	}
+	if err := sched.Register(purge); err != nil {
+		return err
+	}
+
+	router, err := server.NewRouter(logger, version, cfg.TrustedProxy, authFlow, sessions, settings, search, ai, chatSvc, dinnerSvc, suggestSvc, planSvc, shopSvc, googleSvc, pushSvc, ideasSvc, homeSvc, runner, photos, frontend.Assets())
 	if err != nil {
 		return err
 	}
 
 	// Start fails the jobs a previous process left running before any
-	// worker runs. The workers stop, and are waited for, before the
-	// database closes.
-	jobsCtx, stopJobs := context.WithCancel(ctx)
+	// worker runs. The job workers, the notification worker and the
+	// scheduler stop, and are waited for, before the database closes.
+	workersCtx, stopWorkers := context.WithCancel(ctx)
 	defer func() {
-		stopJobs()
+		stopWorkers()
+		sched.Wait()
 		runner.Wait()
+		notifier.Wait()
 	}()
-	if err := runner.Start(jobsCtx); err != nil {
+	if err := runner.Start(workersCtx); err != nil {
+		return err
+	}
+	if err := notifier.Start(workersCtx); err != nil {
 		return err
 	}
 	// With those jobs failed, a dinner still pending with no grounding job
 	// queued or running is failed as interrupted, before any request can
 	// create one.
 	if _, err := dinnerSvc.FailInterruptedGroundings(ctx); err != nil {
+		return err
+	}
+	// The scheduler starts last: its catch-up may enqueue jobs and
+	// notifications, so their workers must already run.
+	if err := sched.Start(workersCtx); err != nil {
 		return err
 	}
 	srv := &http.Server{

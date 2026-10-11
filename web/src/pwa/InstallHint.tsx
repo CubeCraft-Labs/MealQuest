@@ -16,13 +16,18 @@ export const DISMISSED_KEY = 'mealquest.installHint.dismissed'
 // ...) or drops Version/ or Safari/, so only this exact tail is Safari.
 const SAFARI_TAIL = /\(KHTML, like Gecko\) Version\/[\d.]+ (?:Mobile\/\w+ )?Safari\/[\d.]+$/
 
-// isIosSafari reports whether the page is open in Safari on iPhone, iPod or
-// iPad. iPadOS 13+ asks for the desktop site and reports itself as a Mac, so
-// a "Macintosh" with a touch screen is an iPad.
-export function isIosSafari(nav: Pick<Navigator, 'userAgent' | 'maxTouchPoints'>): boolean {
+// isIos reports whether the page is open on iPhone, iPod or iPad, in any
+// browser. iPadOS 13+ asks for the desktop site and reports itself as a Mac,
+// so a "Macintosh" with a touch screen is an iPad.
+export function isIos(nav: Pick<Navigator, 'userAgent' | 'maxTouchPoints'>): boolean {
   const ua = nav.userAgent
-  const ios = /iPhone|iPod|iPad/.test(ua) || (/Macintosh/.test(ua) && nav.maxTouchPoints > 1)
-  return ios && SAFARI_TAIL.test(ua)
+  return /iPhone|iPod|iPad/.test(ua) || (/Macintosh/.test(ua) && nav.maxTouchPoints > 1)
+}
+
+// isIosSafari reports whether the page is open in Safari on iPhone, iPod or
+// iPad.
+function isIosSafari(nav: Pick<Navigator, 'userAgent' | 'maxTouchPoints'>): boolean {
+  return isIos(nav) && SAFARI_TAIL.test(nav.userAgent)
 }
 
 // isStandalone reports whether the app is running from the Home Screen.

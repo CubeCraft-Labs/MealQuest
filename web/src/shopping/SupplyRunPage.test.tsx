@@ -13,6 +13,7 @@ import { sentAt, SupplyRunPage } from './SupplyRunPage.tsx'
 
 const THIS_WEEK = '/api/v1/shopping/2026-10-05'
 const GENERATE = `${THIS_WEEK}/generate`
+const SEND_CHAT = `${THIS_WEEK}/send-chat`
 const ITEM = (id: string) => `/api/v1/shopping/items/${id}`
 
 type Item = { id: string; name: string; qty: string | null; needed: boolean }
@@ -52,6 +53,7 @@ function supplyRun(overrides: Record<string, unknown> = {}, weekStart = '2026-10
     title: null,
     status: 'current',
     sent_to_chat_at: null,
+    chat_send_unconfirmed_at: null,
     needed_count: items.filter((item) => item.needed).length,
     total_count: items.length,
     groups: GROUPS,
@@ -372,17 +374,120 @@ describe('SupplyRunPage', () => {
     expect(archive).toHaveAttribute('href', '/plan/shopping/archive')
     expect(archive).toHaveClass(buttonStyles.outline!)
 
-    // Send to Google Chat waits for Feature 19: primary, unavailable, and
-    // its tooltip says so. Pressing it sends nothing.
-    const send = screen.getByRole('button', { name: 'Send to Google Chat' })
+    // Already sent, the primary action sends it again.
+    const send = screen.getByRole('button', { name: 'Send again' })
     expect(send).toHaveClass(buttonStyles.primary!)
-    expect(send).toHaveAttribute('aria-disabled', 'true')
-    expect(send).toHaveAccessibleDescription('Sending the shopping list to Google Chat arrives in a later update.')
-    fireEvent.click(send)
+    expect(send).toBeEnabled()
     expect(writes(fetchMock)).toEqual([])
 
     expect(screen.getByText('Sent to Google Chat · Sat 8:00 am')).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'Supply archive' })).not.toBeInTheDocument()
+  })
+
+  it('sends the list to Google Chat once and shows when it was sent', async () => {
+    mockViewport(1180)
+    const sent = deferred()
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, supplyRun()),
+      [`POST ${SEND_CHAT}`]: () => sent.response,
+    })
+    await renderPage()
+
+    await screen.findByText('4 / 6')
+    expect(screen.queryByText(/Sent to Google Chat ·/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Google Chat' }))
+
+    const sending = await screen.findByRole('button', { name: 'Sending…' })
+    expect(sending).toBeDisabled()
+    expect(writes(fetchMock)).toEqual([`POST ${SEND_CHAT} {"resend":false}`])
+    // Saturday Oct 10, 8:00 am in New York.
+    sent.send(jsonResponse(200, supplyRun({ sent_to_chat_at: '2026-10-10T12:00:00Z' })))
+
+    expect(await screen.findByText('Sent to Google Chat · Sat 8:00 am')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Send again' })).toBeEnabled()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('sends a list already sent again with resend', async () => {
+    mockViewport(1440)
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, supplyRun({ sent_to_chat_at: '2026-10-10T12:00:00Z' })),
+      [`POST ${SEND_CHAT}`]: () => jsonResponse(200, supplyRun({ sent_to_chat_at: '2026-10-10T16:30:00Z' })),
+    })
+    await renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Send again' }))
+
+    expect(await screen.findByText('Sent to Google Chat · Sat 12:30 pm')).toBeInTheDocument()
+    expect(writes(fetchMock)).toEqual([`POST ${SEND_CHAT} {"resend":true}`])
+  })
+
+  it('says why a send to Google Chat failed, and retries it', async () => {
+    mockViewport(1180)
+    const answers = [
+      () => errorResponse(409, 'not_configured'),
+      () => jsonResponse(200, supplyRun({ sent_to_chat_at: '2026-10-10T12:00:00Z' })),
+    ]
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, supplyRun()),
+      [`POST ${SEND_CHAT}`]: () => answers.shift()!(),
+    })
+    await renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Send to Google Chat' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't send the shopping list to Google Chat. not_configured message")
+    expect(screen.queryByText(/Sent to Google Chat ·/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Send to Google Chat' })).toBeEnabled()
+
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('Sent to Google Chat · Sat 8:00 am')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(writes(fetchMock)).toEqual([`POST ${SEND_CHAT} {"resend":false}`, `POST ${SEND_CHAT} {"resend":false}`])
+  })
+
+  it('says a send whose outcome is not known was not confirmed, offers no retry, and sends again only with resend', async () => {
+    mockViewport(1180)
+    let run = supplyRun()
+    const answers = [
+      () => {
+        // Saturday Oct 10, 8:00 am in New York.
+        run = supplyRun({ chat_send_unconfirmed_at: '2026-10-10T12:00:00Z' })
+        return errorResponse(502, 'chat_unconfirmed')
+      },
+      () => jsonResponse(200, supplyRun({ sent_to_chat_at: '2026-10-10T12:05:00Z' })),
+    ]
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, run),
+      [`POST ${SEND_CHAT}`]: () => answers.shift()!(),
+    })
+    await renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Send to Google Chat' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't send the shopping list to Google Chat. chat_unconfirmed message")
+    expect(within(alert).queryByRole('button')).not.toBeInTheDocument()
+    // The Supply run is read again, and says the send is unconfirmed.
+    expect(
+      await screen.findByText('Send to Google Chat not confirmed · Sat 8:00 am — check the space before sending again'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/Sent to Google Chat ·/)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send again' }))
+    expect(await screen.findByText('Sent to Google Chat · Sat 8:05 am')).toBeInTheDocument()
+    expect(screen.queryByText(/not confirmed/)).not.toBeInTheDocument()
+    expect(writes(fetchMock)).toEqual([`POST ${SEND_CHAT} {"resend":false}`, `POST ${SEND_CHAT} {"resend":true}`])
+  })
+
+  it('shows an unconfirmed send on mobile', async () => {
+    stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, supplyRun({ chat_send_unconfirmed_at: '2026-10-10T12:00:00Z' })) })
+    await renderPage()
+
+    expect(
+      await screen.findByText('Send to Google Chat not confirmed · Sat 8:00 am — check the space before sending again'),
+    ).toBeInTheDocument()
   })
 
   it('renders an archived list read-only, tagged Archived', async () => {

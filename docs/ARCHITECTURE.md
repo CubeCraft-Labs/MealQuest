@@ -43,6 +43,7 @@ headers, so sign-in works whichever peer the request arrives from.
 | Path | Purpose |
 | --- | --- |
 | `cmd/server` | Entry point; wiring only. |
+| `cmd/vapidgen` | Prints a new VAPID key pair for Web Push. |
 | `internal/config` | Env-only `MEALQUEST_*` config; secrets from `*_FILE`. |
 | `internal/server` | HTTP server, router, middleware. |
 | `internal/frontend` | Embedded PWA, SPA fallback. |
@@ -53,6 +54,7 @@ headers, so sign-in works whichever peer the request arrives from.
 | `internal/ai/llm`, `internal/ai/harness`, `internal/ai/skills` | AI provider adapters, skill harness, skills. |
 | `internal/suggest`, `internal/plan`, `internal/shopping`, `internal/ideas` | Feature services. |
 | `internal/gcal`, `internal/notify`, `internal/push`, `internal/chat` | Integrations. |
+| `internal/vapid` | VAPID key generation and validation. |
 | `internal/jobs`, `internal/scheduler` | Background jobs and schedules. |
 | `migrations/` | SQL migrations (no goose or golang-migrate). |
 | `web/` | React PWA. |
@@ -102,7 +104,7 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 | `week_plans` | week_start (unique), status (`draft` / `synced` / `changed`), ai_note, ai_run_id, calendar_synced_at, revision (raised by every swap and stored draft). |
 | `plan_days` | plan_id, date (unique per plan), dinner_id, is_new, calendar_event_id (set while the chosen calendar shows the day as planned; cleared when its dinner changes, another calendar is chosen or Google Calendar is disconnected). |
 | `rotation_reviews` | dinner_id + plan_date (unique), status, decision (`keep` / `drop` / `not_made`), name (set only by a drop: the dinner's name when dropped, kept whatever it is later renamed, so a drop stays among the passed names), decided_at, updated_by. |
-| `shopping_lists` | week_start (unique), plan_id, title (the AI-written post title; NULL until written or when the AI fails, when the week label is shown instead; never empty), status (`current` / `archived`), sent_to_chat_at, frozen_at. |
+| `shopping_lists` | week_start (unique), plan_id, title (the AI-written post title; NULL until written or when the AI fails, when the week label is shown instead; never empty), status (`current` / `archived`), sent_to_chat_at, chat_send_unconfirmed_at (a send to Google Chat recorded as begun before posting and cleared once its outcome is known; left set when it may or may not have posted), frozen_at. |
 | `shopping_groups` / `shopping_items` | One group per plan day with ingredients: dinner_id, date, position (by date). Item name, qty (the display quantity, NULL when the recipe gives none), needed (bool), position. Made by `shopping.Generate` from the plan, with no model call: an item is a grounded recipe ingredient's normalized name with qty and unit joined ("2 cups"), or a manual recipe's line as typed with no qty. Regenerating keeps the id and needed flag of an item whose (dinner_id, name) is unchanged. |
 | `ai_settings` | One row: provider, base_url, model, temperature, system_prompt, api_key_ct, api_key_last4, key_verified_at. |
 | `recipe_search_settings` | One row: provider (`searxng` / `brave`), base_url (the SearXNG instance), api_key_ct and api_key_last4 (Brave). |
@@ -204,6 +206,30 @@ automatic** (D-021).
   sets status `archived` and keeps the row; `POST
   /api/v1/dinners/{id}/favorite` toggles `is_favorite`. Every write records
   the session's subject as `updated_by`; an unknown id is 404.
+  `GET /api/v1/dinners/{id}` returns the dinner with its recipe, read in
+  one transaction: `{id, name, status, origin, method, minutes_total,
+  difficulty, cuisine, is_favorite, photo_urls, ingredients, steps,
+  source, grounding_status, grounding_error, why_picked}`. `photo_urls` is
+  `{"400": url, "1200": url}` (`/media/photos/{photo_id}-{size}.jpg`) or
+  null with no photo; `ingredients` is `[{name, qty, unit, note,
+  raw_text}]` and `steps` the step texts, both in recipe position order and
+  empty (`[]`) with no recipe, as for a dinner whose grounding is
+  `pending` or `failed`; a recipe entered by hand has only `raw_text`.
+  Two items at one position leave recipe order unknown, so such a recipe
+  is 500 rather than shown out of order. `source` is `{site_name}` of the
+  page the recipe was fetched from, null for a manual recipe or none; it
+  has no `url`, as the page's link may carry a personal token.
+  `site_name` is the name the page gives its site (publisher or
+  `og:site_name`) and null otherwise: a page naming no site is stored
+  under its host, which may be the pasted link's — a token in a
+  subdomain — or a redirect's, so any stored name that could be a host
+  (the link's host, an IP address or a dotted host name, even a real
+  name like "Food.com") is withheld. The detail screen shows "Recipe
+  from {site}" only when `site_name` is not null. `why_picked` is the reason of the
+  suggestion that created the dinner — its pending or accepted one, as
+  declining a suggestion archives its dinner — null for one no suggestion
+  created; a dinner with more than one such suggestion is 500, as nothing
+  records which created it. An unknown or archived dinner is 404.
 - Dinner grounding. `POST /api/v1/dinners` also enqueues a `ground_dinner`
   job and answers with its `grounding_job_id` without waiting for it
   (`GET /api/v1/jobs/{id}` reports it); if the job cannot be enqueued it
@@ -283,20 +309,24 @@ automatic** (D-021).
   `suggest_side_quests` for 5 Side quests (scope: the batch id), then
   grounds the survivors in the model's order with `Grounder.GroundMany`,
   as many as are still wanted at a time, until 5 are kept or none are
-  left. A Side quest no recipe grounds is dropped; each round's grounded
-  ones are stored before the next — a dinner with status `suggested`,
-  origin `side_quest`, grounding_status `grounded` with the recipe's
-  recipe_id, photo_id, method, minutes_total and difficulty and the
-  model's cuisine, and a `pending` suggestion with the name it is
-  suggested under, the reason and `cited_regular_ids` — unless, since the
-  job read its input, a dinner it repeats was added, a suggestion it
-  repeats passed, or a Regular it cites renamed or archived (checked in
-  the storing transaction). The job publishes
-  `{batch_id, stage, suggestion_ids, dropped}` as it goes (`suggesting`,
+  left. A Side quest no recipe grounds is dropped. A `replenish` batch
+  stores each round's grounded ones before the next; a `scheduled` or
+  `manual` batch, which notifies, holds them and stores them all in one
+  transaction once its last round is done. Each is stored as a dinner
+  with status `suggested`, origin `side_quest`, grounding_status
+  `grounded` with the recipe's recipe_id, photo_id, method,
+  minutes_total and difficulty and the model's cuisine, and a `pending`
+  suggestion with the name it is suggested under, the reason and
+  `cited_regular_ids` — unless, since the job read its input, a dinner
+  it repeats was added, a suggestion it repeats passed, or a Regular it
+  cites renamed or archived (checked in the storing transaction). The job
+  publishes `{batch_id, stage, suggestion_ids, dropped}` as it goes (`suggesting`,
   `grounding`, `done`). It fails with `no_regulars`, `ai_failed` (the
   skill or `normalize_recipe` failed; no Side quest is made up instead,
   D-017), `search_not_configured` or `search_failed`, and the batch is set
-  `failed`; Side quests stored before the failure stay in the deck. If
+  `failed`. A failed `scheduled` or `manual` batch has stored nothing; a
+  failed `replenish` batch's Side quests stored before the failure stay
+  in the deck. If
   recording the batch's end fails, its job fails; the job runner retries
   a job's final status write with backoff until it lands, each attempt
   bounded at 5 seconds; at shutdown an attempt that fails or times out is
@@ -454,15 +484,13 @@ automatic** (D-021).
   `changed`, and answers 200 with the plan. A date outside the week is 400 `invalid_date`, an unknown dinner or
   a week with no plan 404, any other dinner 409 `dinner_not_plannable`, and
   a dinner already on another day of the week 409 `dinner_already_planned`.
-- Rotation check (`plan.Service`, D-021). This release provides the
-  `MarkTried` service method and the rotation review read and decide APIs
-  below. The `rotation_check` schedule that is to call `MarkTried` for the
-  household-local day just past is planned (Feature 20, the scheduler) and
-  not wired yet: nothing in production calls `MarkTried`, so no Rotation
-  check opens automatically. `MarkTried(date)` moves every `quest_log` dinner planned on that date, on a plan of any
-  status, to `tried` and opens a `pending` `rotation_reviews` row for it;
-  a dinner already checked for that date is left as it is, so it is
-  idempotent. `GET /api/v1/rotation-reviews` returns `{reviews}`, the
+- Rotation check (`plan.Service`, D-021). The `rotation_check` schedule
+  calls `MarkTried` for the household-local day just past (see Scheduler).
+  `MarkTried(date)` moves every `quest_log` dinner planned on that date, on a plan of any
+  status, to `tried`, opens a `pending` `rotation_reviews` row for it and
+  emits its `rotation_review`, in one transaction;
+  a dinner already checked for that date is left as it is and not
+  notified again, so it is idempotent. `GET /api/v1/rotation-reviews` returns `{reviews}`, the
   pending checks whose dinner is still tried, oldest `plan_date` first,
   each `{dinner: {id, name, photo}, plan_date}`. `POST
   /api/v1/dinners/{id}/rotation-review` takes `{decision}`: `keep` makes
@@ -507,8 +535,8 @@ automatic** (D-021).
   received.
   `harness.Purge` deletes rows older than `harness.RunRetention` (30 days),
   clearing the `suggestion_batches` and `week_plans` references first. The
-  harness does not call it: the scheduler's daily `ai_runs` purge
-  (Feature 20) must call `harness.Purge` with `now - RunRetention`.
+  daily `ai_runs_purge` schedule (`harness.PurgeSchedule`) calls it with
+  its fire time less `RunRetention`.
 - **Concurrency guards** (`harness.Guard`, one per process): `harness.Run`
   takes a scope key, and concurrent runs of one skill with one scope share a
   single in-flight run and its result, error included (single-flight); runs
@@ -623,7 +651,8 @@ job failed, the freeze finds the list still untitled and makes its own
 `archive_title` attempt before freezing. A job that starts during a freeze
 waits for it, then finds the list titled (that title stands) or frozen
 untitled (the job fails `title_failed`), and stores nothing. The
-`week_rollover` schedule is to call `Freeze` for last week.
+`week_rollover` schedule (`shopping.Service.RolloverSchedule`) calls
+`Freeze` for last week, judging the week ended by its fire time.
 
 ## Recipe grounding
 
@@ -749,24 +778,219 @@ purge are fixed and not configurable.
 
 | Schedule | When | Does |
 | --- | --- | --- |
-| `suggestions_weekly` | Sunday 08:00 | New batch of Side quests. |
-| `plan_draft` | Friday 09:00 | AI drafts next week's plan. |
-| `shopping_chat_autosend` | Saturday 08:00 | Sends the Supply run to Google Chat. |
-| `day_of_reminder` | Daily 16:30 | Tonight's dinner reminder. |
-| `rotation_check` | Daily 09:00 | Asks "Keep it in rotation?" for tried dinners. |
-| `week_rollover` | Monday 00:05 (fixed) | Freezes last week's Supply run into the Supply archive. |
-| `ai_runs` purge | Daily (fixed) | Calls `harness.Purge` to delete `ai_runs` rows past 30-day retention (Feature 20). |
+| `suggestions_weekly` | Sunday 08:00 | New batch of Side quests (`suggest.Service.WeeklySchedule`). |
+| `plan_draft` | Friday 09:00 | AI drafts next week's plan (`plan.Service.DraftSchedule`). |
+| `shopping_chat_autosend` | Saturday 08:00 | Sends the coming week's Supply run to Google Chat (`shopping.Service.ChatAutosendSchedule`). |
+| `day_of_reminder` | Daily 16:30, and 15 minutes before a crock-pot start_by earlier than that | Tonight's dinner reminder and the crock-pot start reminder (`plan.Service.ReminderSchedules`). |
+| `rotation_check` | Daily 09:00 | Marks yesterday's Quest log dinners tried and asks "Keep it in rotation?" (`plan.Service.RotationCheckSchedule`). |
+| `week_rollover` | Monday 00:05 (fixed) | Freezes last week's Supply run into the Supply archive (`shopping.Service.RolloverSchedule`). |
+| `ai_runs_purge` | Daily 03:00 (fixed) | Calls `harness.Purge` to delete `ai_runs` rows past 30-day retention (`harness.PurgeSchedule`). |
 
 Runs are recorded in `schedule_runs` and executed through `jobs`.
+
+`internal/scheduler` runs them. A schedule registers a name, a rule read
+from the settings (`scheduler.Daily`, `Weekly` or `WeeklyForNextWeek`, or `DailyAt` for a time read from data) and a
+run function; settings changes reach it through `SettingsService.Subscribe`
+and move the next fire time without a restart. Each fire time has a period
+key (`Rule.PeriodKey`): the local date for a daily rule, the ISO week of the
+fire date for a weekly one, or of the week after for `WeeklyForNextWeek`
+(`plan_draft`). Inserting `schedule_runs(schedule, period_key)` is the claim;
+a period already claimed is skipped, so a period runs at most once and a
+failed run is not retried. A claim that fails is not skipped: the pass is
+repeated every `scheduler.ClaimRetry` until the claim succeeds. A settings
+change is recorded with the instant it was saved, and fire times up to that
+instant follow the old rule and later ones the new, however late the
+scheduler applies it. At boot, and whenever the scheduler wakes late,
+every unclaimed fire time within 24 hours (`scheduler.CatchUpWindow`) is
+processed oldest first, each running once. A most recent fire time that
+passed longer ago is claimed without running (logged as missed) so it
+never runs later; older ones are not looked at. DST
+follows `household.LocalTime`: a skipped time fires later by the gap, a
+repeated time fires once, at its first occurrence.
+
+Each schedule is built by the service that does its work, as a
+`scheduler.Schedule` value, and registered in `cmd/server` before the
+scheduler starts: `suggest.Service.WeeklySchedule()` is `suggestions_weekly`.
+Its run calls `StartScheduledBatch(period.Week)`, which starts the same
+batch and job as `POST /api/v1/suggestions/batches` (`StartBatch(manual)`),
+with the `scheduled` trigger, and returns at once; the batch runs as a job. When a
+batch is already pending or running the period starts none and logs it.
+`plan.Service.DraftSchedule()` is `plan_draft`, keyed by the ISO week
+after the fire date (`scheduler.WeeklyForNextWeek`). Its run calls
+`StartScheduledDraft(period.Week)`, which enqueues the same `draft_week`
+job as `POST /api/v1/plans/{weekStart}/draft` without confirm, so a stored
+draft emits `plan_ready:{weekStart}` from the job and a failed one (e.g.
+`ai_failed`, recorded in `ai_runs`) emits nothing. When the week already
+has a plan, in any status, it enqueues nothing; when a draft of the week
+is already queued or running it joins it. Either way it logs it.
+`plan.Service.ReminderSchedules()` is `day_of_reminder`, two schedules
+of one name. The first is `Daily(reminder_time)`, period `YYYY-MM-DD`,
+and calls `EmitDayOfReminder(period.Date)`. The second has `Key` `start`,
+so its periods are `start:YYYY-MM-DD`, and a `scheduler.DailyAt` rule:
+for each date it reads the plan and fires 15 minutes
+(`plan.StartReminderLead`) before the day's `start_by` (the same
+computation the plan API shows) when the dinner is a crock-pot dinner
+whose `start_by` is earlier than that day's `reminder_time`; its run
+calls `EmitStartReminder(period.Date)`, which checks the same again. A
+date whose week has no plan emits neither and logs it. A `DailyAt` fire
+time is looked up from the data on every pass. A committed change that
+can move a `start_by` calls `Scheduler.Wake` (passed to `plan.NewService`
+and `dinners.NewService` as `wake`): a plan swap or stored draft, and a
+dinner's method or minutes changed by edit or grounding. The next pass
+comes at once, so a crock-pot dinner swapped in for tonight is still
+reminded 15 minutes before its `start_by`, not at the next hourly timer
+(`maxWait`); a lookup that fails is logged and repeated every
+`ClaimRetry`.
+`shopping.Service.ChatAutosendSchedule()` is `shopping_chat_autosend`,
+`WeeklyForNextWeek(chat_autosend_dow, chat_autosend_time)`, so its period
+names the coming week. Its run calls `Autosend(period.Week)`, which posts
+with `SendToChat(week, false)`, the household's own send, only when a
+webhook is stored, `list_ready`'s Chat channel is on
+(`notify.Service.ChannelOn`) and the week has a Supply run neither sent
+nor with a send unconfirmed; otherwise it posts nothing and logs why,
+with the key `list_ready:chat:{weekStart}`. It never resends; a send that
+fails is the period's error. `shopping.Service.RolloverSchedule()` is
+`week_rollover`, `Weekly(Monday, 00:05)`; its run freezes the week before
+the fire date's, and a week with no Supply run freezes nothing and logs
+it. `plan.Service.RotationCheckSchedule()` is `rotation_check`,
+`Daily(review_time)`, claimed as `rotation_check:YYYY-MM-DD` of the fire
+date (`Schedule.PeriodKey`). Its run calls `MarkTried` for the day before
+the fire date, which emits one `rotation_review` per Rotation check it
+opens; it never makes a dinner a Regular, and a day with no Quest log
+dinner planned opens none and logs the count.
+`harness.PurgeSchedule(store, logger)` is `ai_runs_purge`,
+`Daily(03:00)`, deleting rows created more than 30 days before the fire
+time.
+Fake-clock tests of a schedule live in `internal/scheduler`, where
+`SetClock` is visible to tests.
 
 ## Notifications
 
 - Events: `plan_ready`, `list_ready`, `day_of_reminder`, `new_suggestions`,
   `rotation_review`; each can go to Web Push and/or Google Chat per
   `notification_prefs`.
+- Where each event is emitted, with its idempotency key. Each is stored by
+  `notify.EmitTx` in the transaction of the change it is about, so the
+  change and its notification commit together or not at all:
+  - `plan_ready:{weekStart}` (URL `/plan?week={weekStart}`) when a draft job, asked for
+    by the API or the `plan_draft` schedule, stores the AI's draft of a
+    week. Only the first draft of a week notifies: a
+    redraft (Rebuild week) has the same key, and a manual swap never
+    drafts. Its title is "Next week's plan is ready" (or "This week's",
+    or "The plan for the week of Oct 26") and its body the drafted
+    dinners Monday to Sunday.
+  - `list_ready:{weekStart}` (URL `/plan/shopping?week={weekStart}`) when a week's Supply
+    run is first created, by `POST /shopping/{weekStart}/generate` or
+    after Push to Calendar; remaking it does not notify.
+  - `new_suggestions:{YYYY-Www}` for a `scheduled` batch, the ISO week it
+    was scheduled for (carried in its job, so a batch caught up late is
+    still keyed by its own week), or `new_suggestions:{batchId}` for a
+    `manual` one (URL `/discover`), once, when the batch's last round is
+    done, in the one transaction that stores all its Side quests, so they
+    and their notification commit together or not at all. Its title
+    counts every Side quest the batch stored ("5 new Side quests are in")
+    and its body names them. A batch that fails at any round, as when
+    `suggest_side_quests` or a later round's `normalize_recipe` fails (the
+    failure is in `ai_runs`), stores no Side quest and sends nothing, so
+    no stored Side quest goes unannounced. A `replenish` batch never
+    notifies. This is the only place `new_suggestions` is emitted; the
+    `suggestions_weekly` schedule does not emit it itself.
+  - `day_of_reminder:{date}` (URL `/dinner/{id}`) through
+    `plan.Service.EmitDayOfReminder(date)`, "Tonight: {dinner} · Recipe →",
+    naming the dinner planned on the date; it emits nothing for a week
+    with no plan. The `day_of_reminder` schedule calls it at
+    `reminder_time`.
+  - `day_of_reminder:start:{date}` (URL `/dinner/{id}`) through
+    `plan.Service.EmitStartReminder(date)`, "Start the crock pot by
+    {time}" with the dinner's name, only for a crock-pot dinner whose
+    `start_by` is earlier than `reminder_time`. The `day_of_reminder`
+    schedule calls it 15 minutes before `start_by`.
+  - `rotation_review:{dinnerId}:{planDate}` (URL `/`, where the Home card
+    asks) through `plan.Service.MarkTried(planDate)`, "How was {dinner}?
+    Keep it in rotation?", once per Rotation check it opens. The
+    `rotation_check` schedule calls it at `review_time` for yesterday.
 - Delivery goes through `notification_outbox`.
 - Web Push uses VAPID (`webpush-go`). Google Chat uses the stored incoming
   webhook.
+- VAPID configuration (`MEALQUEST_VAPID_PUBLIC_KEY`,
+  `MEALQUEST_VAPID_PRIVATE_KEY_FILE`, `MEALQUEST_VAPID_SUBJECT`) is required
+  at boot, all three together. Both keys are unpadded base64url P-256 keys
+  (`internal/vapid`): the public key the 65-byte uncompressed point, the
+  private key the 32-byte scalar, read only from its file. Boot derives the
+  public point from the private key and refuses a pair that does not
+  match. The subject is `mailto:<address>` or an `https://` URL.
+  `go run ./cmd/vapidgen` prints a new pair.
+- `internal/push` keeps the subscriptions, one row per endpoint, under the
+  signed-in `/api/v1`:
+  - `GET /api/v1/push/vapid-public-key` answers `{"public_key": "…"}`, the
+    browser's `applicationServerKey`. The private key is never served.
+  - `POST /api/v1/push/subscriptions` (CSRF-checked) takes
+    `{"endpoint", "keys": {"p256dh", "auth"}, "user_agent"?}` — the
+    endpoint an `https://` URL, the keys unpadded base64url as
+    `PushSubscription.toJSON()` gives them (p256dh a P-256 point, auth 16
+    bytes); unknown fields such as `expirationTime`, and nulls, are
+    refused. It upserts by endpoint: an endpoint already stored keeps its
+    id and `created_at`, has its keys and user agent replaced and its
+    failure count cleared. It answers 200 with
+    `{id, endpoint, user_agent, created_at, updated_at}`, never the keys.
+  - `DELETE /api/v1/push/subscriptions` (CSRF-checked) takes
+    `{"endpoint"}` and answers 204 whether or not it was stored.
+  - An invalid body is 400 `invalid_request` (not a JSON object of the
+    known fields) or `invalid_subscription` (a field fails validation).
+  - `POST /api/v1/settings/notifications/test-push` (CSRF-checked) checks
+    delivery to the household's devices. It queues "MealQuest test
+    notification" through `notification_outbox`, so it takes the real
+    delivery path with its retries. It is a `plan_ready` event whose tap
+    opens `/plan`. Its key is `plan_ready:test-<ULID>`, new on every call,
+    so `Emit` never deduplicates it. It goes to the `push` channel only
+    (`notify.Service.EmitPush`), never to the family Google Chat space.
+    It answers 202 `{event_key, subscriptions}`. Two cases send nothing
+    and answer 409 rather than report success: no device has subscribed
+    (`no_subscriptions`), or push is switched off for `plan_ready` in
+    the preferences (`push_off`).
+- `internal/chat` keeps the Google Chat incoming webhook in `chat_settings`
+  and is the outbox's sender for the `chat` channel. The webhook URL holds
+  its own key and token, so it is sealed with `secretbox` in
+  `webhook_url_ct` and never appears in a response, log line or error.
+  Under the signed-in `/api/v1`:
+  - `PUT /api/v1/settings/chat-webhook` (CSRF-checked) takes
+    `{"url", "space_label"}`, both required. The URL must be exactly
+    `https://chat.googleapis.com/v1/spaces/{space}/messages?key=…&token=…`:
+    that scheme and host spelled so, no port or user info, the space id
+    letters, digits, `-` or `_`, and the raw query exactly
+    `key=…&token=…` (in that order, no empty segment, no second `?`, no
+    other parameter), each decoding to at least 16 characters of letters,
+    digits, `-`, `_`, `.`, `~` or `=`. The space label is 1–100
+    characters. A refused body is 400 `invalid_request` (not a JSON object
+    of the two fields) or `invalid_webhook`. Saving replaces any stored
+    webhook and clears its test outcome.
+  - `GET /api/v1/settings/chat-webhook` answers `{space_label, url_masked,
+    last_test_at, last_test_status}`, so `url_masked` is `null` exactly when
+    no webhook is stored; `url_masked`
+    shows the space id and only the last four characters of the decoded
+    token (`…/spaces/AAQA…/messages?key=…&token=…ZxQ=`). Absent values are
+    `null`.
+  - `POST /api/v1/settings/chat-webhook/test` (CSRF-checked) posts
+    "MealQuest · test message", unthreaded, and records `last_test_at` and
+    `last_test_status` (`ok` for 2xx, else `failed`). Whatever status Google
+    Chat answers, it answers 200 with that status as `http_status` and the
+    settings as GET gives them. No webhook stored is 409 `not_configured`;
+    a webhook replaced during the test is 409 `webhook_changed`; no answer
+    from Google Chat is recorded as failed and answered 502
+    `chat_unreachable`.
+  - A notification is posted as `{"text"}`, plus `cardsV2` with an "Open"
+    button to the payload's path under `MEALQUEST_PUBLIC_URL` for
+    `plan_ready` and `list_ready`, with `threadKey=mealquest-week-YYYY-Www`
+    (the ISO week of the payload's week) and
+    `messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD`; a payload
+    with no week is posted unthreaded. 2xx is sent; 429, 5xx or no answer
+    is retried by the outbox; any other status, or no webhook stored, fails
+    the row at once (`notify.ErrUndeliverable`). Redirects are not
+    followed.
+  - The builders in `internal/chat/messages.go` make each event's
+    `notify.Event` (title and body shared with Web Push) and `chat.Text`
+    its Chat message, such as "This week's plan is ready: Tacos, Bolognese,
+    Tikka masala + 4 more. Open the plan →".
 
 ## Google Calendar
 
@@ -910,7 +1134,8 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
 ## Supply run API (Feature 17)
 
 - `GET /api/v1/shopping/{weekStart}` returns `{weekStart, label, title,
-  status, sent_to_chat_at, needed_count, total_count, groups: [{dinner:
+  status, sent_to_chat_at, chat_send_unconfirmed_at, needed_count,
+  total_count, groups: [{dinner:
   {id, name}, date, day, items: [{id, name, qty, needed}]}]}`: `label` is
   the week label (shown while `title` is null), `day` the plan day's
   weekday ("Monday"), `qty` null when the recipe gives none,
@@ -920,6 +1145,27 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
   through `shopping.Generate` and answers with the same shape plus
   `skipped: [{date, dinner_id, dinner_name, reason}]`. 404 when the week
   has no plan, 409 `archived` when its list is in the Supply archive.
+- `POST /api/v1/shopping/{weekStart}/send-chat` (CSRF-checked) takes
+  `{}` or `{"resend": true}` and posts the Supply run to Google Chat
+  through `chat.PostSupplyRun`, in the week's thread: "Supply run · " and
+  its title (or week label), each dinner with items still needed and those
+  items, and a card whose "Open" button links to
+  `/plan/shopping?week={weekStart}` under `MEALQUEST_PUBLIC_URL`. It
+  records `chat_send_unconfirmed_at` before posting, then
+  `sent_to_chat_at` (clearing it) once Google Chat accepts, and answers
+  with the Supply run as `GET` gives it. A week already sent, or with a
+  send unconfirmed, is answered as it is, with no second post, unless
+  `resend` is true. No webhook stored is 409 `not_configured`; Google Chat
+  answering with a status other than 2xx is 502 `chat_refused` (retryable
+  only for 429 or 5xx), clearing the send begun; Google Chat not
+  answering, or accepting a post that cannot then be recorded, is 502
+  `chat_unconfirmed` (not retryable: the post may have been made), which
+  leaves `chat_send_unconfirmed_at` set, as does the process stopping
+  mid-send. The screen shows an unconfirmed send and sends again only on
+  request. 404 when the week has no Supply run, 409
+  `archived` when it is in the Supply archive, 400 `invalid_request` for a
+  bad body. `shopping.SendToChat(weekStart, resend)` is what
+  `shopping_chat_autosend` calls, through `Autosend`.
 - `PATCH /api/v1/shopping/items/{id}` takes `{needed}` (a required
   boolean; it sets the flag, it does not flip it) and answers `{id,
   needed, needed_count, total_count}` with the list's counts after the
@@ -939,6 +1185,61 @@ Runs are recorded in `schedule_runs` and executed through `jobs`.
   `current` true for the household's current week. 400 `invalid_request`
   for any other `by`. A frozen list is read through `GET
   /api/v1/shopping/{weekStart}` with `status` `archived`.
+
+## Home API (Feature 21)
+
+- `GET /api/v1/home` (`home.Service`) aggregates the Home screen from the
+  services that own each value, at "now" in the household's zone (never
+  UTC), and answers:
+
+  ```json
+  {
+    "dateLabel": "Friday, Oct 2",
+    "timezone": "America/Chicago",
+    "tonight": {"id": "…", "name": "…", "photo": "/media/…", "origin": "regular", "minutes_total": 40},
+    "sideQuestCount": 10,
+    "shoppingList": {"weekStart": "2026-10-05", "label": "Week 41 · Oct 5 – 11", "ready": true, "sentToChatAt": null},
+    "recentUpdates": {"unread": true}
+  }
+  ```
+
+  `tonight` is today's day of the current week's plan (`plan.Get`), null
+  when the week has no plan; it changes at the household's local
+  midnight, so the PWA reads Home again at the next local midnight of
+  `timezone`, the household's IANA zone. `photo` and `minutes_total` are
+  null when unknown. `sideQuestCount` is the pending cards of the deck,
+  read without writing (`suggest.PendingCount`): a Home read never fails
+  orphaned batches the way a `suggest.Deck` read does.
+  `shoppingList` is the upcoming week's Supply run when it has one, else
+  the current week's (`shopping.Get`); with neither, it is the current
+  week with `ready` false. `recentUpdates.unread` is true when a
+  notification was stored in `notification_outbox` after
+  `household_settings.updates_seen_at`, or at all while that is null
+  (`notify.StoredSince`); an event whose channels are all switched off is
+  never stored and never counts.
+- `GET /api/v1/updates` (`home.Service.Updates`, over `notify.Recent`)
+  answers the Recent updates sheet: the last 10 distinct events in
+  `notification_outbox`, newest first, one per event key whatever its
+  channels or delivery status (an event stored for push and Google Chat is
+  one update):
+
+  ```json
+  {"updates": [{"type": "plan_ready", "title": "…", "body": "…", "url": "/plan?week=2026-10-12", "created_at": "2026-10-09T14:00:00.000Z"}]}
+  ```
+
+  Every field comes from the stored payload, which never holds a webhook
+  URL or secret; `url` is the same-origin path the event opens.
+- `POST /api/v1/updates/seen` with `{"through": "<created_at>"}` (CSRF
+  header required) records that the household has seen its updates
+  through the newest one it was shown, and answers 204. The last-seen
+  instant is `household_settings.updates_seen_at` — the one place it is
+  stored. It only moves forward (`MarkUpdatesSeen`), so a `through` older
+  than the stored one is accepted and changes nothing, and an event
+  stored after `through` keeps `unread` true. It is not a settings edit:
+  `updated_by` and `updated_at` are left as they are and settings
+  subscribers are not told. 400 `invalid_request` for a body that is not
+  exactly that object, a `through` that is not RFC 3339, or one after
+  now.
 
 ## Frontend
 

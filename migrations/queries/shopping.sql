@@ -89,6 +89,27 @@ UPDATE shopping_lists
 SET title = ?, updated_at = ?
 WHERE id = ? AND title IS NULL AND status = 'current' AND frozen_at IS NULL;
 
+-- name: BeginShoppingListChatSend :execrows
+-- Records a send of list id to Google Chat begun at
+-- chat_send_unconfirmed_at, before it is posted, unless the list is frozen
+-- into the Supply archive.
+UPDATE shopping_lists
+SET chat_send_unconfirmed_at = ?, updated_at = ?
+WHERE id = ? AND status = 'current' AND frozen_at IS NULL;
+
+-- name: MarkShoppingListSentToChat :execrows
+-- Records list id sent to Google Chat at sent_to_chat_at, its send
+-- confirmed, unless it is frozen into the Supply archive.
+UPDATE shopping_lists
+SET sent_to_chat_at = ?, chat_send_unconfirmed_at = NULL, updated_at = ?
+WHERE id = ? AND status = 'current' AND frozen_at IS NULL;
+
+-- name: ClearShoppingListChatSend :execrows
+-- Clears the send of list id begun, once Google Chat refused it.
+UPDATE shopping_lists
+SET chat_send_unconfirmed_at = NULL, updated_at = ?
+WHERE id = ?;
+
 -- name: FreezeShoppingList :execrows
 -- Freezes list id into the Supply archive at frozen_at, unless it is
 -- frozen already.

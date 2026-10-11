@@ -33,7 +33,9 @@ function idea(name: string, summary: string, minutes: number | null = 30) {
 
 // The ideas of mock 1i.
 const CURRY = idea('Coconut chicken curry', 'Uses all 5 · missing: 1 lime')
-const BOWLS = idea('Garlic spinach rice bowls', 'Uses 4 of 5 · nothing missing', 25)
+// BOWLS's source is withheld, as the server sends one whose link could
+// carry a secret: the card shows all the same.
+const BOWLS = { ...idea('Garlic spinach rice bowls', 'Uses 4 of 5 · nothing missing', 25), source_url: null, site_name: null }
 const ONE_PAN = idea('One-pan chicken & rice', 'Uses 3 of 5 · missing: onion')
 
 type JobBody = { status: string; result: unknown; error: string | null }

@@ -146,3 +146,19 @@ ON CONFLICT (id) DO UPDATE SET
 	last_test_status = excluded.last_test_status,
 	updated_at = excluded.updated_at
 RETURNING *;
+
+-- name: RecordChatTest :execrows
+-- Records the outcome of a test message sent to the webhook sealed in
+-- webhook_url_ct; affects no row when the webhook has been replaced or
+-- removed since the test began.
+UPDATE chat_settings
+SET last_test_at = ?, last_test_status = ?, updated_at = ?
+WHERE id = 1 AND webhook_url_ct = ?;
+
+-- name: MarkUpdatesSeen :execrows
+-- Moves updates_seen_at forward to seen_at; affects no row when it is
+-- already at or after seen_at, so it never moves back. It is not a settings
+-- edit: updated_by and updated_at are left as they are.
+UPDATE household_settings
+SET updates_seen_at = CAST(sqlc.arg(seen_at) AS TEXT)
+WHERE id = 1 AND (updates_seen_at IS NULL OR updates_seen_at < CAST(sqlc.arg(seen_at) AS TEXT));

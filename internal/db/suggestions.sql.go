@@ -187,6 +187,41 @@ func (q *Queries) GetActiveSuggestionBatch(ctx context.Context) (SuggestionBatch
 	return i, err
 }
 
+const getDinnerSuggestionReasons = `-- name: GetDinnerSuggestionReasons :many
+SELECT reason FROM suggestions
+WHERE dinner_id = ? AND status IN ('pending', 'accepted')
+ORDER BY id
+`
+
+// The reason of each suggestion of dinner_id that can have created it,
+// none for a dinner no suggestion created. A suggestion is only ever
+// created with a new dinner, and declining one archives its dinner, so a
+// live dinner's creating suggestion is pending (the dinner still
+// suggested) or accepted; a declined one did not create it. More than one
+// row means nothing records which did.
+func (q *Queries) GetDinnerSuggestionReasons(ctx context.Context, dinnerID string) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, getDinnerSuggestionReasons, dinnerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var reason string
+		if err := rows.Scan(&reason); err != nil {
+			return nil, err
+		}
+		items = append(items, reason)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getLatestSuggestionBatch = `-- name: GetLatestSuggestionBatch :one
 SELECT id, "trigger", status, ai_run_id, created_at, updated_at FROM suggestion_batches
 ORDER BY id DESC
@@ -255,6 +290,26 @@ func (q *Queries) GetSuggestion(ctx context.Context, id string) (GetSuggestionRo
 		&i.Dinner.RecipeUrl,
 		&i.Dinner.GroundingError,
 		&i.Dinner.GroundingRevision,
+	)
+	return i, err
+}
+
+const getSuggestionBatch = `-- name: GetSuggestionBatch :one
+SELECT id, "trigger", status, ai_run_id, created_at, updated_at FROM suggestion_batches
+WHERE id = ?
+`
+
+// Batch id. Returns sql.ErrNoRows when there is none.
+func (q *Queries) GetSuggestionBatch(ctx context.Context, id string) (SuggestionBatch, error) {
+	row := q.db.QueryRowContext(ctx, getSuggestionBatch, id)
+	var i SuggestionBatch
+	err := row.Scan(
+		&i.ID,
+		&i.Trigger,
+		&i.Status,
+		&i.AiRunID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }

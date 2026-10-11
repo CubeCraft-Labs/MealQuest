@@ -1,11 +1,11 @@
 import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { useBreakpoint, useOrientation } from '../shell/useBreakpoint.ts'
-import { Card } from '../ui/Card.tsx'
 import { AIAssistantCard } from './AISettingsPage.tsx'
 import { HouseholdSettingsSections } from './HouseholdSettingsPage.tsx'
 import { LeaveGuard } from './LeaveGuard.tsx'
 import { ChatWebhookCard, NotificationsCard } from './NotificationsPage.tsx'
 import { RecipeSearchCard } from './RecipeSearchCard.tsx'
+import { RegularsManager } from './RegularsSettingsPage.tsx'
 import styles from './SettingsTabs.module.css'
 
 type Tab = 'household' | 'regulars' | 'notifications-ai'
@@ -101,13 +101,7 @@ export function SettingsTabs({ hidden = false }: { hidden?: boolean }) {
 
       {panel('household', styles.single, <HouseholdSettingsSections onDirtyChange={setHouseholdDirty} />)}
 
-      {panel(
-        'regulars',
-        styles.single,
-        // TODO(Feature 12): embed the Regular dinners screen here once Feature
-        // 12 builds it.
-        <Placeholder title="Regular dinners">Managing the household's Regulars arrives in a later update.</Placeholder>,
-      )}
+      {panel('regulars', styles.single, <RegularsManager />)}
 
       {panel(
         'notifications-ai',
@@ -126,19 +120,5 @@ export function SettingsTabs({ hidden = false }: { hidden?: boolean }) {
 
       <LeaveGuard dirty={householdDirty || aiDirty || recipeSearchDirty || chatDirty} />
     </div>
-  )
-}
-
-// Placeholder is a neutral card holding a section's place until the feature
-// that owns it renders it.
-function Placeholder({ title, children }: { title: string; children: ReactNode }) {
-  const titleId = useId()
-  return (
-    <Card className={styles.placeholder} aria-labelledby={titleId} role="region">
-      <h2 id={titleId} className={styles.cardTitle}>
-        {title}
-      </h2>
-      <p className={styles.hint}>{children}</p>
-    </Card>
   )
 }

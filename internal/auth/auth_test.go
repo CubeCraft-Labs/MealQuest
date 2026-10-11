@@ -872,6 +872,43 @@ func TestLoginCookieExpires(t *testing.T) {
 	}
 }
 
+func TestPendingStates(t *testing.T) {
+	t.Parallel()
+	p := NewPendingStates(time.Minute)
+	now := time.Now()
+	if err := p.Add("first", now); err != nil {
+		t.Fatal(err)
+	}
+	if !p.Consume("first") {
+		t.Error("Consume of a pending state = false")
+	}
+	if p.Consume("first") {
+		t.Error("second Consume of a state = true")
+	}
+	if p.Consume("never-added") {
+		t.Error("Consume of an unknown state = true")
+	}
+
+	for i := range maxPendingStates {
+		if err := p.Add(fmt.Sprint("s", i), now); err != nil {
+			t.Fatalf("Add %d: %v", i, err)
+		}
+	}
+	if err := p.Add("over", now); !errors.Is(err, ErrTooManyPending) {
+		t.Errorf("Add past the bound = %v, want ErrTooManyPending", err)
+	}
+	// Once the earlier states expire, they are forgotten and a new one fits.
+	if err := p.Add("later", now.Add(time.Minute)); err != nil {
+		t.Errorf("Add after expiry: %v", err)
+	}
+	if p.Consume("s0") {
+		t.Error("an expired state was still pending")
+	}
+	if !p.Consume("later") {
+		t.Error("the state added after expiry is not pending")
+	}
+}
+
 func TestLoginRejectsOffOriginReturn(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)

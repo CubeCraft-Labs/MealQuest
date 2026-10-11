@@ -253,12 +253,16 @@ func (a *Auth) login(w http.ResponseWriter, r *http.Request) {
 		Return:   returnTo,
 	}
 	now := time.Now()
+	if err := a.pending.Add(state.State, now); err != nil {
+		a.logger.WarnContext(r.Context(), "login refused", "error", err)
+		http.Error(w, "too many sign-ins in progress; try again later", http.StatusServiceUnavailable)
+		return
+	}
 	if err := a.cookie.set(w, state, now); err != nil {
 		a.logger.ErrorContext(r.Context(), "set login cookie", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	a.pending.Add(state.State, now)
 	http.Redirect(w, r, a.oauth.AuthCodeURL(state.State,
 		oidc.Nonce(state.Nonce),
 		oauth2.S256ChallengeOption(state.Verifier),

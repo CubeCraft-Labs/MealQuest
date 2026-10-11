@@ -154,6 +154,15 @@ func (c FlowCookie) Read(r *http.Request, v flowValue, now time.Time) error {
 	return nil
 }
 
+// maxPendingStates bounds each flow's pending states. The login route is
+// unauthenticated, so without a bound anyone could grow the set without
+// limit; one household never has close to this many flows in progress.
+const maxPendingStates = 10000
+
+// ErrTooManyPending means a flow's pending states are at maxPendingStates,
+// so a new flow is refused until older ones expire.
+var ErrTooManyPending = errors.New("too many sign-in flows in progress")
+
 // PendingStates holds the state of every redirect flow started and not yet
 // completed, until its flow cookie expires. A copy of a flow cookie verifies
 // until it expires, so a flow is single-use only because its callback
@@ -163,6 +172,15 @@ type PendingStates struct {
 	ttl    time.Duration
 	mu     sync.Mutex
 	states map[string]time.Time
+	// order is every added state in the order added. Every state is pending
+	// for the same ttl, so it is also expiry order and Add forgets expired
+	// states from its front.
+	order []pendingState
+}
+
+type pendingState struct {
+	state   string
+	expires time.Time
 }
 
 // NewPendingStates returns an empty set whose states are pending for ttl,
@@ -172,15 +190,23 @@ func NewPendingStates(ttl time.Duration) *PendingStates {
 }
 
 // Add records state, started at now, as pending and forgets expired ones.
-func (p *PendingStates) Add(state string, now time.Time) {
+// It fails with ErrTooManyPending when maxPendingStates are pending.
+func (p *PendingStates) Add(state string, now time.Time) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for k, expires := range p.states {
-		if !now.Before(expires) {
-			delete(p.states, k)
-		}
+	expired := 0
+	for expired < len(p.order) && !now.Before(p.order[expired].expires) {
+		delete(p.states, p.order[expired].state)
+		expired++
 	}
-	p.states[state] = now.Add(p.ttl)
+	p.order = p.order[expired:]
+	if len(p.states) >= maxPendingStates {
+		return ErrTooManyPending
+	}
+	expires := now.Add(p.ttl)
+	p.states[state] = expires
+	p.order = append(p.order, pendingState{state: state, expires: expires})
+	return nil
 }
 
 // Consume removes state from the pending states, reporting whether it was

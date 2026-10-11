@@ -209,10 +209,12 @@ func (s *Service) Connect(w http.ResponseWriter, session auth.Session) (string, 
 		Session:  sessionBinding(session),
 	}
 	now := s.now()
+	if err := s.pending.Add(state.State, now); err != nil {
+		return "", fmt.Errorf("gcal: %w", err)
+	}
 	if err := s.cookie.Set(w, &state, now); err != nil {
 		return "", fmt.Errorf("gcal: set connect cookie: %w", err)
 	}
-	s.pending.Add(state.State, now)
 	return s.oauth.AuthCodeURL(state.State,
 		oauth2.AccessTypeOffline,
 		oauth2.ApprovalForce,

@@ -660,6 +660,67 @@ func TestBatchKeepsAtMostBatchSize(t *testing.T) {
 	}
 }
 
+// TestBatchReplacesSideQuestMadeIneligibleWhileHeld: a notifying batch
+// holds its first round's Side quests until its last round is done; when
+// the household adds a dinner one of them repeats while that round grounds,
+// the batch lets it go and grounds a spare Side quest in its place, so it
+// still stores BatchSize and announces them once.
+func TestBatchReplacesSideQuestMadeIneligibleWhileHeld(t *testing.T) {
+	for _, trigger := range []string{suggest.TriggerScheduled, suggest.TriggerManual} {
+		t.Run(trigger, func(t *testing.T) {
+			e := newEnv(t)
+			e.start(t)
+			var quests, want []string
+			for i := range suggest.BatchSize + 1 {
+				name := fmt.Sprintf("Fajita Dish %c", 'A'+i)
+				e.recipe(t, name)
+				quests = append(quests, sideQuest(name, "Like your Chicken Fajitas.", "Chicken Fajitas"))
+				if i != 0 {
+					want = append(want, name)
+				}
+			}
+			e.reply(quests...)
+			// The first round's last search waits, so the household adds a
+			// dinner repeating Fajita Dish A while that round grounds.
+			last := fmt.Sprintf("Fajita Dish %c", 'A'+suggest.BatchSize-1)
+			gate := make(chan struct{})
+			e.search.Gates = map[string]chan struct{}{last: gate}
+
+			b, key := e.startBatch(t, trigger)
+			deadline := time.Now().Add(10 * time.Second)
+			for !slices.Contains(e.search.Queries(), last) {
+				if time.Now().After(deadline) {
+					close(gate)
+					t.Fatalf("search for %s never ran", last)
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			e.dinner(t, "Fajita Dish A", "regular")
+			close(gate)
+
+			job := e.waitJob(t, b.JobID)
+			if job.Status != jobs.StatusSucceeded {
+				t.Fatalf("batch job %s, error %v", job.Status, job.Error)
+			}
+			var res batchResult
+			if err := json.Unmarshal(job.Result, &res); err != nil {
+				t.Fatal(err)
+			}
+			if len(res.SuggestionIDs) != suggest.BatchSize || res.Dropped != 1 {
+				t.Errorf("batch result = %+v, want %d stored and 1 dropped", res, suggest.BatchSize)
+			}
+			if got := e.deckNames(t); !slices.Equal(got, want) {
+				t.Errorf("deck = %v, want %v", got, want)
+			}
+			rows := notifytest.Rows(t, e.st, notify.NewSuggestions)
+			title := fmt.Sprintf("%d new Side quests are in", suggest.BatchSize)
+			if len(rows) != 1 || rows[0].Key != key || rows[0].Payload.Title != title {
+				t.Errorf("new_suggestions rows = %+v, want one keyed %s titled %q", rows, key, title)
+			}
+		})
+	}
+}
+
 func TestDeckIsOldestFirst(t *testing.T) {
 	e := newEnv(t)
 	e.start(t)

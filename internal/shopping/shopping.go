@@ -492,7 +492,9 @@ func (s *Service) Get(ctx context.Context, weekStart store.LocalDate) (l List, e
 	return readList(ctx, q, list)
 }
 
-// readList reads the groups and items of list through q.
+// readList reads the groups and items of list through q. A group of a
+// frozen list is named as its dinner was when the list was frozen; one
+// with no such name is an error.
 func readList(ctx context.Context, q *db.Queries, list db.ShoppingList) (List, error) {
 	rows, err := q.ListShoppingGroupDinners(ctx, list.ID)
 	if err != nil {
@@ -512,8 +514,15 @@ func readList(ctx context.Context, q *db.Queries, list db.ShoppingList) (List, e
 	groups := make([]Group, 0, len(rows))
 	for _, r := range rows {
 		g := r.ShoppingGroup
+		name := r.DinnerName
+		if frozen(list) {
+			if !g.FrozenDinnerName.Valid {
+				return List{}, fmt.Errorf("shopping: group %s of frozen list %s has no frozen dinner name", g.ID, list.WeekStart)
+			}
+			name = g.FrozenDinnerName.String
+		}
 		groups = append(groups, Group{
-			ID: g.ID, DinnerID: g.DinnerID, DinnerName: r.DinnerName, Date: g.Date, Position: int(g.Position),
+			ID: g.ID, DinnerID: g.DinnerID, DinnerName: name, Date: g.Date, Position: int(g.Position),
 			Items: byGroup[g.ID],
 		})
 	}

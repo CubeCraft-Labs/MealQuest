@@ -239,7 +239,7 @@ func TestGenerateTitleNotStoredOnFrozenList(t *testing.T) {
 	e := titleWeek(t)
 	e.model.QueueGenerate(titled("Noodles, Tacos and Chili"))
 	e.beforeTitle = func() {
-		if _, err := e.st.Writer.Exec(`UPDATE shopping_lists SET status = 'archived', frozen_at = '2026-10-19T04:05:00Z'`); err != nil {
+		if _, err := e.st.Writer.Exec(`UPDATE shopping_lists SET status = 'archived', frozen_at = '2026-10-19T04:05:00Z'; UPDATE shopping_groups SET frozen_dinner_name = (SELECT name FROM dinners WHERE dinners.id = dinner_id) WHERE list_id IN (SELECT id FROM shopping_lists WHERE frozen_at IS NOT NULL)`); err != nil {
 			t.Error(err)
 		}
 	}

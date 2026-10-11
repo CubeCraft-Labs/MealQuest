@@ -8,6 +8,7 @@ import { SupplyRunPage } from '../shopping/SupplyRunPage.tsx'
 import { cacheFallbackHeader } from '../sw/routes.ts'
 import { HOUSEHOLD_SETTINGS } from '../test/ApiProviders.tsx'
 import { declaredStyle } from '../test/cssRules.ts'
+import { expectMinHitArea } from '../test/hitArea.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { mockViewport } from '../test/matchMedia.ts'
 import { ago, cooking, duration, PlanPage } from './PlanPage.tsx'
@@ -1222,7 +1223,7 @@ describe('PlanPage', () => {
       expect(declaredStyle(friday).background).toBe('var(--color-bg)')
       expect(declaredStyle(friday).boxShadow).toBe('inset 0 0 0 2px var(--color-accent)')
       expect(declaredStyle(within(friday).getByText('FRI · SWAPPING…')).color).toBe('var(--color-accent-700)')
-      expect(declaredStyle(within(friday).getByText('Pizza night')).color).toBe('var(--color-neutral-600)')
+      expect(declaredStyle(within(friday).getByText('Pizza night')).color).toBe('var(--color-neutral-700)')
 
       // "Quest log · N | Regulars · N", on the Quest log first.
       expect(await within(sheet).findByRole('radio', { name: 'Quest log · 1', checked: true })).toBeInTheDocument()
@@ -1644,6 +1645,9 @@ describe.each([
       const chip = within(within(strip).getByRole('list', { name: 'Quest log dinners' })).getByRole('listitem')
       expect(chip).toHaveTextContent('Lemon orzo')
       expect(declaredStyle(within(chip).getByRole('img', { hidden: true, name: 'Lemon orzo' })).width).toBe('28px')
+      // The 28 px photo makes a 38 px chip; the chip is a button, so it
+      // keeps the 44 px tap minimum.
+      expectMinHitArea(within(chip).getByRole('button', { name: /Lemon orzo/ }))
       // The strip follows the grid.
       const grid = await screen.findByRole('list', { name: 'Dinners this week' })
       expect(grid.compareDocumentPosition(strip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()

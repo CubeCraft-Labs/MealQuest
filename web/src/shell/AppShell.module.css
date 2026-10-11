@@ -22,3 +22,9 @@
 .desktop .main {
   padding: 32px 36px;
 }
+
+/* An upright tablet (820 px wide) leaves 724 px beside the rail; slimmer side
+   padding gives the page a little more of it. */
+.tablet.portrait .main {
+  padding: 32px 28px;
+}

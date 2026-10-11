@@ -1,4 +1,5 @@
 import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useBreakpoint, useOrientation } from '../shell/useBreakpoint.ts'
 import { Card } from '../ui/Card.tsx'
 import { AIAssistantCard } from './AISettingsPage.tsx'
 import { HouseholdSettingsSections } from './HouseholdSettingsPage.tsx'
@@ -21,7 +22,10 @@ const step: Record<string, number> = { ArrowRight: 1, ArrowLeft: -1 }
 // sub-tabs instead of the mobile list. Every tab stays mounted while hidden,
 // so a draft survives switching tabs, and one leave guard covers them all.
 // hidden hides the page but keeps it mounted, drafts and leave guard included.
+// On an upright tablet the two columns stack into one.
 export function SettingsTabs({ hidden = false }: { hidden?: boolean }) {
+  const layout = useBreakpoint()
+  const orientation = useOrientation()
   const [tab, setTab] = useState<Tab>('notifications-ai')
   const [householdDirty, setHouseholdDirty] = useState(false)
   const [aiDirty, setAIDirty] = useState(false)
@@ -64,7 +68,10 @@ export function SettingsTabs({ hidden = false }: { hidden?: boolean }) {
   }
 
   return (
-    <div className={styles.page} hidden={hidden}>
+    <div
+      className={[styles.page, layout === 'tablet' && orientation === 'portrait' && styles.portrait].filter(Boolean).join(' ')}
+      hidden={hidden}
+    >
       <header className={styles.header}>
         <div className={styles.heading}>
           <h1 className={styles.title}>Settings</h1>

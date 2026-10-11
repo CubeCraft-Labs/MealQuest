@@ -83,6 +83,12 @@
   gap: 20px;
 }
 
+/* An upright tablet stacks the columns: Notifications above the AI
+   assistant and Recipe search. */
+.portrait .columns {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .column {
   min-width: 0;
   display: flex;

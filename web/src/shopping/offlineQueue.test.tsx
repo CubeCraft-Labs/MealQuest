@@ -1,7 +1,7 @@
-import { QueryClientProvider } from '@tanstack/react-query'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { defaultScheduler, notifyManager, QueryClientProvider } from '@tanstack/react-query'
+import { act, configure, fireEvent, getConfig, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it, vi, type Mock, type MockInstance } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock, type MockInstance } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus, type NetworkWindow } from '../pwa/networkStatus.ts'
 import { HOUSEHOLD_SETTINGS } from '../test/ApiProviders.tsx'
@@ -217,6 +217,15 @@ async function advance(ms: number) {
   await act(() => vi.advanceTimersByTimeAsync(ms))
 }
 
+// The real setTimeout, taken before any test fakes it.
+const realSetTimeout = globalThis.setTimeout
+
+// pause lets ms of real time pass, the fake clock standing still: time for
+// work that must not happen, such as a PATCH sent too soon, to show itself.
+function pause(ms: number) {
+  return new Promise((resolve) => realSetTimeout(resolve, ms))
+}
+
 // The page's setTimeout, watched: retrySecondTry waits for a timer to be set.
 let timers: MockInstance<typeof setTimeout>
 
@@ -227,6 +236,36 @@ async function retrySecondTry() {
   await waitFor(() => expect(timers).toHaveBeenCalledWith(expect.any(Function), 2 * RETRY_FIRST))
   await advance(2 * RETRY_FIRST)
 }
+
+// React's act environment flag, which Testing Library turns off while it waits.
+const actEnvironment = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+
+// Testing Library's own asyncWrapper, put back after these tests.
+let testingLibraryAsyncWrapper: ReturnType<typeof getConfig>['asyncWrapper']
+
+beforeAll(() => {
+  testingLibraryAsyncWrapper = getConfig().asyncWrapper
+  // As Testing Library's own, which ends each wait with a setTimeout of 0
+  // that the fake clock, standing still, would never fire: this one ends it
+  // with the real setTimeout.
+  configure({
+    asyncWrapper: async (callback) => {
+      const previous = actEnvironment.IS_REACT_ACT_ENVIRONMENT
+      actEnvironment.IS_REACT_ACT_ENVIRONMENT = false
+      try {
+        const result: unknown = await callback()
+        await pause(0)
+        return result
+      } finally {
+        actEnvironment.IS_REACT_ACT_ENVIRONMENT = previous
+      }
+    },
+  })
+})
+
+afterAll(() => {
+  configure({ asyncWrapper: testingLibraryAsyncWrapper })
+})
 
 function checkbox(name: string) {
   return screen.getByRole('checkbox', { name: new RegExp(`^${name}`) })
@@ -240,16 +279,21 @@ beforeEach(() => {
   onLine = true
   reachable = true
   mockViewport(390)
-  // setTimeout moves with real time, and a test can jump past a deadline or
-  // a wait (advance).
-  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'], shouldAdvanceTime: true })
+  // The clock and setTimeout move only when a test jumps past a deadline or
+  // a wait (advance), never with real time: under load, real time would fire
+  // a deadline or a wait the test never reached. React Query sends its
+  // batched notices on a real setTimeout of 0, as it does in the app, so the
+  // page renders its changes without the clock moving.
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
   vi.setSystemTime(new Date('2026-10-07T16:00:00Z'))
+  notifyManager.setScheduler((callback) => realSetTimeout(callback, 0))
   timers = vi.spyOn(globalThis, 'setTimeout')
 })
 
 afterEach(() => {
   vi.restoreAllMocks()
   vi.useRealTimers()
+  notifyManager.setScheduler(defaultScheduler)
   vi.unstubAllGlobals()
   Reflect.deleteProperty(window, 'matchMedia')
 })
@@ -400,7 +444,7 @@ describe('offline toggle queue, replay', () => {
     for (let sent = 1; sent <= 4; sent++) {
       await waitFor(() => expect(patches(server.fetchMock)).toHaveLength(sent))
       // The next one is not sent before this one is answered.
-      await new Promise((resolve) => setTimeout(resolve, 20))
+      await pause(20)
       expect(patches(server.fetchMock)).toHaveLength(sent)
       act(() => answers.release())
     }
@@ -616,7 +660,7 @@ describe('offline toggle queue, replay', () => {
     expect(await screen.findByText(/Couldn't load the household settings/)).toBeInTheDocument()
     expect(screen.getByText(/can't be kept on this device while offline/)).toBeInTheDocument()
     const reads = getItem.mock.calls.filter(([key]) => key === SAVED_KEY).length
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    await pause(50)
     expect(getItem.mock.calls.filter(([key]) => key === SAVED_KEY)).toHaveLength(reads)
   })
 })

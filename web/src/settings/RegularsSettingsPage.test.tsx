@@ -496,6 +496,195 @@ describe('RegularsSettingsPage', () => {
     })
   })
 
+  describe('Photo backfill', () => {
+    const BACKFILL = 'POST /api/v1/settings/photo-backfill'
+    const JOB = 'GET /api/v1/jobs/j9'
+
+    // backfillJob is a GET /api/v1/jobs/j9 answer for the photo backfill.
+    function backfillJob(status: string, result: unknown = null, error: string | null = null) {
+      return jsonResponse(200, { id: 'j9', kind: 'backfill_dinner_photos', status, result, error })
+    }
+
+    // polls answers each poll of the job with the next answer, then the last
+    // one again; an answer may change the server first.
+    function polls(...answers: (() => Response)[]) {
+      let next = 0
+      return () => answers[Math.min(next++, answers.length - 1)]!()
+    }
+
+    function fixSheet() {
+      return within(screen.getByRole('dialog', { name: 'Fix recipe' }))
+    }
+
+    const NO_CANDIDATES = { 'GET /api/v1/dinners/d3/recipe-candidates': () => jsonResponse(200, { candidates: [] }) }
+
+    it('shows why the recipe was not found in the fix-recipe sheet', async () => {
+      stubServer([PIZZA], NO_CANDIDATES)
+      await renderPage()
+
+      openRow('Pizza night')
+      expect(fixSheet().getByText('No recipe page the search found had a recipe we could use.')).toBeInTheDocument()
+      expect(fixSheet().getByRole('button', { name: 'Search again' })).toBeEnabled()
+    })
+
+    it('offers no search again for a pasted link that had no usable recipe', async () => {
+      const linked = { ...PIZZA, grounding_error: 'recipe_unusable' }
+      stubServer([linked], NO_CANDIDATES)
+      await renderPage()
+
+      openRow('Pizza night')
+      expect(fixSheet().getByText('The pasted recipe link has no recipe we could use.')).toBeInTheDocument()
+      expect(fixSheet().queryByRole('button', { name: 'Search again' })).not.toBeInTheDocument()
+    })
+
+    it('searches again from the fix-recipe sheet and shows the new reason when it still fails', async () => {
+      const server = stubServer([PIZZA], {
+        ...NO_CANDIDATES,
+        [BACKFILL]: () => jsonResponse(202, { id: 'j9' }),
+        [JOB]: polls(
+          () => backfillJob('running'),
+          () => {
+            server.regulars = [{ ...PIZZA, grounding_error: 'search_failed' }]
+            return backfillJob('succeeded', { dinners: [{ dinner_id: 'd3', outcome: 'failed', reason: 'search_failed' }] })
+          },
+        ),
+      })
+      await renderPage()
+
+      openRow('Pizza night')
+      fireEvent.click(fixSheet().getByRole('button', { name: 'Search again' }))
+      expect(await fixSheet().findByRole('button', { name: 'Searching again…' })).toBeDisabled()
+      expect(fixSheet().getByText('Searching again… this can take a few minutes.')).toBeInTheDocument()
+      expect(sent(server.fetchMock)).toEqual([{ request: BACKFILL, body: undefined }])
+
+      expect(await fixSheet().findByText('Searched again: still no recipe found.', {}, { timeout: 3000 })).toBeInTheDocument()
+      expect(await fixSheet().findByText("The recipe search couldn't be reached.")).toBeInTheDocument()
+      expect(fixSheet().getByRole('button', { name: 'Search again' })).toBeEnabled()
+    })
+
+    it('closes the fix-recipe sheet once searching again finds the recipe and its photo', async () => {
+      const server = stubServer([PIZZA], {
+        ...NO_CANDIDATES,
+        [BACKFILL]: () => jsonResponse(202, { id: 'j9' }),
+        [JOB]: () => {
+          server.regulars = [{ ...PIZZA, grounding_status: 'grounded', grounding_error: null, photo_url: '/media/photos/p8-400.jpg' }]
+          return backfillJob('succeeded', { dinners: [{ dinner_id: 'd3', outcome: 'grounded', reason: null }] })
+        },
+      })
+      await renderPage()
+
+      openRow('Pizza night')
+      fireEvent.click(fixSheet().getByRole('button', { name: 'Search again' }))
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      expect(within(row('Pizza night')).getByText('Recipe found')).toBeInTheDocument()
+      expect(within(row('Pizza night')).getByRole('img', { name: 'Pizza night' })).toHaveAttribute('src', '/media/photos/p8-400.jpg')
+    })
+
+    it('says a dinner the search left out keeps its pasted recipe link', async () => {
+      const linked = { ...PIZZA, grounding_error: 'ai_failed' }
+      stubServer([linked], {
+        ...NO_CANDIDATES,
+        [BACKFILL]: () => jsonResponse(202, { id: 'j9' }),
+        [JOB]: () => backfillJob('succeeded', { dinners: [] }),
+      })
+      await renderPage()
+
+      openRow('Pizza night')
+      fireEvent.click(fixSheet().getByRole('button', { name: 'Search again' }))
+      expect(await fixSheet().findByText('Not searched again: it keeps its pasted recipe link.')).toBeInTheDocument()
+    })
+
+    it('finds missing photos: the placeholder shows until the backfill finds a photo', async () => {
+      const found = { ...PIZZA, grounding_status: 'grounded', grounding_error: null, photo_url: '/media/photos/p8-400.jpg' }
+      const server = stubServer([TACOS, PIZZA], {
+        [BACKFILL]: () => jsonResponse(202, { id: 'j9' }),
+        [JOB]: polls(
+          () => backfillJob('queued'),
+          () => {
+            server.regulars = [TACOS, found]
+            return backfillJob('succeeded', { dinners: [{ dinner_id: 'd3', outcome: 'grounded', reason: null }] })
+          },
+        ),
+      })
+      await renderPage()
+
+      // The photoless dinner shows the striped placeholder, not an image.
+      const placeholder = within(row('Pizza night')).getByRole('img', { name: 'Pizza night' })
+      expect(placeholder).not.toHaveAttribute('src')
+      expect(placeholder).toHaveTextContent('dish photo')
+
+      const trigger = screen.getByRole('button', { name: 'Find missing photos' })
+      expectMinHitArea(trigger)
+      fireEvent.click(trigger)
+      expect(await screen.findByRole('button', { name: 'Finding photos…' })).toBeDisabled()
+      expect(await screen.findByText('Finding missing photos… this can take a few minutes.')).toBeInTheDocument()
+      expect(within(row('Pizza night')).getByRole('img', { name: 'Pizza night' })).not.toHaveAttribute('src')
+      expect(sent(server.fetchMock)).toEqual([{ request: BACKFILL, body: undefined }])
+
+      expect(await screen.findByText('Photo search done: 1 photo found.', {}, { timeout: 3000 })).toBeInTheDocument()
+      await waitFor(() =>
+        expect(within(row('Pizza night')).getByRole('img', { name: 'Pizza night' })).toHaveAttribute('src', '/media/photos/p8-400.jpg'),
+      )
+      expect(screen.getByRole('button', { name: 'Find missing photos' })).toBeEnabled()
+      expect(reads(server.fetchMock)).toBe(2)
+    })
+
+    it('sums up what the backfill did', async () => {
+      stubServer([PIZZA], {
+        [BACKFILL]: () => jsonResponse(202, { id: 'j9' }),
+        [JOB]: () =>
+          backfillJob('succeeded', {
+            dinners: [
+              { dinner_id: 'd3', outcome: 'grounded', reason: null },
+              { dinner_id: 'd5', outcome: 'grounded', reason: null },
+              { dinner_id: 'd6', outcome: 'failed', reason: 'no_recipe_found' },
+              { dinner_id: 'd7', outcome: 'skipped', reason: null },
+            ],
+          }),
+      })
+      await renderPage()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Find missing photos' }))
+      expect(
+        await screen.findByText(
+          'Photo search done: 2 photos found · 1 dinner still needs a recipe · 1 dinner changed meanwhile, left as it was.',
+        ),
+      ).toBeInTheDocument()
+    })
+
+    it('says when no dinner was missing a photo', async () => {
+      stubServer([TACOS], {
+        [BACKFILL]: () => jsonResponse(202, { id: 'j9' }),
+        [JOB]: () => backfillJob('succeeded', { dinners: [] }),
+      })
+      await renderPage()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Find missing photos' }))
+      expect(await screen.findByText('No dinners were missing a photo.')).toBeInTheDocument()
+    })
+
+    it('says why the backfill stopped', async () => {
+      stubServer([PIZZA], {
+        [BACKFILL]: () => jsonResponse(202, { id: 'j9' }),
+        [JOB]: () => backfillJob('failed', { dinners: [] }, 'internal_error'),
+      })
+      await renderPage()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Find missing photos' }))
+      expect(await screen.findByRole('alert')).toHaveTextContent('Photo search stopped: Something went wrong on the server.')
+      expect(screen.getByRole('button', { name: 'Find missing photos' })).toBeEnabled()
+    })
+
+    it('says why the backfill could not start', async () => {
+      stubServer([PIZZA], { [BACKFILL]: () => errorResponse(403, 'csrf_failed') })
+      await renderPage()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Find missing photos' }))
+      expect(await screen.findByRole('alert')).toHaveTextContent('Photo search not started: csrf_failed message')
+      expect(screen.getByRole('button', { name: 'Find missing photos' })).toBeEnabled()
+    })
+  })
+
   it('refreshes grounding status while any Regular is finding its recipe, then stops', async () => {
     // Only intervals are faked: TanStack Query polls with setInterval, and
     // Testing Library's waits keep their real timers.

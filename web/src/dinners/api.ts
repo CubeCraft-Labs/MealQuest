@@ -20,8 +20,10 @@ export type Difficulty = (typeof DIFFICULTIES)[number]
 export type GroundingStatus = (typeof GROUNDING_STATUSES)[number]
 
 // Regular is the part of a dinner the Regulars screens read. photo_id is
-// the stored photo's id, from photo_url. pending is true while an
-// optimistic add waits for the server; its id is not the server's.
+// the stored photo's id, from photo_url. grounding_error is why its
+// grounding failed, a reason code, set only while grounding_status is
+// failed. pending is true while an optimistic add waits for the server;
+// its id is not the server's.
 export type Regular = {
   id: string
   name: string
@@ -31,6 +33,7 @@ export type Regular = {
   is_favorite: boolean
   photo_id: string | undefined
   grounding_status: GroundingStatus
+  grounding_error: string | null
   pending?: true
 }
 
@@ -122,6 +125,10 @@ export function parseDinner(where: string, body: unknown): Regular {
     is_favorite: body.is_favorite,
     photo_id: photoId(where, body.photo_url),
     grounding_status: oneOf(where, 'grounding_status', GROUNDING_STATUSES, body.grounding_status),
+    grounding_error: nullable(body.grounding_error, (v) => {
+      if (typeof v !== 'string') throw new Error(`${where}: grounding_error is not a string`)
+      return v
+    }),
   }
 }
 
@@ -225,6 +232,7 @@ export function useAddRegular() {
         is_favorite: false,
         photo_id: undefined,
         grounding_status: 'pending',
+        grounding_error: null,
         pending: true,
       }
       await changeOptimistically(queryClient, (list) => [...list, optimistic])

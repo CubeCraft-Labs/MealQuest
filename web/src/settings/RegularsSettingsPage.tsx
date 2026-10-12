@@ -34,6 +34,7 @@ import { Sheet } from '../ui/Sheet.tsx'
 import { Skeleton } from '../ui/Skeleton.tsx'
 import { Tag } from '../ui/Tag.tsx'
 import { TextInput } from '../ui/TextInput.tsx'
+import { usePhotoBackfill, type BackfillResult, type PhotoBackfill } from './photoBackfill.ts'
 import styles from './RegularsSettingsPage.module.css'
 
 // The most minutes a dinner may take, as the dinners API allows: a day.
@@ -57,7 +58,8 @@ const LINK = /^https?:\/\//i
 // method and minutes, favorite heart and whether its recipe was found. The
 // field at the top adds one by name, or by pasted recipe link with a name
 // the household gives it; tapping one
-// edits or removes it, or fixes its recipe when none was found.
+// edits or removes it, or fixes its recipe when none was found. Find
+// missing photos searches again for every dinner left without one.
 export function RegularsSettingsPage() {
   const navigate = useNavigate()
   return (
@@ -86,6 +88,7 @@ function RegularsManager() {
   const remove = useRemoveRegular()
   const favorite = useToggleFavorite()
   const { refusals, track } = useRefusals()
+  const backfill = usePhotoBackfill()
   const [draft, setDraft] = useState('')
   const [linkName, setLinkName] = useState('')
   const [open, setOpen] = useState<Open>(null)
@@ -94,8 +97,10 @@ function RegularsManager() {
   const isLink = LINK.test(draft.trim())
   const ready = draft.trim() !== '' && (!isLink || linkName.trim() !== '')
   const list = regulars.data ?? []
-  // A Regular removed meanwhile closes its sheet.
+  // A Regular removed meanwhile closes its sheet, and one whose recipe was
+  // found meanwhile closes its fix-recipe sheet.
   const opened = open && list.find((regular) => regular.id === open.id && !regular.pending)
+  const fixing = opened && open.sheet === 'fix' && opened.grounding_status === 'failed' ? opened : undefined
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -188,6 +193,7 @@ function RegularsManager() {
           )}
         </section>
       )}
+      {regulars.isSuccess && <FindMissingPhotos backfill={backfill} />}
 
       {opened && open.sheet === 'edit' && (
         <EditRegularSheet
@@ -197,12 +203,13 @@ function RegularsManager() {
           onRemove={() => onRemove(opened)}
         />
       )}
-      {opened && open.sheet === 'fix' && (
+      {fixing && (
         <FixRecipeSheet
-          key={opened.id}
-          regular={opened}
+          key={fixing.id}
+          regular={fixing}
+          backfill={backfill}
           onClose={() => setOpen(null)}
-          onEdit={() => setOpen({ sheet: 'edit', id: opened.id })}
+          onEdit={() => setOpen({ sheet: 'edit', id: fixing.id })}
         />
       )}
     </>
@@ -229,6 +236,88 @@ const badges: Record<GroundingStatus, { text: string; className: string | undefi
 function GroundingBadge({ status }: { status: GroundingStatus }) {
   const badge = badges[status]
   return <Tag className={`${styles.badge} ${badge.className}`}>{badge.text}</Tag>
+}
+
+// groundingReasons says why a dinner's recipe was not found, by its
+// grounding_error reason code.
+const groundingReasons: Record<string, string> = {
+  no_recipe_found: 'No recipe page the search found had a recipe we could use.',
+  recipe_unusable: 'The pasted recipe link has no recipe we could use.',
+  search_not_configured: 'Recipe search is not set up. An admin can set it up in Settings.',
+  search_failed: "The recipe search couldn't be reached.",
+  ai_failed: "The AI assistant couldn't read the recipe.",
+  interrupted: 'The server stopped while finding the recipe.',
+  grounding_error: 'Something went wrong on the server.',
+}
+
+// groundingReason says why a dinner's recipe was not found; an unknown
+// reason code is shown as it is.
+export function groundingReason(code: string): string {
+  return groundingReasons[code] ?? code
+}
+
+// backfillJobFailures says why a photo backfill job failed, by its failure
+// code; an unknown code is shown as it is.
+const backfillJobFailures: Record<string, string> = {
+  internal_error: 'Something went wrong on the server.',
+}
+
+// backfillProblem says what went wrong with a photo backfill, or null.
+function backfillProblem(backfill: PhotoBackfill): string | null {
+  if (backfill.startError) return `Photo search not started: ${backfill.startError.message}`
+  if (backfill.status === 'failed' && backfill.error) {
+    return `Photo search stopped: ${backfillJobFailures[backfill.error.message] ?? backfill.error.message}`
+  }
+  if (backfill.error) return `Couldn't check on the photo search: ${backfill.error.message}`
+  return null
+}
+
+function count(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`
+}
+
+// backfillSummary says what a finished photo backfill did.
+function backfillSummary(result: BackfillResult): string {
+  const tally = (outcome: string) => result.dinners.filter((dinner) => dinner.outcome === outcome).length
+  if (result.dinners.length === 0) return 'No dinners were missing a photo.'
+  const parts = [count(tally('grounded'), 'photo found', 'photos found')]
+  const failed = tally('failed')
+  if (failed > 0) parts.push(`${count(failed, 'dinner still needs', 'dinners still need')} a recipe`)
+  const skipped = tally('skipped')
+  if (skipped > 0) parts.push(`${count(skipped, 'dinner', 'dinners')} changed meanwhile, left as it was`)
+  return `Photo search done: ${parts.join(' · ')}.`
+}
+
+// FindMissingPhotos searches again, by name, for a recipe and photo for
+// every dinner left without a photo because its recipe was not found.
+function FindMissingPhotos({ backfill }: { backfill: PhotoBackfill }) {
+  const headingId = useId()
+  const problem = backfillProblem(backfill)
+  return (
+    <section aria-labelledby={headingId} className={styles.section}>
+      <h2 id={headingId} className={styles.groupLabel}>
+        Missing photos
+      </h2>
+      <Card className={`${styles.card} ${styles.backfill}`}>
+        <p className={styles.hint}>
+          Search again for a recipe and photo for every dinner whose recipe wasn&apos;t found. Dinners with a pasted
+          recipe link keep it.
+        </p>
+        <Button disabled={backfill.active} onClick={backfill.start}>
+          {backfill.active ? 'Finding photos…' : 'Find missing photos'}
+        </Button>
+        <p role="status" className={styles.status}>
+          {backfill.active && 'Finding missing photos… this can take a few minutes.'}
+          {backfill.status === 'succeeded' && backfill.result && backfillSummary(backfill.result)}
+        </p>
+        {problem && (
+          <p role="alert" className={styles.problem}>
+            {problem}
+          </p>
+        )}
+      </Card>
+    </section>
+  )
 }
 
 type RegularRowProps = {
@@ -447,6 +536,7 @@ const fixPaths = [
 
 type FixRecipeSheetProps = {
   regular: Regular
+  backfill: PhotoBackfill
   onClose: () => void
   onEdit: () => void
 }
@@ -459,10 +549,19 @@ function lines(text: string): string[] {
     .filter((line) => line !== '')
 }
 
-// FixRecipeSheet grounds a Regular whose recipe was not found: in one of
-// up to three recipe pages found for its name, in a pasted recipe link, or
-// in ingredients and steps typed in.
-function FixRecipeSheet({ regular, onClose, onEdit }: FixRecipeSheetProps) {
+// retryOutcomes says what searching again did for this dinner.
+const retryOutcomes = {
+  grounded: 'Searched again: a recipe and photo were found.',
+  failed: 'Searched again: still no recipe found.',
+  skipped: 'It changed while it was searched again, so it was left as it is.',
+} as const
+
+// FixRecipeSheet shows why a Regular's recipe was not found and grounds it:
+// by searching its name again (a photo backfill), in one of up to three
+// recipe pages found for its name, in a pasted recipe link, or in
+// ingredients and steps typed in. Searching again never replaces a pasted
+// link, so a dinner whose link had no usable recipe is not offered it.
+function FixRecipeSheet({ regular, backfill, onClose, onEdit }: FixRecipeSheetProps) {
   const [path, setPath] = useState<FixPath>('pick')
   const ground = useGroundRegular()
 
@@ -475,6 +574,15 @@ function FixRecipeSheet({ regular, onClose, onEdit }: FixRecipeSheetProps) {
       <p className={styles.hint}>
         We couldn&apos;t find a recipe for {regular.name}. Pick a match below, paste a recipe link or type it in.
       </p>
+      {regular.grounding_error !== null && (
+        <p className={styles.reason}>
+          <span className={styles.reasonLabel}>Why: </span>
+          {groundingReason(regular.grounding_error)}
+        </p>
+      )}
+      {regular.grounding_error !== 'recipe_unusable' && (
+        <RetrySearch id={regular.id} backfill={backfill} disabled={ground.isPending} />
+      )}
       <Segmented
         label="How to fix the recipe"
         options={fixPaths}
@@ -501,6 +609,34 @@ function FixRecipeSheet({ regular, onClose, onEdit }: FixRecipeSheetProps) {
         Edit or remove {regular.name}
       </Button>
     </SheetFrame>
+  )
+}
+
+// RetrySearch searches the dinner's name again with a photo backfill, and
+// says what it did for the dinner once it ends. The backfill searches
+// every dinner without a photo, this one with them.
+function RetrySearch({ id, backfill, disabled }: { id: string; backfill: PhotoBackfill; disabled: boolean }) {
+  const problem = backfillProblem(backfill)
+  const tried = backfill.result?.dinners.find((dinner) => dinner.dinner_id === id)
+  let status: string | null = null
+  if (backfill.active) status = 'Searching again… this can take a few minutes.'
+  else if (backfill.status === 'succeeded') {
+    status = tried ? retryOutcomes[tried.outcome] : 'Not searched again: it keeps its pasted recipe link.'
+  }
+  return (
+    <>
+      <Button variant="outline" disabled={disabled || backfill.active} onClick={backfill.start}>
+        {backfill.active ? 'Searching again…' : 'Search again'}
+      </Button>
+      <p role="status" className={styles.status}>
+        {status}
+      </p>
+      {problem && (
+        <p role="alert" className={styles.problem}>
+          {problem}
+        </p>
+      )}
+    </>
   )
 }
 

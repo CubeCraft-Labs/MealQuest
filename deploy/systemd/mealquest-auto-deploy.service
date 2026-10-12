@@ -1,0 +1,23 @@
+# Deploys origin/main to production when it is new and its CI passed
+# (/usr/local/sbin/mealquest-auto-deploy, from deploy/auto-deploy.sh).
+# Triggered by mealquest-auto-deploy.timer; output goes to the journal.
+# Installing it and the manual override: deploy/RUNBOOK.md "Automated deploys".
+#
+# ExecCondition= skips the run while mealquest.service is not active, so a
+# stack stopped on purpose (a database or media restore) is never redeployed
+# under the operator. It is deliberately not Requires=/Requisite= on
+# mealquest.service: those would start the stack, or stop this run when the
+# deploy itself restarts mealquest.service. Runs as overseer, who owns the
+# checkout and uses sudo for the runbook's privileged steps.
+[Unit]
+Description=MealQuest automated deploy of main
+Wants=network-online.target
+After=network-online.target docker.service mealquest.service
+
+[Service]
+Type=oneshot
+User=overseer
+Group=overseer
+WorkingDirectory=/home/overseer/mealquest
+ExecCondition=/usr/bin/systemctl is-active --quiet mealquest.service
+ExecStart=/usr/local/sbin/mealquest-auto-deploy

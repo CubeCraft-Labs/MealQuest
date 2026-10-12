@@ -1,0 +1,13 @@
+# Checks for a new main at every quarter hour (plus up to 5 minutes' random
+# delay). Persistent= runs a check at once when the host comes back if a
+# scheduled one was missed while it was down.
+[Unit]
+Description=Periodic MealQuest automated deploy
+
+[Timer]
+OnCalendar=*-*-* *:0/15:00
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

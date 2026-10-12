@@ -74,3 +74,10 @@ func (s *Service) RunGroundJob(ctx context.Context, p GroundJob) (string, error)
 
 // SafeSourceURL is safeSourceURL.
 var SafeSourceURL = safeSourceURL
+
+// RunBackfillJob runs the KindBackfillPhotos handler for p in the caller's
+// goroutine, as the job runner would, and returns its outcomes.
+func (s *Service) RunBackfillJob(ctx context.Context, p BackfillJob) ([]BackfillOutcome, error) {
+	r, err := s.runBackfillJob(ctx, p, nil)
+	return r.Dinners, err
+}

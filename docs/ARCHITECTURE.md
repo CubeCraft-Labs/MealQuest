@@ -259,6 +259,19 @@ automatic** (D-021).
   unarchived dinner still `pending` with no `ground_dinner` job for its revision
   queued or running is set `failed` with `interrupted`, so no dinner stays
   pending with nothing left to ground it.
+  Photo backfill. `POST /api/v1/settings/photo-backfill` (CSRF-checked)
+  enqueues a `backfill_dinner_photos` job and answers 202 `{id}` without
+  waiting for it; the kind is refused by `POST /api/v1/jobs`. The job
+  grounds, one at a time with `Ground` on its name, every unarchived dinner
+  that is `failed` with no photo and no pasted `recipe_url` — grounded,
+  `manual` and `pending` dinners are never listed, and a pasted link is
+  never replaced by a search. Success sets grounding_status `grounded` as
+  the `ground_dinner` job does (the recipe keeps its source URL and site);
+  failure leaves the dinner `failed` with the new `grounding_error`, for
+  the fix-recipe flow. One dinner's failure never stops the others; a
+  dinner renamed, archived or grounded by hand meanwhile is left as it is.
+  Its result is `{dinners: [{dinner_id, outcome, reason}]}`, outcome
+  `grounded`, `failed` (with its reason) or `skipped`.
   `GET /api/v1/dinners/{id}/recipe-candidates`
   searches for the dinner's name and returns `{candidates: [{candidate_id,
   title, site_name, photo_url, minutes}]}`, at most 3, ranked as `Ground`

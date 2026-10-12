@@ -181,3 +181,53 @@ WHERE grounding_status = 'pending'
 			AND json_extract(jobs.payload, '$.dinner_id') = dinners.id
 			AND json_extract(jobs.payload, '$.revision') = dinners.grounding_revision
 	);
+
+-- name: ListPhotoBackfillDinners :many
+-- The dinners a photo backfill grounds by name: unarchived, failed, with no
+-- photo and no pasted recipe_url (the household's own link is never
+-- replaced by a search), ordered by normalized name. A non-NULL id narrows
+-- the list to that dinner. Grounded, manual and pending dinners are never
+-- listed: they have a recipe, or a ground_dinner job grounding them.
+SELECT * FROM dinners
+WHERE status <> 'archived'
+	AND grounding_status = 'failed'
+	AND photo_id IS NULL
+	AND recipe_url IS NULL
+	AND id = COALESCE(sqlc.narg(id), id)
+ORDER BY normalized_name, id;
+
+-- name: GroundFailedDinner :execrows
+-- Records a photo backfill's grounding of a dinner it listed, while the
+-- dinner is still unarchived, failed, photoless, without a recipe_url and at
+-- the grounding_revision it was listed at; a dinner grounded by hand,
+-- renamed or archived meanwhile is left as it is (0 rows). Like
+-- GroundPendingDinner it keeps a method, minutes_total or difficulty a
+-- member already set.
+UPDATE dinners
+SET recipe_id = sqlc.arg(recipe_id),
+	photo_id = sqlc.arg(photo_id),
+	method = COALESCE(method, sqlc.arg(method)),
+	minutes_total = COALESCE(minutes_total, sqlc.arg(minutes_total)),
+	difficulty = COALESCE(difficulty, sqlc.arg(difficulty)),
+	grounding_status = 'grounded',
+	grounding_error = NULL,
+	updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id)
+	AND status <> 'archived'
+	AND grounding_status = 'failed'
+	AND photo_id IS NULL
+	AND recipe_url IS NULL
+	AND grounding_revision = sqlc.arg(grounding_revision);
+
+-- name: RefailDinnerGrounding :execrows
+-- Records why a photo backfill could not ground a dinner it listed, under
+-- the same conditions as GroundFailedDinner (0 rows otherwise).
+UPDATE dinners
+SET grounding_error = sqlc.arg(grounding_error),
+	updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id)
+	AND status <> 'archived'
+	AND grounding_status = 'failed'
+	AND photo_id IS NULL
+	AND recipe_url IS NULL
+	AND grounding_revision = sqlc.arg(grounding_revision);

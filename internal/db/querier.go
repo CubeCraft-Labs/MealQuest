@@ -175,6 +175,13 @@ type Querier interface {
 	// unknown id, returns sql.ErrNoRows. A method, minutes_total or difficulty
 	// no longer as observed is kept: a member edited it while it was grounding.
 	GroundDinner(ctx context.Context, arg GroundDinnerParams) (Dinner, error)
+	// Records a photo backfill's grounding of a dinner it listed, while the
+	// dinner is still unarchived, failed, photoless, without a recipe_url and at
+	// the grounding_revision it was listed at; a dinner grounded by hand,
+	// renamed or archived meanwhile is left as it is (0 rows). Like
+	// GroundPendingDinner it keeps a method, minutes_total or difficulty a
+	// member already set.
+	GroundFailedDinner(ctx context.Context, arg GroundFailedDinnerParams) (int64, error)
 	// Records the background grounding of an unarchived dinner still pending at
 	// the grounding_revision it was grounded for; a dinner grounded some other
 	// way, renamed or archived meanwhile is left as it is (0 rows). A method,
@@ -206,6 +213,12 @@ type Querier interface {
 	// The pending Rotation checks whose dinner is still tried, oldest plan
 	// date first, with their dinners.
 	ListPendingRotationReviews(ctx context.Context) ([]ListPendingRotationReviewsRow, error)
+	// The dinners a photo backfill grounds by name: unarchived, failed, with no
+	// photo and no pasted recipe_url (the household's own link is never
+	// replaced by a search), ordered by normalized name. A non-NULL id narrows
+	// the list to that dinner. Grounded, manual and pending dinners are never
+	// listed: they have a recipe, or a ground_dinner job grounding them.
+	ListPhotoBackfillDinners(ctx context.Context, id sql.NullString) ([]Dinner, error)
 	// The days of plan plan_id with their dinners, Monday first. A day with
 	// no dinner is left out.
 	ListPlanDays(ctx context.Context, planID string) ([]ListPlanDaysRow, error)
@@ -307,6 +320,9 @@ type Querier interface {
 	// Records a new draft over plan id: its status and note, raising its
 	// revision.
 	RedraftWeekPlan(ctx context.Context, arg RedraftWeekPlanParams) error
+	// Records why a photo backfill could not ground a dinner it listed, under
+	// the same conditions as GroundFailedDinner (0 rows otherwise).
+	RefailDinnerGrounding(ctx context.Context, arg RefailDinnerGroundingParams) (int64, error)
 	// Records a generation of list id from plan plan_id.
 	RegenerateShoppingList(ctx context.Context, arg RegenerateShoppingListParams) error
 	// Records a failed delivery and when to try again. The lease must still be

@@ -214,6 +214,26 @@ func (q *Queries) FailPendingDinnerGrounding(ctx context.Context, arg FailPendin
 	return result.RowsAffected()
 }
 
+const getActivePhotoBackfillJob = `-- name: GetActivePhotoBackfillJob :one
+SELECT id
+FROM jobs
+WHERE kind = ?1
+	AND status IN ('queued', 'running')
+	AND json_extract(payload, '$.dinner_id') IS NULL
+ORDER BY id
+LIMIT 1
+`
+
+// The id of the full photo backfill job (no dinner_id) of kind queued or
+// running. StartPhotoBackfill enqueues one only when there is none, so
+// there is at most one. Returns sql.ErrNoRows when there is none.
+func (q *Queries) GetActivePhotoBackfillJob(ctx context.Context, kind string) (string, error) {
+	row := q.db.QueryRowContext(ctx, getActivePhotoBackfillJob, kind)
+	var id string
+	err := row.Scan(&id)
+	return id, err
+}
+
 const getDinner = `-- name: GetDinner :one
 SELECT id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url, grounding_error, grounding_revision FROM dinners
 WHERE id = ?
@@ -344,6 +364,58 @@ func (q *Queries) GroundDinner(ctx context.Context, arg GroundDinnerParams) (Din
 	return i, err
 }
 
+const groundFailedDinner = `-- name: GroundFailedDinner :execrows
+UPDATE dinners
+SET recipe_id = ?1,
+	photo_id = ?2,
+	method = COALESCE(method, ?3),
+	minutes_total = COALESCE(minutes_total, ?4),
+	difficulty = COALESCE(difficulty, ?5),
+	grounding_status = 'grounded',
+	grounding_error = NULL,
+	updated_at = ?6
+WHERE id = ?7
+	AND status <> 'archived'
+	AND grounding_status = 'failed'
+	AND photo_id IS NULL
+	AND recipe_url IS NULL
+	AND grounding_revision = ?8
+`
+
+type GroundFailedDinnerParams struct {
+	RecipeID          sql.NullString
+	PhotoID           sql.NullString
+	Method            sql.NullString
+	MinutesTotal      sql.NullInt64
+	Difficulty        sql.NullString
+	UpdatedAt         string
+	ID                string
+	GroundingRevision int64
+}
+
+// Records a photo backfill's grounding of a dinner it listed, while the
+// dinner is still unarchived, failed, photoless, without a recipe_url and at
+// the grounding_revision it was listed at; a dinner grounded by hand,
+// renamed or archived meanwhile is left as it is (0 rows). Like
+// GroundPendingDinner it keeps a method, minutes_total or difficulty a
+// member already set.
+func (q *Queries) GroundFailedDinner(ctx context.Context, arg GroundFailedDinnerParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, groundFailedDinner,
+		arg.RecipeID,
+		arg.PhotoID,
+		arg.Method,
+		arg.MinutesTotal,
+		arg.Difficulty,
+		arg.UpdatedAt,
+		arg.ID,
+		arg.GroundingRevision,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const groundPendingDinner = `-- name: GroundPendingDinner :execrows
 UPDATE dinners
 SET recipe_id = ?1,
@@ -403,6 +475,64 @@ ORDER BY normalized_name, id
 
 func (q *Queries) ListDinnersByStatus(ctx context.Context, status string) ([]Dinner, error) {
 	rows, err := q.db.QueryContext(ctx, listDinnersByStatus, status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Dinner
+	for rows.Next() {
+		var i Dinner
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.NormalizedName,
+			&i.Status,
+			&i.Origin,
+			&i.Method,
+			&i.MinutesTotal,
+			&i.Difficulty,
+			&i.Cuisine,
+			&i.IsFavorite,
+			&i.RecipeID,
+			&i.PhotoID,
+			&i.GroundingStatus,
+			&i.UpdatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.RecipeUrl,
+			&i.GroundingError,
+			&i.GroundingRevision,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPhotoBackfillDinners = `-- name: ListPhotoBackfillDinners :many
+SELECT id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url, grounding_error, grounding_revision FROM dinners
+WHERE status <> 'archived'
+	AND grounding_status = 'failed'
+	AND photo_id IS NULL
+	AND recipe_url IS NULL
+	AND id = COALESCE(?1, id)
+ORDER BY normalized_name, id
+`
+
+// The dinners a photo backfill grounds by name: unarchived, failed, with no
+// photo and no pasted recipe_url (the household's own link is never
+// replaced by a search), ordered by normalized name. A non-NULL id narrows
+// the list to that dinner. Grounded, manual and pending dinners are never
+// listed: they have a recipe, or a ground_dinner job grounding them.
+func (q *Queries) ListPhotoBackfillDinners(ctx context.Context, id sql.NullString) ([]Dinner, error) {
+	rows, err := q.db.QueryContext(ctx, listPhotoBackfillDinners, id)
 	if err != nil {
 		return nil, err
 	}
@@ -558,6 +688,40 @@ func (q *Queries) ListUnplannedQuestLogDinners(ctx context.Context, fromWeekStar
 		return nil, err
 	}
 	return items, nil
+}
+
+const refailDinnerGrounding = `-- name: RefailDinnerGrounding :execrows
+UPDATE dinners
+SET grounding_error = ?1,
+	updated_at = ?2
+WHERE id = ?3
+	AND status <> 'archived'
+	AND grounding_status = 'failed'
+	AND photo_id IS NULL
+	AND recipe_url IS NULL
+	AND grounding_revision = ?4
+`
+
+type RefailDinnerGroundingParams struct {
+	GroundingError    sql.NullString
+	UpdatedAt         string
+	ID                string
+	GroundingRevision int64
+}
+
+// Records why a photo backfill could not ground a dinner it listed, under
+// the same conditions as GroundFailedDinner (0 rows otherwise).
+func (q *Queries) RefailDinnerGrounding(ctx context.Context, arg RefailDinnerGroundingParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, refailDinnerGrounding,
+		arg.GroundingError,
+		arg.UpdatedAt,
+		arg.ID,
+		arg.GroundingRevision,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const setDinnerFavorite = `-- name: SetDinnerFavorite :one

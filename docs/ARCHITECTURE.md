@@ -259,6 +259,29 @@ automatic** (D-021).
   unarchived dinner still `pending` with no `ground_dinner` job for its revision
   queued or running is set `failed` with `interrupted`, so no dinner stays
   pending with nothing left to ground it.
+  Photo backfill. `POST /api/v1/settings/photo-backfill` (CSRF-checked)
+  enqueues a `backfill_dinner_photos` job and answers 202 `{id}` without
+  waiting for it; while one is queued or running it enqueues nothing and
+  answers with that job's id, so two passes never overlap, across restarts
+  too. The kind is refused by `POST /api/v1/jobs`. The job
+  grounds, one at a time with `Ground` on its name, every unarchived dinner
+  that is `failed` with no photo and no pasted `recipe_url` — grounded,
+  `manual` and `pending` dinners are never listed, and a pasted link is
+  never replaced by a search. Success sets grounding_status `grounded` as
+  the `ground_dinner` job does (the recipe keeps its source URL and site);
+  failure leaves the dinner `failed` with the new `grounding_error`, for
+  the fix-recipe flow. One dinner's failure never stops the others; a
+  dinner renamed, archived or grounded by hand meanwhile is left as it is.
+  Its result is `{dinners: [{dinner_id, outcome, reason}]}`, outcome
+  `grounded`, `failed` (with its reason) or `skipped`. A dinner whose write
+  fails is `failed` with `grounding_error` and left as it was; the others
+  still run, then the job fails with `internal_error`, keeping that result.
+  The responses returning a `dinners.Dinner` representation (the list; the
+  create, update, archive, favorite and grounding responses; the idea
+  responses) carry `photo_backfill_eligible`, and
+  `GET /api/v1/dinners/{id}` does not; it says whether the backfill grounds
+  that dinner, computed by the same condition it lists dinners by, so a
+  client offers a search only where one runs.
   `GET /api/v1/dinners/{id}/recipe-candidates`
   searches for the dinner's name and returns `{candidates: [{candidate_id,
   title, site_name, photo_url, minutes}]}`, at most 3, ranked as `Ground`

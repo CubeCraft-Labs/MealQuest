@@ -52,6 +52,8 @@ function listed(is_favorite: boolean) {
     is_favorite,
     photo_url: null,
     grounding_status: 'grounded',
+    grounding_error: null,
+    photo_backfill_eligible: false,
   }
 }
 

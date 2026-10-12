@@ -39,6 +39,7 @@ type env struct {
 	runner *jobs.Runner
 	search *recipestest.Search
 	pages  *recipestest.Pages
+	images *recipestest.Images
 	model  *llm.Fake
 }
 
@@ -108,7 +109,7 @@ func newUnstartedEnvOn(t *testing.T, st *store.Store, dataDir string) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &env{svc: svc, st: st, runner: runner, search: search, pages: pages, model: model}
+	return &env{svc: svc, st: st, runner: runner, search: search, pages: pages, images: images, model: model}
 }
 
 // start starts the env's job runner, stopping it when the test ends.

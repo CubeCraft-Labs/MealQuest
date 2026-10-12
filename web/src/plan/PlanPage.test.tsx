@@ -115,6 +115,7 @@ function dinner(id: string, name: string, difficulty: string | null, minutes: nu
     photo_url: null,
     grounding_status: 'grounded',
     grounding_error: null,
+    photo_backfill_eligible: false,
   }
 }
 

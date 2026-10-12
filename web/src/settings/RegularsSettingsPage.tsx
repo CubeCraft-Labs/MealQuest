@@ -559,8 +559,9 @@ const retryOutcomes = {
 // FixRecipeSheet shows why a Regular's recipe was not found and grounds it:
 // by searching its name again (a photo backfill), in one of up to three
 // recipe pages found for its name, in a pasted recipe link, or in
-// ingredients and steps typed in. Searching again never replaces a pasted
-// link, so a dinner whose link had no usable recipe is not offered it.
+// ingredients and steps typed in. Searching again is offered only for a
+// dinner the backfill searches (photo_backfill_eligible): it never replaces
+// a pasted link.
 function FixRecipeSheet({ regular, backfill, onClose, onEdit }: FixRecipeSheetProps) {
   const [path, setPath] = useState<FixPath>('pick')
   const ground = useGroundRegular()
@@ -580,7 +581,7 @@ function FixRecipeSheet({ regular, backfill, onClose, onEdit }: FixRecipeSheetPr
           {groundingReason(regular.grounding_error)}
         </p>
       )}
-      {regular.grounding_error !== 'recipe_unusable' && (
+      {regular.photo_backfill_eligible && (
         <RetrySearch id={regular.id} backfill={backfill} disabled={ground.isPending} />
       )}
       <Segmented
@@ -621,7 +622,7 @@ function RetrySearch({ id, backfill, disabled }: { id: string; backfill: PhotoBa
   let status: string | null = null
   if (backfill.active) status = 'Searching again… this can take a few minutes.'
   else if (backfill.status === 'succeeded') {
-    status = tried ? retryOutcomes[tried.outcome] : 'Not searched again: it keeps its pasted recipe link.'
+    status = tried ? retryOutcomes[tried.outcome] : 'This dinner was not included in that search.'
   }
   return (
     <>

@@ -192,6 +192,53 @@ func TestBackfillSkipsDinnersNotMissingAPhoto(t *testing.T) {
 	}
 }
 
+// TestPhotoBackfillEligibleIsWhatTheBackfillLists holds the API's
+// photo_backfill_eligible to ListPhotoBackfillDinners for a dinner the
+// backfill grounds and for each kind it never does.
+func TestPhotoBackfillEligibleIsWhatTheBackfillLists(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	e.model.QueueGenerate(recipestest.NormalizedReply("stovetop", 40))
+	grounded, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr("Chicken curry")}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.waitJob(t, *grounded.GroundingJobID)
+	linked, err := e.svc.CreateRegular(t.Context(), dinners.NewRegular{Name: ptr("Mystery pie"), RecipeURL: ptr("https://d.example/pie")}, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.waitJob(t, *linked.GroundingJobID)
+	failed := e.failedDinner(t, "Abalone surprise")
+	archived, err := e.svc.Archive(t.Context(), e.failedDinner(t, "Old stew"), member)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	shown := map[string]dinners.Dinner{archived.ID: archived}
+	regulars, err := e.svc.List(t.Context(), dinners.StatusRegular)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range regulars {
+		shown[d.ID] = d
+	}
+	q := db.New(e.st.Reader)
+	for id, want := range map[string]bool{grounded.ID: false, linked.ID: false, failed: true, archived.ID: false} {
+		listed, err := q.ListPhotoBackfillDinners(t.Context(), sql.NullString{String: id, Valid: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		d, ok := shown[id]
+		if !ok {
+			t.Fatalf("dinner %s not shown", id)
+		}
+		if got := len(listed) == 1; got != want || d.PhotoBackfillEligible != want {
+			t.Errorf("%s: listed %t, photo_backfill_eligible %t, want both %t", d.Name, got, d.PhotoBackfillEligible, want)
+		}
+	}
+}
+
 func TestBackfillOfOneDinnerGroundsOnlyIt(t *testing.T) {
 	t.Parallel()
 	e := newUnstartedEnv(t)

@@ -85,7 +85,11 @@ const TACOS = dinnerBody('d1', 'Beef tacos', {
   photo_url: '/media/photos/p1-400.jpg',
 })
 const CHILI = dinnerBody('d2', 'Chili', { method: 'crockpot', minutes_total: 480, grounding_status: 'pending' })
-const PIZZA = dinnerBody('d3', 'Pizza night', { grounding_status: 'failed', grounding_error: 'no_recipe_found' })
+const PIZZA = dinnerBody('d3', 'Pizza night', {
+  grounding_status: 'failed',
+  grounding_error: 'no_recipe_found',
+  photo_backfill_eligible: true,
+})
 const ROAST = dinnerBody('d4', 'Pot roast', { method: 'oven', grounding_status: 'manual' })
 
 function rows() {
@@ -528,12 +532,22 @@ describe('RegularsSettingsPage', () => {
     })
 
     it('offers no search again for a pasted link that had no usable recipe', async () => {
-      const linked = { ...PIZZA, grounding_error: 'recipe_unusable' }
+      const linked = { ...PIZZA, grounding_error: 'recipe_unusable', photo_backfill_eligible: false }
       stubServer([linked], NO_CANDIDATES)
       await renderPage()
 
       openRow('Pizza night')
       expect(fixSheet().getByText('The pasted recipe link has no recipe we could use.')).toBeInTheDocument()
+      expect(fixSheet().queryByRole('button', { name: 'Search again' })).not.toBeInTheDocument()
+    })
+
+    it('offers no search again for a dinner with a pasted link whatever its reason', async () => {
+      const linked = { ...PIZZA, grounding_error: 'ai_failed', photo_backfill_eligible: false }
+      stubServer([linked], NO_CANDIDATES)
+      await renderPage()
+
+      openRow('Pizza night')
+      expect(fixSheet().getByText("The AI assistant couldn't read the recipe.")).toBeInTheDocument()
       expect(fixSheet().queryByRole('button', { name: 'Search again' })).not.toBeInTheDocument()
     })
 
@@ -580,9 +594,8 @@ describe('RegularsSettingsPage', () => {
       expect(within(row('Pizza night')).getByRole('img', { name: 'Pizza night' })).toHaveAttribute('src', '/media/photos/p8-400.jpg')
     })
 
-    it('says a dinner the search left out keeps its pasted recipe link', async () => {
-      const linked = { ...PIZZA, grounding_error: 'ai_failed' }
-      stubServer([linked], {
+    it('says when a dinner was not included in the search', async () => {
+      stubServer([PIZZA], {
         ...NO_CANDIDATES,
         [BACKFILL]: () => jsonResponse(202, { id: 'j9' }),
         [JOB]: () => backfillJob('succeeded', { dinners: [] }),
@@ -591,7 +604,7 @@ describe('RegularsSettingsPage', () => {
 
       openRow('Pizza night')
       fireEvent.click(fixSheet().getByRole('button', { name: 'Search again' }))
-      expect(await fixSheet().findByText('Not searched again: it keeps its pasted recipe link.')).toBeInTheDocument()
+      expect(await fixSheet().findByText('This dinner was not included in that search.')).toBeInTheDocument()
     })
 
     it('finds missing photos: the placeholder shows until the backfill finds a photo', async () => {

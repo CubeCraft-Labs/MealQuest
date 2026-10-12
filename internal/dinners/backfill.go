@@ -25,6 +25,17 @@ const (
 	BackfillSkipped = "skipped"
 )
 
+// PhotoBackfillEligible reports whether a photo backfill grounds r: the
+// condition ListPhotoBackfillDinners lists dinners by, and GroundFailedDinner
+// and RefailDinnerGrounding write under, for one dinner. The dinner is
+// unarchived, failed, with no photo and no pasted recipe_url.
+func PhotoBackfillEligible(r db.Dinner) bool {
+	return r.Status != StatusArchived &&
+		r.GroundingStatus == GroundingFailed &&
+		!r.PhotoID.Valid &&
+		!r.RecipeUrl.Valid
+}
+
 // BackfillJob is the KindBackfillPhotos payload. DinnerID narrows the
 // backfill to that dinner; empty backfills every dinner without a photo.
 type BackfillJob struct {

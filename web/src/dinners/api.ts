@@ -22,7 +22,9 @@ export type GroundingStatus = (typeof GROUNDING_STATUSES)[number]
 // Regular is the part of a dinner the Regulars screens read. photo_id is
 // the stored photo's id, from photo_url. grounding_error is why its
 // grounding failed, a reason code, set only while grounding_status is
-// failed. pending is true while an optimistic add waits for the server;
+// failed. photo_backfill_eligible is whether a photo backfill (Search
+// again) searches for it: never for a dinner with a pasted recipe link.
+// pending is true while an optimistic add waits for the server;
 // its id is not the server's.
 export type Regular = {
   id: string
@@ -34,6 +36,7 @@ export type Regular = {
   photo_id: string | undefined
   grounding_status: GroundingStatus
   grounding_error: string | null
+  photo_backfill_eligible: boolean
   pending?: true
 }
 
@@ -116,6 +119,9 @@ export function parseDinner(where: string, body: unknown): Regular {
     throw new Error(`${where}: response is not a dinner`)
   }
   if (typeof body.is_favorite !== 'boolean') throw new Error(`${where}: is_favorite is not a boolean`)
+  if (typeof body.photo_backfill_eligible !== 'boolean') {
+    throw new Error(`${where}: photo_backfill_eligible is not a boolean`)
+  }
   return {
     id: body.id,
     name: body.name,
@@ -129,6 +135,7 @@ export function parseDinner(where: string, body: unknown): Regular {
       if (typeof v !== 'string') throw new Error(`${where}: grounding_error is not a string`)
       return v
     }),
+    photo_backfill_eligible: body.photo_backfill_eligible,
   }
 }
 
@@ -233,6 +240,7 @@ export function useAddRegular() {
         photo_id: undefined,
         grounding_status: 'pending',
         grounding_error: null,
+        photo_backfill_eligible: false,
         pending: true,
       }
       await changeOptimistically(queryClient, (list) => [...list, optimistic])

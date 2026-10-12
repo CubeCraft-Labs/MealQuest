@@ -196,6 +196,18 @@ WHERE status <> 'archived'
 	AND id = COALESCE(sqlc.narg(id), id)
 ORDER BY normalized_name, id;
 
+-- name: GetActivePhotoBackfillJob :one
+-- The id of the full photo backfill job (no dinner_id) of kind queued or
+-- running. StartPhotoBackfill enqueues one only when there is none, so
+-- there is at most one. Returns sql.ErrNoRows when there is none.
+SELECT id
+FROM jobs
+WHERE kind = sqlc.arg(kind)
+	AND status IN ('queued', 'running')
+	AND json_extract(payload, '$.dinner_id') IS NULL
+ORDER BY id
+LIMIT 1;
+
 -- name: GroundFailedDinner :execrows
 -- Records a photo backfill's grounding of a dinner it listed, while the
 -- dinner is still unarchived, failed, photoless, without a recipe_url and at

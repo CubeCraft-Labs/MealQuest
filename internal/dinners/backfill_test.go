@@ -11,6 +11,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes/recipestest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
@@ -237,5 +238,99 @@ func TestBackfillLeavesDinnerChangedWhileGrounding(t *testing.T) {
 	checkOutcomes(t, <-done, []dinners.BackfillOutcome{outcome(id, dinners.BackfillSkipped, nil)})
 	if row := e.dinner(t, id); row.GroundingStatus != dinners.GroundingFailed || row.PhotoID.Valid {
 		t.Errorf("dinner = %+v, want left failed without a photo", row)
+	}
+}
+
+func TestStartPhotoBackfillIsSingleFlight(t *testing.T) {
+	t.Parallel()
+	dataDir := t.TempDir()
+	st := openStore(t, dataDir)
+	e := newUnstartedEnvOn(t, st, dataDir)
+	e.failedDinner(t, "Chicken curry")
+	e.search.Gate = make(chan struct{})
+	e.model.QueueGenerate(recipestest.NormalizedReply("stovetop", 40))
+
+	// Queued: a second trigger returns the queued pass.
+	first, err := e.svc.StartPhotoBackfill(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, err := e.svc.StartPhotoBackfill(t.Context()); err != nil || again != first {
+		t.Fatalf("second trigger = %q, %v; want the queued %q", again, err, first)
+	}
+
+	// After a restart the queued pass is still the one: the claim is the
+	// stored job, not the process's memory.
+	restarted := newUnstartedEnvOn(t, st, dataDir)
+	restarted.search.Gate = e.search.Gate
+	restarted.model.QueueGenerate(recipestest.NormalizedReply("stovetop", 40))
+	if again, err := restarted.svc.StartPhotoBackfill(t.Context()); err != nil || again != first {
+		t.Fatalf("trigger after restart = %q, %v; want the queued %q", again, err, first)
+	}
+
+	// Running: the pass waits at its search, and a trigger returns it.
+	restarted.start(t)
+	for len(restarted.search.Queries()) == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	if again, err := restarted.svc.StartPhotoBackfill(t.Context()); err != nil || again != first {
+		t.Fatalf("trigger while running = %q, %v; want the running %q", again, err, first)
+	}
+	var n int
+	if err := st.Reader.QueryRowContext(t.Context(), `SELECT count(*) FROM jobs WHERE kind = ?`, dinners.KindBackfillPhotos).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("%d backfill jobs, want 1", n)
+	}
+
+	// Finished: the next trigger starts a new pass.
+	close(e.search.Gate)
+	if job := restarted.waitJob(t, first); job.Status != jobs.StatusSucceeded {
+		t.Fatalf("job = %+v (result %s), want succeeded", job, job.Result)
+	}
+	next, err := restarted.svc.StartPhotoBackfill(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next == first {
+		t.Fatalf("trigger after the pass finished = %q, want a new job", next)
+	}
+	restarted.waitJob(t, next)
+}
+
+func TestBackfillFailsJobWhenAWriteFails(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	e.model.QueueGenerate(recipestest.NormalizedReply("stovetop", 40))
+	absent := e.failedDinner(t, "Abalone surprise")
+	curry := e.failedDinner(t, "Chicken curry")
+	if _, err := e.st.Writer.ExecContext(t.Context(), `CREATE TRIGGER refuse_grounded BEFORE UPDATE OF grounding_status ON dinners
+		WHEN NEW.id = '`+curry+`' AND NEW.grounding_status = 'grounded'
+		BEGIN SELECT RAISE(ABORT, 'grounded refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := e.svc.StartPhotoBackfill(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := e.waitJob(t, id)
+	if job.Status != jobs.StatusFailed || job.Error == nil || *job.Error != jobs.CodeInternal {
+		t.Fatalf("job = %+v, want failed with %s", job, jobs.CodeInternal)
+	}
+	var got struct {
+		Dinners []dinners.BackfillOutcome `json:"dinners"`
+	}
+	if err := json.Unmarshal(job.Result, &got); err != nil {
+		t.Fatalf("result %s: %v", job.Result, err)
+	}
+	// The other dinner was still tried and recorded.
+	checkOutcomes(t, got.Dinners, []dinners.BackfillOutcome{
+		outcome(absent, dinners.BackfillFailed, ptr(dinners.ReasonNoRecipe)),
+		outcome(curry, dinners.BackfillFailed, ptr(dinners.ReasonGroundingError)),
+	})
+	if row := e.dinner(t, curry); row.GroundingStatus != dinners.GroundingFailed || row.PhotoID.Valid {
+		t.Errorf("curry = %+v, want left failed without a photo", row)
 	}
 }

@@ -214,6 +214,26 @@ func (q *Queries) FailPendingDinnerGrounding(ctx context.Context, arg FailPendin
 	return result.RowsAffected()
 }
 
+const getActivePhotoBackfillJob = `-- name: GetActivePhotoBackfillJob :one
+SELECT id
+FROM jobs
+WHERE kind = ?1
+	AND status IN ('queued', 'running')
+	AND json_extract(payload, '$.dinner_id') IS NULL
+ORDER BY id
+LIMIT 1
+`
+
+// The id of the full photo backfill job (no dinner_id) of kind queued or
+// running. StartPhotoBackfill enqueues one only when there is none, so
+// there is at most one. Returns sql.ErrNoRows when there is none.
+func (q *Queries) GetActivePhotoBackfillJob(ctx context.Context, kind string) (string, error) {
+	row := q.db.QueryRowContext(ctx, getActivePhotoBackfillJob, kind)
+	var id string
+	err := row.Scan(&id)
+	return id, err
+}
+
 const getDinner = `-- name: GetDinner :one
 SELECT id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url, grounding_error, grounding_revision FROM dinners
 WHERE id = ?

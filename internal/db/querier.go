@@ -117,6 +117,10 @@ type Querier interface {
 	// when there is none, so there is at most one. Returns sql.ErrNoRows when
 	// there is none.
 	GetActiveDraftJob(ctx context.Context, arg GetActiveDraftJobParams) (GetActiveDraftJobRow, error)
+	// The id of the full photo backfill job (no dinner_id) of kind queued or
+	// running. StartPhotoBackfill enqueues one only when there is none, so
+	// there is at most one. Returns sql.ErrNoRows when there is none.
+	GetActivePhotoBackfillJob(ctx context.Context, kind string) (string, error)
 	// The batch still pending or running, oldest first. Returns sql.ErrNoRows
 	// when there is none.
 	GetActiveSuggestionBatch(ctx context.Context) (SuggestionBatch, error)

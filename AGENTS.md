@@ -84,7 +84,7 @@ behaviour, exercise it (hit the endpoint, render the page).
 | `internal/*` (planned) | `auth`, `db`, `store`, `secretbox`, `household`, `dinners`, `recipes`, `ai/llm`, `ai/harness`, `ai/skills`, `suggest`, `plan`, `shopping`, `ideas`, `gcal`, `notify`, `push`, `chat`, `jobs`, `scheduler`. |
 | `migrations/` | SQL migrations (planned). |
 | `web/` | React PWA source. |
-| `deploy/` | Deployment files (planned). |
+| `deploy/` | Deployment files: compose stack, systemd units, [deploy runbook](deploy/RUNBOOK.md) and the automated deploy (`auto-deploy.sh` with `systemd/mealquest-auto-deploy.*`). |
 | `docs/` | Project documentation, including [ARCHITECTURE.md](docs/ARCHITECTURE.md). |
 | `design/` | Requirements and UI handoff. **Read-only reference** — do not edit. |
 | `Dockerfile` | Multi-stage image build, at the repository root. |

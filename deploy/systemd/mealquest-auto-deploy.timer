@@ -1,0 +1,17 @@
+# Checks for a new main every 15 minutes (plus up to 5 minutes' random
+# delay), starting 2 minutes after the timer starts. OnUnitActiveSec= alone
+# never fires before the service's first run, so OnActiveSec= starts the
+# cycle at boot and at `enable --now`. Persistent= is set as the task
+# specified; systemd applies it only to OnCalendar= triggers, so with these
+# monotonic triggers it has no effect.
+[Unit]
+Description=Periodic MealQuest automated deploy
+
+[Timer]
+OnActiveSec=2min
+OnUnitActiveSec=15min
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

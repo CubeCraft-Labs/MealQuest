@@ -2,10 +2,8 @@
 
 This mirrors the architecture section of `CONTEXT.MD` in the CTXD project
 `mealquest`, which is the source of record; if the two disagree, CTXD wins and
-this file should be updated. It describes the **planned** application. The
-repository today is the Feature 01 scaffold: `cmd/server`, `internal/config`,
-`internal/server` (`/health`), `internal/frontend` (embedded PWA with SPA
-fallback), the `web/` skeleton, `Makefile`, `Dockerfile` and CI.
+this file should be updated. It describes the application as built; nothing
+it names is still only planned.
 
 Decision numbers (D-NNN) refer to `DECISIONS.MD` in CTXD.
 
@@ -46,20 +44,22 @@ headers, so sign-in works whichever peer the request arrives from.
 | `cmd/vapidgen` | Prints a new VAPID key pair for Web Push. |
 | `internal/config` | Env-only `MEALQUEST_*` config; secrets from `*_FILE`. |
 | `internal/server` | HTTP server, router, middleware. |
+| `internal/forwarded` | Client IP and scheme from `X-Forwarded-*`, trusted only from `MEALQUEST_TRUSTED_PROXY`. |
+| `internal/secureurl` | The transport rule for URLs that carry credentials (`secureurl.Check`). |
 | `internal/frontend` | Embedded PWA, SPA fallback. |
 | `internal/auth` | Authentik OIDC, sessions, CSRF. |
-| `internal/db`, `internal/store` | SQLite connections, sqlc queries. |
+| `internal/db`, `internal/store` | sqlc-generated queries; SQLite connections, migrations at boot, transactions. |
 | `internal/secretbox` | AES-256-GCM encryption for `_ct` columns. |
-| `internal/household`, `internal/dinners`, `internal/recipes` | Domain. |
-| `internal/ai/llm`, `internal/ai/harness`, `internal/ai/skills` | AI provider adapters, skill harness, skills. |
-| `internal/suggest`, `internal/plan`, `internal/shopping`, `internal/ideas` | Feature services. |
+| `internal/household`, `internal/dinners`, `internal/recipes` | Domain: household settings and local time, dinners (grounding, photo backfill), recipe search, fetch and grounding. |
+| `internal/ai/llm`, `internal/ai/harness`, `internal/ai/skills`, `internal/ai/aisettings` | AI provider adapters, skill harness, skills, AI settings. |
+| `internal/suggest`, `internal/plan`, `internal/shopping`, `internal/ideas`, `internal/home` | Feature services. |
 | `internal/gcal`, `internal/notify`, `internal/push`, `internal/chat` | Integrations. |
 | `internal/vapid` | VAPID key generation and validation. |
 | `internal/jobs`, `internal/scheduler` | Background jobs and schedules. |
-| `migrations/` | SQL migrations (no goose or golang-migrate). |
+| `migrations/` | SQL migrations, embedded and applied at boot by `internal/store` (no goose or golang-migrate); sqlc queries in `migrations/queries/`. |
 | `web/` | React PWA. |
-| `deploy/` | Deployment files. |
-| `docs/` | Documentation. |
+| `deploy/` | Production compose stack, systemd units, the [deploy runbook](../deploy/RUNBOOK.md) and the automated deploy (see Deployment). |
+| `docs/` | Documentation (this file). |
 | `design/` | Requirements and UI handoff (read-only reference). |
 
 ## Backend stack and conventions
@@ -811,6 +811,20 @@ purge are fixed and not configurable.
 
 Runs are recorded in `schedule_runs` and executed through `jobs`.
 
+Job kinds (`internal/jobs`; each registered when `cmd/server` builds the
+service named, before the runner starts). `POST /api/v1/jobs` refuses a
+service-only kind; `GET /api/v1/jobs/{id}` reports any job.
+
+| Kind | Registered by | Enqueued by | Service-only |
+| --- | --- | --- | --- |
+| `noop` | `jobs.RegisterBuiltins` | `POST /api/v1/jobs` (does nothing; proves the runner works) | no |
+| `ground_dinner` | `dinners.Service` | Adding or renaming a `pending` dinner | no |
+| `backfill_dinner_photos` | `dinners.Service` | `POST /api/v1/settings/photo-backfill` | yes |
+| `suggestion_batch` | `suggest.Service` | `POST /api/v1/suggestions/batches`, a deck decision (replenish), `suggestions_weekly` | no |
+| `draft_week` | `plan.Service` | `POST /api/v1/plans/{weekStart}/draft`, `plan_draft` | yes |
+| `title_supply_run` | `shopping.Service` | Generating an untitled Supply run | yes |
+| `ideas_from_ingredients`, `quick_ideas` | `ideas.Service` | `POST /api/v1/ideas/from-ingredients`, `POST /api/v1/ideas/quick` | yes |
+
 `internal/scheduler` runs them. A schedule registers a name, a rule read
 from the settings (`scheduler.Daily`, `Weekly` or `WeeklyForNextWeek`, or `DailyAt` for a time read from data) and a
 run function; settings changes reach it through `SettingsService.Subscribe`
@@ -1319,10 +1333,12 @@ fewer the server answers 400 `invalid_settings` naming
 `onboarding_completed` and changes nothing. Step 3 can be reached with
 fewer — by its URL, or after another member removes a Regular — so it then
 shows the server's reason with an "Add Regulars" button back to step 2.
-Notification permission is never asked for on page load; until Feature 19
-wires Web Push, "Turn on notifications" asks for nothing and says plainly
-that notifications are not on yet, offering "Finish setting up" (which
-completes onboarding as above) instead of a silent success. Offline on the
+Notification permission is never asked for on page load. "Turn on
+notifications" subscribes this device to Web Push from the tap and says
+how it ended — on, blocked by the browser, or unsupported (on iPhone and
+iPad, until MealQuest is on the Home Screen) — then offers only "Finish
+setting up" (which completes onboarding as above); a dismissed permission
+prompt can be asked again. Offline on the
 saved pages the settings cannot be read (the service worker never caches `/api/v1/settings`),
 so the saved pages open as they are.
 
@@ -1338,6 +1354,41 @@ the ingredients and steps in). Adds, removals and the heart show at once and
 are undone if the server refuses them. While any Regular is `pending`, the
 list is read again every 3 seconds (not while a change is in flight), and
 polling stops once none is.
+
+## Deployment
+
+Production is the compose project `mealquest` on 10.60.1.14
+([`deploy/compose.yaml`](../deploy/compose.yaml)): the `mealquest` image built
+from the root `Dockerfile`, `litestream` replicating the database to the
+NAS over SFTP, and `searxng` on the internal network only. Configuration is
+`deploy/.env` and file secrets in `deploy/secrets/`, neither committed. The
+services never restart themselves; systemd units in `deploy/systemd/` own
+the host:
+
+| Unit | Does |
+| --- | --- |
+| `mealquest-firewall.service` | Restricts port 8090 to Traefik in `DOCKER-USER`; required before the stack starts. |
+| `mealquest.service` | Starts and stops the compose stack. |
+| `mealquest-media-backup.timer` / `.service` | Backs up cached photos to the NAS nightly at 03:30. |
+| `mealquest-auto-deploy.timer` / `.service` | Automated deploy of `main` (below). |
+
+Releases: only `overseer` merges `dev` into `main`. The image carries its
+version (`git describe`: a release tag, else the short SHA), which
+`/health` reports. A deploy follows
+[`deploy/RUNBOOK.md`](../deploy/RUNBOOK.md) — build, pre-deploy restore
+point, boot-config check, ship and restart, verify the deployed SHA and a
+real screen — with rollback to the previous release. The automated deploy
+([`deploy/auto-deploy.sh`](../deploy/auto-deploy.sh), installed as
+`/usr/local/sbin/mealquest-auto-deploy`) runs those same steps unattended:
+its timer checks every quarter hour (plus up to 5 minutes' random delay),
+and deploys `refs/remotes/origin/main` only when it differs from the last
+SHA in the deploy record `/home/overseer/mealquest-auto-deploy.log`, its
+Gitea CI status is `success`, its last attempt did not fail, and
+`mealquest.service` is active. It stops at the first failure and never
+retries a failed SHA; `--ref <ref>` is the manual override. Installing,
+seeding the record and enabling the timer are host steps in the runbook's
+"Automated deploys". Database restore and the boot configuration are in
+CTXD `RUNBOOKS.MD`.
 
 ## Boundaries and gotchas
 

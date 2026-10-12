@@ -52,3 +52,45 @@ It prints a PASS or FAIL line per condition per page and exits 1 if any
 condition fails on any page.
 
 **Result: PASS on all four pages.**
+
+## Production smoke — 2026-10-11/12
+
+An end-to-end smoke of the launch flows against production, run in the
+household's owner session.
+
+| | |
+| --- | --- |
+| Target | Production, <https://mealquest.cubecraftlabs.com> |
+| Build | `mealquest:743a155`, then `mealquest:561f249` mid-smoke |
+| Session | Owner session (signed in) |
+| Google Chat | Test space "MealQuest - Test" (not the family space) |
+| Google Calendar | Test calendar "MealQuest - Test" (not the family calendar) |
+| Dates | 2026-10-11 to 2026-10-12 |
+
+The smoke spanned two deploys: Feature 24 shipped mid-smoke through the new
+auto-deploy path, moving production from `743a155` to `561f249`.
+
+| Step | Result |
+| --- | --- |
+| Sign-in session and CSRF | ✓ |
+| `/home` shows the Regulars | ✓ |
+| Suggestion batch through the real LLM | ✓ 10 grounded cards, each "Why this?" citing the Regulars |
+| Try it | ✓ dinner created with a grounded photo, added to the Quest log |
+| Pass | ✓ declined dinner never re-suggested; deck 10 → 8 |
+| AI draft, Week 42 (Oct 12–18) | ✓ 7 days, no duplicates, Quest-log pick marked `is_new`, `ai_note` cites the Regulars |
+| Day swap | ✓ Monday → Slow Cooker French Dip Sandwiches (crock pot) |
+| Push to Calendar | ✓ synced; owner confirmed 7 events; a second push made no duplicates |
+| Supply run | ✓ 27 items, AI title "A Beefy Week with Pizza Night" |
+| Have-it toggle | ✓ needed items 27 → 26 |
+| Send to Google Chat | ✓ `sent_to_chat_at` stamped; owner confirmed receipt in the test space |
+| Test push notification | ✓ HTTP 202, `event_key` `plan_ready:test-…`, 3 subscriptions; owner confirmed receipt on their iPhone |
+| Quick dinner ideas | ✓ 6 ideas |
+| Cook from what I have | ✓ 4 ideas, with uses and missing ingredients computed |
+
+**Result: PASS on every step.**
+
+Evidence form: server-side API responses and timestamps, plus the owner's
+explicit confirmations for the steps that land outside the app (calendar
+events, Google Chat message, push notification on the phone). The owner's
+confirmation quotes are recorded on Maestro task
+`0544e318-9b5f-4264-9884-1ec8cb63fd49`. Phone screenshots were not captured.

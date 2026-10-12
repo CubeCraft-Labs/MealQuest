@@ -85,7 +85,7 @@ behaviour, exercise it (hit the endpoint, render the page).
 | `migrations/` | SQL migrations (planned). |
 | `web/` | React PWA source. |
 | `deploy/` | Deployment files (planned). |
-| `docs/` | Project documentation, including [ARCHITECTURE.md](docs/ARCHITECTURE.md). |
+| `docs/` | Project documentation, including [ARCHITECTURE.md](docs/ARCHITECTURE.md), launch evidence in [LAUNCH.md](docs/LAUNCH.md), and Lighthouse reports in `docs/lighthouse/`. |
 | `design/` | Requirements and UI handoff. **Read-only reference** — do not edit. |
 | `Dockerfile` | Multi-stage image build, at the repository root. |
 | `Makefile` | `dev`, `test`, `build`, `docker`. |

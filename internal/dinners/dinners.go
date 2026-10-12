@@ -79,6 +79,11 @@ type Dinner struct {
 	UpdatedBy      *string `json:"updated_by"`
 	CreatedAt      string  `json:"created_at"`
 	UpdatedAt      string  `json:"updated_at"`
+
+	// PhotoBackfillEligible is whether a photo backfill grounds the dinner
+	// (PhotoBackfillEligible): false for one with a pasted recipe link,
+	// which a search never replaces.
+	PhotoBackfillEligible bool `json:"photo_backfill_eligible"`
 }
 
 // NewRegular is a Regular to add: its Name, which the household always
@@ -712,6 +717,8 @@ func fromRow(r db.Dinner) Dinner {
 		UpdatedBy:       nullString(r.UpdatedBy),
 		CreatedAt:       r.CreatedAt,
 		UpdatedAt:       r.UpdatedAt,
+
+		PhotoBackfillEligible: PhotoBackfillEligible(r),
 	}
 	if r.MinutesTotal.Valid {
 		d.MinutesTotal = &r.MinutesTotal.Int64

@@ -51,7 +51,10 @@ git fetch --quiet --tags origin || fail "git fetch origin failed"
 if [ -n "$ref" ]; then
   target=$(git rev-parse --verify --quiet "$ref^{commit}") || fail "$ref is not a commit in $CHECKOUT"
 else
-  target=$(git rev-parse --verify origin/main)
+  # The full remote-tracking ref: a bare origin/main resolves a tag or local
+  # branch of that name first, which could deploy a commit not on main.
+  target=$(git rev-parse --verify --quiet "refs/remotes/origin/main^{commit}") \
+    || fail "refs/remotes/origin/main is not a commit in $CHECKOUT"
   [ -f "$RECORD" ] || fail "no deploy record at $RECORD: seed it with one manual deploy (deploy/RUNBOOK.md \"Automated deploys\")"
   last=$(grep -oE 'deployed=[0-9a-f]{40}' "$RECORD" | tail -n 1 | cut -d = -f 2) || true
   [ -n "$last" ] || fail "$RECORD records no deploy: seed it with one manual deploy (deploy/RUNBOOK.md \"Automated deploys\")"

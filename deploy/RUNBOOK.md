@@ -269,8 +269,9 @@ release.
 
 [`mealquest-auto-deploy.timer`](systemd/mealquest-auto-deploy.timer) starts
 [`mealquest-auto-deploy.service`](systemd/mealquest-auto-deploy.service)
-2 minutes after the timer starts, then 15 minutes after each run, plus up to
-5 minutes' random delay. The service runs the script as `overseer` from the
+at every quarter hour (`OnCalendar=*-*-* *:0/15:00`), plus up to 5 minutes'
+random delay; a check missed while the host was down runs as soon as it is
+back (`Persistent=true`). The service runs the script as `overseer` from the
 checkout, and only while `mealquest.service` is active: a stack stopped on
 purpose (a database or media restore) is skipped, not redeployed. Output goes
 to the journal (`journalctl -u mealquest-auto-deploy`).

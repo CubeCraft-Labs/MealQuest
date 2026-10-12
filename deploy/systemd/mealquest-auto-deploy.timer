@@ -1,15 +1,11 @@
-# Checks for a new main every 15 minutes (plus up to 5 minutes' random
-# delay), starting 2 minutes after the timer starts. OnUnitActiveSec= alone
-# never fires before the service's first run, so OnActiveSec= starts the
-# cycle at boot and at `enable --now`. Persistent= is set as the task
-# specified; systemd applies it only to OnCalendar= triggers, so with these
-# monotonic triggers it has no effect.
+# Checks for a new main at every quarter hour (plus up to 5 minutes' random
+# delay). Persistent= runs a check at once when the host comes back if a
+# scheduled one was missed while it was down.
 [Unit]
 Description=Periodic MealQuest automated deploy
 
 [Timer]
-OnActiveSec=2min
-OnUnitActiveSec=15min
+OnCalendar=*-*-* *:0/15:00
 RandomizedDelaySec=5min
 Persistent=true
 

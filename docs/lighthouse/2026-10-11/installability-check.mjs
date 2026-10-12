@@ -1,31 +1,53 @@
-import { chromium } from 'playwright';
+import { chromium, devices } from 'playwright';
 const ck = process.env.CK;
+if (!ck) { console.error('CK (session cookie) is not set'); process.exit(2); }
+const origin = 'https://mealquest.cubecraftlabs.com';
 const pages = [['home','/'],['plan','/plan'],['discover','/discover'],['dinner','/dinner/01M4PKT9QYA6C4JCF67XE7RA6R']];
+const SW_READY_TIMEOUT_MS = 10000;
 const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', args: ['--no-sandbox'] });
-const ctx = await browser.newContext({ userAgent: 'Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36' });
-await ctx.addCookies([{ name: '__Host-mealquest_session', value: ck, url: 'https://mealquest.cubecraftlabs.com/' }]);
+// Mobile emulation: Pixel 5 viewport, device scale, touch, isMobile and user agent.
+const ctx = await browser.newContext({ ...devices['Pixel 5'] });
+await ctx.addCookies([{ name: '__Host-mealquest_session', value: ck, url: origin + '/' }]);
 let fail = 0;
 for (const [name, path] of pages) {
   const page = await ctx.newPage();
   page.on('console', m => { if (/sw|service|error/i.test(m.text())) console.log('  [console]', m.text().slice(0,120)); });
   page.on('pageerror', e => console.log('  [pageerror]', String(e).slice(0,120)));
-  await page.goto('https://mealquest.cubecraftlabs.com' + path, { waitUntil: 'networkidle', timeout: 30000 });
+  await page.goto(origin + path, { waitUntil: 'networkidle', timeout: 30000 });
   const href = await page.evaluate(() => document.querySelector('link[rel="manifest"]')?.href || null);
-  const sw = await page.evaluate(async () => {
-    try { await navigator.serviceWorker.ready; } catch (e) { return { err: String(e) }; }
+  const sw = await page.evaluate(async (ms) => {
+    const ready = await Promise.race([
+      navigator.serviceWorker.ready.then(() => 'ready', e => 'error: ' + String(e)),
+      new Promise(r => setTimeout(() => r('timeout after ' + ms + ' ms'), ms)),
+    ]);
     const regs = await navigator.serviceWorker.getRegistrations();
-    return { registrations: regs.length, scope: regs[0]?.scope || null, state: regs[0]?.active?.state || null, controlling: !!navigator.serviceWorker.controller };
-  });
-  const manifest = href ? await page.evaluate(async (h) => { const r = await fetch(h); return { status: r.status, body: await r.json() }; }, href) : { status: 'no link' };
-  const m = manifest.body || {};
-  const icons = (m.icons || []).map(i => i.sizes + (i.purpose ? ':' + i.purpose : ''));
-  const okSw = sw.registrations > 0;
-  const okIcons = icons.some(s => s.startsWith('192')) && icons.some(s => s.startsWith('512')) && icons.some(s => s.includes('maskable'));
-  const okManifest = m.name === 'MealQuest' && m.display === 'standalone' && !!m.start_url && okIcons;
-  const pass = okSw && okManifest;
+    return { ready, registrations: regs.length, state: regs[0]?.active?.state || null };
+  }, SW_READY_TIMEOUT_MS);
+  const manifest = href
+    ? await page.evaluate(async (h) => { const r = await fetch(h); return { status: r.status, body: r.ok ? await r.json() : {} }; }, href)
+    : { status: 'no manifest link', body: {} };
+  const m = manifest.body;
+  const icons = m.icons || [];
+  const hasSize = (s) => icons.some(i => (i.sizes || '').split(/\s+/).includes(s));
+  const checks = [
+    ['manifest HTTP 200', manifest.status === 200, manifest.status],
+    ['manifest name "MealQuest"', m.name === 'MealQuest', m.name],
+    ['manifest display "standalone"', m.display === 'standalone', m.display],
+    ['manifest start_url present', !!m.start_url, m.start_url],
+    ['icon 192x192', hasSize('192x192'), icons.map(i => i.sizes).join(',')],
+    ['icon 512x512', hasSize('512x512'), icons.map(i => i.sizes).join(',')],
+    ['icon purpose maskable', icons.some(i => (i.purpose || '').split(/\s+/).includes('maskable')), icons.map(i => i.purpose || 'any').join(',')],
+    ['service worker ready', sw.ready === 'ready', sw.ready],
+    ['service worker registered', sw.registrations > 0, sw.registrations],
+    ['service worker activated', sw.state === 'activated', sw.state],
+  ];
+  console.log(`${name} (${path}) url=${page.url().replace(origin, '')}:`);
+  for (const [label, ok, actual] of checks) console.log(`  ${ok ? 'PASS' : 'FAIL'} ${label} (got ${JSON.stringify(actual ?? null)})`);
+  const pass = checks.every(([, ok]) => ok);
   if (!pass) fail++;
-  console.log(`${name}: url=${page.url().replace('https://mealquest.cubecraftlabs.com','')} manifest=${manifest.status} name=${m.name} display=${m.display} icons=[${icons.join(',')}] SW=${JSON.stringify(sw)} => ${pass ? 'INSTALLABLE' : 'NOT INSTALLABLE'}`);
+  console.log(`  => ${pass ? 'INSTALLABLE' : 'NOT INSTALLABLE'}`);
   await page.close();
 }
 await browser.close();
+console.log(fail ? `FAILED on ${fail} of ${pages.length} pages` : `PASS on all ${pages.length} pages`);
 process.exit(fail ? 1 : 0);

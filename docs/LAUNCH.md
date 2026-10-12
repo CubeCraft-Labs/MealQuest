@@ -36,18 +36,19 @@ Performance is recorded for reference but is not gated.
 Lighthouse 10 and later removed the PWA category, so installability was checked
 directly with a Playwright probe:
 [installability-check.mjs](lighthouse/2026-10-11/installability-check.mjs).
-It loads each of the four pages above in a signed-in mobile Chrome session
-(the cookie comes from the `CK` environment variable, never the file) and
-checks:
+It loads each of the four pages above in a signed-in Chrome session with
+Playwright's Pixel 5 mobile emulation (viewport, touch, `isMobile` and mobile
+user agent; the cookie comes from the `CK` environment variable, never the
+file) and gates every page on all of:
 
-- **Manifest** — the linked manifest is fetched (HTTP 200) and has
+- **Manifest** — the linked manifest is fetched with HTTP 200 and has
   `name` "MealQuest", `display` "standalone", a `start_url`, and icons at
-  192 px, 512 px and a `maskable` purpose.
-- **Service worker** — registered and activated, and controlling the page on
-  the single-page-app routes.
+  192x192, 512x512 and one with `maskable` purpose.
+- **Service worker** — `navigator.serviceWorker.ready` resolves within 10
+  seconds (expiry is a failure), and a registration exists whose active worker
+  is `activated`.
 
-The script's pass condition gates the manifest fields and icons and the
-service-worker registration; the manifest HTTP status, the worker's activation
-state and whether it controls the page are printed per page for review.
+It prints a PASS or FAIL line per condition per page and exits 1 if any
+condition fails on any page.
 
 **Result: PASS on all four pages.**

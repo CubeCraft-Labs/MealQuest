@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -241,51 +242,92 @@ func TestBackfillLeavesDinnerChangedWhileGrounding(t *testing.T) {
 	}
 }
 
+// triggerAtOnce calls svc.StartPhotoBackfill from n goroutines released
+// together and returns the job ids they got.
+func triggerAtOnce(t *testing.T, svc *dinners.Service, n int) []string {
+	t.Helper()
+	ids := make([]string, n)
+	errs := make([]error, n)
+	release := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-release
+			ids[i], errs[i] = svc.StartPhotoBackfill(t.Context())
+		}()
+	}
+	close(release)
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		t.Fatal(err)
+	}
+	return ids
+}
+
+// backfillJobs counts the KindBackfillPhotos jobs in st.
+func backfillJobs(t *testing.T, st *store.Store) int {
+	t.Helper()
+	var n int
+	if err := st.Reader.QueryRowContext(t.Context(), `SELECT count(*) FROM jobs WHERE kind = ?`, dinners.KindBackfillPhotos).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
 func TestStartPhotoBackfillIsSingleFlight(t *testing.T) {
 	t.Parallel()
+	const triggers = 8
 	dataDir := t.TempDir()
 	st := openStore(t, dataDir)
 	e := newUnstartedEnvOn(t, st, dataDir)
 	e.failedDinner(t, "Chicken curry")
-	e.search.Gate = make(chan struct{})
-	e.model.QueueGenerate(recipestest.NormalizedReply("stovetop", 40))
+	gate := make(chan struct{})
+	e.search.Gate = gate
 
-	// Queued: a second trigger returns the queued pass.
-	first, err := e.svc.StartPhotoBackfill(t.Context())
-	if err != nil {
-		t.Fatal(err)
+	// Queued: simultaneous triggers all get the one pass they enqueued.
+	ids := triggerAtOnce(t, e.svc, triggers)
+	first := ids[0]
+	for _, id := range ids {
+		if id != first {
+			t.Fatalf("simultaneous triggers = %q, want one job id", ids)
+		}
 	}
-	if again, err := e.svc.StartPhotoBackfill(t.Context()); err != nil || again != first {
-		t.Fatalf("second trigger = %q, %v; want the queued %q", again, err, first)
+	if n := backfillJobs(t, st); n != 1 {
+		t.Fatalf("%d backfill jobs after simultaneous triggers, want 1", n)
 	}
 
 	// After a restart the queued pass is still the one: the claim is the
 	// stored job, not the process's memory.
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st = openStore(t, dataDir)
 	restarted := newUnstartedEnvOn(t, st, dataDir)
-	restarted.search.Gate = e.search.Gate
+	restarted.search.Gate = gate
 	restarted.model.QueueGenerate(recipestest.NormalizedReply("stovetop", 40))
 	if again, err := restarted.svc.StartPhotoBackfill(t.Context()); err != nil || again != first {
 		t.Fatalf("trigger after restart = %q, %v; want the queued %q", again, err, first)
 	}
 
-	// Running: the pass waits at its search, and a trigger returns it.
+	// Running: the pass waits at its search, and simultaneous triggers all
+	// return it.
 	restarted.start(t)
 	for len(restarted.search.Queries()) == 0 {
 		time.Sleep(time.Millisecond)
 	}
-	if again, err := restarted.svc.StartPhotoBackfill(t.Context()); err != nil || again != first {
-		t.Fatalf("trigger while running = %q, %v; want the running %q", again, err, first)
+	for _, id := range triggerAtOnce(t, restarted.svc, triggers) {
+		if id != first {
+			t.Fatalf("trigger while running = %q, want the running %q", id, first)
+		}
 	}
-	var n int
-	if err := st.Reader.QueryRowContext(t.Context(), `SELECT count(*) FROM jobs WHERE kind = ?`, dinners.KindBackfillPhotos).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	if n != 1 {
+	if n := backfillJobs(t, st); n != 1 {
 		t.Fatalf("%d backfill jobs, want 1", n)
 	}
 
 	// Finished: the next trigger starts a new pass.
-	close(e.search.Gate)
+	close(gate)
 	if job := restarted.waitJob(t, first); job.Status != jobs.StatusSucceeded {
 		t.Fatalf("job = %+v (result %s), want succeeded", job, job.Result)
 	}

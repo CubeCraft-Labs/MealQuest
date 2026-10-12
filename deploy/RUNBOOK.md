@@ -110,7 +110,7 @@ git fetch --tags origin
 rollback=$(git rev-parse --verify --quiet "$running^{commit}") \
   || fail "running version $running is not a commit in this repository"
 echo "rollback SHA: $rollback (running version $running)"   # RECORD it for rollback
-git checkout --detach origin/main            # or the release tag, e.g. v1.0.0
+git checkout --detach "refs/remotes/origin/main^{commit}"   # or the release tag, e.g. v1.0.0
 dirty=$(git status --porcelain --untracked-files=no -- . ':(exclude)internal/frontend/dist')
 [ -z "$dirty" ] || fail "the checkout has modified tracked files; clean it first:
 $dirty"
@@ -327,7 +327,7 @@ one manual deploy of the release production should run (below), then start
 the timer:
 
 ```sh
-sudo /usr/local/sbin/mealquest-auto-deploy --ref origin/main
+sudo /usr/local/sbin/mealquest-auto-deploy --ref refs/remotes/origin/main
 sudo systemctl enable --now mealquest-auto-deploy.timer
 systemctl list-timers mealquest-auto-deploy.timer
 ```

@@ -276,7 +276,8 @@ automatic** (D-021).
   `grounded`, `failed` (with its reason) or `skipped`. A dinner whose write
   fails is `failed` with `grounding_error` and left as it was; the others
   still run, then the job fails with `internal_error`, keeping that result.
-  Every dinner response carries `photo_backfill_eligible`, whether the
+  The list and every response that creates or changes a dinner (not
+  `GET /api/v1/dinners/{id}`) carry `photo_backfill_eligible`, whether the
   backfill grounds that dinner, computed by the same condition it lists
   dinners by, so a client offers a search only where one runs.
   `GET /api/v1/dinners/{id}/recipe-candidates`

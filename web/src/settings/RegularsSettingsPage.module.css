@@ -300,3 +300,27 @@
 .lock {
   display: contents;
 }
+
+/* Find missing photos: its hint, button and progress, padded like a sheet. */
+.card.backfill {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+/* Why a Regular's recipe was not found. */
+.reason {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: var(--color-neutral-100);
+  color: var(--color-neutral-900);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.reasonLabel {
+  font-weight: 700;
+}

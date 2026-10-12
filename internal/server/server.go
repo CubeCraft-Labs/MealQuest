@@ -162,6 +162,7 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Get("/settings/chat-webhook", getChatWebhook(logger, chatSvc))
 	apiV1.Put("/settings/chat-webhook", putChatWebhook(logger, chatSvc))
 	apiV1.Post("/settings/chat-webhook/test", postChatWebhookTest(logger, chatSvc))
+	apiV1.Post("/settings/photo-backfill", postPhotoBackfill(logger, dinnerSvc))
 	apiV1.Get("/dinners", getDinners(logger, dinnerSvc))
 	apiV1.Post("/dinners", postDinner(logger, dinnerSvc))
 	apiV1.Get("/dinners/{id}", getDinner(logger, dinnerSvc))

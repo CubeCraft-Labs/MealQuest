@@ -71,8 +71,10 @@ fi
 
 echo "auto-deploy: deploying $target${ref:+ (--ref $ref)}"
 restarted=
+W=
 on_exit() {
   local st=$?
+  [ -z "$W" ] || rm -rf "$W" || st=1
   if [ "$st" -ne 0 ]; then
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) FAILED target=$target status=$st" >> "$RECORD"
     if [ -n "$restarted" ]; then
@@ -115,9 +117,13 @@ loose=$(sudo find deploy/secrets -type f ! -perm 600)
 [ -z "$loose" ] || fail "secrets not mode 0600: $loose"
 
 # CTXD RUNBOOKS.MD "Routine deploy and rollback" > "Deploy" step 2: a verified
-# pre-deploy restore point. The scripts are CTXD "Count check"; /tmp is
-# temporary, so they are written before every check.
-cat > /tmp/mqcount.py <<'EOF'
+# pre-deploy restore point. The scripts are CTXD "Count check". They and the
+# check files live in a private mktemp directory (mode 0700), not at shared
+# /tmp paths, and python runs with -I: the snapshot runs as root, and a
+# shared directory on its import path would let any local user run code as
+# root.
+W=$(mktemp -d)
+cat > "$W/mqcount.py" <<'EOF'
 import sqlite3, sys, hashlib
 c = sqlite3.connect(sys.argv[1])
 tabs = [r[0] for r in c.execute("select name from sqlite_master where type=\"table\" and name not like \"sqlite_%\" and name not like \"_litestream%\" order by name")]
@@ -130,7 +136,7 @@ for t in tabs:
 print("tables", len(tabs), "content-sha256", h.hexdigest()[:16])
 print("integrity", c.execute("pragma integrity_check").fetchone()[0])
 EOF
-cat > /tmp/mqsnap.py <<'EOF'
+cat > "$W/mqsnap.py" <<'EOF'
 import os, sqlite3, sys
 src, dst = sys.argv[1], sys.argv[2]
 if os.path.exists(dst):
@@ -149,22 +155,21 @@ point=$(
 set -eu
 point=
 trap 'st=$?
-rm -rf /tmp/mqcheck || st=1
+rm -rf "$W" || st=1
 sudo sh -c "rm -f $D/predeploy-check.db*" || st=1
 if [ "$st" -eq 0 ] && [ -n "$point" ]; then echo "pre-deploy restore point: $point" >&2; echo "$point"
 else [ "$st" -ne 0 ] || st=1; echo "verification FAILED (status $st): do not restart" >&2; fi
 exit "$st"' EXIT
 exec 3>&1 1>&2   # block output to the journal; only the restore point to $point
-rm -rf /tmp/mqcheck
-mkdir /tmp/mqcheck
+mkdir "$W/mqcheck"
 # a. Replication running, no log errors (grep: 0 match, 1 none, 2+ error), newest LTX listed
 id=$("${COMPOSE[@]}" ps --status running --quiet litestream) || fail "docker compose ps failed"
 [ -n "$id" ] || fail "litestream is not running"
-"${COMPOSE[@]}" logs --since 24h litestream > /tmp/mqcheck/litestream.log || fail "docker compose logs failed"
+"${COMPOSE[@]}" logs --since 24h litestream > "$W/mqcheck/litestream.log" || fail "docker compose logs failed"
 gs=0
-grep -i error /tmp/mqcheck/litestream.log > /tmp/mqcheck/litestream.errors || gs=$?
+grep -i error "$W/mqcheck/litestream.log" > "$W/mqcheck/litestream.errors" || gs=$?
 case "$gs" in
-  0) cat /tmp/mqcheck/litestream.errors; fail "litestream logged errors in the last 24h";;
+  0) cat "$W/mqcheck/litestream.errors"; fail "litestream logged errors in the last 24h";;
   1) ;;
   *) fail "the litestream log scan failed (status $gs)";;
 esac
@@ -173,19 +178,19 @@ esac
 # b. Restore replica to a scratch file (live files untouched), move off the volume, snapshot live
 "${COMPOSE[@]}" run --rm --no-deps litestream \
   restore -config /etc/litestream.yml -o /data/predeploy-check.db /data/mealquest.db
-sudo sh -c "mv $D/predeploy-check.db* /tmp/mqcheck/"
-sudo python3 /tmp/mqsnap.py "$D/mealquest.db" /tmp/mqcheck/live.db
-sudo chown -R "$(id -un)" /tmp/mqcheck
+sudo sh -c "mv $D/predeploy-check.db* $W/mqcheck/"
+sudo python3 -I "$W/mqsnap.py" "$D/mealquest.db" "$W/mqcheck/live.db"
+sudo chown -R "$(id -un)" "$W/mqcheck"
 sudo ls -ln "$D"
 # mealquest.db-wal and -shm owned by 10001, never 0 (CTXD "Count check")
 root=$(sudo find "$D" -maxdepth 1 \( -name mealquest.db-wal -o -name mealquest.db-shm \) -uid 0)
 [ -z "$root" ] || fail "owned by root, not 10001 (CTXD RUNBOOKS.MD \"Count check\"): $root"
 # c. Restored replica: integrity ok and identical counts/content-sha256 to the live snapshot
-python3 /tmp/mqcount.py /tmp/mqcheck/predeploy-check.db > /tmp/mqcheck/restored.txt
-python3 /tmp/mqcount.py /tmp/mqcheck/live.db > /tmp/mqcheck/live.txt
-cat /tmp/mqcheck/restored.txt
-grep -qx 'integrity ok' /tmp/mqcheck/restored.txt || fail "the restored replica failed integrity_check"
-diff /tmp/mqcheck/restored.txt /tmp/mqcheck/live.txt || fail "the restored replica differs from the live snapshot"
+python3 -I "$W/mqcount.py" "$W/mqcheck/predeploy-check.db" > "$W/mqcheck/restored.txt"
+python3 -I "$W/mqcount.py" "$W/mqcheck/live.db" > "$W/mqcheck/live.txt"
+cat "$W/mqcheck/restored.txt"
+grep -qx 'integrity ok' "$W/mqcheck/restored.txt" || fail "the restored replica failed integrity_check"
+diff "$W/mqcheck/restored.txt" "$W/mqcheck/live.txt" || fail "the restored replica differs from the live snapshot"
 # d. Restore point: after every check, before the restart
 point=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 exec 1>&3

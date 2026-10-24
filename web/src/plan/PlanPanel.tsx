@@ -74,7 +74,7 @@ function Draggable({
   keysHintId: string
   children: ReactNode
 }) {
-  const { drag, float, props } = useDraggable({ dinner: planDinner(dinner), fromQuestLog })
+  const { drag, float, props } = useDraggable({ dinner: planDinner(dinner, fromQuestLog), fromQuestLog })
   return (
     <li>
       <button

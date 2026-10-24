@@ -1,5 +1,5 @@
 import { useIsMutating, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { useApi } from '../api/index.ts'
+import { useApi, type ApiClient } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import type { DinnerDetail } from './detail.ts'
 
@@ -15,9 +15,15 @@ export const METHODS = ['stovetop', 'oven', 'crockpot', 'grill', 'other'] as con
 export const DIFFICULTIES = ['easy', 'medium', 'hard'] as const
 export const GROUNDING_STATUSES = ['pending', 'grounded', 'failed', 'manual'] as const
 
+// PLANNED_DINNER_STATUSES is every status a dinner on a plan day or a Supply
+// run can have now: archived once it was removed from Regulars after the
+// plan or Supply run was made, when it has no detail to open.
+export const PLANNED_DINNER_STATUSES = ['suggested', 'quest_log', 'tried', 'regular', 'archived'] as const
+
 export type Method = (typeof METHODS)[number]
 export type Difficulty = (typeof DIFFICULTIES)[number]
 export type GroundingStatus = (typeof GROUNDING_STATUSES)[number]
+export type PlannedDinnerStatus = (typeof PLANNED_DINNER_STATUSES)[number]
 
 // Regular is the part of a dinner the Regulars screens read. photo_id is
 // the stored photo's id, from photo_url. grounding_error is why its
@@ -257,30 +263,30 @@ export function useAddRegular() {
   })
 }
 
-// useRemoveRegular archives a Regular (DELETE /api/v1/dinners/{id}). It
+// regularRemoval is the mutation archiving a Regular (DELETE
+// /api/v1/dinners/{id}), which useRemoveRegular (removeRegular.ts) runs. It
 // leaves the list at once and is put back in its place if the server
-// refuses.
-export function useRemoveRegular() {
-  const { apiFetch } = useApi()
-  const queryClient = useQueryClient()
-  return useMutation({
+// refuses; once the server has archived it, archived is told its id.
+export function regularRemoval(queryClient: QueryClient, apiFetch: ApiClient['apiFetch'], archived: (id: string) => void) {
+  return {
     mutationKey: REGULARS_MUTATION_KEY,
     mutationFn: async (regular: Regular) => {
       await apiFetch<unknown>(dinnerPath(regular.id), { method: 'DELETE' })
     },
-    onMutate: async (regular) => {
+    onMutate: async (regular: Regular) => {
       await changeOptimistically(queryClient, (list) =>
         list.map((r): CachedRegular => (r.id === regular.id ? { ...r, removing: true } : r)),
       )
     },
-    onSuccess: (_data, regular) => {
+    onSuccess: (_data: void, regular: Regular) => {
       setRegulars(queryClient, (list) => list.filter((r) => r.id !== regular.id))
+      archived(regular.id)
     },
-    onError: (_error, regular) => {
+    onError: (_error: Error, regular: Regular) => {
       setRegulars(queryClient, (list) => list.map((r) => (r.id === regular.id ? restored(r) : r)))
     },
     onSettled: () => settle(queryClient),
-  })
+  }
 }
 
 // useEditRegular saves changes to a Regular (PATCH /api/v1/dinners/{id})

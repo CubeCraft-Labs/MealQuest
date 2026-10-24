@@ -217,8 +217,11 @@ type Day struct {
 
 // Dinner is a planned dinner as a plan day shows it.
 type Dinner struct {
-	ID      string  `json:"id"`
-	Name    string  `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Status is the dinner's status now (dinners.Status*); a dinner
+	// archived after the plan was made stays on it, archived.
+	Status  string  `json:"status"`
 	Photo   *string `json:"photo"`
 	Minutes *int64  `json:"minutes"`
 	Method  *string `json:"method"`
@@ -525,6 +528,7 @@ func fromDinner(d db.Dinner) Dinner {
 	out := Dinner{
 		ID:     d.ID,
 		Name:   d.Name,
+		Status: d.Status,
 		Method: nullString(d.Method),
 		Origin: d.Origin,
 	}

@@ -160,7 +160,9 @@ function DayTile({ day, timezone, swapping, onSwap }: { day: PlanDay; timezone: 
 // over a card with the dinner's washed photo, name, method and time, a
 // crock-pot dinner's start-by time in the household's zone, and its Regular
 // or Side quest tag, a Side quest's card in teal. The photo and name open the
-// dinner's recipe; the swap icon opens the swap sheet; while that is open
+// dinner's recipe, unless the dinner was archived (removed from Regulars)
+// after the plan was made — it has no detail to open — when they are plain;
+// the swap icon opens the swap sheet; while that is open
 // the card is swapping, ringed in grape. A dinner dragged over the day drops
 // on it: the card is swapping, covered by a dashed grape "Drop to swap"
 // saying which dinner it replaces.
@@ -169,6 +171,15 @@ function DayColumn({ day, timezone, swapping, onSwap }: { day: PlanDay; timezone
   const time = cooking(dinner)
   const target = useDropTarget(day.date) !== null
   const classes = [styles.card, day.is_new && styles.sideQuestCard, (swapping || target) && styles.swapping].filter(Boolean).join(' ')
+  const recipe = (
+    <>
+      {/* The card's name already says what the photo shows. */}
+      <span aria-hidden="true">
+        <Photo id={dinner.photo_id} name={dinner.name} radius="18px" sizes="160px" className={styles.cardPhoto} />
+      </span>
+      <p className={styles.cardName}>{dinner.name}</p>
+    </>
+  )
   return (
     <li className={styles.column} aria-label={weekdayName(day.date)} {...{ [DROP_DATE]: day.date }}>
       <p className={styles.dayLabel} aria-hidden="true">
@@ -176,13 +187,13 @@ function DayColumn({ day, timezone, swapping, onSwap }: { day: PlanDay; timezone
         <span className={styles.dayNumber}>{dayOfMonth(day.date)}</span>
       </p>
       <div className={classes}>
-        <Link to={`/dinner/${encodeURIComponent(dinner.id)}`} className={styles.cardRecipe}>
-          {/* The card's name already says what the photo shows. */}
-          <span aria-hidden="true">
-            <Photo id={dinner.photo_id} name={dinner.name} radius="18px" sizes="160px" className={styles.cardPhoto} />
-          </span>
-          <p className={styles.cardName}>{dinner.name}</p>
-        </Link>
+        {dinner.status === 'archived' ? (
+          <div className={styles.cardRecipe}>{recipe}</div>
+        ) : (
+          <Link to={`/dinner/${encodeURIComponent(dinner.id)}`} className={styles.cardRecipe}>
+            {recipe}
+          </Link>
+        )}
         {time !== null && <p className={styles.cardMinutes}>{time}</p>}
         {day.start_by !== null && (
           <p className={styles.cardStartBy}>Start by {formatClockTime(localNow(timezone, new Date(day.start_by)).time)}</p>

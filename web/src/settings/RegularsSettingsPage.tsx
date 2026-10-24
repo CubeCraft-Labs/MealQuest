@@ -9,7 +9,6 @@ import {
   useGroundRegular,
   useRecipeCandidates,
   useRegulars,
-  useRemoveRegular,
   useToggleFavorite,
   type Difficulty,
   type GroundingStatus,
@@ -20,6 +19,7 @@ import {
   type Regular,
   type RegularPatch,
 } from '../dinners/api.ts'
+import { useRemoveRegular } from '../dinners/removeRegular.ts'
 import { useRefusals } from '../dinners/useRefusals.ts'
 import { Button } from '../ui/Button.tsx'
 import { Card } from '../ui/Card.tsx'

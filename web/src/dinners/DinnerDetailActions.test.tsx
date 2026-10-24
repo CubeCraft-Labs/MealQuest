@@ -72,7 +72,7 @@ function planBody(weekStart: string, names: string[], ids = names.map((_, i) => 
     calendar_synced_at: null as string | null,
     days: names.map((name, i) => ({
       date: new Date(start + i * 86_400_000).toISOString().slice(0, 10),
-      dinner: { id: ids[i], name, photo: null, minutes: 30, method: 'stovetop' },
+      dinner: { id: ids[i], name, status: 'regular', photo: null, minutes: 30, method: 'stovetop' },
       is_new: false,
       start_by: null,
     })),
@@ -85,6 +85,7 @@ function thursdaySwapped() {
   const names = THIS_NAMES.map((name, i) => (i === 3 ? 'Korean beef bowls' : name))
   const plan = planBody('2026-10-05', names, ids)
   plan.days[3]!.is_new = true
+  plan.days[3]!.dinner.status = 'quest_log'
   return plan
 }
 

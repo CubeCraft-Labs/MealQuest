@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { useMutation, useMutationState, useQuery, useQueryClient, type Mutation, type QueryClient } from '@tanstack/react-query'
 import { ApiError, useApi, type ApiRead } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
-import { METHODS, oneOf, photoId, type Method } from '../dinners/api.ts'
+import { METHODS, oneOf, photoId, PLANNED_DINNER_STATUSES, type Method, type PlannedDinnerStatus } from '../dinners/api.ts'
 import { QUEST_LOG_KEY } from '../discover/api.ts'
 import { noteGoogleFailure } from '../settings/calendarApi.ts'
 import { supplyRunKey } from '../shopping/api.ts'
@@ -25,10 +25,19 @@ export const PLAN_STATUSES = ['draft', 'synced', 'changed'] as const
 // synced plan makes it changed.
 export type PlanStatus = (typeof PLAN_STATUSES)[number]
 
-// PlanDinner is a planned dinner: photo_id is its stored photo's id, from
-// photo, minutes its minutes from prep to table and method how it is
-// cooked, each when known.
-export type PlanDinner = { id: string; name: string; photo_id: string | undefined; minutes: number | null; method: Method | null }
+// PlanDinner is a planned dinner: status is its status now — archived once
+// it was removed from Regulars after the plan was made, when it has no
+// detail to open — photo_id is its stored photo's id, from photo, minutes
+// its minutes from prep to table and method how it is cooked, each when
+// known.
+export type PlanDinner = {
+  id: string
+  name: string
+  status: PlannedDinnerStatus
+  photo_id: string | undefined
+  minutes: number | null
+  method: Method | null
+}
 
 // PlanDay is one day of a plan: its household-local date, the dinner
 // planned, whether that dinner is a Quest-log pick, and, for a crock-pot
@@ -76,11 +85,28 @@ function parseDay(where: string, body: unknown): PlanDay {
   const dinner: PlanDinner = {
     id: body.dinner.id,
     name: body.dinner.name,
+    status: oneOf(where, 'dinner status', PLANNED_DINNER_STATUSES, body.dinner.status),
     photo_id: photoId(where, body.dinner.photo),
     minutes: body.dinner.minutes as number | null,
     method: body.dinner.method === null ? null : oneOf(where, 'method', METHODS, body.dinner.method),
   }
   return { date: body.date, dinner, is_new: body.is_new, start_by: body.start_by }
+}
+
+// archivePlanDinner shows dinner id archived — removed from Regulars, so it
+// has no detail to open — on every cached plan that has it, keeping when
+// each was read, so it is read again as before.
+export function archivePlanDinner(queryClient: QueryClient, id: string) {
+  for (const query of queryClient.getQueryCache().findAll({ queryKey: ['plans'] })) {
+    const [, week] = query.queryKey
+    const plan = query.state.data as Plan | null | undefined
+    if (query.queryKey.length !== 2 || typeof week !== 'string' || !plan?.days.some((day) => day.dinner.id === id)) continue
+    queryClient.setQueryData<Plan>(
+      planKey(week),
+      { ...plan, days: plan.days.map((day) => (day.dinner.id === id ? { ...day, dinner: { ...day.dinner, status: 'archived' } } : day)) },
+      { updatedAt: query.state.dataUpdatedAt },
+    )
+  }
 }
 
 // syncedAt reads calendar_synced_at, an RFC 3339 instant or null.
@@ -223,6 +249,7 @@ function sameDay(a: PlanDay, b: PlanDay): boolean {
     a.date === b.date &&
     a.dinner.id === b.dinner.id &&
     a.dinner.name === b.dinner.name &&
+    a.dinner.status === b.dinner.status &&
     a.dinner.photo_id === b.dinner.photo_id &&
     a.dinner.minutes === b.dinner.minutes &&
     a.dinner.method === b.dinner.method &&

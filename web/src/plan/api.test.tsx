@@ -6,7 +6,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
-import { planKey, usePlan, usePushToCalendar, useSwapDay, type Plan, type PushToCalendar, type SwapDay } from './api.ts'
+import {
+  archivePlanDinner,
+  parsePlan,
+  planKey,
+  usePlan,
+  usePushToCalendar,
+  useSwapDay,
+  type Plan,
+  type PushToCalendar,
+  type SwapDay,
+} from './api.ts'
 
 const WEEK = '2026-10-05'
 const PLAN = `/api/v1/plans/${WEEK}`
@@ -42,7 +52,11 @@ function planBody(changes: Record<number, { id: string; name: string; is_new?: b
       const change = changes[i]
       return {
         date,
-        dinner: { id: change?.id ?? `d${i}`, name: change?.name ?? `Dinner ${i}`, photo: null, minutes: null, method: null as string | null, origin: 'regular' },
+        dinner: {
+          id: change?.id ?? `d${i}`,
+          name: change?.name ?? `Dinner ${i}`,
+          status: change?.is_new ? 'quest_log' : 'regular',
+          photo: null, minutes: null, method: null as string | null, origin: 'regular' },
         is_new: change?.is_new ?? false,
         start_by: change?.start_by ?? null,
       }
@@ -91,8 +105,8 @@ async function renderSwaps() {
   return { ...hook, queryClient, plan: () => queryClient.getQueryData<Plan>(planKey(WEEK))! }
 }
 
-const ORZO = { date: '2026-10-09', dinner: { id: 'q1', name: 'Lemon orzo', photo_id: undefined, minutes: null, method: null }, fromQuestLog: true }
-const FISH = { date: '2026-10-05', dinner: { id: 'r1', name: 'Fish tacos', photo_id: undefined, minutes: null, method: null }, fromQuestLog: false }
+const ORZO = { date: '2026-10-09', dinner: { id: 'q1', name: 'Lemon orzo', status: 'quest_log' as const, photo_id: undefined, minutes: null, method: null }, fromQuestLog: true }
+const FISH = { date: '2026-10-05', dinner: { id: 'r1', name: 'Fish tacos', status: 'regular' as const, photo_id: undefined, minutes: null, method: null }, fromQuestLog: false }
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -123,9 +137,28 @@ describe('usePlan', () => {
     expect(plan.data?.days.map((day) => day.dinner.method)).toEqual([null, null, 'crockpot', null, null, null, null])
   })
 
+  it("reads each dinner's status now, archived for one removed from Regulars after the plan was made", async () => {
+    const body = planBody({ 4: { id: 'q1', name: 'Lemon orzo', is_new: true } })
+    body.days[1]!.dinner.status = 'archived'
+    stubServer({ [`GET ${PLAN}`]: () => jsonResponse(200, body) })
+    const plan = await renderPlan()
+
+    expect(plan.data?.days.map((day) => day.dinner.status)).toEqual([
+      'regular',
+      'archived',
+      'regular',
+      'regular',
+      'quest_log',
+      'regular',
+      'regular',
+    ])
+  })
+
   it.each([
     ['a method it does not know', (body: ReturnType<typeof planBody>) => (body.days[0]!.dinner.method = 'microwave'), 'method "microwave"'],
     ['no method', (body: ReturnType<typeof planBody>) => Reflect.deleteProperty(body.days[0]!.dinner, 'method'), 'method undefined'],
+    ['a dinner status it does not know', (body: ReturnType<typeof planBody>) => (body.days[0]!.dinner.status = 'deleted'), 'dinner status "deleted"'],
+    ['no dinner status', (body: ReturnType<typeof planBody>) => Reflect.deleteProperty(body.days[0]!.dinner, 'status'), 'dinner status undefined'],
     ['a sync time that is no instant', (body: ReturnType<typeof planBody>) => (body.calendar_synced_at = 'yesterday'), 'calendar_synced_at "yesterday"'],
   ])('refuses a plan with %s', async (_, change, said) => {
     const body = planBody()
@@ -449,5 +482,26 @@ describe('week mutations', () => {
     await act(async () => push.send(jsonResponse(200, { ...synced, ...GENERATED })))
     await waitFor(() => expect(weekMutations(queryClient, WEEK)).toEqual([]))
     expect(queryClient.getQueryData<Plan>(planKey(WEEK))).toMatchObject({ status: 'synced', calendar_synced_at: new Date('2026-10-08T06:00:00Z') })
+  })
+})
+
+describe('archivePlanDinner', () => {
+  it('shows the dinner removed archived on every cached plan that has it, keeping when each was read', () => {
+    const queryClient = createQueryClient()
+    const NEXT = '2026-10-12'
+    queryClient.setQueryData(planKey(WEEK), parsePlan(`GET ${PLAN}`, WEEK, planBody(), false), { updatedAt: 1000 })
+    queryClient.setQueryData(planKey(NEXT), parsePlan('GET next', NEXT, { ...planBody({ 2: { id: 'd1', name: 'Dinner 1' } }), week_start: NEXT }, false), {
+      updatedAt: 2000,
+    })
+    queryClient.setQueryData(planKey('2026-10-19'), null, { updatedAt: 3000 })
+
+    archivePlanDinner(queryClient, 'd1')
+
+    const statuses = (week: string) => queryClient.getQueryData<Plan>(planKey(week))!.days.map((day) => `${day.dinner.id} ${day.dinner.status}`)
+    expect(statuses(WEEK)).toEqual(['d0 regular', 'd1 archived', 'd2 regular', 'd3 regular', 'd4 regular', 'd5 regular', 'd6 regular'])
+    expect(statuses(NEXT)).toEqual(['d0 regular', 'd1 archived', 'd1 archived', 'd3 regular', 'd4 regular', 'd5 regular', 'd6 regular'])
+    expect(queryClient.getQueryData(planKey('2026-10-19'))).toBeNull()
+    expect(queryClient.getQueryState(planKey(WEEK))?.dataUpdatedAt).toBe(1000)
+    expect(queryClient.getQueryState(planKey(NEXT))?.dataUpdatedAt).toBe(2000)
   })
 })

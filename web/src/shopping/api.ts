@@ -11,7 +11,7 @@ import { useEffect, useReducer, useState, useSyncExternalStore } from 'react'
 import { ApiError, useApi, type ApiClient } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { meQueryKey } from '../AuthBootstrap.tsx'
-import { oneOf } from '../dinners/api.ts'
+import { oneOf, PLANNED_DINNER_STATUSES, type PlannedDinnerStatus } from '../dinners/api.ts'
 import { settleUnmadePushes } from '../plan/api.ts'
 import type { NetworkStatus } from '../pwa/networkStatus.ts'
 import { HOUSEHOLD_SETTINGS_KEY, type HouseholdSettings } from '../settings/api.ts'
@@ -26,10 +26,12 @@ import {
   SAVED_KEY,
   saveRun,
   savedRun,
+  savedWeeks,
   saveSchedule,
   SCHEDULE_CAUSE,
   synced,
   toggleCause,
+  WEEKS_CAUSE,
   willSync,
 } from './offline.ts'
 
@@ -67,20 +69,13 @@ export type SupplyRunStatus = (typeof SUPPLY_RUN_STATUSES)[number]
 // and needed is false once it is marked "have it".
 export type SupplyRunItem = { id: string; name: string; qty: string | null; needed: boolean }
 
-export const SUPPLY_RUN_DINNER_STATUSES = ['suggested', 'quest_log', 'tried', 'regular', 'archived'] as const
-
-// SupplyRunDinnerStatus is a group's dinner's status now: archived once it
-// was removed from Regulars after the Supply run was made, when it has no
-// detail to open.
-export type SupplyRunDinnerStatus = (typeof SUPPLY_RUN_DINNER_STATUSES)[number]
-
 // SupplyRunGroup is the items of one plan day's dinner: date is the plan
 // day, household-local YYYY-MM-DD. The dinner's status is null while it is
 // not known: the Supply run was saved on this device by a build from before
 // dinners carried their status (see savedDinnerStatus), and has not been read
 // again since.
 export type SupplyRunGroup = {
-  dinner: { id: string; name: string; status: SupplyRunDinnerStatus | null }
+  dinner: { id: string; name: string; status: PlannedDinnerStatus | null }
   date: string
   items: SupplyRunItem[]
 }
@@ -129,11 +124,11 @@ function parseItem(where: string, body: unknown): SupplyRunItem {
 }
 
 // DinnerStatus reads a group's dinner's status.
-type DinnerStatus = (where: string, value: unknown) => SupplyRunDinnerStatus | null
+type DinnerStatus = (where: string, value: unknown) => PlannedDinnerStatus | null
 
 // serverDinnerStatus is a dinner's status as the server sends it: always one
-// of SUPPLY_RUN_DINNER_STATUSES.
-const serverDinnerStatus: DinnerStatus = (where, value) => oneOf(where, 'dinner status', SUPPLY_RUN_DINNER_STATUSES, value)
+// of PLANNED_DINNER_STATUSES.
+const serverDinnerStatus: DinnerStatus = (where, value) => oneOf(where, 'dinner status', PLANNED_DINNER_STATUSES, value)
 
 // savedDinnerStatus is a dinner's status in a Supply run saved on this
 // device. A Supply run saved by a build from before dinners carried their
@@ -208,6 +203,29 @@ function parseRun(where: string, weekStart: string, body: unknown, dinnerStatus:
 function savedSupplyRun(weekStart: string): SupplyRun | undefined {
   const saved = savedRun(weekStart)
   return saved === undefined ? undefined : parseRun(`Saved ${SAVED_KEY}`, weekStart, saved, savedDinnerStatus)
+}
+
+// archiveSupplyRunDinner shows dinner id archived — removed from Regulars,
+// so it has no detail to open — on every Supply run that has it: each saved
+// on this device is saved again so, and each cached is changed so, keeping
+// when it was read, so it is read again as before. No Supply run, cached or
+// saved, then links to the dinner's recipe.
+export function archiveSupplyRunDinner(queryClient: QueryClient, id: string) {
+  const has = (run: SupplyRun | null | undefined): run is SupplyRun => !!run && run.groups.some((group) => group.dinner.id === id)
+  const archived = (run: SupplyRun): SupplyRun => ({
+    ...run,
+    groups: run.groups.map((group) => (group.dinner.id === id ? { ...group, dinner: { ...group.dinner, status: 'archived' } } : group)),
+  })
+  for (const week of keep(WEEKS_CAUSE, savedWeeks) ?? []) {
+    const saved = keep(runCause(week), () => savedSupplyRun(week))
+    if (has(saved)) keep(runCause(week), () => saveRun(week, archived(saved)))
+  }
+  for (const query of queryClient.getQueryCache().findAll({ queryKey: ['shopping'] })) {
+    const [, week] = query.queryKey
+    const run = query.state.data as SupplyRun | null | undefined
+    if (query.queryKey.length !== 2 || typeof week !== 'string' || !has(run)) continue
+    queryClient.setQueryData<SupplyRun>(supplyRunKey(week), archived(run), { updatedAt: query.state.dataUpdatedAt })
+  }
 }
 
 // useSupplyRun is the Supply run of the week starting on Monday weekStart

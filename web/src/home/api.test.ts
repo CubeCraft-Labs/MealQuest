@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { createQueryClient } from '../api/index.ts'
 import { HOME } from '../test/ApiProviders.tsx'
-import { parseHome, parseUpdates } from './api.ts'
+import { archiveTonight, HOME_KEY, parseHome, parseUpdates, type Home } from './api.ts'
 
 const origin = 'https://mealquest.example'
 const where = 'GET /api/v1/updates'
@@ -48,5 +49,19 @@ describe('parseHome', () => {
     expect(() => parseHome('GET /api/v1/home', { ...HOME, timezone: undefined })).toThrow(
       'GET /api/v1/home: timezone undefined is not an IANA zone',
     )
+  })
+})
+
+describe('archiveTonight', () => {
+  it("shows tonight's dinner archived when it is the dinner removed, keeping when Home was read", () => {
+    const queryClient = createQueryClient()
+    queryClient.setQueryData(HOME_KEY, parseHome('GET /api/v1/home', HOME), { updatedAt: 1000 })
+
+    archiveTonight(queryClient, 'other')
+    expect(queryClient.getQueryData<Home>(HOME_KEY)?.tonight?.status).toBe('regular')
+
+    archiveTonight(queryClient, 'd1')
+    expect(queryClient.getQueryData<Home>(HOME_KEY)?.tonight).toMatchObject({ id: 'd1', name: 'Pizza night', status: 'archived' })
+    expect(queryClient.getQueryState(HOME_KEY)?.dataUpdatedAt).toBe(1000)
   })
 })

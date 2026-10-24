@@ -66,9 +66,12 @@ type Home struct {
 
 // Dinner is tonight's dinner.
 type Dinner struct {
-	ID    string  `json:"id"`
-	Name  string  `json:"name"`
-	Photo *string `json:"photo"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Status is the dinner's status now (dinners.Status*); a dinner
+	// archived after the plan was made stays on it, archived.
+	Status string  `json:"status"`
+	Photo  *string `json:"photo"`
 	// Origin is regular or side_quest.
 	Origin       string `json:"origin"`
 	MinutesTotal *int64 `json:"minutes_total"`
@@ -149,7 +152,7 @@ func (s *Service) tonight(ctx context.Context, thisWeek, today store.LocalDate) 
 	for _, d := range p.Days {
 		if d.Date == today.String() {
 			return &Dinner{
-				ID: d.Dinner.ID, Name: d.Dinner.Name, Photo: d.Dinner.Photo,
+				ID: d.Dinner.ID, Name: d.Dinner.Name, Status: d.Dinner.Status, Photo: d.Dinner.Photo,
 				Origin: d.Dinner.Origin, MinutesTotal: d.Dinner.Minutes,
 			}, nil
 		}

@@ -1,13 +1,17 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { Route, Routes, useLocation } from 'react-router'
+import { Link, Route, Routes, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { GROUNDING_POLL_MS } from '../dinners/api.ts'
 import { DinnerDetailPage } from '../dinners/DinnerDetailPage.tsx'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
+import { SupplyRunSync } from '../shopping/api.ts'
+import { SAVED_KEY } from '../shopping/offline.ts'
+import { SupplyRunPage } from '../shopping/SupplyRunPage.tsx'
 import tokens from '../styles/tokens.css?raw'
 import { declaredStyle } from '../test/cssRules.ts'
+import { HOUSEHOLD_SETTINGS } from '../test/ApiProviders.tsx'
 import { InDataRouter } from '../test/dataRouter.tsx'
 import { dinnerBody, type DinnerBody } from '../test/dinners.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
@@ -493,6 +497,116 @@ describe('RegularsSettingsPage', () => {
     await waitFor(() => expect(rows()).toHaveLength(1))
     expect(within(rows()[0]!).getByText('Pot roast')).toBeInTheDocument()
     expect(sent(server.fetchMock)).toEqual([{ request: 'DELETE /api/v1/dinners/d1', body: undefined }])
+  })
+
+  describe('a removed Regular on a Supply run already read', () => {
+    const WEEK = '2026-10-05'
+    const SUPPLY_RUN = `/api/v1/shopping/${WEEK}`
+    const RUN_SCREEN = `/plan/shopping?week=${WEEK}`
+
+    // run is the week's Supply run as the server sends it: Beef tacos, the
+    // Regular, and Pot roast, each a Regular when it was read.
+    const run = {
+      weekStart: WEEK,
+      label: 'Week 41 · Oct 5 – 11',
+      title: null,
+      status: 'current',
+      sent_to_chat_at: null,
+      chat_send_unconfirmed_at: null,
+      needed_count: 2,
+      total_count: 2,
+      groups: [
+        { dinner: { id: 'd1', name: 'Beef tacos', status: 'regular' }, date: '2026-10-05', day: 'Monday', items: [{ id: 'i1', name: 'Ground beef', qty: '1 lb', needed: true }] },
+        { dinner: { id: 'd4', name: 'Pot roast', status: 'regular' }, date: '2026-10-06', day: 'Tuesday', items: [{ id: 'i2', name: 'Chuck roast', qty: '3 lb', needed: true }] },
+      ],
+    }
+
+    // renderApp renders, as App does, the Regulars and the Supply run screen
+    // over one query client with SupplyRunSync keeping the Supply run on this
+    // device, starting at path; each screen links to the other.
+    async function renderApp(path: string) {
+      const api = createApiClient(fakeLocation(path), createNetworkStatus(window), createVerifiedSession(localStorage))
+      await api.loadMe()
+      return render(
+        <ApiProvider client={api}>
+          <QueryClientProvider client={createQueryClient()}>
+            <SupplyRunSync />
+            <InDataRouter path={path}>
+              <Routes>
+                <Route path="/settings/regulars" element={<RegularsSettingsPage />} />
+                <Route path="/plan/shopping" element={<SupplyRunPage />} />
+              </Routes>
+              <Link to="/settings/regulars">To Regulars</Link>
+              <Link to={RUN_SCREEN}>To Supply run</Link>
+            </InDataRouter>
+          </QueryClientProvider>
+        </ApiProvider>,
+      )
+    }
+
+    // card is the Supply run's card of a dinner.
+    function card(name: string) {
+      return screen.getByRole('region', { name })
+    }
+
+    // savedStatus is the dinner's status on the week's Supply run saved on
+    // this device.
+    function savedStatus(id: string) {
+      const saved = JSON.parse(localStorage.getItem(SAVED_KEY)!) as { runs: Record<string, typeof run> }
+      return saved.runs[WEEK]!.groups.find((group) => group.dinner.id === id)!.dinner.status
+    }
+
+    it('shows it archived, with no recipe link, on the Supply run cached and saved on this device', async () => {
+      mockViewport(390)
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date('2026-10-07T16:00:00Z'))
+      // The Supply run is read once; any later read never answers, as when
+      // the server cannot be reached, so only what is cached or saved shows.
+      let runReads = 0
+      const server = stubServer([TACOS, ROAST], {
+        'GET /api/v1/settings/household': () => jsonResponse(200, HOUSEHOLD_SETTINGS),
+        [`GET ${SUPPLY_RUN}`]: () => (++runReads === 1 ? jsonResponse(200, run) : new Promise<Response>(() => undefined)),
+        'DELETE /api/v1/dinners/d1': () => {
+          server.regulars = [ROAST]
+          return jsonResponse(200, { ...TACOS, status: 'archived' })
+        },
+      })
+      const app = await renderApp(RUN_SCREEN)
+
+      const tacos = await waitFor(() => within(card('Beef tacos')).getByRole('link', { name: 'Beef tacos' }))
+      expect(tacos).toHaveAttribute('href', '/dinner/d1')
+      await waitFor(() => expect(savedStatus('d1')).toBe('regular'))
+
+      fireEvent.click(screen.getByRole('link', { name: 'To Regulars' }))
+      await screen.findByRole('heading', { level: 2, name: /^On rotation/ })
+      editRow('Beef tacos')
+      fireEvent.click(screen.getByRole('button', { name: 'Remove from Regulars' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+      await waitFor(() => expect(rows()).toHaveLength(1))
+
+      // Saved on this device archived; Pot roast is left as it was.
+      await waitFor(() => expect(savedStatus('d1')).toBe('archived'))
+      expect(savedStatus('d4')).toBe('regular')
+
+      // Back on the Supply run, from the cache, still fresh and not read
+      // again: the card is plain while its items still toggle.
+      fireEvent.click(screen.getByRole('link', { name: 'To Supply run' }))
+      const archived = await waitFor(() => card('Beef tacos'))
+      expect(runReads).toBe(1)
+      expect(within(archived).getByRole('heading', { name: 'Beef tacos' })).toBeInTheDocument()
+      expect(within(archived).queryByRole('link')).not.toBeInTheDocument()
+      expect(within(archived).getByRole('checkbox', { name: /Ground beef/ })).toBeEnabled()
+      expect(within(card('Pot roast')).getByRole('link', { name: 'Pot roast' })).toHaveAttribute('href', '/dinner/d4')
+
+      // A new page, with nothing cached, opens the saved Supply run while its
+      // read is not answered: no recipe link there either.
+      app.unmount()
+      await renderApp(RUN_SCREEN)
+      const reopened = await waitFor(() => card('Beef tacos'))
+      expect(within(reopened).queryByRole('link')).not.toBeInTheDocument()
+      expect(within(card('Pot roast')).getByRole('link', { name: 'Pot roast' })).toHaveAttribute('href', '/dinner/d4')
+      await waitFor(() => expect(runReads).toBe(2))
+    })
   })
 
   it('puts a refused removal back and says why', async () => {

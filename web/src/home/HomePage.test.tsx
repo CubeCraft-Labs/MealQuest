@@ -242,6 +242,23 @@ describe('HomePage', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
+  it('shows a dinner archived after the plan was made with no Recipe pill to its missing recipe', async () => {
+    renderHome({ ...HOME, tonight: { ...HOME.tonight, status: 'archived' } })
+
+    const tonight = await screen.findByRole('region', { name: 'Tonight' })
+    expect(within(tonight).getByRole('heading', { name: 'Pizza night' })).toBeInTheDocument()
+    expect(within(tonight).queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  it.each([['an unknown', 'gone'], ['no', undefined]])('reports tonight with %s status rather than guessing it', async (_, status) => {
+    renderHome({ ...HOME, tonight: { ...HOME.tonight, status } })
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      `status ${JSON.stringify(status)} is not one of suggested, quest_log, tried, regular, archived`,
+    )
+    expect(screen.queryByRole('region', { name: 'Tonight' })).not.toBeInTheDocument()
+  })
+
   it('reports a home it cannot read rather than guessing', async () => {
     renderHome({ ...HOME, tonight: { ...HOME.tonight, origin: 'leftovers' } })
     expect(await screen.findByRole('alert')).toHaveTextContent('origin "leftovers" is not one of regular, side_quest')

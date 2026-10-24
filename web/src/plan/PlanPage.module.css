@@ -462,6 +462,16 @@
   background: var(--color-accent-2-200);
 }
 
+/* The photo and name, opening the dinner's recipe. */
+.cardRecipe {
+  display: flex;
+  flex-direction: column;
+  gap: inherit;
+  border-radius: 18px;
+  color: inherit;
+  text-decoration: none;
+}
+
 .cardPhoto {
   width: 100%;
   height: 110px;

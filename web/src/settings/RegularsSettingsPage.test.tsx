@@ -1,14 +1,16 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { Route, Routes } from 'react-router'
+import { Route, Routes, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { GROUNDING_POLL_MS } from '../dinners/api.ts'
+import { DinnerDetailPage } from '../dinners/DinnerDetailPage.tsx'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
 import { InDataRouter } from '../test/dataRouter.tsx'
 import { dinnerBody, type DinnerBody } from '../test/dinners.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
+import { mockViewport } from '../test/matchMedia.ts'
 import { RegularsSettingsPage } from './RegularsSettingsPage.tsx'
 
 const REGULARS = '/api/v1/dinners?status=regular'
@@ -56,10 +58,17 @@ function reads(fetchMock: Mock<typeof fetch>) {
 afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
+  Reflect.deleteProperty(window, 'matchMedia')
 })
 
+// Where shows the path the router is at.
+function Where() {
+  return <output aria-label="Path">{useLocation().pathname}</output>
+}
+
 // renderPage loads /me (for the CSRF token every write needs) and renders
-// the page at /settings/regulars once its Regulars have loaded.
+// the page at /settings/regulars once its Regulars have loaded, routed
+// beside the dinner detail screen a row opens.
 async function renderPage() {
   const api = createApiClient(fakeLocation('/settings/regulars'), createNetworkStatus(window), createVerifiedSession(localStorage))
   await api.loadMe()
@@ -69,7 +78,9 @@ async function renderPage() {
         <InDataRouter path="/settings/regulars">
           <Routes>
             <Route path="/settings/regulars" element={<RegularsSettingsPage />} />
+            <Route path="/dinner/:id" element={<DinnerDetailPage />} />
           </Routes>
+          <Where />
         </InDataRouter>
       </QueryClientProvider>
     </ApiProvider>,
@@ -92,6 +103,34 @@ const PIZZA = dinnerBody('d3', 'Pizza night', {
 })
 const ROAST = dinnerBody('d4', 'Pot roast', { method: 'oven', grounding_status: 'manual' })
 
+// TACOS_RECIPE is Beef tacos as GET /api/v1/dinners/{id} sends it, with its
+// ingredients and steps.
+const TACOS_RECIPE = {
+  id: 'd1',
+  name: 'Beef tacos',
+  status: 'regular',
+  origin: 'regular',
+  method: 'stovetop',
+  minutes_total: 40,
+  difficulty: 'easy',
+  cuisine: null,
+  is_favorite: true,
+  photo_urls: null,
+  ingredients: [
+    { name: 'Ground beef', qty: '1', unit: 'lb', note: null, raw_text: '1 lb ground beef' },
+    { name: 'Corn tortillas', qty: '12', unit: null, note: null, raw_text: '12 corn tortillas' },
+  ],
+  steps: ['Brown the beef.', 'Warm the tortillas and fill them.'],
+  source: { site_name: 'Example Kitchen' },
+  grounding_status: 'grounded',
+  grounding_error: null,
+  why_picked: null,
+}
+
+function path() {
+  return screen.getByRole('status', { name: 'Path' })
+}
+
 function rows() {
   return within(screen.getByRole('list', { name: 'Regulars' })).queryAllByRole('listitem')
 }
@@ -111,8 +150,20 @@ function add(text: string) {
   fireEvent.click(screen.getByRole('button', { name: 'Add Regular' }))
 }
 
+// openRow taps the Regular's row itself, which opens its recipe.
 function openRow(name: string) {
   fireEvent.click(within(row(name)).getByRole('button', { name: new RegExp(`^${name}`) }))
+}
+
+// editRow taps the Regular's pencil, which opens its edit sheet.
+function editRow(name: string) {
+  fireEvent.click(within(row(name)).getByRole('button', { name: `Edit ${name}` }))
+}
+
+// fixRow taps the pencil of a Regular whose recipe was not found, which
+// opens its fix-recipe sheet.
+function fixRow(name: string) {
+  fireEvent.click(within(row(name)).getByRole('button', { name: `Fix recipe for ${name}` }))
 }
 
 describe('RegularsSettingsPage', () => {
@@ -150,6 +201,7 @@ describe('RegularsSettingsPage', () => {
     expectMinHitArea(screen.getByRole('button', { name: 'Add Regular' }))
     expectMinHitArea(screen.getByRole('button', { name: 'Favorite Beef tacos' }))
     expectMinHitArea(within(row('Beef tacos')).getByRole('button', { name: /^Beef tacos/ }))
+    expectMinHitArea(screen.getByRole('button', { name: 'Edit Beef tacos' }))
     expectMinHitArea(screen.getByRole('button', { name: 'Back to Settings' }))
   })
 
@@ -252,6 +304,55 @@ describe('RegularsSettingsPage', () => {
     expect(screen.getByRole('button', { name: 'Favorite Beef tacos' })).toHaveAttribute('aria-pressed', 'false')
   })
 
+  it("opens a Regular's recipe, its ingredients and steps, from its row", async () => {
+    // The detail screen lays itself out by the viewport: a phone's.
+    mockViewport(390)
+    stubServer([TACOS], { 'GET /api/v1/dinners/d1': () => jsonResponse(200, TACOS_RECIPE) })
+    await renderPage()
+
+    openRow('Beef tacos')
+    expect(path()).toHaveTextContent('/dinner/d1')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 2, name: 'Ingredients' })).toBeInTheDocument()
+    const [ingredients, steps] = screen.getAllByRole('list')
+    expect(within(ingredients!).getAllByRole('listitem').map((item) => item.firstElementChild!.textContent)).toEqual([
+      'Ground beef',
+      'Corn tortillas',
+    ])
+    expect(screen.getByRole('heading', { level: 2, name: 'Steps' })).toBeInTheDocument()
+    expect(within(steps!).getAllByRole('listitem').map((step) => step.textContent)).toEqual([
+      '1Brown the beef.',
+      '2Warm the tortillas and fill them.',
+    ])
+  })
+
+  it('opens a Regular whose recipe was not found at its recipe too, and its pencil fixes the recipe', async () => {
+    stubServer([PIZZA], { 'GET /api/v1/dinners/d3/recipe-candidates': () => jsonResponse(200, { candidates: [] }) })
+    await renderPage()
+
+    fixRow('Pizza night')
+    expect(screen.getByRole('dialog', { name: 'Fix recipe' })).toBeInTheDocument()
+    expect(path()).toHaveTextContent('/settings/regulars')
+    expect(within(row('Pizza night')).queryByRole('button', { name: 'Edit Pizza night' })).not.toBeInTheDocument()
+  })
+
+  it('keeps the pencil, not the row, opening the edit sheet, and neither while it is being added', async () => {
+    const answer = Promise.withResolvers<Response>()
+    stubServer([TACOS], { 'POST /api/v1/dinners': () => answer.promise })
+    await renderPage()
+
+    editRow('Beef tacos')
+    expect(screen.getByRole('dialog', { name: 'Edit Beef tacos' })).toBeInTheDocument()
+    expect(path()).toHaveTextContent('/settings/regulars')
+
+    add('Chicken enchiladas')
+    const adding = within(await waitFor(() => row('Chicken enchiladas')))
+    expect(adding.getByRole('button', { name: 'Edit Chicken enchiladas' })).toBeDisabled()
+    expect(adding.queryByRole('button', { name: /^Chicken enchiladas/ })).not.toBeInTheDocument()
+    answer.resolve(errorResponse(500, 'internal_error'))
+    await waitFor(() => expect(screen.queryByText('Chicken enchiladas')).not.toBeInTheDocument())
+  })
+
   it('edits a Regular: name, method, minutes and difficulty', async () => {
     const server = stubServer([TACOS], {
       'PATCH /api/v1/dinners/d1': (body) => {
@@ -262,7 +363,7 @@ describe('RegularsSettingsPage', () => {
     })
     await renderPage()
 
-    openRow('Beef tacos')
+    editRow('Beef tacos')
     const sheet = within(screen.getByRole('dialog', { name: 'Edit Beef tacos' }))
     expect(sheet.getByLabelText('Name')).toHaveValue('Beef tacos')
     expect(sheet.getByLabelText('Method')).toHaveValue('stovetop')
@@ -290,7 +391,7 @@ describe('RegularsSettingsPage', () => {
     const server = stubServer([TACOS], { 'PATCH /api/v1/dinners/d1': () => errorResponse(400, 'invalid_dinner') })
     await renderPage()
 
-    openRow('Beef tacos')
+    editRow('Beef tacos')
     const sheet = within(screen.getByRole('dialog', { name: 'Edit Beef tacos' }))
     fireEvent.change(sheet.getByLabelText('Minutes'), { target: { value: '0' } })
     expect(sheet.getByText('Minutes must be a whole number from 1 to 1440.')).toBeInTheDocument()
@@ -311,7 +412,7 @@ describe('RegularsSettingsPage', () => {
     })
     await renderPage()
 
-    openRow('Beef tacos')
+    editRow('Beef tacos')
     fireEvent.click(screen.getByRole('button', { name: 'Remove from Regulars' }))
     const confirm = within(screen.getByRole('dialog', { name: 'Remove Beef tacos?' }))
     fireEvent.click(confirm.getByRole('button', { name: 'Keep it' }))
@@ -330,7 +431,7 @@ describe('RegularsSettingsPage', () => {
     stubServer([TACOS], { 'DELETE /api/v1/dinners/d1': () => errorResponse(500, 'internal') })
     await renderPage()
 
-    openRow('Beef tacos')
+    editRow('Beef tacos')
     fireEvent.click(screen.getByRole('button', { name: 'Remove from Regulars' }))
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not remove Beef tacos: internal message')
@@ -370,7 +471,7 @@ describe('RegularsSettingsPage', () => {
       })
       await renderPage()
 
-      openRow('Pizza night')
+      fixRow('Pizza night')
       const matches = within(await fixSheet().findByRole('list', { name: 'Recipe matches' }))
       const options = matches.getAllByRole('button')
       expect(options.map((option) => option.getAttribute('aria-label'))).toEqual([
@@ -394,7 +495,7 @@ describe('RegularsSettingsPage', () => {
     it('says so when no match was found', async () => {
       stubServer([PIZZA], { 'GET /api/v1/dinners/d3/recipe-candidates': () => jsonResponse(200, { candidates: [] }) })
       await renderPage()
-      openRow('Pizza night')
+      fixRow('Pizza night')
       expect(await fixSheet().findByText('No matches were found. Paste a recipe link or type it in.')).toBeInTheDocument()
     })
 
@@ -407,7 +508,7 @@ describe('RegularsSettingsPage', () => {
       })
       await renderPage()
 
-      openRow('Pizza night')
+      fixRow('Pizza night')
       fireEvent.click(fixSheet().getByRole('radio', { name: 'Paste a link' }))
       fireEvent.change(fixSheet().getByLabelText('Recipe link'), { target: { value: ' https://example.com/blog/pizza ' } })
       fireEvent.click(fixSheet().getByRole('button', { name: 'Use this recipe' }))
@@ -431,7 +532,7 @@ describe('RegularsSettingsPage', () => {
       })
       await renderPage()
 
-      openRow('Pizza night')
+      fixRow('Pizza night')
       fireEvent.click(fixSheet().getByRole('radio', { name: 'Type it in' }))
       const save = fixSheet().getByRole('button', { name: 'Save recipe' })
       expect(save).toBeDisabled()
@@ -469,7 +570,7 @@ describe('RegularsSettingsPage', () => {
       })
       await renderPage()
 
-      openRow('Pizza night')
+      fixRow('Pizza night')
       fireEvent.click(fixSheet().getByRole('radio', { name: 'Type it in' }))
       const save = fixSheet().getByRole('button', { name: 'Save recipe' })
       fireEvent.change(fixSheet().getByLabelText('Ingredients, one per line'), { target: { value: '1 pizza dough' } })
@@ -494,7 +595,7 @@ describe('RegularsSettingsPage', () => {
     it('switches to editing the Regular', async () => {
       stubServer([PIZZA], { 'GET /api/v1/dinners/d3/recipe-candidates': () => jsonResponse(200, CANDIDATES) })
       await renderPage()
-      openRow('Pizza night')
+      fixRow('Pizza night')
       fireEvent.click(fixSheet().getByRole('button', { name: 'Edit or remove Pizza night' }))
       expect(screen.getByRole('dialog', { name: 'Edit Pizza night' })).toBeInTheDocument()
     })
@@ -526,7 +627,7 @@ describe('RegularsSettingsPage', () => {
       stubServer([PIZZA], NO_CANDIDATES)
       await renderPage()
 
-      openRow('Pizza night')
+      fixRow('Pizza night')
       expect(fixSheet().getByText('No recipe page the search found had a recipe we could use.')).toBeInTheDocument()
       expect(fixSheet().getByRole('button', { name: 'Search again' })).toBeEnabled()
     })
@@ -536,7 +637,7 @@ describe('RegularsSettingsPage', () => {
       stubServer([linked], NO_CANDIDATES)
       await renderPage()
 
-      openRow('Pizza night')
+      fixRow('Pizza night')
       expect(fixSheet().getByText('The pasted recipe link has no recipe we could use.')).toBeInTheDocument()
       expect(fixSheet().queryByRole('button', { name: 'Search again' })).not.toBeInTheDocument()
     })
@@ -546,7 +647,7 @@ describe('RegularsSettingsPage', () => {
       stubServer([linked], NO_CANDIDATES)
       await renderPage()
 
-      openRow('Pizza night')
+      fixRow('Pizza night')
       expect(fixSheet().getByText("The AI assistant couldn't read the recipe.")).toBeInTheDocument()
       expect(fixSheet().queryByRole('button', { name: 'Search again' })).not.toBeInTheDocument()
     })
@@ -565,7 +666,7 @@ describe('RegularsSettingsPage', () => {
       })
       await renderPage()
 
-      openRow('Pizza night')
+      fixRow('Pizza night')
       fireEvent.click(fixSheet().getByRole('button', { name: 'Search again' }))
       expect(await fixSheet().findByRole('button', { name: 'Searching again…' })).toBeDisabled()
       expect(fixSheet().getByText('Searching again… this can take a few minutes.')).toBeInTheDocument()
@@ -587,7 +688,7 @@ describe('RegularsSettingsPage', () => {
       })
       await renderPage()
 
-      openRow('Pizza night')
+      fixRow('Pizza night')
       fireEvent.click(fixSheet().getByRole('button', { name: 'Search again' }))
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
       expect(within(row('Pizza night')).getByText('Recipe found')).toBeInTheDocument()
@@ -602,7 +703,7 @@ describe('RegularsSettingsPage', () => {
       })
       await renderPage()
 
-      openRow('Pizza night')
+      fixRow('Pizza night')
       fireEvent.click(fixSheet().getByRole('button', { name: 'Search again' }))
       expect(await fixSheet().findByText('This dinner was not included in that search.')).toBeInTheDocument()
     })
@@ -739,7 +840,7 @@ describe('RegularsSettingsPage', () => {
     const server = stubServer([TACOS, CHILI], { 'PATCH /api/v1/dinners/d1': patch.respond })
     await renderPage()
 
-    openRow('Beef tacos')
+    editRow('Beef tacos')
     const sheet = within(screen.getByRole('dialog', { name: 'Edit Beef tacos' }))
     fireEvent.change(sheet.getByLabelText('Name'), { target: { value: 'Fish tacos' } })
     fireEvent.click(sheet.getByRole('button', { name: 'Save changes' }))
@@ -766,7 +867,7 @@ describe('RegularsSettingsPage', () => {
     })
     await renderPage()
 
-    openRow('Pizza night')
+    fixRow('Pizza night')
     const sheet = within(screen.getByRole('dialog', { name: 'Fix recipe' }))
     fireEvent.click(sheet.getByRole('radio', { name: 'Paste a link' }))
     fireEvent.change(sheet.getByLabelText('Recipe link'), { target: { value: 'https://example.com/pizza' } })

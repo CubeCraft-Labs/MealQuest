@@ -75,13 +75,21 @@ function ItemRow({ item, toggles }: { item: SupplyRunItem; toggles: Toggles | nu
   )
 }
 
-// GroupCard is one dinner's items: its name in Bagel over its day.
+// GroupCard is one dinner's items: its name in Bagel over its day, and the
+// Recipe pill to the dinner's recipe.
 function GroupCard({ group, toggles }: { group: SupplyRunGroup; toggles: Toggles | null }) {
   return (
     <section className={styles.group} aria-label={group.dinner.name}>
       <header className={styles.groupHeader}>
         <h2 className={styles.dinner}>{group.dinner.name}</h2>
         <span className={styles.day}>{weekdayKicker(group.date)}</span>
+        <Link
+          to={`/dinner/${encodeURIComponent(group.dinner.id)}`}
+          aria-label={`Recipe for ${group.dinner.name}`}
+          className={[buttonStyles.button, buttonStyles.outline].join(' ')}
+        >
+          Recipe
+        </Link>
       </header>
       <ul className={styles.items}>
         {group.items.map((item) => (

@@ -266,8 +266,13 @@ export function useAddRegular() {
 // regularRemoval is the mutation archiving a Regular (DELETE
 // /api/v1/dinners/{id}), which useRemoveRegular (removeRegular.ts) runs. It
 // leaves the list at once and is put back in its place if the server
-// refuses; once the server has archived it, archived is told its id.
-export function regularRemoval(queryClient: QueryClient, apiFetch: ApiClient['apiFetch'], archived: (id: string) => void) {
+// refuses; once the server has archived it, archived is told its id, and
+// the removal is done once what archived returns is.
+export function regularRemoval(
+  queryClient: QueryClient,
+  apiFetch: ApiClient['apiFetch'],
+  archived: (id: string) => Promise<void>,
+) {
   return {
     mutationKey: REGULARS_MUTATION_KEY,
     mutationFn: async (regular: Regular) => {
@@ -278,9 +283,9 @@ export function regularRemoval(queryClient: QueryClient, apiFetch: ApiClient['ap
         list.map((r): CachedRegular => (r.id === regular.id ? { ...r, removing: true } : r)),
       )
     },
-    onSuccess: (_data: void, regular: Regular) => {
+    onSuccess: async (_data: void, regular: Regular) => {
       setRegulars(queryClient, (list) => list.filter((r) => r.id !== regular.id))
-      archived(regular.id)
+      await archived(regular.id)
     },
     onError: (_error: Error, regular: Regular) => {
       setRegulars(queryClient, (list) => list.map((r) => (r.id === regular.id ? restored(r) : r)))

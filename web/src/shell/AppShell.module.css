@@ -5,7 +5,10 @@
   background: var(--color-bg);
 }
 
+/* One stacking context for the routed page: whatever a page stacks inside
+   it, none of it can rise past the mobile bottom bar. */
 .main {
+  isolation: isolate;
   flex: 1;
   min-width: 0;
   overflow-y: auto;

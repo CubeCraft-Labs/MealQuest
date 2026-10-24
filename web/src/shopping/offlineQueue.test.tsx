@@ -382,6 +382,76 @@ describe('offline toggle queue', () => {
   })
 })
 
+describe('Supply run saved by an earlier build', () => {
+  // saveLegacyRun saves this week's Supply run as a build from before
+  // dinners carried their status saved it: its dinners have no status.
+  function saveLegacyRun(run: ReturnType<typeof stubServer>['run']) {
+    const { groups, ...rest } = run('2026-10-05')
+    const legacy = { ...rest, groups: groups.map(({ dinner: { id, name }, ...group }) => ({ ...group, dinner: { id, name } })) }
+    const { timezone, plan_draft_dow, plan_draft_time } = HOUSEHOLD_SETTINGS
+    localStorage.setItem(
+      SAVED_KEY,
+      JSON.stringify({ schedule: { timezone, plan_draft_dow, plan_draft_time }, runs: { '2026-10-05': legacy }, queue: [] }),
+    )
+  }
+
+  function savedDinnerStatuses(): unknown[] {
+    const saved = JSON.parse(localStorage.getItem(SAVED_KEY)!) as { runs: Record<string, { groups: { dinner: { status?: unknown } }[] }> }
+    return saved.runs['2026-10-05']!.groups.map((group) => group.dinner.status)
+  }
+
+  it('opens it offline with its items and toggles, the dinner name plain text, and links it once read again', async () => {
+    const { fetchMock, run } = stubServer()
+    saveLegacyRun(run)
+    onLine = false
+    const first = await openPage()
+
+    const tacos = await screen.findByRole('region', { name: 'Beef tacos' })
+    expect(screen.getByText('2 / 3')).toBeInTheDocument()
+    expect(within(tacos).getByRole('heading', { level: 2, name: 'Beef tacos' })).toBeInTheDocument()
+    expect(within(tacos).queryByRole('link')).not.toBeInTheDocument()
+    expect(screen.queryByText(/can't be kept on this device/)).not.toBeInTheDocument()
+
+    fireEvent.click(checkbox('Taco seasoning'))
+    expect(checkbox('Taco seasoning')).toBeChecked()
+    expect(screen.getByText('3 / 3')).toBeInTheDocument()
+    expect(await within(row('Taco seasoning')).findByText('will sync')).toBeInTheDocument()
+    expect(queue()).toEqual(['i3 true'])
+    expect(screen.queryByText(/can't be kept on this device/)).not.toBeInTheDocument()
+
+    // Online, the toggle is sent and its answer saved; the status is still
+    // not known, so the name stays plain text.
+    goOnline()
+    await waitFor(() => expect(queue()).toEqual([]))
+    expect(patches(fetchMock)).toEqual([`${ITEM('i3')} {"needed":true}`])
+    await waitFor(() => expect(screen.queryByText('will sync')).not.toBeInTheDocument())
+    expect(savedDinnerStatuses()).toEqual([null])
+
+    // Opened again online, the Supply run read gives the dinner's status: its
+    // name opens its recipe, and the saved run has the status too.
+    reload(first)
+    await openPage()
+    const read = await screen.findByRole('link', { name: 'Beef tacos' })
+    expect(read).toHaveAttribute('href', '/dinner/d0')
+    expect(checkbox('Taco seasoning')).toBeChecked()
+    expect(screen.getByText('3 / 3')).toBeInTheDocument()
+    expect(screen.queryByText(/can't be kept on this device/)).not.toBeInTheDocument()
+    await waitFor(() => expect(savedDinnerStatuses()).toEqual(['regular']))
+  })
+
+  it('opens it online as the Supply run read, with the dinner name its recipe link and no saved-data warning', async () => {
+    const { run } = stubServer()
+    saveLegacyRun(run)
+    await openPage()
+
+    expect(await screen.findByRole('link', { name: 'Beef tacos' })).toHaveAttribute('href', '/dinner/d0')
+    expect(screen.getByText('2 / 3')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByText(/can't be kept on this device/)).not.toBeInTheDocument()
+    await waitFor(() => expect(savedDinnerStatuses()).toEqual(['regular']))
+  })
+})
+
 describe('offline toggle queue, replay', () => {
   it('replays a queue spanning two weeks strictly in order, one PATCH at a time, a toggle made meanwhile after it', async () => {
     const answers = held()
@@ -618,5 +688,34 @@ describe('offline toggle queue, replay', () => {
     const reads = getItem.mock.calls.filter(([key]) => key === SAVED_KEY).length
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(getItem.mock.calls.filter(([key]) => key === SAVED_KEY)).toHaveLength(reads)
+  })
+})
+
+// These leave a saved-data failure reported, as the corrupt saved list does,
+// so they come last: the failure is the page's, and outlives a test.
+describe('Supply run saved on this device, refused', () => {
+  it('still refuses a saved Supply run whose dinner status is not one MealQuest knows', async () => {
+    const { run } = stubServer()
+    const unknown = run('2026-10-05')
+    unknown.groups[0]!.dinner.status = 'retired'
+    const { timezone, plan_draft_dow, plan_draft_time } = HOUSEHOLD_SETTINGS
+    localStorage.setItem(
+      SAVED_KEY,
+      JSON.stringify({ schedule: { timezone, plan_draft_dow, plan_draft_time }, runs: { '2026-10-05': unknown }, queue: [] }),
+    )
+    onLine = false
+    const first = await openPage()
+
+    expect(await screen.findByText(/can't be kept on this device while offline.*dinner status "retired"/)).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Beef tacos' })).not.toBeInTheDocument()
+
+    // Opened again online, the Supply run read is saved over it: the page is
+    // clean.
+    reload(first)
+    onLine = true
+    await openPage()
+    expect(await screen.findByRole('link', { name: 'Beef tacos' })).toHaveAttribute('href', '/dinner/d0')
+    await waitFor(() => expect(screen.queryByText(/can't be kept on this device/)).not.toBeInTheDocument())
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })

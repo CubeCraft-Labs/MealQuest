@@ -7,7 +7,7 @@ import {
   type MutationObserverOptions,
   type QueryClient,
 } from '@tanstack/react-query'
-import { useEffect, useReducer, useSyncExternalStore } from 'react'
+import { useEffect, useReducer, useState, useSyncExternalStore } from 'react'
 import { ApiError, useApi, type ApiClient } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { meQueryKey } from '../AuthBootstrap.tsx'
@@ -71,9 +71,12 @@ export const SUPPLY_RUN_DINNER_STATUSES = ['suggested', 'quest_log', 'tried', 'r
 export type SupplyRunDinnerStatus = (typeof SUPPLY_RUN_DINNER_STATUSES)[number]
 
 // SupplyRunGroup is the items of one plan day's dinner: date is the plan
-// day, household-local YYYY-MM-DD.
+// day, household-local YYYY-MM-DD. The dinner's status is null while it is
+// not known: the Supply run was saved on this device by a build from before
+// dinners carried their status (see savedDinnerStatus), and has not been read
+// again since.
 export type SupplyRunGroup = {
-  dinner: { id: string; name: string; status: SupplyRunDinnerStatus }
+  dinner: { id: string; name: string; status: SupplyRunDinnerStatus | null }
   date: string
   items: SupplyRunItem[]
 }
@@ -121,7 +124,22 @@ function parseItem(where: string, body: unknown): SupplyRunItem {
   return { id: body.id, name: body.name, qty: body.qty, needed: body.needed }
 }
 
-function parseGroup(where: string, body: unknown): SupplyRunGroup {
+// DinnerStatus reads a group's dinner's status.
+type DinnerStatus = (where: string, value: unknown) => SupplyRunDinnerStatus | null
+
+// serverDinnerStatus is a dinner's status as the server sends it: always one
+// of SUPPLY_RUN_DINNER_STATUSES.
+const serverDinnerStatus: DinnerStatus = (where, value) => oneOf(where, 'dinner status', SUPPLY_RUN_DINNER_STATUSES, value)
+
+// savedDinnerStatus is a dinner's status in a Supply run saved on this
+// device. A Supply run saved by a build from before dinners carried their
+// status has none (undefined): its status is not known (null), and the
+// Supply run, saved again before it is read again — a toggle's answer is
+// written over it — keeps it null. Any other status is the server's.
+const savedDinnerStatus: DinnerStatus = (where, value) =>
+  value === undefined || value === null ? null : serverDinnerStatus(where, value)
+
+function parseGroup(where: string, body: unknown, dinnerStatus: DinnerStatus): SupplyRunGroup {
   if (
     !isRecord(body) ||
     !isRecord(body.dinner) ||
@@ -136,7 +154,7 @@ function parseGroup(where: string, body: unknown): SupplyRunGroup {
     dinner: {
       id: body.dinner.id,
       name: body.dinner.name,
-      status: oneOf(where, 'dinner status', SUPPLY_RUN_DINNER_STATUSES, body.dinner.status),
+      status: dinnerStatus(where, body.dinner.status),
     },
     date: body.date,
     items: body.items.map((item) => parseItem(where, item)),
@@ -153,7 +171,12 @@ function instant(where: string, field: string, value: unknown): Date | null {
   return at
 }
 
+// parseSupplyRun reads a Supply run the server sent.
 export function parseSupplyRun(where: string, weekStart: string, body: unknown): SupplyRun {
+  return parseRun(where, weekStart, body, serverDinnerStatus)
+}
+
+function parseRun(where: string, weekStart: string, body: unknown, dinnerStatus: DinnerStatus): SupplyRun {
   if (
     !isRecord(body) ||
     body.weekStart !== weekStart ||
@@ -171,25 +194,31 @@ export function parseSupplyRun(where: string, weekStart: string, body: unknown):
     sent_to_chat_at: instant(where, 'sent_to_chat_at', body.sent_to_chat_at),
     chat_send_unconfirmed_at: instant(where, 'chat_send_unconfirmed_at', body.chat_send_unconfirmed_at),
     ...parseCounts(where, body),
-    groups: body.groups.map((group) => parseGroup(where, group)),
+    groups: body.groups.map((group) => parseGroup(where, group, dinnerStatus)),
   }
 }
 
 // savedSupplyRun is the week's Supply run saved on this device, or undefined.
+// One saved by an earlier build may not know its dinners' statuses
+// (savedDinnerStatus).
 function savedSupplyRun(weekStart: string): SupplyRun | undefined {
   const saved = savedRun(weekStart)
-  return saved === undefined ? undefined : parseSupplyRun(`Saved ${SAVED_KEY}`, weekStart, saved)
+  return saved === undefined ? undefined : parseRun(`Saved ${SAVED_KEY}`, weekStart, saved, savedDinnerStatus)
 }
 
 // useSupplyRun is the Supply run of the week starting on Monday weekStart
 // (GET /api/v1/shopping/{weekStart}), or null when the week has none (404).
 // It starts from the Supply run saved on this device, if there is one, so
-// the list opens offline; the saved one is always read again.
+// the list opens offline; the saved one is always read again. It is read
+// from this device once, not on every render: while the query has no data
+// its initial data is asked for again on each render, and a failed read
+// reports a problem, which renders this again.
 export function useSupplyRun(weekStart: string) {
   const { apiRead } = useApi()
+  const [saved] = useState(() => keep(() => savedSupplyRun(weekStart)))
   return useQuery({
     queryKey: supplyRunKey(weekStart),
-    initialData: () => keep(() => savedSupplyRun(weekStart)),
+    initialData: saved,
     initialDataUpdatedAt: 0,
     queryFn: async (): Promise<SupplyRun | null> => {
       const path = supplyRunPath(weekStart)

@@ -82,7 +82,8 @@ export function savedRun(weekStart: string): unknown {
 
 // saveRun keeps the week's Supply run as the server sent it, with the latest
 // weeks'. A week with none (null) or one frozen into the Supply archive is
-// not kept: nothing on it can change.
+// not kept: nothing on it can change. Once it is kept, this device keeps
+// changes again, so the failure before it is no longer reported (cleared).
 export function saveRun(weekStart: string, run: { status: string } | null) {
   write((saved) => {
     const runs = { ...saved.runs }
@@ -91,6 +92,7 @@ export function saveRun(weekStart: string, run: { status: string } | null) {
     const latest = Object.keys(runs).sort().slice(-SAVED_WEEKS)
     return { ...saved, runs: Object.fromEntries(latest.map((week) => [week, runs[week]])) }
   })
+  cleared()
 }
 
 // queued is the toggles the server has not answered, in the order made.
@@ -141,6 +143,13 @@ export function keep<T>(action: () => T): T | undefined {
     queueMicrotask(() => listeners.forEach((listener) => listener()))
     return undefined
   }
+}
+
+// cleared stops reporting the latest failure, if there is one.
+function cleared() {
+  if (problem === null) return
+  problem = null
+  queueMicrotask(() => listeners.forEach((listener) => listener()))
 }
 
 function subscribe(listener: () => void) {

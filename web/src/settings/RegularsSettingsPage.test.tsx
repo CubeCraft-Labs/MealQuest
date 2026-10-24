@@ -6,6 +6,8 @@ import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession 
 import { GROUNDING_POLL_MS } from '../dinners/api.ts'
 import { DinnerDetailPage } from '../dinners/DinnerDetailPage.tsx'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
+import tokens from '../styles/tokens.css?raw'
+import { declaredStyle } from '../test/cssRules.ts'
 import { InDataRouter } from '../test/dataRouter.tsx'
 import { dinnerBody, type DinnerBody } from '../test/dinners.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
@@ -14,6 +16,15 @@ import { mockViewport } from '../test/matchMedia.ts'
 import { RegularsSettingsPage } from './RegularsSettingsPage.tsx'
 
 const REGULARS = '/api/v1/dinners?status=regular'
+
+// token is a design token's value as tokens.css declares it, given the
+// var() that names it.
+function token(reference: string): string {
+  const name = /^var\((--[\w-]+)\)$/.exec(reference)?.[1]
+  const value = name && new RegExp(`${name}:\\s*([^;\\s]+);`).exec(tokens)?.[1]
+  if (!value) throw new Error(`${reference} is not a token in tokens.css`)
+  return value
+}
 
 type Responder = (body: unknown) => Response | Promise<Response>
 
@@ -205,6 +216,33 @@ describe('RegularsSettingsPage', () => {
     expectMinHitArea(screen.getByRole('button', { name: 'Back to Settings' }))
   })
 
+  it("keeps the pencil's and the heart's hit boxes apart at mobile width", async () => {
+    mockViewport(390)
+    stubServer([TACOS])
+    await renderPage()
+    const pencil = screen.getByRole('button', { name: 'Edit Beef tacos' })
+    const heart = screen.getByRole('button', { name: 'Favorite Beef tacos' })
+    // Side by side in one flex row: nothing else between them.
+    expect(pencil.nextElementSibling).toBe(heart)
+    const actions = pencil.parentElement!
+    expect(declaredStyle(actions).display).toBe('inline-flex')
+    const gap = declaredStyle(actions).getPropertyValue('gap')
+    expect(gap).toMatch(/^var\(--space-\d\)$/)
+
+    // jsdom does no layout, so lay the two out from their declared styles:
+    // each button's border box is its hit box; margins place it in the row.
+    const length = (value: string) => {
+      const match = /^(-?\d+(?:\.\d+)?)px$/.exec(value)
+      if (!match) throw new Error(`${JSON.stringify(value)} is not a px length`)
+      return Number(match[1])
+    }
+    const [pencilStyle, heartStyle] = [declaredStyle(pencil), declaredStyle(heart)]
+    const pencilHitEnd = length(pencilStyle.marginLeft) + length(pencilStyle.width)
+    const heartHitStart =
+      length(pencilStyle.marginLeft) + length(pencilStyle.width) + length(pencilStyle.marginRight) + length(token(gap)) + length(heartStyle.marginLeft)
+    expect(heartHitStart - pencilHitEnd, 'space between the hit boxes').toBeGreaterThan(0)
+  })
+
   it('says so when there are no Regulars yet', async () => {
     stubServer([])
     await renderPage()
@@ -334,6 +372,36 @@ describe('RegularsSettingsPage', () => {
     expect(screen.getByRole('dialog', { name: 'Fix recipe' })).toBeInTheDocument()
     expect(path()).toHaveTextContent('/settings/regulars')
     expect(within(row('Pizza night')).queryByRole('button', { name: 'Edit Pizza night' })).not.toBeInTheDocument()
+  })
+
+  it('opens the detail of a Regular whose recipe was not found from its row, saying there is no recipe yet', async () => {
+    mockViewport(390)
+    stubServer([PIZZA], {
+      'GET /api/v1/dinners/d3': () =>
+        jsonResponse(200, {
+          ...TACOS_RECIPE,
+          id: 'd3',
+          name: 'Pizza night',
+          method: null,
+          minutes_total: null,
+          difficulty: null,
+          is_favorite: false,
+          ingredients: [],
+          steps: [],
+          source: null,
+          grounding_status: 'failed',
+          grounding_error: 'no_recipe_found',
+        }),
+    })
+    await renderPage()
+
+    openRow('Pizza night')
+    expect(path()).toHaveTextContent('/dinner/d3')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    const missing = await screen.findByRole('region', { name: 'No recipe' })
+    expect(missing).toHaveTextContent("We couldn't find a recipe for this dinner, so there are no ingredients or steps yet.")
+    expect(within(missing).getByRole('link', { name: 'Fix recipe' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { level: 2, name: 'Ingredients' })).not.toBeInTheDocument()
   })
 
   it('keeps the pencil, not the row, opening the edit sheet, and neither while it is being added', async () => {

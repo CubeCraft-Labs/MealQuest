@@ -777,6 +777,39 @@ func TestGetReadsStoredList(t *testing.T) {
 	}
 }
 
+// TestGetShowsDinnerStatus reads each group's dinner status as it is now:
+// a dinner removed from Regulars after the list was made stays on it,
+// archived.
+func TestGetShowsDinnerStatus(t *testing.T) {
+	e := newEnv(t)
+	e.dinner(t, "Beef Chili", ing{"ground beef", "1", "lb"})
+	e.dinner(t, "Pot Roast", ing{"carrots", "4", ""})
+	e.plan(t, "Beef Chili", "Pot Roast")
+	made := e.generate(t).List
+	for _, g := range made.Groups {
+		if g.DinnerStatus != dinners.StatusRegular {
+			t.Errorf("generated group %s status = %q, want regular", g.DinnerName, g.DinnerStatus)
+		}
+	}
+	if _, err := e.st.Writer.Exec(`UPDATE dinners SET status = 'archived' WHERE id = ?`, e.ids["Pot Roast"]); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := e.svc.Get(t.Context(), week)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"Beef Chili": dinners.StatusRegular, "Pot Roast": dinners.StatusArchived}
+	if len(got.Groups) != len(want) {
+		t.Fatalf("groups = %+v, want %d", got.Groups, len(want))
+	}
+	for _, g := range got.Groups {
+		if g.DinnerStatus != want[g.DinnerName] {
+			t.Errorf("group %s status = %q, want %q", g.DinnerName, g.DinnerStatus, want[g.DinnerName])
+		}
+	}
+}
+
 func TestGetWeekWithoutList(t *testing.T) {
 	e := newEnv(t)
 	if _, err := e.svc.Get(t.Context(), week); !errors.Is(err, shopping.ErrListNotFound) {

@@ -63,9 +63,20 @@ export type SupplyRunStatus = (typeof SUPPLY_RUN_STATUSES)[number]
 // and needed is false once it is marked "have it".
 export type SupplyRunItem = { id: string; name: string; qty: string | null; needed: boolean }
 
+export const SUPPLY_RUN_DINNER_STATUSES = ['suggested', 'quest_log', 'tried', 'regular', 'archived'] as const
+
+// SupplyRunDinnerStatus is a group's dinner's status now: archived once it
+// was removed from Regulars after the Supply run was made, when it has no
+// detail to open.
+export type SupplyRunDinnerStatus = (typeof SUPPLY_RUN_DINNER_STATUSES)[number]
+
 // SupplyRunGroup is the items of one plan day's dinner: date is the plan
 // day, household-local YYYY-MM-DD.
-export type SupplyRunGroup = { dinner: { id: string; name: string }; date: string; items: SupplyRunItem[] }
+export type SupplyRunGroup = {
+  dinner: { id: string; name: string; status: SupplyRunDinnerStatus }
+  date: string
+  items: SupplyRunItem[]
+}
 
 // Counts is how many of a Supply run's items are still to buy (needed) of
 // all of them (total).
@@ -122,7 +133,11 @@ function parseGroup(where: string, body: unknown): SupplyRunGroup {
     throw new Error(`${where}: response has a group that is not a dinner's items`)
   }
   return {
-    dinner: { id: body.dinner.id, name: body.dinner.name },
+    dinner: {
+      id: body.dinner.id,
+      name: body.dinner.name,
+      status: oneOf(where, 'dinner status', SUPPLY_RUN_DINNER_STATUSES, body.dinner.status),
+    },
     date: body.date,
     items: body.items.map((item) => parseItem(where, item)),
   }

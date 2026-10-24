@@ -226,6 +226,14 @@
   resize: vertical;
 }
 
+/* The pencil and heart: IconButton's 44 px hit boxes overhang their 40 px
+   footprint by 2 px a side, so the gap must exceed 4 px to keep them apart. */
+.rowActions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .actions {
   display: grid;
   gap: 10px;

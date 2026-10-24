@@ -127,6 +127,20 @@
   line-height: 1.2;
 }
 
+.dinnerLink {
+  display: inline-flex;
+  align-items: center;
+  min-width: 44px;
+  min-height: 44px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.dinnerLink:focus-visible {
+  outline: 3px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
 .day {
   flex: none;
   font-family: var(--font-body);

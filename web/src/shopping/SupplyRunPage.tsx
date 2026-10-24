@@ -75,21 +75,25 @@ function ItemRow({ item, toggles }: { item: SupplyRunItem; toggles: Toggles | nu
   )
 }
 
-// GroupCard is one dinner's items: its name in Bagel over its day, and the
-// Recipe pill to the dinner's recipe.
+// GroupCard is one dinner's items: its name in Bagel over its day. The name
+// opens the dinner's recipe, unless the dinner was archived (removed from
+// Regulars) after the Supply run was made: it has no detail to open, so its
+// name is plain text.
 function GroupCard({ group, toggles }: { group: SupplyRunGroup; toggles: Toggles | null }) {
+  const { dinner } = group
   return (
-    <section className={styles.group} aria-label={group.dinner.name}>
+    <section className={styles.group} aria-label={dinner.name}>
       <header className={styles.groupHeader}>
-        <h2 className={styles.dinner}>{group.dinner.name}</h2>
+        <h2 className={styles.dinner}>
+          {dinner.status === 'archived' ? (
+            dinner.name
+          ) : (
+            <Link to={`/dinner/${encodeURIComponent(dinner.id)}`} className={styles.dinnerLink}>
+              {dinner.name}
+            </Link>
+          )}
+        </h2>
         <span className={styles.day}>{weekdayKicker(group.date)}</span>
-        <Link
-          to={`/dinner/${encodeURIComponent(group.dinner.id)}`}
-          aria-label={`Recipe for ${group.dinner.name}`}
-          className={[buttonStyles.button, buttonStyles.outline].join(' ')}
-        >
-          Recipe
-        </Link>
       </header>
       <ul className={styles.items}>
         {group.items.map((item) => (

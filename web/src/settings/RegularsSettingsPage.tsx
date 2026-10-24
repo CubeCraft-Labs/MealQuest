@@ -330,7 +330,8 @@ type RegularRowProps = {
 }
 
 // RegularRow opens the Regular's recipe; its pencil opens the edit sheet,
-// or the fix-recipe sheet when its recipe was not found.
+// or the fix-recipe sheet when its recipe was not found. The pencil and the
+// heart sit apart, so their 44 px hit boxes never overlap.
 function RegularRow({ regular, onOpen, onEdit, onFavorite }: RegularRowProps) {
   const line = details(regular)
   const fix = regular.grounding_status === 'failed'
@@ -348,7 +349,7 @@ function RegularRow({ regular, onOpen, onEdit, onFavorite }: RegularRowProps) {
         }
         onClick={regular.pending ? undefined : onOpen}
         trailing={
-          <>
+          <span className={styles.rowActions}>
             <IconButton
               label={fix ? `Fix recipe for ${regular.name}` : `Edit ${regular.name}`}
               disabled={regular.pending}
@@ -364,7 +365,7 @@ function RegularRow({ regular, onOpen, onEdit, onFavorite }: RegularRowProps) {
             >
               <Icon icon={Heart} size="nav" className={regular.is_favorite ? styles.filled : undefined} />
             </IconButton>
-          </>
+          </span>
         }
       />
     </li>

@@ -7,8 +7,8 @@ import { createNetworkStatus, type NetworkWindow } from '../pwa/networkStatus.ts
 import { HOUSEHOLD_SETTINGS } from '../test/ApiProviders.tsx'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { mockViewport } from '../test/matchMedia.ts'
-import { RETRY_FIRST, SupplyRunSync, TOGGLE_DEADLINE } from './api.ts'
-import { SAVED_KEY } from './offline.ts'
+import { RETRY_FIRST, supplyRunKey, SupplyRunSync, TOGGLE_DEADLINE } from './api.ts'
+import { resetSavedProblems, SAVED_KEY } from './offline.ts'
 import { SupplyRunPage } from './SupplyRunPage.tsx'
 
 const THIS_WEEK = '/api/v1/shopping/2026-10-05'
@@ -182,7 +182,7 @@ function queue(): string[] {
 // openPage opens the Supply run screen in a new window, as the app does:
 // with SupplyRunSync, and with /me loaded unless the server cannot be
 // reached. leave goes to another screen of the same page, and reopen comes
-// back to the Supply run screen.
+// back to the Supply run screen; queryClient is the page's.
 async function openPage() {
   const api = createApiClient(fakeLocation('/plan/shopping'), createNetworkStatus(openWindow()), createVerifiedSession(localStorage))
   if (onLine && reachable) await api.loadMe()
@@ -198,7 +198,7 @@ async function openPage() {
     </ApiProvider>
   )
   const view = render(app(true))
-  return { ...view, leave: () => view.rerender(app(false)), reopen: () => view.rerender(app(true)) }
+  return { ...view, queryClient, leave: () => view.rerender(app(false)), reopen: () => view.rerender(app(true)) }
 }
 
 // reload ends the page open and its timers, as a reload does: a toggle it
@@ -237,6 +237,8 @@ function row(name: string) {
 }
 
 beforeEach(() => {
+  // Each test is a new page: no saved-data failure is reported yet.
+  resetSavedProblems()
   onLine = true
   reachable = true
   mockViewport(390)
@@ -691,11 +693,10 @@ describe('offline toggle queue, replay', () => {
   })
 })
 
-// These leave a saved-data failure reported, as the corrupt saved list does,
-// so they come last: the failure is the page's, and outlives a test.
 describe('Supply run saved on this device, refused', () => {
-  it('still refuses a saved Supply run whose dinner status is not one MealQuest knows', async () => {
-    const { run } = stubServer()
+  // saveRefusedRun saves this week's Supply run with a dinner status
+  // MealQuest does not know, and the schedule.
+  function saveRefusedRun(run: ReturnType<typeof stubServer>['run']) {
     const unknown = run('2026-10-05')
     unknown.groups[0]!.dinner.status = 'retired'
     const { timezone, plan_draft_dow, plan_draft_time } = HOUSEHOLD_SETTINGS
@@ -703,6 +704,29 @@ describe('Supply run saved on this device, refused', () => {
       SAVED_KEY,
       JSON.stringify({ schedule: { timezone, plan_draft_dow, plan_draft_time }, runs: { '2026-10-05': unknown }, queue: [] }),
     )
+  }
+
+  function savedWeeks(): string[] {
+    return Object.keys((JSON.parse(localStorage.getItem(SAVED_KEY)!) as { runs: Record<string, unknown> }).runs).sort()
+  }
+
+  it('keeps saying so when another week is saved while the refused week is still saved', async () => {
+    const { run } = stubServer()
+    saveRefusedRun(run)
+    onLine = false
+    const page = await openPage()
+    expect(await screen.findByText(/can't be kept on this device while offline.*dinner status "retired"/)).toBeInTheDocument()
+
+    // Next week's Supply run is read, and saved beside the refused one.
+    act(() => void page.queryClient.setQueryData(supplyRunKey('2026-10-12'), run('2026-10-12')))
+    await waitFor(() => expect(savedWeeks()).toEqual(['2026-10-05', '2026-10-12']))
+    await act(() => Promise.resolve())
+    expect(screen.getByText(/can't be kept on this device while offline.*dinner status "retired"/)).toBeInTheDocument()
+  })
+
+  it('still refuses a saved Supply run whose dinner status is not one MealQuest knows', async () => {
+    const { run } = stubServer()
+    saveRefusedRun(run)
     onLine = false
     const first = await openPage()
 
@@ -717,5 +741,41 @@ describe('Supply run saved on this device, refused', () => {
     expect(await screen.findByRole('link', { name: 'Beef tacos' })).toHaveAttribute('href', '/dinner/d0')
     await waitFor(() => expect(screen.queryByText(/can't be kept on this device/)).not.toBeInTheDocument())
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+})
+
+describe('toggle not kept on this device', () => {
+  it('says so until the toggle settles, even when a Supply run is saved meanwhile', async () => {
+    const { hold, release, waiting } = held()
+    const { run } = stubServer(undefined, hold)
+    const page = await openPage()
+    await screen.findByRole('region', { name: 'Beef tacos' })
+
+    // The saved queue cannot be written as the toggle is made: it is
+    // pending only on this page.
+    const setItem = Storage.prototype.setItem
+    let refuse = true
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
+      if (key === SAVED_KEY && refuse) {
+        refuse = false
+        throw new DOMException('The quota has been exceeded.', 'QuotaExceededError')
+      }
+      setItem.call(this, key, value)
+    })
+    fireEvent.click(checkbox('Taco seasoning'))
+    expect(await screen.findByText(/can't be kept on this device while offline.*quota has been exceeded/)).toBeInTheDocument()
+    expect(queue()).toEqual([])
+    await waitFor(() => expect(waiting()).toBe(1))
+
+    // Next week's Supply run is read and saved: the toggle is still not.
+    act(() => void page.queryClient.setQueryData(supplyRunKey('2026-10-12'), run('2026-10-12')))
+    await act(() => Promise.resolve())
+    expect(screen.getByText(/can't be kept on this device while offline.*quota has been exceeded/)).toBeInTheDocument()
+
+    // Answered, the toggle has nothing left to lose.
+    release()
+    await waitFor(() => expect(screen.queryByText(/can't be kept on this device/)).not.toBeInTheDocument())
+    expect(checkbox('Taco seasoning')).toBeChecked()
+    expect(queue()).toEqual([])
   })
 })

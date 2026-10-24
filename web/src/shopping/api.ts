@@ -21,11 +21,15 @@ import {
   keep,
   markWillSync,
   queued,
+  QUEUE_CAUSE,
+  runCause,
   SAVED_KEY,
   saveRun,
   savedRun,
   saveSchedule,
+  SCHEDULE_CAUSE,
   synced,
+  toggleCause,
   willSync,
 } from './offline.ts'
 
@@ -215,7 +219,7 @@ function savedSupplyRun(weekStart: string): SupplyRun | undefined {
 // reports a problem, which renders this again.
 export function useSupplyRun(weekStart: string) {
   const { apiRead } = useApi()
-  const [saved] = useState(() => keep(() => savedSupplyRun(weekStart)))
+  const [saved] = useState(() => keep(runCause(weekStart), () => savedSupplyRun(weekStart)))
   return useQuery({
     queryKey: supplyRunKey(weekStart),
     initialData: saved,
@@ -431,7 +435,7 @@ function toggleOptions(
       for (const earlier of cache.findAll({ mutationKey, predicate: (m) => m.state.status !== 'pending' })) {
         if ((earlier.state.variables as KeyedToggle).id === id) cache.remove(earlier)
       }
-      keep(() => dequeue(settled))
+      keep(toggleCause(settled), () => dequeue(settled))
       synced(settled)
     },
   }
@@ -492,7 +496,7 @@ export function useToggles(weekStart: string): Toggles {
     failed: failed === undefined ? null : { toggle: { id: failed.toggle.id, needed: failed.toggle.needed }, error: failed.error! },
     toggle: ({ id, needed }) => {
       const queuedToggle = { key: crypto.randomUUID(), weekStart, id, needed }
-      keep(() => enqueue(queuedToggle))
+      keep(toggleCause(queuedToggle.key), () => enqueue(queuedToggle))
       mutate({ key: queuedToggle.key, id, needed })
       renderAgain()
     },
@@ -524,9 +528,9 @@ export function useSupplyRunSync() {
       const [scope, week] = event.query.queryKey
       const data: unknown = event.query.state.data
       if (scope === 'shopping' && typeof week === 'string' && event.query.queryKey.length === 2) {
-        keep(() => saveRun(week, data as SupplyRun | null))
+        keep(runCause(week), () => saveRun(week, data as SupplyRun | null))
       } else if (scope === HOUSEHOLD_SETTINGS_KEY[0] && week === HOUSEHOLD_SETTINGS_KEY[1]) {
-        keep(() => saveSchedule(data as HouseholdSettings))
+        keep(SCHEDULE_CAUSE, () => saveSchedule(data as HouseholdSettings))
       }
     })
     const pending = new Set(
@@ -535,11 +539,11 @@ export function useSupplyRunSync() {
         .findAll({ mutationKey: ['shopping'], predicate: (m) => m.state.status === 'pending' })
         .map((m) => (m.state.variables as KeyedToggle).key),
     )
-    for (const { key, weekStart, id, needed } of keep(queued) ?? []) {
+    for (const { key, weekStart, id, needed } of keep(QUEUE_CAUSE, queued) ?? []) {
       if (pending.has(key)) continue
       const runKey = supplyRunKey(weekStart)
       if (queryClient.getQueryData(runKey) === undefined) {
-        const saved = keep(() => savedSupplyRun(weekStart))
+        const saved = keep(runCause(weekStart), () => savedSupplyRun(weekStart))
         if (saved !== undefined) queryClient.setQueryData(runKey, saved, { updatedAt: 0 })
       }
       // A refusal is the mutation's state, which the Supply run screen shows.

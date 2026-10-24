@@ -23,7 +23,7 @@ import {
   type SupplyRunItem,
   type Toggles,
 } from './api.ts'
-import { keep, savedSchedule, useSavedProblem } from './offline.ts'
+import { keep, SCHEDULE_CAUSE, savedSchedule, useSavedProblem } from './offline.ts'
 import styles from './SupplyRunPage.module.css'
 
 // SUPPLY_ARCHIVE is the Supply archive screen.
@@ -309,7 +309,7 @@ function ChosenSupplyRun({ readOnly }: { readOnly: boolean }) {
   const chosen = params.get(WEEK_PARAM)
   // Read once, not on every render: a failed read reports a problem, which
   // renders this again.
-  const [saved] = useState(() => keep(savedSchedule))
+  const [saved] = useState(() => keep(SCHEDULE_CAUSE, savedSchedule))
 
   if (chosen !== null && !isMonday(chosen)) {
     return <ErrorBanner>{`“${chosen}” is not the Monday of a week, as YYYY-MM-DD.`}</ErrorBanner>

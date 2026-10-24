@@ -3,6 +3,8 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -387,7 +389,7 @@ func TestListDinnersFiltersByStatus(t *testing.T) {
 	if _, err := st.Writer.ExecContext(ctx, `UPDATE dinners SET photo_id = 'photo1', grounding_status = 'grounded' WHERE id = ?`, tacos); err != nil {
 		t.Fatal(err)
 	}
-	if rec, _ := callDinners(t, router, http.MethodDelete, dinnersPath+"/"+gone, ""); rec.Code != http.StatusOK {
+	if rec, _ := callDinners(t, router, http.MethodDelete, dinnersPath+"/"+gone+"?removal="+newRemoval(), ""); rec.Code != http.StatusOK {
 		t.Fatalf("DELETE = %d", rec.Code)
 	}
 
@@ -583,7 +585,7 @@ func TestDeleteDinnerArchives(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rec, body := callDinners(t, router, http.MethodDelete, dinnersPath+"/"+id, "")
+	rec, body := callDinners(t, router, http.MethodDelete, dinnersPath+"/"+id+"?removal="+newRemoval(), "")
 	if rec.Code != http.StatusOK || body["status"] != "archived" || body["updated_by"] != testSession.Subject {
 		t.Fatalf("DELETE = %d %v", rec.Code, body)
 	}
@@ -600,9 +602,75 @@ func TestDeleteDinnerArchives(t *testing.T) {
 	// An archived name may be added again.
 	createDinner(t, router, `{"name":"Shepherds Pie"}`)
 
-	rec, body = callDinners(t, router, http.MethodDelete, dinnersPath+"/nope", "")
+	rec, body = callDinners(t, router, http.MethodDelete, dinnersPath+"/nope?removal="+newRemoval(), "")
 	if rec.Code != http.StatusNotFound || errorCode(body) != "not_found" {
 		t.Errorf("unknown id = %d %v, want 404", rec.Code, body)
+	}
+}
+
+// newRemoval is a new removal id, as the PWA makes with crypto.randomUUID.
+func newRemoval() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// TestDinnerRemovalWithdraw: a removal is made or withdrawn for good. One
+// withdrawn before it arrives is 409 and archives nothing; one made is
+// answered archived when withdrawn, and sending it again succeeds.
+func TestDinnerRemovalWithdraw(t *testing.T) {
+	t.Parallel()
+	router, st := newDinnersRouter(t)
+	id := createDinner(t, router, `{"name":"Shepherd's Pie"}`)
+	withdraw := func(id, removal string) (int, map[string]any) {
+		rec, body := callDinners(t, router, http.MethodPost, dinnersPath+"/"+id+"/removals/"+removal+"/withdraw", "")
+		return rec.Code, body
+	}
+	status := func() string {
+		var s string
+		if err := st.Reader.QueryRow(`SELECT status FROM dinners WHERE id = ?`, id).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+
+	late := newRemoval()
+	if code, body := withdraw(id, late); code != http.StatusOK || body["outcome"] != "withdrawn" {
+		t.Fatalf("withdraw = %d %v, want 200 withdrawn", code, body)
+	}
+	rec, body := callDinners(t, router, http.MethodDelete, dinnersPath+"/"+id+"?removal="+late, "")
+	if rec.Code != http.StatusConflict || errorCode(body) != "removal_withdrawn" {
+		t.Fatalf("withdrawn removal arriving = %d %v, want 409 removal_withdrawn", rec.Code, body)
+	}
+	if s := status(); s != "regular" {
+		t.Fatalf("status after a withdrawn removal = %s, want regular", s)
+	}
+
+	made := newRemoval()
+	for range 2 {
+		if rec, body := callDinners(t, router, http.MethodDelete, dinnersPath+"/"+id+"?removal="+made, ""); rec.Code != http.StatusOK || body["status"] != "archived" {
+			t.Fatalf("DELETE = %d %v", rec.Code, body)
+		}
+	}
+	if code, body := withdraw(id, made); code != http.StatusOK || body["outcome"] != "archived" {
+		t.Errorf("withdraw a removal made = %d %v, want 200 archived", code, body)
+	}
+	if s := status(); s != "archived" {
+		t.Errorf("status = %s, want archived", s)
+	}
+
+	for _, target := range []string{dinnersPath + "/" + id, dinnersPath + "/" + id + "?removal=nope"} {
+		if rec, body := callDinners(t, router, http.MethodDelete, target, ""); rec.Code != http.StatusBadRequest || errorCode(body) != "invalid_dinner" {
+			t.Errorf("DELETE %s = %d %v, want 400 invalid_dinner", target, rec.Code, body)
+		}
+	}
+	if code, body := withdraw(id, "nope"); code != http.StatusBadRequest || errorCode(body) != "invalid_dinner" {
+		t.Errorf("withdraw removal nope = %d %v, want 400 invalid_dinner", code, body)
+	}
+	if code, body := withdraw("nope", newRemoval()); code != http.StatusNotFound || errorCode(body) != "not_found" {
+		t.Errorf("withdraw for an unknown dinner = %d %v, want 404", code, body)
 	}
 }
 
@@ -650,7 +718,7 @@ func TestDinnerWritesRequireCSRF(t *testing.T) {
 	writes := []struct{ method, target, body string }{
 		{http.MethodPost, dinnersPath, `{"name":"Lasagna"}`},
 		{http.MethodPatch, dinnersPath + "/" + id, `{"method":"oven"}`},
-		{http.MethodDelete, dinnersPath + "/" + id, ""},
+		{http.MethodDelete, dinnersPath + "/" + id + "?removal=" + newRemoval(), ""},
 		{http.MethodPost, dinnersPath + "/" + id + "/favorite", ""},
 	}
 	for _, w := range writes {

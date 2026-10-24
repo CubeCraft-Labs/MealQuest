@@ -49,6 +49,7 @@ type Querier interface {
 	CountRotationReviews(ctx context.Context, dinnerID string) (int64, error)
 	CreateAIRun(ctx context.Context, arg CreateAIRunParams) error
 	CreateDinner(ctx context.Context, arg CreateDinnerParams) (Dinner, error)
+	CreateDinnerRemoval(ctx context.Context, arg CreateDinnerRemovalParams) error
 	CreateJob(ctx context.Context, arg CreateJobParams) error
 	// A recipe the household typed in. Its source_url is a mealquest:manual:
 	// URN rather than a page, so it never matches a fetched page.
@@ -127,6 +128,8 @@ type Querier interface {
 	// Returns sql.ErrNoRows until the row exists.
 	GetChatSettings(ctx context.Context) (ChatSetting, error)
 	GetDinner(ctx context.Context, id string) (Dinner, error)
+	// An unknown removal returns sql.ErrNoRows.
+	GetDinnerRemoval(ctx context.Context, id string) (DinnerRemoval, error)
 	// The reason of each suggestion of dinner_id that can have created it,
 	// none for a dinner no suggestion created. A suggestion is only ever
 	// created with a new dinner, and declining one archives its dinner, so a

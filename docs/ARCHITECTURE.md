@@ -202,8 +202,14 @@ automatic** (D-021).
   (deduplicated against the other unarchived dinners), `method`
   (`stovetop` / `oven` / `crockpot` / `grill` / `other`), `minutes_total`
   (1–1440) and `difficulty` (`easy` / `medium` / `hard`); invalid values
-  are 400 `invalid_dinner` and change nothing. `DELETE /api/v1/dinners/{id}`
-  sets status `archived` and keeps the row; `POST
+  are 400 `invalid_dinner` and change nothing. `DELETE /api/v1/dinners/{id}?removal=<uuid>`
+  sets status `archived` and keeps the row, recording the removal (an id
+  the PWA chose, a lower-case UUID) as made in the same transaction in
+  `dinner_removals`; sending it again succeeds. `POST
+  /api/v1/dinners/{id}/removals/{removal}/withdraw` settles a removal no
+  answer settled for good, answering `{outcome}`: `archived` when it was
+  made, otherwise `withdrawn`, recorded so that the removal, however late
+  it arrives, is 409 `removal_withdrawn` and archives nothing. `POST
   /api/v1/dinners/{id}/favorite` toggles `is_favorite`. Every write records
   the session's subject as `updated_by`; an unknown id is 404.
   `GET /api/v1/dinners/{id}` returns the dinner with its recipe, read in

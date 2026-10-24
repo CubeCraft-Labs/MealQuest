@@ -546,24 +546,50 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 	return fromRow(row), nil
 }
 
-// Archive sets dinner id's status to archived, recording updatedBy. The row
-// is kept, so its name still counts for Side quest dedupe. A
+// Archive sets dinner id's status to archived for removal (a RemovalID the
+// PWA chose), recording updatedBy. The row is kept, so its name still
+// counts for Side quest dedupe. The removal is recorded as made with the
+// archive, in one transaction, so it is made or withdrawn (WithdrawRemoval)
+// for good: archiving again for a removal already made succeeds, and for a
+// withdrawn one is ErrRemovalWithdrawn and archives nothing. A
 // KindGroundDinner job running for it is stopped, and its candidates no
 // longer ground it.
-func (s *Service) Archive(ctx context.Context, id, updatedBy string) (Dinner, error) {
+func (s *Service) Archive(ctx context.Context, id, removal, updatedBy string) (Dinner, error) {
 	if updatedBy == "" {
 		return Dinner{}, errors.New("dinners: archive: no member to record as updated_by")
 	}
-	row, err := db.New(s.st.Writer).ArchiveDinner(ctx, db.ArchiveDinnerParams{
-		ID:        id,
-		UpdatedBy: sql.NullString{String: updatedBy, Valid: true},
-		UpdatedAt: store.Now().String(),
-	})
-	if errors.Is(err, sql.ErrNoRows) {
-		return Dinner{}, ErrNotFound
+	if err := checkRemoval(removal); err != nil {
+		return Dinner{}, err
 	}
+	var row db.Dinner
+	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		q := db.New(tx)
+		recorded, found, err := getRemoval(ctx, q, id, removal)
+		if err != nil {
+			return err
+		}
+		if found && recorded.Outcome == RemovalWithdrawn {
+			return ErrRemovalWithdrawn
+		}
+		now := store.Now().String()
+		row, err = q.ArchiveDinner(ctx, db.ArchiveDinnerParams{
+			ID:        id,
+			UpdatedBy: sql.NullString{String: updatedBy, Valid: true},
+			UpdatedAt: now,
+		})
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("dinners: archive %s: %w", id, err)
+		}
+		if found {
+			return nil
+		}
+		return createRemoval(ctx, q, id, removal, RemovalArchived, updatedBy, now)
+	})
 	if err != nil {
-		return Dinner{}, fmt.Errorf("dinners: archive %s: %w", id, err)
+		return Dinner{}, err
 	}
 	s.stopGroundings(row.ID, math.MaxInt64)
 	s.clearOffers(row.ID, math.MaxInt64)

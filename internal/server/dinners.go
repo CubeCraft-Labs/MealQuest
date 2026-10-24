@@ -187,19 +187,43 @@ func postDinnerGround(logger *slog.Logger, svc *dinners.Service) http.HandlerFun
 	}
 }
 
-// deleteDinner archives a dinner; the row is never deleted.
+// deleteDinner archives a dinner for the removal named by the removal
+// query parameter (dinners.Service.Archive); the row is never deleted.
 func deleteDinner(logger *slog.Logger, svc *dinners.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		actor, ok := actorOrFail(w, r, logger)
 		if !ok {
 			return
 		}
-		d, err := svc.Archive(r.Context(), chi.URLParam(r, "id"), actor.Subject)
+		d, err := svc.Archive(r.Context(), chi.URLParam(r, "id"), r.URL.Query().Get("removal"), actor.Subject)
 		if err != nil {
 			writeDinnerError(w, r, logger, "archive dinner", err)
 			return
 		}
 		writeJSON(w, r, logger, http.StatusOK, d)
+	}
+}
+
+// removalOutcome is the POST /dinners/{id}/removals/{removal}/withdraw
+// answer: archived or withdrawn.
+type removalOutcome struct {
+	Outcome string `json:"outcome"`
+}
+
+// postRemovalWithdraw settles a dinner's removal for good
+// (dinners.Service.WithdrawRemoval) and answers whether it was made.
+func postRemovalWithdraw(logger *slog.Logger, svc *dinners.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		actor, ok := actorOrFail(w, r, logger)
+		if !ok {
+			return
+		}
+		outcome, err := svc.WithdrawRemoval(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "removal"), actor.Subject)
+		if err != nil {
+			writeDinnerError(w, r, logger, "withdraw dinner removal", err)
+			return
+		}
+		writeJSON(w, r, logger, http.StatusOK, removalOutcome{Outcome: outcome})
 	}
 }
 
@@ -270,6 +294,8 @@ func writeDinnerError(w http.ResponseWriter, r *http.Request, logger *slog.Logge
 		// dinner are logged.
 		logger.ErrorContext(r.Context(), action, "reason", "candidates_failed", "dinner_id", chi.URLParam(r, "id"))
 		writeError(w, r, logger, http.StatusInternalServerError, "internal", "internal error")
+	case errors.Is(err, dinners.ErrRemovalWithdrawn):
+		writeError(w, r, logger, http.StatusConflict, "removal_withdrawn", "the removal was withdrawn")
 	case errors.Is(err, dinners.ErrArchived):
 		writeError(w, r, logger, http.StatusConflict, "dinner_archived", "the dinner is archived")
 	case errors.Is(err, dinners.ErrGroundConflict):

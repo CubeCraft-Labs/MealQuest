@@ -200,7 +200,7 @@ func TestGetDinnerNotFound(t *testing.T) {
 	t.Parallel()
 	e := newDinnersEnv(t)
 	id := createDinner(t, e.h, `{"name":"Old favourite"}`)
-	if rec, _ := callDinners(t, e.h, http.MethodDelete, dinnersPath+"/"+id, ""); rec.Code != http.StatusOK {
+	if rec, _ := callDinners(t, e.h, http.MethodDelete, dinnersPath+"/"+id+"?removal="+newRemoval(), ""); rec.Code != http.StatusOK {
 		t.Fatalf("DELETE = %d: %s", rec.Code, rec.Body)
 	}
 	for _, target := range []string{id, store.NewID()} {

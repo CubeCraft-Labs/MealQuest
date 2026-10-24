@@ -468,7 +468,7 @@ func TestPostGroundArchived(t *testing.T) {
 	t.Parallel()
 	e := newDinnersEnv(t)
 	id := createDinner(t, e.h, `{"name":"Family chili"}`)
-	if rec, _ := callDinners(t, e.h, http.MethodDelete, dinnersPath+"/"+id, ""); rec.Code != http.StatusOK {
+	if rec, _ := callDinners(t, e.h, http.MethodDelete, dinnersPath+"/"+id+"?removal="+newRemoval(), ""); rec.Code != http.StatusOK {
 		t.Fatalf("DELETE = %d: %s", rec.Code, rec.Body)
 	}
 	rec, body := callDinners(t, e.h, http.MethodPost, dinnersPath+"/"+id+"/ground",

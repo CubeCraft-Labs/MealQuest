@@ -14,6 +14,7 @@ import { ARCHIVED, archivedKey, resetArchived } from '../dinners/archived.ts'
 import { cacheFallbackHeader } from '../sw/routes.ts'
 import { DECK_KEY } from './api.ts'
 import { DiscoverPage } from './DiscoverPage.tsx'
+import { removalKey, withdrawKey } from '../test/removals.ts'
 
 const DECK = '/api/v1/suggestions/deck'
 const QUEST_LOG = '/api/v1/dinners?status=quest_log'
@@ -72,7 +73,7 @@ function stubServer(deck: unknown[], responders: Record<string, Responder> = {},
     ...responders,
   }
   server.fetchMock = vi.fn<typeof fetch>((input, init) => {
-    const key = `${init?.method ?? 'GET'} ${String(input)}`
+    const key = removalKey(`${init?.method ?? 'GET'} ${String(input)}`)
     const respond = Object.hasOwn(all, key) ? all[key] : undefined
     if (respond === undefined) throw new Error(`unexpected fetch: ${key}`)
     return Promise.resolve(respond())
@@ -85,7 +86,7 @@ function stubServer(deck: unknown[], responders: Record<string, Responder> = {},
 function sent(fetchMock: Mock<typeof fetch>) {
   return fetchMock.mock.calls
     .filter(([, init]) => (init?.method ?? 'GET') !== 'GET')
-    .map(([input, init]) => `${init?.method} ${String(input)}`)
+    .map(([input, init]) => removalKey(`${init?.method} ${String(input)}`))
 }
 
 // deckReads counts the GET /api/v1/suggestions/deck requests.
@@ -1013,7 +1014,11 @@ describe('DiscoverPage', () => {
     })
 
     it('keeps a dinner whose removal the server refuses, saying why', async () => {
-      const server = stubQuestLog([PAD_THAI, GUMBO], { 'DELETE /api/v1/dinners/q1': () => errorResponse(500, 'internal') })
+      // Refused, the removal is withdrawn, so it is never made.
+      const server = stubQuestLog([PAD_THAI, GUMBO], {
+        'DELETE /api/v1/dinners/q1': () => errorResponse(500, 'internal'),
+        [withdrawKey('q1')]: () => jsonResponse(200, { outcome: 'withdrawn' }),
+      })
       await renderPage()
       const sheet = await openSheet(2)
 
@@ -1021,7 +1026,7 @@ describe('DiscoverPage', () => {
       const confirm = screen.getByRole('dialog', { name: 'Remove Pad thai?' })
       fireEvent.click(within(confirm).getByRole('button', { name: 'Remove' }))
       expect(await within(confirm).findByRole('alert')).toHaveTextContent("Couldn't remove it. internal message")
-      expect(sent(server.fetchMock)).toEqual(['DELETE /api/v1/dinners/q1'])
+      expect(sent(server.fetchMock)).toEqual(['DELETE /api/v1/dinners/q1', withdrawKey('q1')])
       expect(rows(sheet)).toHaveLength(2)
       expect(screen.getByRole('button', { name: 'Quest log · 2' })).toBeInTheDocument()
 

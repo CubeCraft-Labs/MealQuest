@@ -72,6 +72,14 @@ type Dinner struct {
 	GroundingRevision int64
 }
 
+type DinnerRemoval struct {
+	ID        string
+	DinnerID  string
+	Outcome   string
+	CreatedBy string
+	CreatedAt string
+}
+
 type HouseholdSetting struct {
 	ID                    int64
 	Timezone              string

@@ -10,6 +10,7 @@ import { InDataRouter } from '../test/dataRouter.tsx'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { expectMinHitArea, hitArea } from '../test/hitArea.ts'
 import styles from './Onboarding.module.css'
+import { removalKey } from '../test/removals.ts'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -23,14 +24,16 @@ type Held = { method: string; path: string; body: unknown; answer: (response: Re
 // stubDinnersServer stands in for the server a household meets on first
 // run: signed in, onboarding not finished and the given Regulars. GET answers at once;
 // each POST and DELETE is held in `held` until the test answers it, so the
-// test sees the optimistic list first. Once failReads is set, every GET of
+// test sees the optimistic list first; each withdrawal of a removal is
+// answered withdrawn at once and listed in `withdrawals`. Once failReads is set, every GET of
 // the Regulars fails, so the test sees the list the client keeps by itself.
 function stubDinnersServer(regulars: Dinner[] = []) {
   const held: Held[] = []
+  const withdrawals: string[] = []
   const reads = { fail: false }
   const fetchMock: Mock<typeof fetch> = vi.fn<typeof fetch>((input, init) => {
-    const path = String(input)
     const method = init?.method ?? 'GET'
+    const path = removalKey(`${method} ${String(input)}`).slice(method.length + 1)
     if (method === 'GET' && path === '/api/v1/me') return Promise.resolve(jsonResponse(200, ME))
     if (method === 'GET' && path === '/api/v1/settings/household') {
       return Promise.resolve(jsonResponse(200, { ...HOUSEHOLD_SETTINGS, onboarding_completed_at: null }))
@@ -38,6 +41,12 @@ function stubDinnersServer(regulars: Dinner[] = []) {
     if (method === 'GET' && path === '/api/v1/dinners?status=regular') {
       if (reads.fail) return Promise.resolve(errorResponse(500, 'internal'))
       return Promise.resolve(jsonResponse(200, { dinners: regulars }))
+    }
+    // A removal answered any way but made is withdrawn at once: it is
+    // never made.
+    if (`${method} ${path}`.endsWith('/removals/{removal}/withdraw')) {
+      withdrawals.push(path)
+      return Promise.resolve(jsonResponse(200, { outcome: 'withdrawn' }))
     }
     if ((method === 'POST' && path === '/api/v1/dinners') || (method === 'DELETE' && path.startsWith('/api/v1/dinners/'))) {
       return new Promise<Response>((resolve) => {
@@ -47,7 +56,7 @@ function stubDinnersServer(regulars: Dinner[] = []) {
     throw new Error(`unexpected fetch: ${method} ${path}`)
   })
   vi.stubGlobal('fetch', fetchMock)
-  return { fetchMock, held, regulars, reads }
+  return { fetchMock, held, withdrawals, regulars, reads }
 }
 
 // created answers a held POST /api/v1/dinners as the server does, adding the
@@ -306,6 +315,7 @@ describe('onboarding step 2 (mock 1h)', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not remove Beef tacos: internal message')
     expect(regularNames()).toEqual(['Beef tacos', 'Pizza night'])
+    expect(server.withdrawals).toEqual(['/api/v1/dinners/d1/removals/{removal}/withdraw'])
   })
 
   it('puts a refused removal back and says why while another removal is still unanswered', async () => {

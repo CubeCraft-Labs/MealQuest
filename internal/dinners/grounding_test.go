@@ -568,7 +568,7 @@ func TestArchiveWhilePendingStopsGrounding(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := e.svc.Archive(t.Context(), c.ID, member); err != nil {
+		if _, err := e.svc.Archive(t.Context(), c.ID, newRemoval(), member); err != nil {
 			t.Fatal(err)
 		}
 		e.start(t)
@@ -592,7 +592,7 @@ func TestArchiveWhilePendingStopsGrounding(t *testing.T) {
 			t.Fatal(err)
 		}
 		e.waitQuery(t, "Chicken curry")
-		if _, err := e.svc.Archive(t.Context(), c.ID, member); err != nil {
+		if _, err := e.svc.Archive(t.Context(), c.ID, newRemoval(), member); err != nil {
 			t.Fatal(err)
 		}
 		// The job ends while its search is still held: archiving stopped it.
@@ -841,7 +841,7 @@ func TestGroundingOrArchivingClearsCandidates(t *testing.T) {
 			}
 		}, false},
 		{"archive", func(t *testing.T, e *env, id, _ string) {
-			if _, err := e.svc.Archive(t.Context(), id, member); err != nil {
+			if _, err := e.svc.Archive(t.Context(), id, newRemoval(), member); err != nil {
 				t.Fatal(err)
 			}
 		}, true},
@@ -1107,7 +1107,7 @@ func TestCandidatesRunningWhenCleared(t *testing.T) {
 			}
 		}, false},
 		{"archive", func(t *testing.T, e *env, id string) {
-			if _, err := e.svc.Archive(t.Context(), id, member); err != nil {
+			if _, err := e.svc.Archive(t.Context(), id, newRemoval(), member); err != nil {
 				t.Fatal(err)
 			}
 		}, true},
@@ -1468,7 +1468,7 @@ func TestRestartKeepsArchivedPendingDinner(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.waitQuery(t, "Chicken curry")
-	if _, err := e.svc.Archive(t.Context(), c.ID, member); err != nil {
+	if _, err := e.svc.Archive(t.Context(), c.ID, newRemoval(), member); err != nil {
 		t.Fatal(err)
 	}
 	job := e.waitJob(t, *c.GroundingJobID)
@@ -1644,7 +1644,7 @@ func TestFixInFlightWhenDinnerChanges(t *testing.T) {
 			return row.Name == "Easy Grandma's stew" && row.GroundingStatus == dinners.GroundingFailed && !row.RecipeID.Valid
 		}},
 		{"archived", func(t *testing.T, e *env, id string) {
-			if _, err := e.svc.Archive(t.Context(), id, member); err != nil {
+			if _, err := e.svc.Archive(t.Context(), id, newRemoval(), member); err != nil {
 				t.Fatal(err)
 			}
 		}, dinners.ErrArchived, func(row db.Dinner) bool {
@@ -1786,7 +1786,7 @@ func TestFixArchivedDinner(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
 	id := failedDinner(t, e, "Grandma's stew")
-	if _, err := e.svc.Archive(t.Context(), id, member); err != nil {
+	if _, err := e.svc.Archive(t.Context(), id, newRemoval(), member); err != nil {
 		t.Fatal(err)
 	}
 	before := e.dinner(t, id)

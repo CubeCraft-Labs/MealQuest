@@ -1,8 +1,8 @@
 import { useIsMutating, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
-import { archiveDinner, checkRemovals, knownArchived, useArchived, type SendRemoval } from './archived.ts'
+import { archiveDinner, checkRemovals, knownArchived, useArchived, type RemovalOutcome, type Removals } from './archived.ts'
 import type { DinnerDetail } from './detail.ts'
 
 export const DINNERS_PATH = '/api/v1/dinners'
@@ -269,12 +269,33 @@ export function useAddRegular() {
   })
 }
 
-// useSendRemoval sends a dinner's removal (DELETE /api/v1/dinners/{id}),
-// which the server archives. A non-GET never reaches the service worker's
-// cache, so only the server answers it.
-function useSendRemoval(): SendRemoval {
+// parseRemovalOutcome is the server's answer to a withdrawal; any other
+// body is an error.
+function parseRemovalOutcome(body: unknown): RemovalOutcome {
+  if (!isRecord(body) || (body.outcome !== 'archived' && body.outcome !== 'withdrawn')) {
+    throw new Error(`POST ${DINNERS_PATH}/{id}/removals/{removal}/withdraw: response is not an outcome`)
+  }
+  return body.outcome
+}
+
+// useRemovals sends a dinner's removal (DELETE
+// /api/v1/dinners/{id}?removal={removal}), which the server archives, and
+// withdraws one (POST /api/v1/dinners/{id}/removals/{removal}/withdraw). A
+// non-GET never reaches the service worker's cache, so only the server
+// answers them.
+function useRemovals(): Removals {
   const { apiFetch } = useApi()
-  return useCallback((id: string) => apiFetch<unknown>(dinnerPath(id), { method: 'DELETE' }), [apiFetch])
+  return useMemo(
+    () => ({
+      send: (id: string, removal: string) =>
+        apiFetch<unknown>(`${dinnerPath(id)}?removal=${encodeURIComponent(removal)}`, { method: 'DELETE' }),
+      withdraw: async (id: string, removal: string) =>
+        parseRemovalOutcome(
+          await apiFetch<unknown>(`${dinnerPath(id)}/removals/${encodeURIComponent(removal)}/withdraw`, { method: 'POST' }),
+        ),
+    }),
+    [apiFetch],
+  )
 }
 
 // useArchiveDinner removes a dinner — from Regulars or the Quest log — which
@@ -282,25 +303,25 @@ function useSendRemoval(): SendRemoval {
 // answered before — in flight, cached or saved — shows it with a recipe to
 // open (archiveDinner).
 export function useArchiveDinner() {
-  const send = useSendRemoval()
-  return useCallback((id: string) => archiveDinner(id, send), [send])
+  const removals = useRemovals()
+  return useCallback((id: string) => archiveDinner(id, removals), [removals])
 }
 
-// useRemovalCheck sends again each removal no answer settled
+// useRemovalCheck sends again each removal the server did not settle
 // (checkRemovals) when the app starts and each time the server can be
 // reached again.
 export function useRemovalCheck() {
   const { network } = useApi()
-  const send = useSendRemoval()
+  const removals = useRemovals()
   useEffect(() => {
     let offline = network.offline()
-    if (!offline) void checkRemovals(send)
+    if (!offline) void checkRemovals(removals)
     return network.subscribe(() => {
       const now = network.offline()
-      if (offline && !now) void checkRemovals(send)
+      if (offline && !now) void checkRemovals(removals)
       offline = now
     })
-  }, [network, send])
+  }, [network, removals])
 }
 
 // RemovalCheck runs useRemovalCheck for the whole app.

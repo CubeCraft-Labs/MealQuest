@@ -245,7 +245,8 @@ type Querier interface {
 	ListRecentPassedNames(ctx context.Context, limit int64) ([]string, error)
 	ListRecipeIngredients(ctx context.Context, recipeID string) ([]RecipeIngredient, error)
 	ListRecipeSteps(ctx context.Context, recipeID string) ([]RecipeStep, error)
-	// The groups of list list_id with their dinner's name, in list order.
+	// The groups of list list_id with their dinner's name and status, in list
+	// order. A group may keep a dinner archived since the list was made.
 	ListShoppingGroupDinners(ctx context.Context, listID string) ([]ListShoppingGroupDinnersRow, error)
 	// The groups of list list_id, in list order.
 	ListShoppingGroups(ctx context.Context, listID string) ([]ShoppingGroup, error)

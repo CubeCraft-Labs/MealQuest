@@ -1,12 +1,14 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
+import { DinnerDetailPage } from '../dinners/DinnerDetailPage.tsx'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
 import { HOUSEHOLD_SETTINGS } from '../test/ApiProviders.tsx'
 import { declaredStyle } from '../test/cssRules.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
+import { expectMinHitArea } from '../test/hitArea.ts'
 import { mockViewport } from '../test/matchMedia.ts'
 import buttonStyles from '../ui/Button.module.css'
 import { sentAt, SupplyRunPage } from './SupplyRunPage.tsx'
@@ -20,9 +22,9 @@ type Item = { id: string; name: string; qty: string | null; needed: boolean }
 
 // The week of Oct 5's Supply run, as mock 1l starts it: Monday's tacos and
 // Wednesday's tikka masala, each with one item the household has.
-const GROUPS: { dinner: { id: string; name: string }; date: string; day: string; items: Item[] }[] = [
+const GROUPS: { dinner: { id: string; name: string; status: string }; date: string; day: string; items: Item[] }[] = [
   {
-    dinner: { id: 'd0', name: 'Beef tacos' },
+    dinner: { id: 'd0', name: 'Beef tacos', status: 'regular' },
     date: '2026-10-05',
     day: 'Monday',
     items: [
@@ -32,7 +34,7 @@ const GROUPS: { dinner: { id: string; name: string }; date: string; day: string;
     ],
   },
   {
-    dinner: { id: 'd2', name: 'Crock pot tikka masala' },
+    dinner: { id: 'd2', name: 'Crock pot tikka masala', status: 'regular' },
     date: '2026-10-07',
     day: 'Wednesday',
     items: [
@@ -97,8 +99,14 @@ function writes(fetchMock: Mock<typeof fetch>) {
     .map(([input, init]) => `${init!.method} ${String(input)} ${String(init?.body)}`)
 }
 
+// Where shows the path the router is at.
+function Where() {
+  return <output aria-label="Path">{useLocation().pathname}</output>
+}
+
 // renderPage loads /me (for the CSRF token every write needs) and renders
-// the Supply run at path.
+// the Supply run at path, routed beside the dinner detail screen a card
+// opens.
 async function renderPage(path = '/plan/shopping') {
   const api = createApiClient(fakeLocation('/plan/shopping'), createNetworkStatus(window), createVerifiedSession(localStorage))
   await api.loadMe()
@@ -106,7 +114,11 @@ async function renderPage(path = '/plan/shopping') {
     <ApiProvider client={api}>
       <QueryClientProvider client={createQueryClient()}>
         <MemoryRouter initialEntries={[path]}>
-          <SupplyRunPage />
+          <Routes>
+            <Route path="/dinner/:id" element={<DinnerDetailPage />} />
+            <Route path="*" element={<SupplyRunPage />} />
+          </Routes>
+          <Where />
         </MemoryRouter>
       </QueryClientProvider>
     </ApiProvider>,
@@ -164,6 +176,114 @@ describe('SupplyRunPage', () => {
     expect(declaredStyle(name).fontSize).toBe('16px')
     expect(declaredStyle(within(tacos).getByText('MON')).fontSize).toBe('11px')
     expect(within(screen.getByRole('region', { name: 'Crock pot tikka masala' })).getByText('WED')).toBeInTheDocument()
+  })
+
+  it("opens each dinner's recipe, its ingredients and steps, from its name", async () => {
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, supplyRun()),
+      'GET /api/v1/dinners/d2': () =>
+        jsonResponse(200, {
+          id: 'd2',
+          name: 'Crock pot tikka masala',
+          status: 'regular',
+          origin: 'regular',
+          method: 'crockpot',
+          minutes_total: 360,
+          difficulty: 'easy',
+          cuisine: null,
+          is_favorite: false,
+          photo_urls: null,
+          ingredients: [
+            { name: 'Chicken thighs', qty: '2', unit: 'lb', note: null, raw_text: '2 lb chicken thighs' },
+            { name: 'Tikka masala paste', qty: '1', unit: 'jar', note: null, raw_text: '1 jar tikka masala paste' },
+          ],
+          steps: ['Put everything in the crock pot.', 'Cook on low for 6 hours.'],
+          source: null,
+          grounding_status: 'manual',
+          grounding_error: null,
+          why_picked: null,
+        }),
+    })
+    await renderPage()
+
+    const tacos = await screen.findByRole('region', { name: 'Beef tacos' })
+    // The dinner's name is the card's one way to its recipe: no Recipe pill.
+    expect(within(tacos).getAllByRole('link')).toHaveLength(1)
+    const tacosName = within(within(tacos).getByRole('heading', { level: 2, name: 'Beef tacos' })).getByRole('link', { name: 'Beef tacos' })
+    expect(tacosName).toHaveAttribute('href', '/dinner/d0')
+    expect(declaredStyle(tacosName).color).toBe('inherit')
+    expect(declaredStyle(tacosName).textDecoration).toBe('none')
+    expectMinHitArea(tacosName)
+    expect(screen.queryByRole('link', { name: /Recipe/ })).not.toBeInTheDocument()
+
+    const tikka = screen.getByRole('region', { name: 'Crock pot tikka masala' })
+    fireEvent.click(within(tikka).getByRole('link', { name: 'Crock pot tikka masala' }))
+    expect(screen.getByRole('status', { name: 'Path' })).toHaveTextContent('/dinner/d2')
+    expect(await screen.findByRole('heading', { level: 2, name: 'Ingredients' })).toBeInTheDocument()
+    const [ingredients, steps] = screen.getAllByRole('list')
+    expect(within(ingredients!).getAllByRole('listitem').map((item) => item.firstElementChild!.textContent)).toEqual([
+      'Chicken thighs',
+      'Tikka masala paste',
+    ])
+    expect(screen.getByRole('heading', { level: 2, name: 'Steps' })).toBeInTheDocument()
+    expect(within(steps!).getAllByRole('listitem').map((step) => step.textContent)).toEqual([
+      '1Put everything in the crock pot.',
+      '2Cook on low for 6 hours.',
+    ])
+  })
+
+  it('keeps an item toggle on the card, not opening the recipe', async () => {
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, supplyRun()),
+      [`PATCH ${ITEM('i1')}`]: () => jsonResponse(200, { id: 'i1', needed: false, needed_count: 3, total_count: 6 }),
+    })
+    await renderPage()
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Ground beef' }))
+    await waitFor(() => expect(writes(fetchMock)).toEqual([`PATCH ${ITEM('i1')} {"needed":false}`]))
+    expect(checkbox('Ground beef')).not.toBeChecked()
+    expect(screen.getByRole('status', { name: 'Path' })).toHaveTextContent('/plan/shopping')
+  })
+
+  it("links a frozen Supply run's dinner names to their recipes too", async () => {
+    stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, supplyRun({ status: 'archived' })) })
+    await renderPage()
+
+    const tacos = await screen.findByRole('region', { name: 'Beef tacos' })
+    expect(within(tacos).getByRole('link', { name: 'Beef tacos' })).toHaveAttribute('href', '/dinner/d0')
+  })
+
+  it('shows a dinner removed from Regulars since by name only, its card still working', async () => {
+    const archivedTacos = { ...GROUPS[0]!, dinner: { ...GROUPS[0]!.dinner, status: 'archived' } }
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, supplyRun({ groups: [archivedTacos, GROUPS[1]] })),
+      [`PATCH ${ITEM('i1')}`]: () => jsonResponse(200, { id: 'i1', needed: false, needed_count: 3, total_count: 6 }),
+    })
+    await renderPage()
+
+    const tacos = await screen.findByRole('region', { name: 'Beef tacos' })
+    expect(within(tacos).getByRole('heading', { level: 2, name: 'Beef tacos' })).toBeInTheDocument()
+    expect(within(tacos).queryByRole('link')).not.toBeInTheDocument()
+    expect(within(screen.getByRole('region', { name: 'Crock pot tikka masala' })).getByRole('link', { name: 'Crock pot tikka masala' })).toHaveAttribute(
+      'href',
+      '/dinner/d2',
+    )
+
+    fireEvent.click(within(tacos).getByText('Beef tacos'))
+    expect(screen.getByRole('status', { name: 'Path' })).toHaveTextContent('/plan/shopping')
+    fireEvent.click(within(tacos).getByRole('checkbox', { name: 'Ground beef' }))
+    await waitFor(() => expect(writes(fetchMock)).toEqual([`PATCH ${ITEM('i1')} {"needed":false}`]))
+    expect(checkbox('Ground beef')).not.toBeChecked()
+    expect(screen.getByRole('status', { name: 'Path' })).toHaveTextContent('/plan/shopping')
+  })
+
+  it('refuses a Supply run whose dinner status is unknown', async () => {
+    const unknown = { ...GROUPS[0]!, dinner: { ...GROUPS[0]!.dinner, status: 'retired' } }
+    stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, supplyRun({ groups: [unknown, GROUPS[1]] })) })
+    await renderPage()
+
+    await screen.findByRole('alert')
+    expect(screen.queryByRole('region', { name: 'Beef tacos' })).not.toBeInTheDocument()
   })
 
   it('checks the items to buy; one the household has is unchecked, struck through and "have it"', async () => {

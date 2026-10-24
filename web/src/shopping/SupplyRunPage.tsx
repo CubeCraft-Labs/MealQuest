@@ -23,7 +23,7 @@ import {
   type SupplyRunItem,
   type Toggles,
 } from './api.ts'
-import { keep, savedSchedule, useSavedProblem } from './offline.ts'
+import { keep, SCHEDULE_CAUSE, savedSchedule, useSavedProblem } from './offline.ts'
 import styles from './SupplyRunPage.module.css'
 
 // SUPPLY_ARCHIVE is the Supply archive screen.
@@ -75,12 +75,25 @@ function ItemRow({ item, toggles }: { item: SupplyRunItem; toggles: Toggles | nu
   )
 }
 
-// GroupCard is one dinner's items: its name in Bagel over its day.
+// GroupCard is one dinner's items: its name in Bagel over its day. The name
+// opens the dinner's recipe, unless the dinner was archived (removed from
+// Regulars) after the Supply run was made — it has no detail to open — or
+// its status is not known yet (a Supply run saved by an earlier build, until
+// it is read again): then its name is plain text.
 function GroupCard({ group, toggles }: { group: SupplyRunGroup; toggles: Toggles | null }) {
+  const { dinner } = group
   return (
-    <section className={styles.group} aria-label={group.dinner.name}>
+    <section className={styles.group} aria-label={dinner.name}>
       <header className={styles.groupHeader}>
-        <h2 className={styles.dinner}>{group.dinner.name}</h2>
+        <h2 className={styles.dinner}>
+          {dinner.status === null || dinner.status === 'archived' ? (
+            dinner.name
+          ) : (
+            <Link to={`/dinner/${encodeURIComponent(dinner.id)}`} className={styles.dinnerLink}>
+              {dinner.name}
+            </Link>
+          )}
+        </h2>
         <span className={styles.day}>{weekdayKicker(group.date)}</span>
       </header>
       <ul className={styles.items}>
@@ -296,7 +309,7 @@ function ChosenSupplyRun({ readOnly }: { readOnly: boolean }) {
   const chosen = params.get(WEEK_PARAM)
   // Read once, not on every render: a failed read reports a problem, which
   // renders this again.
-  const [saved] = useState(() => keep(savedSchedule))
+  const [saved] = useState(() => keep(SCHEDULE_CAUSE, savedSchedule))
 
   if (chosen !== null && !isMonday(chosen)) {
     return <ErrorBanner>{`“${chosen}” is not the Monday of a week, as YYYY-MM-DD.`}</ErrorBanner>

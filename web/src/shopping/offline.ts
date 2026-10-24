@@ -70,8 +70,11 @@ export function savedSchedule(): Schedule | null {
   return read().schedule
 }
 
+// saveSchedule keeps the household's schedule. Once it is kept, a failure to
+// read or keep it before is no longer reported (repaired).
 export function saveSchedule({ timezone, plan_draft_dow, plan_draft_time }: Schedule) {
   write((saved) => ({ ...saved, schedule: { timezone, plan_draft_dow, plan_draft_time } }))
+  repaired(SCHEDULE_CAUSE)
 }
 
 // savedRun is the week's Supply run as the server last sent it, unparsed, or
@@ -82,7 +85,9 @@ export function savedRun(weekStart: string): unknown {
 
 // saveRun keeps the week's Supply run as the server sent it, with the latest
 // weeks'. A week with none (null) or one frozen into the Supply archive is
-// not kept: nothing on it can change.
+// not kept: nothing on it can change. Once it is kept, a failure to read or
+// keep that week's Supply run before is no longer reported (repaired); a
+// failure of any other week's still is.
 export function saveRun(weekStart: string, run: { status: string } | null) {
   write((saved) => {
     const runs = { ...saved.runs }
@@ -91,6 +96,7 @@ export function saveRun(weekStart: string, run: { status: string } | null) {
     const latest = Object.keys(runs).sort().slice(-SAVED_WEEKS)
     return { ...saved, runs: Object.fromEntries(latest.map((week) => [week, runs[week]])) }
   })
+  repaired(runCause(weekStart))
 }
 
 // queued is the toggles the server has not answered, in the order made.
@@ -102,8 +108,12 @@ export function enqueue(toggle: QueuedToggle) {
   write((saved) => ({ ...saved, queue: [...saved.queue, toggle] }))
 }
 
+// dequeue takes a settled toggle out of the saved queue. Once it is out, the
+// saved queue holds what is still to sync, so a failure to keep the toggle in
+// it before is no longer reported (repaired).
 export function dequeue(key: string) {
   write((saved) => ({ ...saved, queue: saved.queue.filter((toggle) => toggle.key !== key) }))
+  repaired(toggleCause(key))
 }
 
 // The keys of the toggles that will sync: made, or waiting, while the server
@@ -125,22 +135,59 @@ export function synced(key: string) {
   syncing.delete(key)
 }
 
-// The latest failure to read or write the saved Supply run, which the Supply
-// run screen shows: a toggle that cannot be kept may be lost on a reload.
-let problem: Error | null = null
+// A cause names what a failed read or write of the saved Supply run left
+// wrong, and so what repairs it: the saved schedule (saveSchedule), a week's
+// saved Supply run (saveRun of that week), a toggle that may be lost on a
+// reload because the saved queue does not hold it (dequeue once it settles),
+// or the saved queue read to replay, which nothing on this page repairs.
+export const SCHEDULE_CAUSE = 'schedule'
+export const QUEUE_CAUSE = 'queue'
+
+export function runCause(weekStart: string) {
+  return `run ${weekStart}`
+}
+
+export function toggleCause(key: string) {
+  return `toggle ${key}`
+}
+
+// The failures to read or write the saved Supply run not repaired yet, by
+// cause, the latest last; the Supply run screen shows the latest.
+const problems = new Map<string, Error>()
+let latest: Error | null = null
 const listeners = new Set<() => void>()
+
+// changed takes the latest failure afresh; listeners hear of it after the
+// current render.
+function changed() {
+  latest = [...problems.values()].at(-1) ?? null
+  queueMicrotask(() => listeners.forEach((listener) => listener()))
+}
 
 // keep runs one read or write of the saved Supply run, and returns its
 // result, or undefined when it failed: the failure is reported to the Supply
-// run screen. Listeners hear of it after the current render.
-export function keep<T>(action: () => T): T | undefined {
+// run screen, under its cause, until that cause is repaired.
+export function keep<T>(cause: string, action: () => T): T | undefined {
   try {
     return action()
   } catch (error) {
-    problem = error instanceof Error ? error : new Error(String(error))
-    queueMicrotask(() => listeners.forEach((listener) => listener()))
+    problems.delete(cause)
+    problems.set(cause, error instanceof Error ? error : new Error(String(error)))
+    changed()
     return undefined
   }
+}
+
+// repaired stops reporting the failure of cause, if there is one.
+function repaired(cause: string) {
+  if (problems.delete(cause)) changed()
+}
+
+// resetSavedProblems forgets every failure reported, as a new page starts:
+// each test starts with it.
+export function resetSavedProblems() {
+  problems.clear()
+  latest = null
 }
 
 function subscribe(listener: () => void) {
@@ -149,7 +196,7 @@ function subscribe(listener: () => void) {
 }
 
 // useSavedProblem is the latest failure to read or write the saved Supply
-// run, or null.
+// run not repaired yet, or null.
 export function useSavedProblem(): Error | null {
-  return useSyncExternalStore(subscribe, () => problem)
+  return useSyncExternalStore(subscribe, () => latest)
 }

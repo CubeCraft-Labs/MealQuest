@@ -1,4 +1,4 @@
-import { ChevronLeft, Heart, Plus } from 'lucide-react'
+import { ChevronLeft, Heart, Pencil, Plus } from 'lucide-react'
 import { useId, useState, type FormEvent, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import {
@@ -57,7 +57,7 @@ const LINK = /^https?:\/\//i
 // Settings · Regular dinners: the household's Regulars, each with its photo,
 // method and minutes, favorite heart and whether its recipe was found. The
 // field at the top adds one by name, or by pasted recipe link with a name
-// the household gives it; tapping one
+// the household gives it; tapping one opens its recipe, and its pencil
 // edits or removes it, or fixes its recipe when none was found. Find
 // missing photos searches again for every dinner left without one.
 export function RegularsSettingsPage() {
@@ -83,6 +83,7 @@ export function RegularsSettingsPage() {
 type Open = { sheet: 'edit' | 'fix'; id: string } | null
 
 function RegularsManager() {
+  const navigate = useNavigate()
   const regulars = useRegulars()
   const add = useAddRegular()
   const remove = useRemoveRegular()
@@ -182,7 +183,8 @@ function RegularsManager() {
                   <RegularRow
                     key={regular.id}
                     regular={regular}
-                    onOpen={() =>
+                    onOpen={() => void navigate(`/dinner/${encodeURIComponent(regular.id)}`)}
+                    onEdit={() =>
                       setOpen({ sheet: regular.grounding_status === 'failed' ? 'fix' : 'edit', id: regular.id })
                     }
                     onFavorite={() => onFavorite(regular)}
@@ -323,11 +325,16 @@ function FindMissingPhotos({ backfill }: { backfill: PhotoBackfill }) {
 type RegularRowProps = {
   regular: Regular
   onOpen: () => void
+  onEdit: () => void
   onFavorite: () => void
 }
 
-function RegularRow({ regular, onOpen, onFavorite }: RegularRowProps) {
+// RegularRow opens the Regular's recipe; its pencil opens the edit sheet,
+// or the fix-recipe sheet when its recipe was not found. The pencil and the
+// heart sit apart, so their 44 px hit boxes never overlap.
+function RegularRow({ regular, onOpen, onEdit, onFavorite }: RegularRowProps) {
   const line = details(regular)
+  const fix = regular.grounding_status === 'failed'
   return (
     <li className={styles.item} aria-busy={regular.pending}>
       <ListRow
@@ -342,14 +349,23 @@ function RegularRow({ regular, onOpen, onFavorite }: RegularRowProps) {
         }
         onClick={regular.pending ? undefined : onOpen}
         trailing={
-          <IconButton
-            label={`Favorite ${regular.name}`}
-            aria-pressed={regular.is_favorite}
-            disabled={regular.pending}
-            onClick={onFavorite}
-          >
-            <Icon icon={Heart} size="nav" className={regular.is_favorite ? styles.filled : undefined} />
-          </IconButton>
+          <span className={styles.rowActions}>
+            <IconButton
+              label={fix ? `Fix recipe for ${regular.name}` : `Edit ${regular.name}`}
+              disabled={regular.pending}
+              onClick={onEdit}
+            >
+              <Icon icon={Pencil} size="nav" />
+            </IconButton>
+            <IconButton
+              label={`Favorite ${regular.name}`}
+              aria-pressed={regular.is_favorite}
+              disabled={regular.pending}
+              onClick={onFavorite}
+            >
+              <Icon icon={Heart} size="nav" className={regular.is_favorite ? styles.filled : undefined} />
+            </IconButton>
+          </span>
         }
       />
     </li>

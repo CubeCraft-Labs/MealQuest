@@ -1,7 +1,9 @@
 import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useCallback } from 'react'
 import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
-import { DIFFICULTIES, DINNERS_PATH, dinnerPath, oneOf, parseDinner, photoId, type Difficulty, type Regular } from '../dinners/api.ts'
+import { DIFFICULTIES, DINNERS_PATH, oneOf, parseDinner, photoId, useArchiveDinner, type Difficulty, type Regular } from '../dinners/api.ts'
+import { knownArchived, useArchived } from '../dinners/archived.ts'
 
 export const SUGGESTIONS_PATH = '/api/v1/suggestions'
 export const DECK_PATH = `${SUGGESTIONS_PATH}/deck`
@@ -118,9 +120,12 @@ export function useDeck() {
 
 // useQuestLog is the dinners in the Quest log, in the server's order (GET
 // /api/v1/dinners?status=quest_log). The server leaves out a dinner already
-// on the plan for the current week or a later one: it is scheduled.
+// on the plan for the current week or a later one: it is scheduled. A
+// dinner removed on this device (archived.ts) is left out too, whatever the
+// read — one the service worker saved before, say — said.
 export function useQuestLog() {
   const { apiFetch } = useApi()
+  const archived = useArchived()
   return useQuery({
     queryKey: QUEST_LOG_KEY,
     queryFn: async (): Promise<QuestLogDinner[]> => {
@@ -132,19 +137,25 @@ export function useQuestLog() {
         return { id, name, photo_id, difficulty, method, minutes_total }
       })
     },
+    select: useCallback(
+      (dinners: QuestLogDinner[]) => {
+        const ids = knownArchived(archived)
+        return dinners.filter((dinner) => !ids.has(dinner.id))
+      },
+      [archived],
+    ),
   })
 }
 
-// useRemoveFromQuestLog archives a Quest-log dinner (DELETE
-// /api/v1/dinners/{id}). Once the server has archived it, it leaves the
-// Quest log, and the Quest log is read again.
+// useRemoveFromQuestLog removes a Quest-log dinner, which the server
+// archives (useArchiveDinner), so no read answered before shows it again.
+// Once the server has archived it, it leaves the Quest log, and the Quest
+// log is read again.
 export function useRemoveFromQuestLog() {
-  const { apiFetch } = useApi()
   const queryClient = useQueryClient()
+  const archive = useArchiveDinner()
   return useMutation({
-    mutationFn: async (dinner: QuestLogDinner) => {
-      await apiFetch<unknown>(dinnerPath(dinner.id), { method: 'DELETE' })
-    },
+    mutationFn: (dinner: QuestLogDinner) => archive(dinner.id),
     onSuccess: async (_data, dinner) => {
       queryClient.setQueryData<QuestLogDinner[]>(QUEST_LOG_KEY, (dinners) => dinners?.filter((d) => d.id !== dinner.id))
       await queryClient.invalidateQueries({ queryKey: QUEST_LOG_KEY })

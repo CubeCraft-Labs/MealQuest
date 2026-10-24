@@ -4,7 +4,6 @@ import { useNavigate } from 'react-router'
 import {
   DIFFICULTIES,
   METHODS,
-  unsavedArchive,
   useAddRegular,
   useEditRegular,
   useGroundRegular,
@@ -116,7 +115,7 @@ function RegularsManager() {
 
   function onRemove(regular: Regular) {
     setOpen(null)
-    track(`remove:${regular.id}`, `remove ${regular.name}`, remove.mutateAsync(regular), unsavedArchive(regular.name))
+    track(`remove:${regular.id}`, `remove ${regular.name}`, remove.mutateAsync(regular))
   }
 
   function onFavorite(regular: Regular) {

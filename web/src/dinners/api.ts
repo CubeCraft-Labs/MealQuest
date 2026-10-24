@@ -1,8 +1,8 @@
 import { useIsMutating, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { useCallback } from 'react'
+import { useCallback, useEffect } from 'react'
 import { useApi } from '../api/index.ts'
-import { isRecord } from '../api/errors.ts'
-import { knownArchived, recordArchived, useArchived } from './archived.ts'
+import { ApiError, isRecord } from '../api/errors.ts'
+import { archiveDinner, checkRemovals, knownArchived, useArchived, type AskDinner } from './archived.ts'
 import type { DinnerDetail } from './detail.ts'
 
 export const DINNERS_PATH = '/api/v1/dinners'
@@ -269,27 +269,79 @@ export function useAddRegular() {
   })
 }
 
-// useRemoveRegular archives a Regular (DELETE /api/v1/dinners/{id}). It
-// leaves the list at once and is put back in its place if the server
-// refuses. Once the server has archived it, it is recorded archived on this
-// device (archived.ts), so no read answered before — in flight, cached or
-// saved — shows it with a recipe to open. The removal answers why the record
-// could not be saved on this device (see unsavedArchive), or null.
-export function useRemoveRegular() {
+// useAskDinner asks the server whether a dinner is still a dinner (GET
+// /api/v1/dinners/{id}) or archived (404). The service worker's saved copy
+// says nothing about now: it rejects, as does any other failure.
+function useAskDinner(): AskDinner {
+  const { apiRead } = useApi()
+  return useCallback(
+    async (id: string) => {
+      const path = dinnerPath(id)
+      try {
+        const read = await apiRead<unknown>(path)
+        if (read.cached) throw new Error(`GET ${path}: answered from the copy saved on this device, not by the server`)
+        return true
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return false
+        throw error
+      }
+    },
+    [apiRead],
+  )
+}
+
+// useArchiveDinner removes a dinner — from Regulars or the Quest log — which
+// the server archives (DELETE /api/v1/dinners/{id}), recording it on this
+// device first so no read answered before — in flight, cached or saved —
+// shows it with a recipe to open (archiveDinner).
+export function useArchiveDinner() {
   const { apiFetch } = useApi()
+  const ask = useAskDinner()
+  return useCallback(
+    (id: string) => archiveDinner(id, () => apiFetch<unknown>(dinnerPath(id), { method: 'DELETE' }), ask),
+    [apiFetch, ask],
+  )
+}
+
+// useRemovalCheck asks the server about each dinner whose removal no answer
+// settled (checkRemovals) when the app starts and each time the server can
+// be reached again.
+export function useRemovalCheck() {
+  const { network } = useApi()
+  const ask = useAskDinner()
+  useEffect(() => {
+    let offline = network.offline()
+    if (!offline) void checkRemovals(ask)
+    return network.subscribe(() => {
+      const now = network.offline()
+      if (offline && !now) void checkRemovals(ask)
+      offline = now
+    })
+  }, [network, ask])
+}
+
+// RemovalCheck runs useRemovalCheck for the whole app.
+export function RemovalCheck(): null {
+  useRemovalCheck()
+  return null
+}
+
+// useRemoveRegular removes a Regular, which the server archives
+// (useArchiveDinner). It leaves the list at once and is put back in its
+// place if the removal fails; one the server may have made stays hidden
+// (UnconfirmedRemovalError).
+export function useRemoveRegular() {
   const queryClient = useQueryClient()
+  const archive = useArchiveDinner()
   return useMutation({
     mutationKey: REGULARS_MUTATION_KEY,
-    mutationFn: async (regular: Regular): Promise<Error | null> => {
-      await apiFetch<unknown>(dinnerPath(regular.id), { method: 'DELETE' })
-      return recordArchived(regular.id)
-    },
+    mutationFn: (regular: Regular) => archive(regular.id),
     onMutate: async (regular) => {
       await changeOptimistically(queryClient, (list) =>
         list.map((r): CachedRegular => (r.id === regular.id ? { ...r, removing: true } : r)),
       )
     },
-    onSuccess: (_unsaved, regular) => {
+    onSuccess: (_data, regular) => {
       setRegulars(queryClient, (list) => list.filter((r) => r.id !== regular.id))
     },
     onError: (_error, regular) => {
@@ -297,16 +349,6 @@ export function useRemoveRegular() {
     },
     onSettled: () => settle(queryClient),
   })
-}
-
-// unsavedArchive says what a removal of the Regular named name that the
-// server made left wrong on this device: unsaved is why the device could not
-// save that it is archived (useRemoveRegular), or null when nothing is.
-export function unsavedArchive(name: string) {
-  return (unsaved: Error | null): string | null =>
-    unsaved === null
-      ? null
-      : `Removed ${name} from Regulars, but this device could not save that it is archived, so after a reload a page saved before may link to its recipe again: ${unsaved.message}`
 }
 
 // useEditRegular saves changes to a Regular (PATCH /api/v1/dinners/{id})

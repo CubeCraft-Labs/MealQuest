@@ -11,7 +11,7 @@ import { useCallback, useEffect, useReducer, useState, useSyncExternalStore } fr
 import { ApiError, useApi, type ApiClient } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { meQueryKey } from '../AuthBootstrap.tsx'
-import { knownArchived, useArchived } from '../dinners/archived.ts'
+import { archivedNow, knownArchived, onArchived, useArchived } from '../dinners/archived.ts'
 import { oneOf, PLANNED_DINNER_STATUSES, type PlannedDinnerStatus } from '../dinners/api.ts'
 import { settleUnmadePushes } from '../plan/api.ts'
 import type { NetworkStatus } from '../pwa/networkStatus.ts'
@@ -27,10 +27,12 @@ import {
   SAVED_KEY,
   saveRun,
   savedRun,
+  savedWeeks,
   saveSchedule,
   SCHEDULE_CAUSE,
   synced,
   toggleCause,
+  WEEKS_CAUSE,
   willSync,
 } from './offline.ts'
 
@@ -222,9 +224,8 @@ export function showArchived(run: SupplyRun | null, archived: ReadonlySet<string
 // the list opens offline; the saved one is always read again. It is read
 // from this device once, not on every render: while the query has no data
 // its initial data is asked for again on each render, and a failed read
-// reports a problem, which renders this again. Each dinner removed from
-// Regulars on this device shows archived (archived.ts), on the saved one as
-// on every read.
+// reports a problem, which renders this again. Each dinner removed on this
+// device shows archived (archived.ts), on the saved one as on every read.
 export function useSupplyRun(weekStart: string) {
   const { apiRead } = useApi()
   const [saved] = useState(() => keep(runCause(weekStart), () => savedSupplyRun(weekStart)))
@@ -469,8 +470,8 @@ function toggleOptions(
 // before it stops being pending. Making a toggle renders again at once, so
 // the checkbox clicked never shows its old state; useSupplyRun and
 // useMutationState render again on every later change. Like useSupplyRun's,
-// the Supply run shows each dinner removed from Regulars on this device
-// archived (showArchived).
+// the Supply run shows each dinner removed on this device archived
+// (showArchived).
 //
 // A failed toggle stays failed, and shown, until a later toggle of its item
 // supersedes it, such as its Retry: a toggle of another item succeeding
@@ -532,6 +533,10 @@ export function useToggles(weekStart: string): Toggles {
 // A replayed toggle's answer is written over the Supply run saved, so the
 // week's Supply run is cached from it first; it is still read again
 // (updatedAt 0) when the Supply run screen opens.
+//
+// Each Supply run is saved with the dinners removed on this device shown
+// archived (showArchived), and once the server archives one, every Supply
+// run saved and cached is saved again with it archived (onArchived).
 export function useSupplyRunSync() {
   const api = useApi()
   const queryClient = useQueryClient()
@@ -541,9 +546,26 @@ export function useSupplyRunSync() {
       const [scope, week] = event.query.queryKey
       const data: unknown = event.query.state.data
       if (scope === 'shopping' && typeof week === 'string' && event.query.queryKey.length === 2) {
-        keep(runCause(week), () => saveRun(week, data as SupplyRun | null))
+        keep(runCause(week), () => saveRun(week, showArchived(data as SupplyRun | null, knownArchived(archivedNow()))))
       } else if (scope === HOUSEHOLD_SETTINGS_KEY[0] && week === HOUSEHOLD_SETTINGS_KEY[1]) {
         keep(SCHEDULE_CAUSE, () => saveSchedule(data as HouseholdSettings))
+      }
+    })
+    // A dinner the server archived, here or in another tab, shows archived
+    // on each Supply run saved on this device and each one cached, so what
+    // is saved says so too.
+    const stopArchived = onArchived((id) => {
+      const ids = new Set([id])
+      for (const week of keep(WEEKS_CAUSE, savedWeeks) ?? []) {
+        keep(runCause(week), () => {
+          const run = savedSupplyRun(week)
+          if (run !== undefined) saveRun(week, showArchived(run, ids))
+        })
+      }
+      for (const query of queryClient.getQueryCache().findAll({ queryKey: ['shopping'] })) {
+        const [, week] = query.queryKey
+        if (typeof week !== 'string' || query.queryKey.length !== 2 || query.state.data === undefined) continue
+        queryClient.setQueryData<SupplyRun | null>(query.queryKey, (run) => showArchived(run ?? null, ids))
       }
     })
     const pending = new Set(
@@ -562,7 +584,10 @@ export function useSupplyRunSync() {
       // A refusal is the mutation's state, which the Supply run screen shows.
       new MutationObserver(queryClient, toggleOptions(weekStart, api, queryClient)).mutate({ key, id, needed }).catch(() => {})
     }
-    return stop
+    return () => {
+      stop()
+      stopArchived()
+    }
   }, [api, queryClient])
 }
 

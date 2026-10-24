@@ -10,6 +10,8 @@ import { dinnerBody, type DinnerBody } from '../test/dinners.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
 import { mockViewport } from '../test/matchMedia.ts'
+import { ARCHIVED, archivedKey, resetArchived } from '../dinners/archived.ts'
+import { cacheFallbackHeader } from '../sw/routes.ts'
 import { DECK_KEY } from './api.ts'
 import { DiscoverPage } from './DiscoverPage.tsx'
 
@@ -866,6 +868,43 @@ describe('DiscoverPage', () => {
         expect(server.fetchMock.mock.calls.filter(([input]) => String(input) === QUEST_LOG)).toHaveLength(2),
       )
       expect(screen.getByRole('button', { name: 'Quest log · 1' })).toBeInTheDocument()
+    })
+
+    it('keeps a removed dinner out of the Quest log, with no way to its recipe, when a read the worker saved before still has it', async () => {
+      // Once Pad thai is archived, the server cannot be reached and the
+      // service worker answers each Quest log read with what it saved before
+      // the removal, Pad thai still in it.
+      let removed = false
+      const savedBefore = () =>
+        new Response(JSON.stringify({ dinners: [PAD_THAI, GUMBO] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json', [cacheFallbackHeader]: '1' },
+        })
+      const server = stubQuestLog([PAD_THAI, GUMBO], {
+        [`GET ${QUEST_LOG}`]: () => (removed ? savedBefore() : jsonResponse(200, { dinners: [PAD_THAI, GUMBO] })),
+        'DELETE /api/v1/dinners/q1': () => {
+          removed = true
+          return jsonResponse(200, { ...PAD_THAI, status: 'archived' })
+        },
+      })
+      const page = await renderPage()
+      const sheet = await openSheet(2)
+
+      fireEvent.click(within(sheet).getByRole('button', { name: 'Remove Pad thai' }))
+      fireEvent.click(within(screen.getByRole('dialog', { name: 'Remove Pad thai?' })).getByRole('button', { name: 'Remove' }))
+      await waitFor(() => expect(server.fetchMock.mock.calls.filter(([input]) => String(input) === QUEST_LOG)).toHaveLength(2))
+      expect(localStorage.getItem(archivedKey('q1'))).toBe(ARCHIVED)
+      expect(names(sheet)).toEqual(['Shrimp gumbo'])
+      expect(within(sheet).queryByRole('button', { name: /^Pad thai/ })).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Quest log · 1' })).toBeInTheDocument()
+
+      // Nor does a new page, from the record saved on this device.
+      page.unmount()
+      resetArchived()
+      await renderPage()
+      const reopened = await openSheet(1)
+      expect(names(reopened)).toEqual(['Shrimp gumbo'])
+      expect(within(reopened).queryByRole('button', { name: /^Pad thai/ })).not.toBeInTheDocument()
     })
 
     it('keeps focus in the open Quest log after a removal: on the next row, the one before the last, then the sheet', async () => {

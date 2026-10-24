@@ -131,7 +131,7 @@ function isZone(zone: string): boolean {
 // useHome is the Home screen's summary (GET /api/v1/home). Home is read
 // again at the household's next local midnight, counted from each read, so
 // a Home left open does not keep yesterday's date and dinner. Tonight's
-// dinner shows archived once it was removed from Regulars on this device
+// dinner shows archived once it was removed on this device
 // (archived.ts).
 export function useHome() {
   const { apiFetch } = useApi()

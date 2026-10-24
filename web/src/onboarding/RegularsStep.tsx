@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { Plus } from 'lucide-react'
 import { useNavigate } from 'react-router'
-import { unsavedArchive, useAddRegular, useRegulars, useRemoveRegular, type Regular } from '../dinners/api.ts'
+import { useAddRegular, useRegulars, useRemoveRegular, type Regular } from '../dinners/api.ts'
 import { similarNames } from '../dinners/names.ts'
 import { useRefusals } from '../dinners/useRefusals.ts'
 import { Button } from '../ui/Button.tsx'
@@ -52,7 +52,7 @@ export function RegularsStep() {
   }
 
   function removeRegular(regular: Regular) {
-    track(`remove:${regular.id}`, `remove ${regular.name}`, remove.mutateAsync(regular), unsavedArchive(regular.name))
+    track(`remove:${regular.id}`, `remove ${regular.name}`, remove.mutateAsync(regular))
   }
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {

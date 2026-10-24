@@ -200,7 +200,7 @@ export function parseDraftResult(where: string, weekStart: string, body: unknown
 
 // usePlan is the plan of the week starting on Monday weekStart (GET
 // /api/v1/plans/{weekStart}), or null when the week has none (404), with
-// each dinner removed from Regulars on this device shown archived
+// each dinner removed on this device shown archived
 // (archived.ts).
 export function usePlan(weekStart: string) {
   const { apiRead } = useApi()

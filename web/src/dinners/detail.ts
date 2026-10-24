@@ -153,7 +153,7 @@ export function parseDinnerDetail(where: string, body: unknown, cached: boolean)
 // saved copy, which would only answer the same again, and a saved pending
 // copy is read once more when the connection comes back. Polling stops on
 // unmount. An unknown or archived dinner fails with the API's 404, and one
-// removed from Regulars on this device (archived.ts) with
+// removed on this device (archived.ts) with
 // ArchivedDinnerError, whatever a read saved before says. It runs
 // even while the browser reports offline, so the copy the service worker
 // saved is shown, or the read fails, instead of waiting for the network.

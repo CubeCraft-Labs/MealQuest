@@ -4,7 +4,7 @@ import { Link, Route, Routes, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { GROUNDING_POLL_MS } from '../dinners/api.ts'
-import { ARCHIVED_KEY, resetArchived } from '../dinners/archived.ts'
+import { ARCHIVED, archivedKey, REMOVING, resetArchived } from '../dinners/archived.ts'
 import { DinnerDetailPage } from '../dinners/DinnerDetailPage.tsx'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
 import { SupplyRunSync } from '../shopping/api.ts'
@@ -74,6 +74,7 @@ function reads(fetchMock: Mock<typeof fetch>) {
 afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
   Reflect.deleteProperty(window, 'matchMedia')
 })
 
@@ -585,10 +586,11 @@ describe('RegularsSettingsPage', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
       await waitFor(() => expect(rows()).toHaveLength(1))
 
-      // Recorded archived on this device; the Supply run saved here is kept
-      // as the server sent it.
-      expect(JSON.parse(localStorage.getItem(ARCHIVED_KEY)!)).toEqual(['d1'])
-      expect(savedStatus('d1')).toBe('regular')
+      // Recorded archived on this device, and the Supply run saved here
+      // saved again with it archived.
+      expect(localStorage.getItem(archivedKey('d1'))).toBe(ARCHIVED)
+      expect(savedStatus('d1')).toBe('archived')
+      expect(savedStatus('d4')).toBe('regular')
 
       // Back on the Supply run, from the cache, still fresh and not read
       // again: the card is plain while its items still toggle.
@@ -611,9 +613,57 @@ describe('RegularsSettingsPage', () => {
       expect(within(card('Pot roast')).getByRole('link', { name: 'Pot roast' })).toHaveAttribute('href', '/dinner/d4')
       await waitFor(() => expect(runReads).toBe(2))
     })
+
+    it('shows no recipe link after a reload, from the Supply run saved before, when the device could not mark it archived', async () => {
+      mockViewport(390)
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date('2026-10-07T16:00:00Z'))
+      let runReads = 0
+      const server = stubServer([TACOS, ROAST], {
+        'GET /api/v1/settings/household': () => jsonResponse(200, HOUSEHOLD_SETTINGS),
+        [`GET ${SUPPLY_RUN}`]: () => (++runReads === 1 ? jsonResponse(200, run) : new Promise<Response>(() => undefined)),
+        'DELETE /api/v1/dinners/d1': () => {
+          server.regulars = [ROAST]
+          return jsonResponse(200, { ...TACOS, status: 'archived' })
+        },
+      })
+      // The device saves the removal before it is sent, then refuses to save
+      // that the server archived it.
+      const setItem = Storage.prototype.setItem
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
+        if (key === archivedKey('d1') && value === ARCHIVED) throw new Error('The quota has been exceeded.')
+        setItem.call(this, key, value)
+      })
+      const app = await renderApp(RUN_SCREEN)
+      await waitFor(() => expect(within(card('Beef tacos')).getByRole('link', { name: 'Beef tacos' })).toBeInTheDocument())
+      await waitFor(() => expect(savedStatus('d1')).toBe('regular'))
+
+      fireEvent.click(screen.getByRole('link', { name: 'To Regulars' }))
+      await screen.findByRole('heading', { level: 2, name: /^On rotation/ })
+      editRow('Beef tacos')
+      fireEvent.click(screen.getByRole('button', { name: 'Remove from Regulars' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+      await waitFor(() => expect(rows()).toHaveLength(1))
+      expect(sent(server.fetchMock)).toContainEqual({ request: 'DELETE /api/v1/dinners/d1', body: undefined })
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+
+      // Still marked removing; the saved Supply run is the one read before.
+      expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
+      expect(savedStatus('d1')).toBe('regular')
+
+      // A new page, with nothing cached, opens that saved Supply run while
+      // its read is not answered: no recipe link to the archived dinner.
+      app.unmount()
+      resetArchived()
+      await renderApp(RUN_SCREEN)
+      const reopened = await waitFor(() => card('Beef tacos'))
+      expect(within(reopened).queryByRole('link')).not.toBeInTheDocument()
+      expect(within(card('Pot roast')).getByRole('link', { name: 'Pot roast' })).toHaveAttribute('href', '/dinner/d4')
+      await waitFor(() => expect(runReads).toBe(2))
+    })
   })
 
-  it('keeps a removal the server made and says, as that, that this device could not save it is archived', async () => {
+  it('sends no removal this device cannot save, keeps the Regular and says why', async () => {
     const server = stubServer([TACOS, ROAST], {
       'DELETE /api/v1/dinners/d1': () => {
         server.regulars = [ROAST]
@@ -622,7 +672,7 @@ describe('RegularsSettingsPage', () => {
     })
     const setItem = Storage.prototype.setItem
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
-      if (key === ARCHIVED_KEY) throw new Error('The quota has been exceeded.')
+      if (key === archivedKey('d1')) throw new Error('The quota has been exceeded.')
       setItem.call(this, key, value)
     })
     await renderPage()
@@ -631,14 +681,31 @@ describe('RegularsSettingsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove from Regulars' }))
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Removed Beef tacos from Regulars, but this device could not save that it is archived, so after a reload a page saved before may link to its recipe again: The quota has been exceeded.',
+      'Could not remove Beef tacos: this device could not save the removal, so it was not sent: The quota has been exceeded.',
     )
-    expect(screen.queryByText(/Could not remove/)).not.toBeInTheDocument()
+    expect(rows()).toHaveLength(2)
+    expect(screen.getByText('Beef tacos')).toBeInTheDocument()
+    expect(sent(server.fetchMock)).toEqual([])
+    expect(localStorage.getItem(archivedKey('d1'))).toBeNull()
+  })
+
+  it('keeps a removal no answer settled hidden and says the server may have made it', async () => {
+    // Asked about at once, the server does not answer either.
+    stubServer([TACOS, ROAST], {
+      'DELETE /api/v1/dinners/d1': () => Promise.reject(new TypeError('Failed to fetch')),
+      'GET /api/v1/dinners/d1': () => new Promise<Response>(() => undefined),
+    })
+    await renderPage()
+
+    editRow('Beef tacos')
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from Regulars' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not remove Beef tacos: Failed to fetch. The server may have removed it, so this device hides it until the server can say whether it did.',
+    )
     expect(rows()).toHaveLength(1)
     expect(screen.queryByText('Beef tacos')).not.toBeInTheDocument()
-    await waitFor(() => expect(server.fetchMock.mock.calls.filter(([url]) => String(url) === REGULARS)).toHaveLength(2))
-    expect(rows()).toHaveLength(1)
-    expect(localStorage.getItem(ARCHIVED_KEY)).toBeNull()
+    expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
   })
 
   it('puts a refused removal back and says why', async () => {

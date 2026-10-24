@@ -8,8 +8,8 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { Link, Route, Routes } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
-import { dinnerDetailKey } from './api.ts'
-import { ARCHIVED_KEY, resetArchived } from './archived.ts'
+import { dinnerDetailKey, RemovalCheck } from './api.ts'
+import { ARCHIVED, archivedKey, REMOVING, resetArchived } from './archived.ts'
 import { DinnerDetailPage } from './DinnerDetailPage.tsx'
 import { HOME_KEY } from '../home/api.ts'
 import { HomePage } from '../home/HomePage.tsx'
@@ -119,13 +119,17 @@ const server: Record<string, () => Response> = {
   'GET /api/v1/home': () => jsonResponse(200, homeWith(archived ? 'archived' : 'regular')),
   'GET /api/v1/rotation-reviews': () => jsonResponse(200, { reviews: [] }),
   [`GET /api/v1/shopping/${WEEK}`]: () => jsonResponse(200, runWith(archived ? 'archived' : 'regular')),
-  'DELETE /api/v1/dinners/d1': () => {
-    archived = true
-    return jsonResponse(200, { ...TACOS, status: 'archived' })
-  },
+}
+
+// archiveTacos is the server archiving Beef tacos, which every test starts
+// with as its answer to the removal.
+function archiveTacos() {
+  archived = true
+  return jsonResponse(200, { ...TACOS, status: 'archived' })
 }
 
 beforeEach(() => {
+  server['DELETE /api/v1/dinners/d1'] = archiveTacos
   cache = stubWorkerCaches()
   reachable = true
   networkReads = []
@@ -158,7 +162,8 @@ afterEach(() => {
 // renderApp loads the app at path as a fresh page load would — a new API
 // client, network status, query cache and record of archived dinners read
 // from this device — with the Plan, Home, Supply run, Regulars and dinner
-// screens, SupplyRunSync and the offline indicator, as App does; each screen
+// screens, SupplyRunSync, RemovalCheck and the offline indicator, as App
+// does; each screen
 // links to the others.
 async function renderApp(path: string): Promise<{ queryClient: QueryClient; unmount: () => void }> {
   resetArchived()
@@ -169,6 +174,7 @@ async function renderApp(path: string): Promise<{ queryClient: QueryClient; unmo
     <ApiProvider client={api}>
       <QueryClientProvider client={queryClient}>
         <SupplyRunSync />
+        <RemovalCheck />
         <InDataRouter path={path}>
           <Routes>
             <Route path="/" element={<HomePage />} />
@@ -304,11 +310,11 @@ describe('a removed Regular read offline from what the worker saved before', () 
     ])
 
     // Beef tacos leaves the Regulars, and is recorded archived on this
-    // device; the Supply run saved here is kept as the server sent it.
+    // device; the Supply run saved here is saved again with it archived.
     removeTacos()
     await waitFor(() => expect(online.queryClient.isMutating()).toBe(0))
-    expect(JSON.parse(localStorage.getItem(ARCHIVED_KEY)!)).toEqual(['d1'])
-    expect(savedStatus('d1')).toBe('regular')
+    expect(localStorage.getItem(archivedKey('d1'))).toBe(ARCHIVED)
+    expect(savedStatus('d1')).toBe('archived')
 
     // The server can no longer be reached and everything is read again. The
     // worker answers with what it saved before, Beef tacos a Regular in
@@ -366,6 +372,8 @@ describe('a read answered before a Regular is removed that arrives after', () =>
       `/api/v1/plans/${WEEK}`,
       `/api/v1/shopping/${WEEK}`,
     ])
+    // The late Supply run is saved on this device with Beef tacos archived.
+    expect(savedStatus('d1')).toBe('archived')
 
     // Online, no screen links to its recipe.
     await expectNoRecipeLink()
@@ -391,5 +399,76 @@ describe('a read answered before a Regular is removed that arrives after', () =>
     const reopened = await waitFor(() => screen.getByRole('region', { name: 'Beef tacos' }))
     expect(within(reopened).getByRole('checkbox', { name: /Ground beef/ })).toBeEnabled()
     expect(recipeLinks('d1')).toEqual([])
+  })
+})
+
+describe('a removal no answer settled', () => {
+  it('links to its recipe nowhere, even after a reload, until the server says it archived it', async () => {
+    mockViewport(768)
+    const online = await renderApp(PLAN_SCREEN)
+    await readOnline()
+
+    // The server archives Beef tacos, but its answer never arrives, and it
+    // cannot be reached when asked at once.
+    server['DELETE /api/v1/dinners/d1'] = () => {
+      archived = true
+      reachable = false
+      throw new TypeError('Failed to fetch')
+    }
+    removeTacos()
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not remove Beef tacos: Failed to fetch. The server may have removed it, so this device hides it until the server can say whether it did.',
+    )
+    await waitFor(() => expect(online.queryClient.isMutating()).toBe(0))
+    expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
+    expect(savedStatus('d1')).toBe('regular')
+
+    // Offline, every read is the worker's from before, yet nothing links.
+    networkReads = []
+    await readAgain(online.queryClient)
+    await expectNoRecipeLink()
+    online.unmount()
+
+    // A new page offline opens the saved Supply run: still no link.
+    networkReads = []
+    const runPage = await renderApp(RUN_SCREEN)
+    await read(runPage.queryClient, `/api/v1/shopping/${WEEK}`)
+    await waitFor(() => screen.getByRole('region', { name: 'Beef tacos' }))
+    expect(recipeLinks('d1')).toEqual([])
+    runPage.unmount()
+
+    // A new page that can reach the server asks it, and marks Beef tacos
+    // archived, the saved Supply run with it.
+    reachable = true
+    networkReads = []
+    await renderApp(RUN_SCREEN)
+    await waitFor(() => expect(localStorage.getItem(archivedKey('d1'))).toBe(ARCHIVED))
+    expect(networkReads).toContain('GET /api/v1/dinners/d1')
+    await waitFor(() => expect(savedStatus('d1')).toBe('archived'))
+    expect(recipeLinks('d1')).toEqual([])
+  })
+
+  it('shows the Regular again, with its recipe, once the server can say it did not archive it', async () => {
+    mockViewport(768)
+    const online = await renderApp(PLAN_SCREEN)
+    await readOnline()
+
+    // The removal never reaches the server.
+    reachable = false
+    removeTacos()
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not remove Beef tacos: Failed to fetch. The server may have removed it')
+    await waitFor(() => expect(online.queryClient.isMutating()).toBe(0))
+    expect(archived).toBe(false)
+    expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
+    expect(screen.queryByRole('button', { name: 'Edit Beef tacos' })).not.toBeInTheDocument()
+
+    // The server can be reached again: asked, it still has Beef tacos, so
+    // the mark goes and Beef tacos is a Regular with its recipe again.
+    reachable = true
+    await readAgain(online.queryClient)
+    await waitFor(() => expect(localStorage.getItem(archivedKey('d1'))).toBeNull())
+    expect(await screen.findByRole('button', { name: 'Edit Beef tacos' })).toBeInTheDocument()
+    go('To Plan')
+    await waitFor(() => expect(recipeLinks('d1')).toHaveLength(1))
   })
 })

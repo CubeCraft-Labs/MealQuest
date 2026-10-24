@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { createQueryClient } from '../api/index.ts'
 import { HOME } from '../test/ApiProviders.tsx'
-import { archiveTonight, HOME_KEY, parseHome, parseUpdates, type Home } from './api.ts'
+import { parseHome, parseUpdates, showArchived } from './api.ts'
 
 const origin = 'https://mealquest.example'
 const where = 'GET /api/v1/updates'
@@ -52,16 +51,12 @@ describe('parseHome', () => {
   })
 })
 
-describe('archiveTonight', () => {
-  it("shows tonight's dinner archived when it is the dinner removed, keeping when Home was read", () => {
-    const queryClient = createQueryClient()
-    queryClient.setQueryData(HOME_KEY, parseHome('GET /api/v1/home', HOME), { updatedAt: 1000 })
+describe('showArchived', () => {
+  it("shows tonight's dinner archived when the server archived it, whatever the read said", () => {
+    const home = parseHome('GET /api/v1/home', HOME)
 
-    archiveTonight(queryClient, 'other')
-    expect(queryClient.getQueryData<Home>(HOME_KEY)?.tonight?.status).toBe('regular')
-
-    archiveTonight(queryClient, 'd1')
-    expect(queryClient.getQueryData<Home>(HOME_KEY)?.tonight).toMatchObject({ id: 'd1', name: 'Pizza night', status: 'archived' })
-    expect(queryClient.getQueryState(HOME_KEY)?.dataUpdatedAt).toBe(1000)
+    expect(showArchived(home, new Set(['other']))).toBe(home)
+    expect(showArchived(home, new Set(['d1'])).tonight).toMatchObject({ id: 'd1', name: 'Pizza night', status: 'archived' })
+    expect(home.tonight?.status).toBe('regular')
   })
 })

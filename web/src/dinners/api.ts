@@ -1,6 +1,8 @@
 import { useIsMutating, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { useApi, type ApiClient } from '../api/index.ts'
+import { useCallback } from 'react'
+import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
+import { knownArchived, recordArchived, useArchived } from './archived.ts'
 import type { DinnerDetail } from './detail.ts'
 
 export const DINNERS_PATH = '/api/v1/dinners'
@@ -76,8 +78,10 @@ export type RecipeCandidate = {
 // a refused removal returns exactly there whatever else changed meanwhile.
 type CachedRegular = Regular & { removing?: true }
 
-function shown(list: CachedRegular[]): Regular[] {
-  return list.filter((regular) => !regular.removing)
+// shown is the Regulars to show: none being removed, and none the server
+// archived (archived), whatever the read said.
+function shown(list: CachedRegular[], archived: ReadonlySet<string>): Regular[] {
+  return list.filter((regular) => !regular.removing && !archived.has(regular.id))
 }
 
 function restored(regular: CachedRegular): CachedRegular {
@@ -181,6 +185,8 @@ export function dinnerDetailKey(id: string) {
 export function useRegulars() {
   const { apiFetch } = useApi()
   const changing = useIsMutating({ mutationKey: REGULARS_MUTATION_KEY }) > 0
+  const archived = useArchived()
+  const select = useCallback((list: CachedRegular[]) => shown(list, knownArchived(archived)), [archived])
   return useQuery({
     queryKey: REGULARS_LIST_KEY,
     queryFn: async () => {
@@ -189,7 +195,7 @@ export function useRegulars() {
       if (!isRecord(body) || !Array.isArray(body.dinners)) throw new Error(`${where}: response has no dinners list`)
       return body.dinners.map((dinner): CachedRegular => parseDinner(where, dinner))
     },
-    select: shown,
+    select,
     refetchInterval: (query) => {
       const list = query.state.data
       if (list === undefined || changing) return false
@@ -263,35 +269,44 @@ export function useAddRegular() {
   })
 }
 
-// regularRemoval is the mutation archiving a Regular (DELETE
-// /api/v1/dinners/{id}), which useRemoveRegular (removeRegular.ts) runs. It
+// useRemoveRegular archives a Regular (DELETE /api/v1/dinners/{id}). It
 // leaves the list at once and is put back in its place if the server
-// refuses; once the server has archived it, archived is told its id, and
-// the removal is done once what archived returns is.
-export function regularRemoval(
-  queryClient: QueryClient,
-  apiFetch: ApiClient['apiFetch'],
-  archived: (id: string) => Promise<void>,
-) {
-  return {
+// refuses. Once the server has archived it, it is recorded archived on this
+// device (archived.ts), so no read answered before — in flight, cached or
+// saved — shows it with a recipe to open. The removal answers why the record
+// could not be saved on this device (see unsavedArchive), or null.
+export function useRemoveRegular() {
+  const { apiFetch } = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
     mutationKey: REGULARS_MUTATION_KEY,
-    mutationFn: async (regular: Regular) => {
+    mutationFn: async (regular: Regular): Promise<Error | null> => {
       await apiFetch<unknown>(dinnerPath(regular.id), { method: 'DELETE' })
+      return recordArchived(regular.id)
     },
-    onMutate: async (regular: Regular) => {
+    onMutate: async (regular) => {
       await changeOptimistically(queryClient, (list) =>
         list.map((r): CachedRegular => (r.id === regular.id ? { ...r, removing: true } : r)),
       )
     },
-    onSuccess: async (_data: void, regular: Regular) => {
+    onSuccess: (_unsaved, regular) => {
       setRegulars(queryClient, (list) => list.filter((r) => r.id !== regular.id))
-      await archived(regular.id)
     },
-    onError: (_error: Error, regular: Regular) => {
+    onError: (_error, regular) => {
       setRegulars(queryClient, (list) => list.map((r) => (r.id === regular.id ? restored(r) : r)))
     },
     onSettled: () => settle(queryClient),
-  }
+  })
+}
+
+// unsavedArchive says what a removal of the Regular named name that the
+// server made left wrong on this device: unsaved is why the device could not
+// save that it is archived (useRemoveRegular), or null when nothing is.
+export function unsavedArchive(name: string) {
+  return (unsaved: Error | null): string | null =>
+    unsaved === null
+      ? null
+      : `Removed ${name} from Regulars, but this device could not save that it is archived, so after a reload a page saved before may link to its recipe again: ${unsaved.message}`
 }
 
 // useEditRegular saves changes to a Regular (PATCH /api/v1/dinners/{id})

@@ -1,7 +1,8 @@
-import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { useEffect } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useCallback, useEffect } from 'react'
 import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
+import { knownArchived, useArchived } from '../dinners/archived.ts'
 import { oneOf, photoId, PLANNED_DINNER_STATUSES, type PlannedDinnerStatus } from '../dinners/api.ts'
 import { untilLocalMidnight, weekLabel } from '../plan/week.ts'
 import { appPath } from '../push/notification.ts'
@@ -50,14 +51,13 @@ export type Home = {
   unread: boolean
 }
 
-// archiveTonight shows tonight's dinner archived — removed from Regulars, so
-// it has no detail to open — when it is dinner id, keeping when Home was
-// read, so it is read again as before.
-export function archiveTonight(queryClient: QueryClient, id: string) {
-  const state = queryClient.getQueryState<Home>(HOME_KEY)
-  if (state?.data?.tonight?.id !== id) return
-  const tonight: Tonight = { ...state.data.tonight, status: 'archived' }
-  queryClient.setQueryData<Home>(HOME_KEY, { ...state.data, tonight }, { updatedAt: state.dataUpdatedAt })
+// showArchived is home with tonight's dinner shown archived — removed from
+// Regulars, so it has no detail to open — when the server archived it
+// (archived), whatever the read said; otherwise it is home itself.
+export function showArchived(home: Home, archived: ReadonlySet<string>): Home {
+  const tonight = home.tonight
+  if (tonight === null || !archived.has(tonight.id) || tonight.status === 'archived') return home
+  return { ...home, tonight: { ...tonight, status: 'archived' } }
 }
 
 function parseTonight(where: string, body: unknown): Tonight | null {
@@ -130,13 +130,17 @@ function isZone(zone: string): boolean {
 
 // useHome is the Home screen's summary (GET /api/v1/home). Home is read
 // again at the household's next local midnight, counted from each read, so
-// a Home left open does not keep yesterday's date and dinner.
+// a Home left open does not keep yesterday's date and dinner. Tonight's
+// dinner shows archived once it was removed from Regulars on this device
+// (archived.ts).
 export function useHome() {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
+  const archived = useArchived()
   const home = useQuery({
     queryKey: HOME_KEY,
     queryFn: async () => parseHome(`GET ${HOME_PATH}`, await apiFetch<unknown>(HOME_PATH)),
+    select: useCallback((home: Home) => showArchived(home, knownArchived(archived)), [archived]),
   })
   const zone = home.data?.timezone
   const readAt = home.dataUpdatedAt

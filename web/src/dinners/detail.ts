@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useSyncExternalStore } from 'react'
 import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import {
@@ -16,6 +16,7 @@ import {
   type GroundingStatus,
   type Method,
 } from './api.ts'
+import { ArchivedDinnerError, knownArchived, useArchived } from './archived.ts'
 
 // The statuses a dinner with detail can have; an archived dinner is 404.
 const STATUSES = ['suggested', 'quest_log', 'tried', 'regular'] as const
@@ -151,18 +152,29 @@ export function parseDinnerDetail(where: string, body: unknown, cached: boolean)
 // while the browser is offline or the last read was the service worker's
 // saved copy, which would only answer the same again, and a saved pending
 // copy is read once more when the connection comes back. Polling stops on
-// unmount. An unknown or archived dinner fails with the API's 404. It runs
+// unmount. An unknown or archived dinner fails with the API's 404, and one
+// removed from Regulars on this device (archived.ts) with
+// ArchivedDinnerError, whatever a read saved before says. It runs
 // even while the browser reports offline, so the copy the service worker
 // saved is shown, or the read fails, instead of waiting for the network.
 export function useDinnerDetail(id: string) {
   const { apiRead, network } = useApi()
   const offline = useSyncExternalStore(network.subscribe, network.offline)
+  const archived = useArchived()
+  const select = useCallback(
+    (dinner: DinnerDetail) => {
+      if (knownArchived(archived).has(dinner.id)) throw new ArchivedDinnerError()
+      return dinner
+    },
+    [archived],
+  )
   const query = useQuery({
     queryKey: dinnerDetailKey(id),
     queryFn: async () => {
       const read = await apiRead<unknown>(dinnerPath(id))
       return parseDinnerDetail(`GET ${DINNERS_PATH}/{id}`, read.body, read.cached)
     },
+    select,
     networkMode: 'always',
     refetchInterval: (query) => {
       const dinner = query.state.data

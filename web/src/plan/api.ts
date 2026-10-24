@@ -1,7 +1,8 @@
-import { useEffect } from 'react'
+import { useCallback, useEffect } from 'react'
 import { useMutation, useMutationState, useQuery, useQueryClient, type Mutation, type QueryClient } from '@tanstack/react-query'
 import { ApiError, useApi, type ApiRead } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
+import { knownArchived, useArchived } from '../dinners/archived.ts'
 import { METHODS, oneOf, photoId, PLANNED_DINNER_STATUSES, type Method, type PlannedDinnerStatus } from '../dinners/api.ts'
 import { QUEST_LOG_KEY } from '../discover/api.ts'
 import { noteGoogleFailure } from '../settings/calendarApi.ts'
@@ -93,19 +94,14 @@ function parseDay(where: string, body: unknown): PlanDay {
   return { date: body.date, dinner, is_new: body.is_new, start_by: body.start_by }
 }
 
-// archivePlanDinner shows dinner id archived — removed from Regulars, so it
-// has no detail to open — on every cached plan that has it, keeping when
-// each was read, so it is read again as before.
-export function archivePlanDinner(queryClient: QueryClient, id: string) {
-  for (const query of queryClient.getQueryCache().findAll({ queryKey: ['plans'] })) {
-    const [, week] = query.queryKey
-    const plan = query.state.data as Plan | null | undefined
-    if (query.queryKey.length !== 2 || typeof week !== 'string' || !plan?.days.some((day) => day.dinner.id === id)) continue
-    queryClient.setQueryData<Plan>(
-      planKey(week),
-      { ...plan, days: plan.days.map((day) => (day.dinner.id === id ? { ...day, dinner: { ...day.dinner, status: 'archived' } } : day)) },
-      { updatedAt: query.state.dataUpdatedAt },
-    )
+// showArchived is plan with each dinner the server archived (archived)
+// shown archived — removed from Regulars, so it has no detail to open —
+// whatever the read said; a plan with none is plan itself.
+export function showArchived(plan: Plan | null, archived: ReadonlySet<string>): Plan | null {
+  if (plan === null || !plan.days.some((day) => archived.has(day.dinner.id) && day.dinner.status !== 'archived')) return plan
+  return {
+    ...plan,
+    days: plan.days.map((day) => (archived.has(day.dinner.id) ? { ...day, dinner: { ...day.dinner, status: 'archived' } } : day)),
   }
 }
 
@@ -203,9 +199,13 @@ export function parseDraftResult(where: string, weekStart: string, body: unknown
 }
 
 // usePlan is the plan of the week starting on Monday weekStart (GET
-// /api/v1/plans/{weekStart}), or null when the week has none (404).
+// /api/v1/plans/{weekStart}), or null when the week has none (404), with
+// each dinner removed from Regulars on this device shown archived
+// (archived.ts).
 export function usePlan(weekStart: string) {
   const { apiRead } = useApi()
+  const archived = useArchived()
+  const select = useCallback((plan: Plan | null) => showArchived(plan, knownArchived(archived)), [archived])
   return useQuery({
     queryKey: planKey(weekStart),
     queryFn: async (): Promise<Plan | null> => {
@@ -219,6 +219,7 @@ export function usePlan(weekStart: string) {
       }
       return parsePlan(`GET ${path}`, weekStart, read.body, read.cached)
     },
+    select,
   })
 }
 

@@ -4,11 +4,13 @@ import { useNavigate } from 'react-router'
 import {
   DIFFICULTIES,
   METHODS,
+  unsavedArchive,
   useAddRegular,
   useEditRegular,
   useGroundRegular,
   useRecipeCandidates,
   useRegulars,
+  useRemoveRegular,
   useToggleFavorite,
   type Difficulty,
   type GroundingStatus,
@@ -19,7 +21,6 @@ import {
   type Regular,
   type RegularPatch,
 } from '../dinners/api.ts'
-import { useRemoveRegular } from '../dinners/removeRegular.ts'
 import { useRefusals } from '../dinners/useRefusals.ts'
 import { Button } from '../ui/Button.tsx'
 import { Card } from '../ui/Card.tsx'
@@ -115,7 +116,7 @@ function RegularsManager() {
 
   function onRemove(regular: Regular) {
     setOpen(null)
-    track(`remove:${regular.id}`, `remove ${regular.name}`, remove.mutateAsync(regular))
+    track(`remove:${regular.id}`, `remove ${regular.name}`, remove.mutateAsync(regular), unsavedArchive(regular.name))
   }
 
   function onFavorite(regular: Regular) {

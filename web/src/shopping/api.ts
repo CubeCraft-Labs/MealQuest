@@ -7,10 +7,11 @@ import {
   type MutationObserverOptions,
   type QueryClient,
 } from '@tanstack/react-query'
-import { useEffect, useReducer, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useReducer, useState, useSyncExternalStore } from 'react'
 import { ApiError, useApi, type ApiClient } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { meQueryKey } from '../AuthBootstrap.tsx'
+import { knownArchived, useArchived } from '../dinners/archived.ts'
 import { oneOf, PLANNED_DINNER_STATUSES, type PlannedDinnerStatus } from '../dinners/api.ts'
 import { settleUnmadePushes } from '../plan/api.ts'
 import type { NetworkStatus } from '../pwa/networkStatus.ts'
@@ -26,12 +27,10 @@ import {
   SAVED_KEY,
   saveRun,
   savedRun,
-  savedWeeks,
   saveSchedule,
   SCHEDULE_CAUSE,
   synced,
   toggleCause,
-  WEEKS_CAUSE,
   willSync,
 } from './offline.ts'
 
@@ -205,26 +204,15 @@ function savedSupplyRun(weekStart: string): SupplyRun | undefined {
   return saved === undefined ? undefined : parseRun(`Saved ${SAVED_KEY}`, weekStart, saved, savedDinnerStatus)
 }
 
-// archiveSupplyRunDinner shows dinner id archived — removed from Regulars,
-// so it has no detail to open — on every Supply run that has it: each saved
-// on this device is saved again so, and each cached is changed so, keeping
-// when it was read, so it is read again as before. No Supply run, cached or
-// saved, then links to the dinner's recipe.
-export function archiveSupplyRunDinner(queryClient: QueryClient, id: string) {
-  const has = (run: SupplyRun | null | undefined): run is SupplyRun => !!run && run.groups.some((group) => group.dinner.id === id)
-  const archived = (run: SupplyRun): SupplyRun => ({
+// showArchived is run with each dinner the server archived (archived) shown
+// archived — removed from Regulars, so it has no detail to open — whatever
+// the read, or the Supply run saved on this device, said; a Supply run with
+// none is run itself.
+export function showArchived(run: SupplyRun | null, archived: ReadonlySet<string>): SupplyRun | null {
+  if (run === null || !run.groups.some((group) => archived.has(group.dinner.id) && group.dinner.status !== 'archived')) return run
+  return {
     ...run,
-    groups: run.groups.map((group) => (group.dinner.id === id ? { ...group, dinner: { ...group.dinner, status: 'archived' } } : group)),
-  })
-  for (const week of keep(WEEKS_CAUSE, savedWeeks) ?? []) {
-    const saved = keep(runCause(week), () => savedSupplyRun(week))
-    if (has(saved)) keep(runCause(week), () => saveRun(week, archived(saved)))
-  }
-  for (const query of queryClient.getQueryCache().findAll({ queryKey: ['shopping'] })) {
-    const [, week] = query.queryKey
-    const run = query.state.data as SupplyRun | null | undefined
-    if (query.queryKey.length !== 2 || typeof week !== 'string' || !has(run)) continue
-    queryClient.setQueryData<SupplyRun>(supplyRunKey(week), archived(run), { updatedAt: query.state.dataUpdatedAt })
+    groups: run.groups.map((group) => (archived.has(group.dinner.id) ? { ...group, dinner: { ...group.dinner, status: 'archived' } } : group)),
   }
 }
 
@@ -234,10 +222,13 @@ export function archiveSupplyRunDinner(queryClient: QueryClient, id: string) {
 // the list opens offline; the saved one is always read again. It is read
 // from this device once, not on every render: while the query has no data
 // its initial data is asked for again on each render, and a failed read
-// reports a problem, which renders this again.
+// reports a problem, which renders this again. Each dinner removed from
+// Regulars on this device shows archived (archived.ts), on the saved one as
+// on every read.
 export function useSupplyRun(weekStart: string) {
   const { apiRead } = useApi()
   const [saved] = useState(() => keep(runCause(weekStart), () => savedSupplyRun(weekStart)))
+  const archived = useArchived()
   return useQuery({
     queryKey: supplyRunKey(weekStart),
     initialData: saved,
@@ -253,6 +244,7 @@ export function useSupplyRun(weekStart: string) {
       }
       return parseSupplyRun(`GET ${path}`, weekStart, body)
     },
+    select: useCallback((run: SupplyRun | null) => showArchived(run, knownArchived(archived)), [archived]),
   })
 }
 
@@ -476,7 +468,9 @@ function toggleOptions(
 // pending as soon as it is made, and its answer is in the query cache
 // before it stops being pending. Making a toggle renders again at once, so
 // the checkbox clicked never shows its old state; useSupplyRun and
-// useMutationState render again on every later change.
+// useMutationState render again on every later change. Like useSupplyRun's,
+// the Supply run shows each dinner removed from Regulars on this device
+// archived (showArchived).
 //
 // A failed toggle stays failed, and shown, until a later toggle of its item
 // supersedes it, such as its Retry: a toggle of another item succeeding
@@ -494,7 +488,8 @@ export function useToggles(weekStart: string): Toggles {
   useMutationState({ filters: { mutationKey } })
   const offline = useSyncExternalStore(api.network.subscribe, api.network.offline)
   const [, renderAgain] = useReducer((n: number) => n + 1, 0)
-  const run = queryClient.getQueryData<SupplyRun | null>(key)
+  const archived = useArchived()
+  const run = showArchived(queryClient.getQueryData<SupplyRun | null>(key) ?? null, knownArchived(archived))
   if (!run) throw new Error(`The week of ${weekStart} has no Supply run read to toggle items of.`)
   const toggles = queryClient
     .getMutationCache()

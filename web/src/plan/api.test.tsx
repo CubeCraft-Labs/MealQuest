@@ -7,9 +7,9 @@ import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession 
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import {
-  archivePlanDinner,
   parsePlan,
   planKey,
+  showArchived,
   usePlan,
   usePushToCalendar,
   useSwapDay,
@@ -485,23 +485,21 @@ describe('week mutations', () => {
   })
 })
 
-describe('archivePlanDinner', () => {
-  it('shows the dinner removed archived on every cached plan that has it, keeping when each was read', () => {
-    const queryClient = createQueryClient()
-    const NEXT = '2026-10-12'
-    queryClient.setQueryData(planKey(WEEK), parsePlan(`GET ${PLAN}`, WEEK, planBody(), false), { updatedAt: 1000 })
-    queryClient.setQueryData(planKey(NEXT), parsePlan('GET next', NEXT, { ...planBody({ 2: { id: 'd1', name: 'Dinner 1' } }), week_start: NEXT }, false), {
-      updatedAt: 2000,
-    })
-    queryClient.setQueryData(planKey('2026-10-19'), null, { updatedAt: 3000 })
+describe('showArchived', () => {
+  it('shows each dinner the server archived archived, whatever the read said, and leaves a plan without one as it is', () => {
+    const plan = parsePlan(`GET ${PLAN}`, WEEK, planBody({ 2: { id: 'd1', name: 'Dinner 1' } }), false)
+    const statuses = (shown: Plan | null) => shown!.days.map((day) => `${day.dinner.id} ${day.dinner.status}`)
 
-    archivePlanDinner(queryClient, 'd1')
-
-    const statuses = (week: string) => queryClient.getQueryData<Plan>(planKey(week))!.days.map((day) => `${day.dinner.id} ${day.dinner.status}`)
-    expect(statuses(WEEK)).toEqual(['d0 regular', 'd1 archived', 'd2 regular', 'd3 regular', 'd4 regular', 'd5 regular', 'd6 regular'])
-    expect(statuses(NEXT)).toEqual(['d0 regular', 'd1 archived', 'd1 archived', 'd3 regular', 'd4 regular', 'd5 regular', 'd6 regular'])
-    expect(queryClient.getQueryData(planKey('2026-10-19'))).toBeNull()
-    expect(queryClient.getQueryState(planKey(WEEK))?.dataUpdatedAt).toBe(1000)
-    expect(queryClient.getQueryState(planKey(NEXT))?.dataUpdatedAt).toBe(2000)
+    expect(statuses(showArchived(plan, new Set(['d1'])))).toEqual([
+      'd0 regular',
+      'd1 archived',
+      'd1 archived',
+      'd3 regular',
+      'd4 regular',
+      'd5 regular',
+      'd6 regular',
+    ])
+    expect(showArchived(plan, new Set(['other']))).toBe(plan)
+    expect(showArchived(null, new Set(['d1']))).toBeNull()
   })
 })

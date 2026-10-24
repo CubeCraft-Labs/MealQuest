@@ -83,11 +83,6 @@ export function savedRun(weekStart: string): unknown {
   return read().runs[weekStart]
 }
 
-// savedWeeks is the Mondays of the weeks whose Supply runs are saved.
-export function savedWeeks(): string[] {
-  return Object.keys(read().runs)
-}
-
 // saveRun keeps the week's Supply run as the server sent it, with the latest
 // weeks'. A week with none (null) or one frozen into the Supply archive is
 // not kept: nothing on it can change. Once it is kept, a failure to read or
@@ -144,12 +139,9 @@ export function synced(key: string) {
 // wrong, and so what repairs it: the saved schedule (saveSchedule), a week's
 // saved Supply run (saveRun of that week), a toggle that may be lost on a
 // reload because the saved queue does not hold it (dequeue once it settles),
-// the saved queue read to replay, or the saved Supply runs read to show a
-// removed Regular archived on them, neither of which anything on this page
-// repairs.
+// or the saved queue read to replay, which nothing on this page repairs.
 export const SCHEDULE_CAUSE = 'schedule'
 export const QUEUE_CAUSE = 'queue'
-export const WEEKS_CAUSE = 'weeks'
 
 export function runCause(weekStart: string) {
   return `run ${weekStart}`

@@ -16,12 +16,6 @@ export class FakeCache {
   async put(request: RequestInfo | URL, response: Response): Promise<void> {
     this.entries.set(new Request(request).url, response)
   }
-  async keys(): Promise<Request[]> {
-    return [...this.entries.keys()].map((url) => new Request(url))
-  }
-  async delete(request: RequestInfo | URL): Promise<boolean> {
-    return this.entries.delete(new Request(request).url)
-  }
 }
 
 // FakeExtendableEvent stands in for the worker-only ExtendableEvent,

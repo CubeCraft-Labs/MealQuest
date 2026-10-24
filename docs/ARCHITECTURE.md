@@ -207,9 +207,14 @@ automatic** (D-021).
   the PWA chose, a lower-case UUID) as made in the same transaction in
   `dinner_removals`; sending it again succeeds. `POST
   /api/v1/dinners/{id}/removals/{removal}/withdraw` settles a removal no
-  answer settled for good, answering `{outcome}`: `archived` when it was
-  made, otherwise `withdrawn`, recorded so that the removal, however late
-  it arrives, is 409 `removal_withdrawn` and archives nothing. `POST
+  answer settled for good, answering `{outcome, dinner_status}`: `outcome`
+  is `archived` when it was made, otherwise `withdrawn`, recorded so that
+  the removal, however late it arrives, is 409 `removal_withdrawn` and
+  archives nothing; `dinner_status` is the dinner's status, read in the
+  same transaction, since a removal withdrawn may find the dinner archived
+  all the same by another removal (another device's). The PWA takes away
+  its mark of a removal only when it is `withdrawn` and the dinner is not
+  `archived`; otherwise it marks the dinner archived. `POST
   /api/v1/dinners/{id}/favorite` toggles `is_favorite`. Every write records
   the session's subject as `updated_by`; an unknown id is 404.
   `GET /api/v1/dinners/{id}` returns the dinner with its recipe, read in

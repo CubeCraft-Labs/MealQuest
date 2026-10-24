@@ -219,12 +219,25 @@ const checking = new Set<string>()
 // withdraw: made (archived) or never to be made (withdrawn).
 export type RemovalOutcome = 'archived' | 'withdrawn'
 
+// REMOVAL_DINNER_STATUSES are the statuses a dinner can have when the server
+// answers a withdrawal.
+export const REMOVAL_DINNER_STATUSES = ['suggested', 'quest_log', 'tried', 'regular', 'archived'] as const
+
+// Withdrawal is the server's answer to a withdrawal: how it settled the
+// removal, and the dinner's status as it stands then, read with it. A
+// removal withdrawn says nothing of the dinner: another removal — from
+// another device, say — may have archived it all the same.
+export type Withdrawal = {
+  outcome: RemovalOutcome
+  dinnerStatus: (typeof REMOVAL_DINNER_STATUSES)[number]
+}
+
 // Removals is how removals reach the server: send sends dinner id's removal
 // with its id (DELETE), which the server archives; withdraw asks the server
 // to settle that removal for good and is how it did.
 export type Removals = {
   send: (id: string, removal: string) => Promise<unknown>
-  withdraw: (id: string, removal: string) => Promise<RemovalOutcome>
+  withdraw: (id: string, removal: string) => Promise<Withdrawal>
 }
 
 function notFound(error: unknown): boolean {
@@ -236,8 +249,10 @@ function notFound(error: unknown): boolean {
 // detail either — it is marked archived. Answered any other way, or not at
 // all, the server is asked to withdraw it, since neither says that a send
 // of it before, unanswered, will not still arrive and be made: made after
-// all, it is marked archived and the removal succeeds; withdrawn, its mark
-// is taken away and the removal fails as it was answered. With no answer to
+// all, or withdrawn but the dinner archived by another removal, it is
+// marked archived and the removal succeeds; withdrawn with the dinner still
+// there, its mark is taken away and the removal fails as it was answered.
+// Only that answer takes a mark away. With no answer to
 // that either, it stays marked removing and the removal fails with
 // UnconfirmedRemovalError.
 async function settle(id: string, removal: string, removals: Removals): Promise<void> {
@@ -253,9 +268,9 @@ async function settle(id: string, removal: string, removals: Removals): Promise<
     }
     answer = error
   }
-  let outcome: RemovalOutcome
+  let withdrawal: Withdrawal
   try {
-    outcome = await removals.withdraw(id, removal)
+    withdrawal = await removals.withdraw(id, removal)
   } catch (error) {
     if (notFound(error)) {
       archived(id)
@@ -263,7 +278,7 @@ async function settle(id: string, removal: string, removals: Removals): Promise<
     }
     throw new UnconfirmedRemovalError(asError(answer))
   }
-  if (outcome === 'archived') {
+  if (withdrawal.outcome === 'archived' || withdrawal.dinnerStatus === 'archived') {
     archived(id)
     return
   }

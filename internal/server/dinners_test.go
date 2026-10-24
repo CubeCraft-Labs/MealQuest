@@ -637,8 +637,8 @@ func TestDinnerRemovalWithdraw(t *testing.T) {
 	}
 
 	late := newRemoval()
-	if code, body := withdraw(id, late); code != http.StatusOK || body["outcome"] != "withdrawn" {
-		t.Fatalf("withdraw = %d %v, want 200 withdrawn", code, body)
+	if code, body := withdraw(id, late); code != http.StatusOK || body["outcome"] != "withdrawn" || body["dinner_status"] != "regular" {
+		t.Fatalf("withdraw = %d %v, want 200 withdrawn, dinner regular", code, body)
 	}
 	rec, body := callDinners(t, router, http.MethodDelete, dinnersPath+"/"+id+"?removal="+late, "")
 	if rec.Code != http.StatusConflict || errorCode(body) != "removal_withdrawn" {
@@ -654,8 +654,13 @@ func TestDinnerRemovalWithdraw(t *testing.T) {
 			t.Fatalf("DELETE = %d %v", rec.Code, body)
 		}
 	}
-	if code, body := withdraw(id, made); code != http.StatusOK || body["outcome"] != "archived" {
-		t.Errorf("withdraw a removal made = %d %v, want 200 archived", code, body)
+	if code, body := withdraw(id, made); code != http.StatusOK || body["outcome"] != "archived" || body["dinner_status"] != "archived" {
+		t.Errorf("withdraw a removal made = %d %v, want 200 archived, dinner archived", code, body)
+	}
+	// A removal withdrawn after another archived the dinner is withdrawn,
+	// and the answer says the dinner is archived.
+	if code, body := withdraw(id, newRemoval()); code != http.StatusOK || body["outcome"] != "withdrawn" || body["dinner_status"] != "archived" {
+		t.Errorf("withdraw after another removal archived = %d %v, want 200 withdrawn, dinner archived", code, body)
 	}
 	if s := status(); s != "archived" {
 		t.Errorf("status = %s, want archived", s)

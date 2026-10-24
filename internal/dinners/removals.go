@@ -73,39 +73,53 @@ func createRemoval(ctx context.Context, q *db.Queries, id, removal, outcome, cre
 	return nil
 }
 
+// Withdrawal is how WithdrawRemoval settled a removal: its Outcome, and
+// the Status of its dinner as it stands once the removal is settled, read in
+// the same transaction. A removal withdrawn says nothing of the dinner: it
+// may be archived all the same, by another removal.
+type Withdrawal struct {
+	Outcome string
+	Status  string
+}
+
 // WithdrawRemoval settles removal of dinner id for good and answers how: a
 // removal already made (Archive) is RemovalArchived; any other is recorded
-// RemovalWithdrawn, so it is never made, however late it arrives. The PWA
-// asks this when no answer to a removal it sent said whether it was made. An
-// unknown dinner is ErrNotFound.
-func (s *Service) WithdrawRemoval(ctx context.Context, id, removal, updatedBy string) (string, error) {
+// RemovalWithdrawn, so it is never made, however late it arrives. Either way
+// it answers the dinner's status with it, so the PWA can tell a dinner still
+// shown from one another removal archived. The PWA asks this when no answer
+// to a removal it sent said whether it was made. An unknown dinner is
+// ErrNotFound.
+func (s *Service) WithdrawRemoval(ctx context.Context, id, removal, updatedBy string) (Withdrawal, error) {
 	if updatedBy == "" {
-		return "", errors.New("dinners: withdraw removal: no member to record as created_by")
+		return Withdrawal{}, errors.New("dinners: withdraw removal: no member to record as created_by")
 	}
 	if err := checkRemoval(removal); err != nil {
-		return "", err
+		return Withdrawal{}, err
 	}
-	var outcome string
+	var w Withdrawal
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		q := db.New(tx)
 		recorded, found, err := getRemoval(ctx, q, id, removal)
 		if err != nil {
 			return err
 		}
-		if found {
-			outcome = recorded.Outcome
-			return nil
-		}
-		if _, err := q.GetDinner(ctx, id); errors.Is(err, sql.ErrNoRows) {
+		row, err := q.GetDinner(ctx, id)
+		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
-		} else if err != nil {
+		}
+		if err != nil {
 			return fmt.Errorf("dinners: withdraw removal of %s: %w", id, err)
 		}
-		outcome = RemovalWithdrawn
+		w.Status = row.Status
+		if found {
+			w.Outcome = recorded.Outcome
+			return nil
+		}
+		w.Outcome = RemovalWithdrawn
 		return createRemoval(ctx, q, id, removal, RemovalWithdrawn, updatedBy, store.Now().String())
 	})
 	if err != nil {
-		return "", err
+		return Withdrawal{}, err
 	}
-	return outcome, nil
+	return w, nil
 }

@@ -2,7 +2,15 @@ import { useIsMutating, useMutation, useQuery, useQueryClient, type QueryClient 
 import { useCallback, useEffect, useMemo } from 'react'
 import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
-import { archiveDinner, checkRemovals, knownArchived, useArchived, type RemovalOutcome, type Removals } from './archived.ts'
+import {
+  archiveDinner,
+  checkRemovals,
+  knownArchived,
+  REMOVAL_DINNER_STATUSES,
+  useArchived,
+  type Removals,
+  type Withdrawal,
+} from './archived.ts'
 import type { DinnerDetail } from './detail.ts'
 
 export const DINNERS_PATH = '/api/v1/dinners'
@@ -269,13 +277,14 @@ export function useAddRegular() {
   })
 }
 
-// parseRemovalOutcome is the server's answer to a withdrawal; any other
-// body is an error.
-function parseRemovalOutcome(body: unknown): RemovalOutcome {
+// parseWithdrawal is the server's answer to a withdrawal, {outcome,
+// dinner_status}; any other body is an error.
+function parseWithdrawal(body: unknown): Withdrawal {
+  const where = `POST ${DINNERS_PATH}/{id}/removals/{removal}/withdraw`
   if (!isRecord(body) || (body.outcome !== 'archived' && body.outcome !== 'withdrawn')) {
-    throw new Error(`POST ${DINNERS_PATH}/{id}/removals/{removal}/withdraw: response is not an outcome`)
+    throw new Error(`${where}: response is not an outcome`)
   }
-  return body.outcome
+  return { outcome: body.outcome, dinnerStatus: oneOf(where, 'dinner_status', REMOVAL_DINNER_STATUSES, body.dinner_status) }
 }
 
 // useRemovals sends a dinner's removal (DELETE
@@ -290,7 +299,7 @@ function useRemovals(): Removals {
       send: (id: string, removal: string) =>
         apiFetch<unknown>(`${dinnerPath(id)}?removal=${encodeURIComponent(removal)}`, { method: 'DELETE' }),
       withdraw: async (id: string, removal: string) =>
-        parseRemovalOutcome(
+        parseWithdrawal(
           await apiFetch<unknown>(`${dinnerPath(id)}/removals/${encodeURIComponent(removal)}/withdraw`, { method: 'POST' }),
         ),
     }),

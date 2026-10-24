@@ -46,7 +46,7 @@ function stubDinnersServer(regulars: Dinner[] = []) {
     // never made.
     if (`${method} ${path}`.endsWith('/removals/{removal}/withdraw')) {
       withdrawals.push(path)
-      return Promise.resolve(jsonResponse(200, { outcome: 'withdrawn' }))
+      return Promise.resolve(jsonResponse(200, { outcome: 'withdrawn', dinner_status: 'regular' }))
     }
     if ((method === 'POST' && path === '/api/v1/dinners') || (method === 'DELETE' && path.startsWith('/api/v1/dinners/'))) {
       return new Promise<Response>((resolve) => {

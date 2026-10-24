@@ -17,6 +17,7 @@ import {
   useArchived,
   type RemovalOutcome,
   type Removals,
+  type Withdrawal,
 } from './archived.ts'
 
 afterEach(() => {
@@ -36,7 +37,8 @@ function removals(over: Partial<Removals> = {}): Removals {
   }
 }
 
-const withdrawn = () => Promise.resolve<RemovalOutcome>('withdrawn')
+// withdrawn is the server withdrawing a removal of a dinner it still has.
+const withdrawn = () => Promise.resolve<Withdrawal>({ outcome: 'withdrawn', dinnerStatus: 'regular' })
 
 // marks is every dinner's mark saved on this device; a removing mark reads
 // as REMOVING_MARK's source, whatever its removal.
@@ -72,10 +74,12 @@ class Server {
     this.archived.add(id)
   }
 
-  withdraw(_id: string, removal: string): RemovalOutcome {
+  // withdraw is a withdrawal reaching the server: the removal settled for
+  // good, and the dinner's status with it.
+  withdraw(id: string, removal: string): Withdrawal {
     const outcome = this.outcomes.get(removal) ?? 'withdrawn'
     this.outcomes.set(removal, outcome)
-    return outcome
+    return { outcome, dinnerStatus: this.archived.has(id) ? 'archived' : 'regular' }
   }
 }
 
@@ -152,10 +156,41 @@ describe('archiveDinner', () => {
     const told = vi.fn()
     const stop = onArchived(told)
 
-    await archiveDinner('d1', removals({ send: () => Promise.reject(internal()), withdraw: () => Promise.resolve('archived') }))
+    await archiveDinner('d1', removals({ send: () => Promise.reject(internal()), withdraw: () => Promise.resolve<Withdrawal>({ outcome: 'archived', dinnerStatus: 'archived' }) }))
     stop()
     expect(marks()).toEqual({ [archivedKey('d1')]: ARCHIVED })
     expect(told).toHaveBeenCalledWith('d1')
+  })
+
+  // F3: another device archives the dinner with its own removal before this
+  // one's withdrawal settles.
+  it('marks archived a dinner another removal archived, though the server withdraws this one', async () => {
+    const server = new Server()
+    const { result } = renderHook(() => useArchived())
+    const told = vi.fn()
+    const stop = onArchived(told)
+    const R2 = '0190b8c4-7e2a-4c1d-9f3e-2a1b3c4d5e6f'
+    const send = vi.fn((_id: string, _removal: string) => Promise.reject(internal()))
+    const withdraw = vi.fn((id: string, removal: string) => {
+      // Device B's removal R2 reaches the server first.
+      server.arrive(id, R2)
+      return Promise.resolve(server.withdraw(id, removal))
+    })
+
+    await archiveDinner('d1', removals({ send, withdraw }))
+    stop()
+    const r1 = send.mock.calls[0]![1]
+    expect(withdraw.mock.calls).toEqual([['d1', r1]])
+    // R1 is withdrawn for good, and never made, however late it arrives.
+    expect(() => server.arrive('d1', r1)).toThrow('the removal was withdrawn')
+    expect(marks()).toEqual({ [archivedKey('d1')]: ARCHIVED })
+    expect([...knownArchived(result.current)]).toEqual(['d1'])
+    expect(told).toHaveBeenCalledWith('d1')
+
+    // A new page still hides it: no earlier read can link to it.
+    resetArchived()
+    const reloaded = renderHook(() => useArchived())
+    expect([...knownArchived(reloaded.result.current)]).toEqual(['d1'])
   })
 
   it('withdraws the very removal it sent', async () => {
@@ -280,6 +315,13 @@ describe('checkRemovals', () => {
     ['no answer', () => Promise.reject(new TypeError('Failed to fetch'))],
     ['refused', () => Promise.reject(internal())],
     ['no outcome', () => Promise.reject(new Error('POST /api/v1/dinners/{id}/removals/{removal}/withdraw: response is not an outcome'))],
+    [
+      'no dinner status',
+      () =>
+        Promise.reject(
+          new Error('POST /api/v1/dinners/{id}/removals/{removal}/withdraw: dinner_status undefined is not one of suggested, quest_log, tried, regular, archived'),
+        ),
+    ],
   ])('leaves a refused removal marked removing when its withdrawal is not settled either (%s)', async (_case, withdraw) => {
     localStorage.setItem(archivedKey('d1'), removingMark(A1))
 

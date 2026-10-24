@@ -471,7 +471,7 @@ describe('a removal no answer settled', () => {
     // it, and asked to withdraw it, says it never made it and never will,
     // so the mark goes and Beef tacos is a Regular with its recipe again.
     server['DELETE /api/v1/dinners/d1'] = () => errorResponse(500, 'internal')
-    server[withdrawKey('d1')] = () => jsonResponse(200, { outcome: 'withdrawn' })
+    server[withdrawKey('d1')] = () => jsonResponse(200, { outcome: 'withdrawn', dinner_status: 'regular' })
     reachable = true
     networkReads = []
     await readAgain(online.queryClient)

@@ -204,26 +204,29 @@ func deleteDinner(logger *slog.Logger, svc *dinners.Service) http.HandlerFunc {
 	}
 }
 
-// removalOutcome is the POST /dinners/{id}/removals/{removal}/withdraw
-// answer: archived or withdrawn.
-type removalOutcome struct {
-	Outcome string `json:"outcome"`
+// removalWithdrawal is the POST /dinners/{id}/removals/{removal}/withdraw
+// answer: the removal's outcome, archived or withdrawn, and the dinner's
+// status, read with it.
+type removalWithdrawal struct {
+	Outcome      string `json:"outcome"`
+	DinnerStatus string `json:"dinner_status"`
 }
 
 // postRemovalWithdraw settles a dinner's removal for good
-// (dinners.Service.WithdrawRemoval) and answers whether it was made.
+// (dinners.Service.WithdrawRemoval) and answers whether it was made and
+// the dinner's status.
 func postRemovalWithdraw(logger *slog.Logger, svc *dinners.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		actor, ok := actorOrFail(w, r, logger)
 		if !ok {
 			return
 		}
-		outcome, err := svc.WithdrawRemoval(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "removal"), actor.Subject)
+		withdrawal, err := svc.WithdrawRemoval(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "removal"), actor.Subject)
 		if err != nil {
 			writeDinnerError(w, r, logger, "withdraw dinner removal", err)
 			return
 		}
-		writeJSON(w, r, logger, http.StatusOK, removalOutcome{Outcome: outcome})
+		writeJSON(w, r, logger, http.StatusOK, removalWithdrawal{Outcome: withdrawal.Outcome, DinnerStatus: withdrawal.Status})
 	}
 }
 

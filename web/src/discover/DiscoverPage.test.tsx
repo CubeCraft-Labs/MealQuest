@@ -1017,7 +1017,7 @@ describe('DiscoverPage', () => {
       // Refused, the removal is withdrawn, so it is never made.
       const server = stubQuestLog([PAD_THAI, GUMBO], {
         'DELETE /api/v1/dinners/q1': () => errorResponse(500, 'internal'),
-        [withdrawKey('q1')]: () => jsonResponse(200, { outcome: 'withdrawn' }),
+        [withdrawKey('q1')]: () => jsonResponse(200, { outcome: 'withdrawn', dinner_status: 'quest_log' }),
       })
       await renderPage()
       const sheet = await openSheet(2)

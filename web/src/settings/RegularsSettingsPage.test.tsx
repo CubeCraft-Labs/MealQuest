@@ -713,7 +713,7 @@ describe('RegularsSettingsPage', () => {
     // Refused, the removal is withdrawn, so it is never made.
     const server = stubServer([TACOS], {
       'DELETE /api/v1/dinners/d1': () => errorResponse(500, 'internal'),
-      [withdrawKey('d1')]: () => jsonResponse(200, { outcome: 'withdrawn' }),
+      [withdrawKey('d1')]: () => jsonResponse(200, { outcome: 'withdrawn', dinner_status: 'regular' }),
     })
     await renderPage()
 
@@ -724,6 +724,43 @@ describe('RegularsSettingsPage', () => {
     expect(rows()).toHaveLength(1)
     expect(sent(server.fetchMock).map(({ request }) => request)).toEqual(['DELETE /api/v1/dinners/d1', withdrawKey('d1')])
     expect(localStorage.getItem(archivedKey('d1'))).toBeNull()
+  })
+
+  // F3: another device archived the Regular with its own removal before
+  // this one's refused removal was withdrawn.
+  it('keeps a Regular removed when its removal is withdrawn but another removal archived it', async () => {
+    const server = stubServer([TACOS, ROAST], {
+      'DELETE /api/v1/dinners/d1': () => errorResponse(500, 'internal'),
+      [withdrawKey('d1')]: () => {
+        server.regulars = [ROAST]
+        return jsonResponse(200, { outcome: 'withdrawn', dinner_status: 'archived' })
+      },
+    })
+    await renderPage()
+
+    editRow('Beef tacos')
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from Regulars' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    await waitFor(() => expect(localStorage.getItem(archivedKey('d1'))).toBe(ARCHIVED))
+    expect(sent(server.fetchMock).map(({ request }) => request)).toEqual(['DELETE /api/v1/dinners/d1', withdrawKey('d1')])
+    await waitFor(() => expect(rows()).toHaveLength(1))
+    expect(screen.queryByText('Beef tacos')).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('keeps a refused removal hidden when the withdrawal does not say the dinner\'s status', async () => {
+    stubServer([TACOS, ROAST], {
+      'DELETE /api/v1/dinners/d1': () => errorResponse(500, 'internal'),
+      [withdrawKey('d1')]: () => jsonResponse(200, { outcome: 'withdrawn' }),
+    })
+    await renderPage()
+
+    editRow('Beef tacos')
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from Regulars' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not remove Beef tacos')
+    expect(localStorage.getItem(archivedKey('d1'))).toMatch(REMOVING_MARK)
+    expect(screen.queryByText('Beef tacos')).not.toBeInTheDocument()
   })
 
   describe('Fix recipe', () => {

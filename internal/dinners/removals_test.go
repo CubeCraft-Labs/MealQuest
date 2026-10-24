@@ -43,8 +43,8 @@ func TestArchiveForARemovalIsMadeOnce(t *testing.T) {
 	if d, err := e.svc.Archive(t.Context(), id, removal, member); err != nil || d.Status != dinners.StatusArchived {
 		t.Fatalf("archive again = %+v, %v", d, err)
 	}
-	if outcome, err := e.svc.WithdrawRemoval(t.Context(), id, removal, member); err != nil || outcome != dinners.RemovalArchived {
-		t.Fatalf("withdraw a removal made = %q, %v; want archived", outcome, err)
+	if w, err := e.svc.WithdrawRemoval(t.Context(), id, removal, member); err != nil || w != (dinners.Withdrawal{Outcome: dinners.RemovalArchived, Status: dinners.StatusArchived}) {
+		t.Fatalf("withdraw a removal made = %+v, %v; want archived, dinner archived", w, err)
 	}
 	if row := e.dinner(t, id); row.Status != dinners.StatusArchived {
 		t.Errorf("status = %s", row.Status)
@@ -60,8 +60,8 @@ func TestWithdrawnRemovalArrivingLateArchivesNothing(t *testing.T) {
 	id := e.regular(t, "Chili")
 	removal := newRemoval()
 
-	if outcome, err := e.svc.WithdrawRemoval(t.Context(), id, removal, member); err != nil || outcome != dinners.RemovalWithdrawn {
-		t.Fatalf("withdraw = %q, %v; want withdrawn", outcome, err)
+	if w, err := e.svc.WithdrawRemoval(t.Context(), id, removal, member); err != nil || w != (dinners.Withdrawal{Outcome: dinners.RemovalWithdrawn, Status: dinners.StatusRegular}) {
+		t.Fatalf("withdraw = %+v, %v; want withdrawn, dinner regular", w, err)
 	}
 	if _, err := e.svc.Archive(t.Context(), id, removal, member); !errors.Is(err, dinners.ErrRemovalWithdrawn) {
 		t.Fatalf("late archive = %v, want ErrRemovalWithdrawn", err)
@@ -69,8 +69,8 @@ func TestWithdrawnRemovalArrivingLateArchivesNothing(t *testing.T) {
 	if row := e.dinner(t, id); row.Status != dinners.StatusRegular {
 		t.Errorf("status after a withdrawn removal = %s, want regular", row.Status)
 	}
-	if outcome, err := e.svc.WithdrawRemoval(t.Context(), id, removal, member); err != nil || outcome != dinners.RemovalWithdrawn {
-		t.Errorf("withdraw again = %q, %v; want withdrawn", outcome, err)
+	if w, err := e.svc.WithdrawRemoval(t.Context(), id, removal, member); err != nil || w != (dinners.Withdrawal{Outcome: dinners.RemovalWithdrawn, Status: dinners.StatusRegular}) {
+		t.Errorf("withdraw again = %+v, %v; want withdrawn, dinner regular", w, err)
 	}
 	// A new removal by the household is made.
 	if _, err := e.svc.Archive(t.Context(), id, newRemoval(), member); err != nil {
@@ -78,6 +78,35 @@ func TestWithdrawnRemovalArrivingLateArchivesNothing(t *testing.T) {
 	}
 	if row := e.dinner(t, id); row.Status != dinners.StatusArchived {
 		t.Errorf("status = %s, want archived", row.Status)
+	}
+}
+
+// TestWithdrawalAnswersADinnerAnotherRemovalArchived: removal R1, sent by
+// one device and answered with a failure, is withdrawn only after removal
+// R2, from another device, archived the dinner. R1 is withdrawn — never
+// made — but the answer says the dinner is archived, so the device that
+// withdrew R1 does not take it for a dinner still shown.
+func TestWithdrawalAnswersADinnerAnotherRemovalArchived(t *testing.T) {
+	t.Parallel()
+	e := newUnstartedEnv(t)
+	id := e.regular(t, "Chili")
+	r1, r2 := newRemoval(), newRemoval()
+
+	if _, err := e.svc.Archive(t.Context(), id, r2, member); err != nil {
+		t.Fatal(err)
+	}
+	w, err := e.svc.WithdrawRemoval(t.Context(), id, r1, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w != (dinners.Withdrawal{Outcome: dinners.RemovalWithdrawn, Status: dinners.StatusArchived}) {
+		t.Errorf("withdraw R1 after R2 archived = %+v; want withdrawn, dinner archived", w)
+	}
+	if _, err := e.svc.Archive(t.Context(), id, r1, member); !errors.Is(err, dinners.ErrRemovalWithdrawn) {
+		t.Errorf("late R1 = %v, want ErrRemovalWithdrawn", err)
+	}
+	if w, err := e.svc.WithdrawRemoval(t.Context(), id, r2, member); err != nil || w != (dinners.Withdrawal{Outcome: dinners.RemovalArchived, Status: dinners.StatusArchived}) {
+		t.Errorf("withdraw R2 = %+v, %v; want archived, dinner archived", w, err)
 	}
 }
 

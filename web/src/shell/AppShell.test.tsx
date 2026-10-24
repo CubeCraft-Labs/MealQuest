@@ -4,8 +4,9 @@ import { AppRoutes } from '../App.tsx'
 import { ApiProviders, SETTINGS_API } from '../test/ApiProviders.tsx'
 import { declaredStyle, outerSize } from '../test/cssRules.ts'
 import { InDataRouter } from '../test/dataRouter.tsx'
+import { dinnerBody } from '../test/dinners.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
-import { stubFetchByPath } from '../test/fetchStub.ts'
+import { jsonResponse, stubFetchByPath } from '../test/fetchStub.ts'
 import { mockViewport } from '../test/matchMedia.ts'
 import bottomBarStyles from './BottomBar.module.css'
 import railStyles from './Rail.module.css'
@@ -21,9 +22,9 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-async function renderAt(path: string, width: number) {
+async function renderAt(path: string, width: number, api: Record<string, () => Response> = SETTINGS_API) {
   const resize = mockViewport(width)
-  stubFetchByPath(SETTINGS_API)
+  stubFetchByPath(api)
   render(
     <InDataRouter path={path}>
       <ApiProviders>
@@ -42,6 +43,23 @@ function nav() {
 
 function navLinks() {
   return within(nav()).getAllByRole('link')
+}
+
+// The px the mobile scroll area reserves beneath its content, above the
+// safe area.
+function reservedBelowMain(): number {
+  const padding = declaredStyle(screen.getByRole('main')).paddingBottom
+  const reserved = /^calc\((\d+)px \+ env\(safe-area-inset-bottom\)\)$/.exec(padding)
+  expect(reserved, `padding-bottom ${JSON.stringify(padding)}`).not.toBeNull()
+  return Number(reserved![1])
+}
+
+// The px the bottom bar covers at the bottom of the screen, above the safe
+// area: its height plus its offset from the bottom.
+function coveredByBar(): number {
+  const bottom = /^calc\((\d+)px \+ env\(safe-area-inset-bottom\)\)$/.exec(declaredStyle(nav()).bottom)
+  expect(bottom).not.toBeNull()
+  return outerSize(nav(), 'height') + Number(bottom![1])
 }
 
 function current() {
@@ -113,10 +131,53 @@ describe('AppShell', () => {
 
   it('reserves at least 100 px below the mobile scroll area', async () => {
     await renderAt('/', MOBILE)
-    const padding = declaredStyle(screen.getByRole('main')).paddingBottom
-    const reserved = /^calc\((\d+)px \+ env\(safe-area-inset-bottom\)\)$/.exec(padding)
-    expect(reserved, `padding-bottom ${JSON.stringify(padding)}`).not.toBeNull()
-    expect(Number(reserved![1])).toBeGreaterThanOrEqual(100)
+    expect(reservedBelowMain()).toBeGreaterThanOrEqual(100)
+    expect(reservedBelowMain()).toBeGreaterThanOrEqual(coveredByBar())
+  })
+
+  // The bar comes before the scroll area in the document, so without a
+  // stacking order of its own anything in a page that forms a stacking
+  // context (a Photo's filter, a pending row's opacity) paints over it.
+  it('paints the mobile bottom bar above the page content', async () => {
+    await renderAt('/', MOBILE)
+    const barZ = Number(declaredStyle(nav()).zIndex)
+    expect(Number.isInteger(barZ) && barZ > 0, `bar z-index ${JSON.stringify(declaredStyle(nav()).zIndex)}`).toBe(true)
+    // The scroll area is one stacking context, so no z-index inside a page
+    // can lift its content past the bar.
+    expect(declaredStyle(screen.getByRole('main')).getPropertyValue('isolation')).toBe('isolate')
+    // Inside the bar, its items still paint above the grape pill.
+    const pill = nav().querySelector<HTMLElement>(`.${bottomBarStyles.pill}`)!
+    for (const link of navLinks()) {
+      expect(Number(declaredStyle(link).zIndex)).toBeGreaterThan(Number(declaredStyle(pill).zIndex))
+    }
+  })
+
+  it('keeps the last of a long Regulars list reachable above the mobile bottom bar', async () => {
+    const regulars = Array.from({ length: 40 }, (_, i) =>
+      dinnerBody(`d${i}`, `Regular ${i}`, { method: 'stovetop', minutes_total: 20 }),
+    )
+    await renderAt('/settings/regulars', MOBILE, {
+      ...SETTINGS_API,
+      '/api/v1/dinners?status=regular': () => jsonResponse(200, { dinners: regulars }),
+    })
+    const rows = within(await screen.findByRole('list', { name: 'Regulars' })).getAllByRole('listitem')
+    expect(rows).toHaveLength(40)
+    const last = rows.at(-1)!
+    expect(last).toHaveTextContent('Regular 39')
+
+    // The shell's scroll area is the one scroll container between the last
+    // row and the screen, and nothing on the way is pinned, so scrolling it
+    // to its end brings the row up into the space it reserves above the bar.
+    const main = screen.getByRole('main')
+    expect(declaredStyle(main).overflowY).toBe('auto')
+    for (let el = last.parentElement; el !== main; el = el!.parentElement) {
+      expect(el, 'the last row sits inside the scroll area').not.toBeNull()
+      const style = declaredStyle(el!)
+      expect(['auto', 'scroll', 'hidden']).not.toContain(style.overflow)
+      expect(['auto', 'scroll', 'hidden']).not.toContain(style.overflowY)
+      expect(['sticky', 'fixed']).not.toContain(style.position)
+    }
+    expect(reservedBelowMain()).toBeGreaterThanOrEqual(coveredByBar())
   })
 
   it.each([768, TABLET, 1199])('shows only the tablet rail with the "M" mark at %i px', async (width) => {

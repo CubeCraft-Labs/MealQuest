@@ -9,7 +9,7 @@ import { Link, Route, Routes } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { dinnerDetailKey, RemovalCheck } from './api.ts'
-import { ARCHIVED, archivedKey, REMOVING, resetArchived } from './archived.ts'
+import { ARCHIVED, archivedKey, removalLock, REMOVING, resetArchived } from './archived.ts'
 import { DinnerDetailPage } from './DinnerDetailPage.tsx'
 import { HOME_KEY } from '../home/api.ts'
 import { HomePage } from '../home/HomePage.tsx'
@@ -25,6 +25,7 @@ import { HOME, HOUSEHOLD_SETTINGS } from '../test/ApiProviders.tsx'
 import { InDataRouter } from '../test/dataRouter.tsx'
 import { dinnerBody } from '../test/dinners.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
+import { deviceLocks } from '../test/locks.ts'
 import { mockViewport } from '../test/matchMedia.ts'
 import { origin, stubFetchThroughWorker, stubWorkerCaches, type FakeCache } from '../test/serviceWorker.ts'
 
@@ -108,7 +109,7 @@ let held: Array<() => void>
 const HELD = [`/api/v1/plans/${WEEK}`, '/api/v1/home', `/api/v1/shopping/${WEEK}`, '/api/v1/dinners/d1']
 
 // server answers "METHOD path?search" while it can be reached.
-const server: Record<string, () => Response> = {
+const server: Record<string, () => Response | Promise<Response>> = {
   'GET /api/v1/me': () => jsonResponse(200, ME),
   'GET /api/v1/settings/household': () => jsonResponse(200, HOUSEHOLD_SETTINGS),
   'GET /api/v1/dinners?status=regular': () => jsonResponse(200, { dinners: archived ? [ROAST] : [TACOS, ROAST] }),
@@ -146,7 +147,7 @@ beforeEach(() => {
     if (!reachable) throw new TypeError('Failed to fetch')
     const respond = Object.hasOwn(server, key) ? server[key] : undefined
     if (respond === undefined) throw new Error(`unexpected network fetch: ${key}`)
-    const response = respond()
+    const response = await respond()
     if (holding && request.method === 'GET' && HELD.includes(url.pathname)) await new Promise<void>((release) => held.push(release))
     return response
   })
@@ -437,13 +438,15 @@ describe('a removal no answer settled', () => {
     expect(recipeLinks('d1')).toEqual([])
     runPage.unmount()
 
-    // A new page that can reach the server asks it, and marks Beef tacos
-    // archived, the saved Supply run with it.
+    // A new page that can reach the server sends the removal again; the
+    // server answers it, and Beef tacos is marked archived, the saved Supply
+    // run with it.
+    server['DELETE /api/v1/dinners/d1'] = archiveTacos
     reachable = true
     networkReads = []
     await renderApp(RUN_SCREEN)
     await waitFor(() => expect(localStorage.getItem(archivedKey('d1'))).toBe(ARCHIVED))
-    expect(networkReads).toContain('GET /api/v1/dinners/d1')
+    expect(networkReads).toContain('DELETE /api/v1/dinners/d1')
     await waitFor(() => expect(savedStatus('d1')).toBe('archived'))
     expect(recipeLinks('d1')).toEqual([])
   })
@@ -462,13 +465,66 @@ describe('a removal no answer settled', () => {
     expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
     expect(screen.queryByRole('button', { name: 'Edit Beef tacos' })).not.toBeInTheDocument()
 
-    // The server can be reached again: asked, it still has Beef tacos, so
-    // the mark goes and Beef tacos is a Regular with its recipe again.
+    // The server can be reached again: sent the removal again, it refuses
+    // it and still has Beef tacos, so the mark goes and Beef tacos is a
+    // Regular with its recipe again.
+    server['DELETE /api/v1/dinners/d1'] = () => errorResponse(500, 'internal')
     reachable = true
     await readAgain(online.queryClient)
     await waitFor(() => expect(localStorage.getItem(archivedKey('d1'))).toBeNull())
     expect(await screen.findByRole('button', { name: 'Edit Beef tacos' })).toBeInTheDocument()
     go('To Plan')
     await waitFor(() => expect(recipeLinks('d1')).toHaveLength(1))
+  })
+})
+
+describe('a removal another tab is still sending', () => {
+  it('is not settled by another page while unanswered, and links nowhere after that tab closes and a reload', async () => {
+    mockViewport(768)
+    const tabA = await renderApp(PLAN_SCREEN)
+    await readOnline()
+
+    // Tab A's removal reaches the server, which has not archived Beef tacos
+    // yet, and is never answered.
+    server['DELETE /api/v1/dinners/d1'] = () => new Promise<Response>(() => undefined)
+    removeTacos()
+    await waitFor(() => expect(networkReads).toContain('DELETE /api/v1/dinners/d1'))
+    expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
+    tabA.unmount()
+
+    // Tab B opens while tab A's removal is unanswered. The server still has
+    // Beef tacos and says so to every read, yet tab B neither takes the mark
+    // away nor sends the removal itself, and links nowhere to the recipe.
+    networkReads = []
+    const tabB = await renderApp(PLAN_SCREEN)
+    await read(tabB.queryClient, `/api/v1/plans/${WEEK}`)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
+    expect(networkReads).not.toContain('DELETE /api/v1/dinners/d1')
+    expect(screen.getByText('Beef tacos')).toBeInTheDocument()
+    expect(recipeLinks('d1')).toEqual([])
+
+    // Tab A's removal commits, and tab A closes before its answer comes.
+    // Tab B, holding the dinner's lock now, sends the removal again; the
+    // server answers it, and Beef tacos is marked archived, the saved Supply
+    // run with it.
+    archived = true
+    server['DELETE /api/v1/dinners/d1'] = archiveTacos
+    deviceLocks().close(removalLock('d1'))
+    await waitFor(() => expect(localStorage.getItem(archivedKey('d1'))).toBe(ARCHIVED))
+    expect(networkReads).toContain('DELETE /api/v1/dinners/d1')
+    await waitFor(() => expect(savedStatus('d1')).toBe('archived'))
+    tabB.unmount()
+
+    // A new page offline opens the saved Supply run: its Beef tacos card
+    // links nowhere, and its items still toggle.
+    reachable = false
+    networkReads = []
+    const runPage = await renderApp(RUN_SCREEN)
+    await read(runPage.queryClient, `/api/v1/shopping/${WEEK}`)
+    const card = await waitFor(() => screen.getByRole('region', { name: 'Beef tacos' }))
+    expect(within(card).getByRole('checkbox', { name: /Ground beef/ })).toBeEnabled()
+    expect(recipeLinks('d1')).toEqual([])
+    expect(localStorage.getItem(archivedKey('d1'))).toBe(ARCHIVED)
   })
 })

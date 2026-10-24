@@ -10,7 +10,9 @@ import { ApiError } from '../api/errors.ts'
 // answers, and ARCHIVED once it has archived the dinner. Archiving is for
 // good — no dinner leaves archived — so an ARCHIVED key is never taken away.
 // A REMOVING key stays when no answer said whether the server archived it,
-// until the server is asked (checkRemovals).
+// until the removal is sent again and answered (checkRemovals). Only a tab
+// holding the dinner's Web Lock (removalLock) sends its removal or settles
+// its key, so no tab settles it while another tab's removal is unanswered.
 //
 // Every read of a plan, Home, Supply run, the Regulars, the Quest log or a
 // dinner's detail applies the record before anything shows (the select of
@@ -42,8 +44,8 @@ export class ArchivedDinnerError extends Error {
 }
 
 // UnconfirmedRemovalError is a removal no answer settled: the server may
-// have archived the dinner, so it stays marked removing until the server is
-// asked (checkRemovals).
+// have archived the dinner, so it stays marked removing until the removal is
+// sent again and answered (checkRemovals).
 export class UnconfirmedRemovalError extends Error {
   constructor(cause: Error) {
     super(`${cause.message}. The server may have removed it, so this device hides it until the server can say whether it did.`, {
@@ -100,7 +102,7 @@ function changed() {
 
 // archived marks dinner id archived and tells those listening (onArchived).
 // The device refusing to save it leaves it marked removing, which hides it
-// as well; asking the server (checkRemovals) tries again.
+// as well; sending the removal again (checkRemovals) tries again.
 function archived(id: string) {
   try {
     window.localStorage.setItem(archivedKey(id), ARCHIVED)
@@ -141,57 +143,99 @@ export function onArchived(listener: (id: string) => void): () => void {
   }
 }
 
-// The dinners whose removal this page has sent and not had answered: no
-// check of the server settles them while the answer may still come.
-const sending = new Set<string>()
-const checking = new Set<string>()
+// removalLock names the Web Lock held, across every tab of the app, while a
+// removal of dinner id is sent and until its answer is taken in. Only the
+// holder settles the dinner's mark, so no tab settles it while another
+// tab's removal is unanswered; a tab that closes lets the lock go, and the
+// next holder sends the removal again.
+export function removalLock(id: string): string {
+  return 'mealquest.removal.' + id
+}
 
-// AskDinner asks the server whether dinner id is still a dinner (true) or
-// archived (false), rejecting when the server's own answer did not say.
-export type AskDinner = (id: string) => Promise<boolean>
+// locks is the browser's Web Locks, without which tabs cannot keep from
+// settling one removal at once: an error.
+function locks(): LockManager {
+  if (typeof navigator.locks === 'undefined') {
+    throw new Error('this browser cannot keep its tabs from settling one removal at once (no Web Locks), so it was not sent')
+  }
+  return navigator.locks
+}
 
-// archiveDinner removes dinner id: send is its DELETE, and ask asks the
-// server about it (checkRemovals). It is marked removing before anything is
-// sent; a device that refuses to save that is an error and nothing is sent.
-// Archived by the server — or not found, so it has no detail either — it is
-// marked archived. Refused by the server, its mark is taken away. With no
-// answer from the server, it stays marked removing, the server is asked at
-// once, and the removal fails with UnconfirmedRemovalError.
-export async function archiveDinner(id: string, send: () => Promise<unknown>, ask: AskDinner): Promise<void> {
+// markRemoving marks dinner id removing; a device that refuses to save that
+// is an error, and nothing may be sent.
+function markRemoving(id: string) {
   try {
     window.localStorage.setItem(archivedKey(id), REMOVING)
   } catch (error) {
     throw new Error(`this device could not save the removal, so it was not sent: ${asError(error).message}`, { cause: error })
   }
-  sending.add(id)
   changed()
+}
+
+// The dinners this page is settling (checkRemovals), so no second check
+// here waits to settle one again.
+const checking = new Set<string>()
+
+// SendRemoval sends dinner id's removal, which the server archives, and is
+// settled only by the server's own answer to it.
+export type SendRemoval = (id: string) => Promise<unknown>
+
+// settle sends dinner id's removal while this page holds its lock and marks
+// it as the server answers. Archived — or not found, so it has no detail
+// either — it is marked archived. Refused, its mark is taken away. With no
+// answer, it stays marked removing and the removal fails with
+// UnconfirmedRemovalError.
+async function settle(id: string, send: SendRemoval): Promise<void> {
   try {
-    await send()
+    await send(id)
   } catch (error) {
-    sending.delete(id)
     if (error instanceof ApiError && error.status === 404) {
       archived(id)
     } else if (error instanceof ApiError) {
       window.localStorage.removeItem(archivedKey(id))
       changed()
     } else {
-      changed()
-      void checkRemovals(ask)
       throw new UnconfirmedRemovalError(asError(error))
     }
     throw error
   }
-  sending.delete(id)
   archived(id)
 }
 
-// checkRemovals asks the server about each dinner marked removing whose
-// removal is not being sent from this page: one still a dinner loses its
-// mark, one archived is marked archived. One the server could not be asked
-// about stays marked removing — hidden, as it may be archived — until the
-// next check: when the app starts and each time the server can be reached
-// again (useRemovalCheck).
-export async function checkRemovals(ask: AskDinner): Promise<void> {
+// archiveDinner removes dinner id with send (its DELETE). It is marked
+// removing before anything is sent; a device that refuses to save that is
+// an error and nothing is sent. The removal is sent holding the dinner's
+// lock (removalLock) and settled as the server answers (settle) — unless
+// another tab, holding it first, already had it archived. With no answer,
+// the server is sent it again at once (checkRemovals).
+export async function archiveDinner(id: string, send: SendRemoval): Promise<void> {
+  const manager = locks()
+  markRemoving(id)
+  try {
+    await manager.request(removalLock(id), async () => {
+      const mark = window.localStorage.getItem(archivedKey(id))
+      if (mark === ARCHIVED) return
+      // Another tab's removal was refused meanwhile and took the mark away:
+      // this is the household asking again.
+      if (mark !== REMOVING) markRemoving(id)
+      await settle(id, send)
+    })
+  } catch (error) {
+    if (error instanceof UnconfirmedRemovalError) void checkRemovals(send)
+    throw error
+  }
+}
+
+// checkRemovals settles each dinner marked removing that this page is not
+// settling already: it waits for the dinner's lock — held while a removal
+// of it is unanswered, here or in another tab — and, if it is still marked
+// removing then, sends its removal again (settle). The household's removal
+// is never undone on the strength of a read that may have come before
+// another tab's removal: only the server's answer to a removal settles it.
+// One the server does not answer stays marked removing — hidden, as it may
+// be archived — until the next check: when the app starts and each time the
+// server can be reached again (useRemovalCheck).
+export async function checkRemovals(send: SendRemoval): Promise<void> {
   let saved: Map<string, string>
   try {
     saved = marks()
@@ -199,22 +243,20 @@ export async function checkRemovals(ask: AskDinner): Promise<void> {
     // The record cannot be read; every read reports that already.
     return
   }
-  const unsettled = [...saved].filter(([id, mark]) => mark === REMOVING && !sending.has(id) && !checking.has(id))
+  const manager = locks()
+  const unsettled = [...saved].filter(([id, mark]) => mark === REMOVING && !checking.has(id))
   await Promise.all(
     unsettled.map(async ([id]) => {
       checking.add(id)
       try {
-        const still = await ask(id)
-        // A removal sent meanwhile, here or in another tab, settles itself.
-        if (sending.has(id) || window.localStorage.getItem(archivedKey(id)) !== REMOVING) return
-        if (still) {
-          window.localStorage.removeItem(archivedKey(id))
-          changed()
-        } else {
-          archived(id)
-        }
+        await manager.request(removalLock(id), async () => {
+          // A removal answered meanwhile, here or in another tab, settled it.
+          if (window.localStorage.getItem(archivedKey(id)) !== REMOVING) return
+          await settle(id, send)
+        })
       } catch {
-        // Not asked: it stays marked removing until the next check.
+        // Settled as the server answered, or still marked removing until
+        // the next check.
       } finally {
         checking.delete(id)
       }
@@ -245,6 +287,5 @@ export function useArchived(): Archived {
 // test starts with it.
 export function resetArchived() {
   current = undefined
-  sending.clear()
   checking.clear()
 }

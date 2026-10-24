@@ -1,8 +1,8 @@
 import { useIsMutating, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect } from 'react'
 import { useApi } from '../api/index.ts'
-import { ApiError, isRecord } from '../api/errors.ts'
-import { archiveDinner, checkRemovals, knownArchived, useArchived, type AskDinner } from './archived.ts'
+import { isRecord } from '../api/errors.ts'
+import { archiveDinner, checkRemovals, knownArchived, useArchived, type SendRemoval } from './archived.ts'
 import type { DinnerDetail } from './detail.ts'
 
 export const DINNERS_PATH = '/api/v1/dinners'
@@ -269,55 +269,38 @@ export function useAddRegular() {
   })
 }
 
-// useAskDinner asks the server whether a dinner is still a dinner (GET
-// /api/v1/dinners/{id}) or archived (404). The service worker's saved copy
-// says nothing about now: it rejects, as does any other failure.
-function useAskDinner(): AskDinner {
-  const { apiRead } = useApi()
-  return useCallback(
-    async (id: string) => {
-      const path = dinnerPath(id)
-      try {
-        const read = await apiRead<unknown>(path)
-        if (read.cached) throw new Error(`GET ${path}: answered from the copy saved on this device, not by the server`)
-        return true
-      } catch (error) {
-        if (error instanceof ApiError && error.status === 404) return false
-        throw error
-      }
-    },
-    [apiRead],
-  )
+// useSendRemoval sends a dinner's removal (DELETE /api/v1/dinners/{id}),
+// which the server archives. A non-GET never reaches the service worker's
+// cache, so only the server answers it.
+function useSendRemoval(): SendRemoval {
+  const { apiFetch } = useApi()
+  return useCallback((id: string) => apiFetch<unknown>(dinnerPath(id), { method: 'DELETE' }), [apiFetch])
 }
 
 // useArchiveDinner removes a dinner — from Regulars or the Quest log — which
-// the server archives (DELETE /api/v1/dinners/{id}), recording it on this
-// device first so no read answered before — in flight, cached or saved —
-// shows it with a recipe to open (archiveDinner).
+// the server archives, recording it on this device first so no read
+// answered before — in flight, cached or saved — shows it with a recipe to
+// open (archiveDinner).
 export function useArchiveDinner() {
-  const { apiFetch } = useApi()
-  const ask = useAskDinner()
-  return useCallback(
-    (id: string) => archiveDinner(id, () => apiFetch<unknown>(dinnerPath(id), { method: 'DELETE' }), ask),
-    [apiFetch, ask],
-  )
+  const send = useSendRemoval()
+  return useCallback((id: string) => archiveDinner(id, send), [send])
 }
 
-// useRemovalCheck asks the server about each dinner whose removal no answer
-// settled (checkRemovals) when the app starts and each time the server can
-// be reached again.
+// useRemovalCheck sends again each removal no answer settled
+// (checkRemovals) when the app starts and each time the server can be
+// reached again.
 export function useRemovalCheck() {
   const { network } = useApi()
-  const ask = useAskDinner()
+  const send = useSendRemoval()
   useEffect(() => {
     let offline = network.offline()
-    if (!offline) void checkRemovals(ask)
+    if (!offline) void checkRemovals(send)
     return network.subscribe(() => {
       const now = network.offline()
-      if (offline && !now) void checkRemovals(ask)
+      if (offline && !now) void checkRemovals(send)
       offline = now
     })
-  }, [network, ask])
+  }, [network, send])
 }
 
 // RemovalCheck runs useRemovalCheck for the whole app.

@@ -108,7 +108,7 @@ async function visit(id: string, name: string) {
 describe('dinner detail offline', () => {
   it('saves a visited dinner in the API cache the worker reads offline', async () => {
     mockViewport(390)
-    expect(routeFor({ method: 'GET', url: new URL('/api/v1/dinners/d1', origin), mode: 'cors' }, origin)).toEqual({
+    expect(routeFor({ method: 'GET', url: new URL('/api/v1/dinners/d1', origin), mode: 'cors', cache: 'default' }, origin)).toEqual({
       strategy: 'network-first',
       cacheName: cacheNames.api,
     })

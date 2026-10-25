@@ -6,10 +6,12 @@ import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession 
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
 import { stubAnimate, type FakeAnimation } from '../test/animate.ts'
 import { declaredStyle } from '../test/cssRules.ts'
-import { dinnerBody, type DinnerBody } from '../test/dinners.ts'
+import { dinnerBody, recipeBody, type DinnerBody } from '../test/dinners.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
 import { mockViewport } from '../test/matchMedia.ts'
+import { ARCHIVED, archivedKey, REMOVING, resetArchived } from '../dinners/archived.ts'
+import { cacheFallbackHeader } from '../sw/routes.ts'
 import { DECK_KEY } from './api.ts'
 import { DiscoverPage } from './DiscoverPage.tsx'
 
@@ -828,8 +830,10 @@ describe('DiscoverPage', () => {
       expect(server.fetchMock.mock.calls.map(([input]) => String(input)).filter((path) => path.startsWith('/api/v1/plans'))).toEqual([])
     })
 
-    it('opens /dinner/:id from a row', async () => {
-      stubQuestLog([PAD_THAI, GUMBO])
+    it('opens /dinner/:id from a row once the server answers that the dinner is there', async () => {
+      stubQuestLog([PAD_THAI, GUMBO], {
+        'GET /api/v1/dinners/q2': () => jsonResponse(200, recipeBody('q2', 'Shrimp gumbo', { status: 'quest_log' })),
+      })
       await renderPage()
       const sheet = await openSheet(2)
       fireEvent.click(within(sheet).getByRole('button', { name: /^Shrimp gumbo/ }))
@@ -866,6 +870,43 @@ describe('DiscoverPage', () => {
         expect(server.fetchMock.mock.calls.filter(([input]) => String(input) === QUEST_LOG)).toHaveLength(2),
       )
       expect(screen.getByRole('button', { name: 'Quest log · 1' })).toBeInTheDocument()
+    })
+
+    it('keeps a removed dinner out of the Quest log, with no way to its recipe, when a read the worker saved before still has it', async () => {
+      // Once Pad thai is archived, the server cannot be reached and the
+      // service worker answers each Quest log read with what it saved before
+      // the removal, Pad thai still in it.
+      let removed = false
+      const savedBefore = () =>
+        new Response(JSON.stringify({ dinners: [PAD_THAI, GUMBO] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json', [cacheFallbackHeader]: '1' },
+        })
+      const server = stubQuestLog([PAD_THAI, GUMBO], {
+        [`GET ${QUEST_LOG}`]: () => (removed ? savedBefore() : jsonResponse(200, { dinners: [PAD_THAI, GUMBO] })),
+        'DELETE /api/v1/dinners/q1': () => {
+          removed = true
+          return jsonResponse(200, { ...PAD_THAI, status: 'archived' })
+        },
+      })
+      const page = await renderPage()
+      const sheet = await openSheet(2)
+
+      fireEvent.click(within(sheet).getByRole('button', { name: 'Remove Pad thai' }))
+      fireEvent.click(within(screen.getByRole('dialog', { name: 'Remove Pad thai?' })).getByRole('button', { name: 'Remove' }))
+      await waitFor(() => expect(server.fetchMock.mock.calls.filter(([input]) => String(input) === QUEST_LOG)).toHaveLength(2))
+      expect(localStorage.getItem(archivedKey('q1'))).toBe(ARCHIVED)
+      expect(names(sheet)).toEqual(['Shrimp gumbo'])
+      expect(within(sheet).queryByRole('button', { name: /^Pad thai/ })).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Quest log · 1' })).toBeInTheDocument()
+
+      // Nor does a new page, from the record saved on this device.
+      page.unmount()
+      resetArchived()
+      await renderPage()
+      const reopened = await openSheet(1)
+      expect(names(reopened)).toEqual(['Shrimp gumbo'])
+      expect(within(reopened).queryByRole('button', { name: /^Pad thai/ })).not.toBeInTheDocument()
     })
 
     it('keeps focus in the open Quest log after a removal: on the next row, the one before the last, then the sheet', async () => {
@@ -973,7 +1014,7 @@ describe('DiscoverPage', () => {
       expect(within(sheet).getByRole('button', { name: 'Remove Shrimp gumbo' })).toHaveFocus()
     })
 
-    it('keeps a dinner whose removal the server refuses, saying why', async () => {
+    it('hides a dinner whose removal the server refuses on this device, saying why', async () => {
       const server = stubQuestLog([PAD_THAI, GUMBO], { 'DELETE /api/v1/dinners/q1': () => errorResponse(500, 'internal') })
       await renderPage()
       const sheet = await openSheet(2)
@@ -981,15 +1022,21 @@ describe('DiscoverPage', () => {
       fireEvent.click(within(sheet).getByRole('button', { name: 'Remove Pad thai' }))
       const confirm = screen.getByRole('dialog', { name: 'Remove Pad thai?' })
       fireEvent.click(within(confirm).getByRole('button', { name: 'Remove' }))
-      expect(await within(confirm).findByRole('alert')).toHaveTextContent("Couldn't remove it. internal message")
+      expect(await within(confirm).findByRole('alert')).toHaveTextContent(
+        "Couldn't remove it. internal message. It could not be removed here; it stays hidden on this device until the server settles it.",
+      )
       expect(sent(server.fetchMock)).toEqual(['DELETE /api/v1/dinners/q1'])
-      expect(rows(sheet)).toHaveLength(2)
-      expect(screen.getByRole('button', { name: 'Quest log · 2' })).toBeInTheDocument()
+      // The server may yet archive it, so it stays hidden here.
+      expect(localStorage.getItem(archivedKey('q1'))).toBe(REMOVING)
+      expect(rows(sheet)).toHaveLength(1)
+      expect(within(sheet).queryByText('Pad thai')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Quest log · 1' })).toBeInTheDocument()
 
       // Keep it closes the confirmation and clears the error.
       fireEvent.click(within(confirm).getByRole('button', { name: 'Keep it' }))
-      fireEvent.click(within(sheet).getByRole('button', { name: 'Remove Pad thai' }))
-      expect(within(screen.getByRole('dialog', { name: 'Remove Pad thai?' })).queryByRole('alert')).not.toBeInTheDocument()
+      expect(screen.queryByRole('dialog', { name: 'Remove Pad thai?' })).not.toBeInTheDocument()
+      fireEvent.click(within(sheet).getByRole('button', { name: 'Remove Shrimp gumbo' }))
+      expect(within(screen.getByRole('dialog', { name: 'Remove Shrimp gumbo?' })).queryByRole('alert')).not.toBeInTheDocument()
     })
 
     it('says how to fill an empty Quest log', async () => {

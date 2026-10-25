@@ -49,7 +49,7 @@ export function stubWorkerCaches(): FakeCache {
 // answer sends a GET through the API strategy, as src/sw.ts does for a
 // network-first route; the strategy's own fetch is the network.
 export async function answer(request: Request): Promise<Response> {
-  expect(routeFor({ method: request.method, url: new URL(request.url), mode: 'cors' }, origin)).toEqual({
+  expect(routeFor({ method: request.method, url: new URL(request.url), mode: 'cors', cache: request.cache }, origin)).toEqual({
     strategy: 'network-first',
     cacheName: cacheNames.api,
   })
@@ -69,7 +69,7 @@ export function stubFetchThroughWorker(network: (request: Request) => Promise<Re
   vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     if (input instanceof Request) return network(input)
     const request = new Request(new URL(String(input), origin), init)
-    const route = routeFor({ method: request.method, url: new URL(request.url), mode: 'cors' }, origin)
+    const route = routeFor({ method: request.method, url: new URL(request.url), mode: 'cors', cache: request.cache }, origin)
     if (route.strategy === 'network-only') return network(request)
     if (route.strategy !== 'network-first') throw new Error(`unexpected ${route.strategy} fetch: ${request.url}`)
     return answer(request).catch((error: unknown) => {

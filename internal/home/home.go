@@ -66,9 +66,12 @@ type Home struct {
 
 // Dinner is tonight's dinner.
 type Dinner struct {
-	ID    string  `json:"id"`
-	Name  string  `json:"name"`
-	Photo *string `json:"photo"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Status is the dinner's status now (dinners.Status*); a dinner
+	// archived after the plan was made stays on it, archived.
+	Status string  `json:"status"`
+	Photo  *string `json:"photo"`
 	// Origin is regular or side_quest.
 	Origin       string `json:"origin"`
 	MinutesTotal *int64 `json:"minutes_total"`
@@ -149,7 +152,7 @@ func (s *Service) tonight(ctx context.Context, thisWeek, today store.LocalDate) 
 	for _, d := range p.Days {
 		if d.Date == today.String() {
 			return &Dinner{
-				ID: d.Dinner.ID, Name: d.Dinner.Name, Photo: d.Dinner.Photo,
+				ID: d.Dinner.ID, Name: d.Dinner.Name, Status: d.Dinner.Status, Photo: d.Dinner.Photo,
 				Origin: d.Dinner.Origin, MinutesTotal: d.Dinner.Minutes,
 			}, nil
 		}
@@ -212,13 +215,21 @@ type Update struct {
 	Body  string `json:"body"`
 	// URL is the path-absolute, same-origin path a tap on the update opens.
 	URL string `json:"url"`
+	// Dinner is the dinner whose recipe URL opens, or null when URL opens
+	// no recipe. The app asks the server whether the dinner still has a
+	// recipe before it opens it, and names it when it does not.
+	Dinner *notify.Dinner `json:"dinner"`
 	// CreatedAt is when the event was stored, UTC RFC 3339 with
 	// milliseconds; it is what POST /updates/seen takes back.
 	CreatedAt string `json:"created_at"`
 }
 
 // Updates returns the last RecentLimit distinct notification events, newest
-// first, whatever channels they went to.
+// first, whatever channels they went to. An event stored before events
+// named the dinner whose recipe they open has a recipe URL and no dinner:
+// it offers no recipe and opens its week's plan instead, as a reminder of a
+// dinner archived since it was planned does, where the day's recipe button
+// checks the dinner with the server.
 func (s *Service) Updates(ctx context.Context) ([]Update, error) {
 	events, err := s.notifier.Recent(ctx, RecentLimit)
 	if err != nil {
@@ -226,10 +237,18 @@ func (s *Service) Updates(ctx context.Context) ([]Update, error) {
 	}
 	out := make([]Update, len(events))
 	for i, ev := range events {
-		out[i] = Update{
-			Type: string(ev.Type), Title: ev.Title, Body: ev.Body, URL: ev.URL,
+		u := Update{
+			Type: string(ev.Type), Title: ev.Title, Body: ev.Body, URL: ev.URL, Dinner: ev.Dinner,
 			CreatedAt: store.Timestamp{Time: ev.CreatedAt}.String(),
 		}
+		if ev.Dinner == nil && notify.OpensRecipe(ev.URL) {
+			week, err := store.ParseLocalDate(ev.Week)
+			if err != nil {
+				return nil, fmt.Errorf("home: %s update opening %q has no week: %w", ev.Type, ev.URL, err)
+			}
+			u.URL = notify.PlanPath(week)
+		}
+		out[i] = u
 	}
 	return out, nil
 }

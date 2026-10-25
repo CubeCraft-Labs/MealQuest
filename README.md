@@ -7,9 +7,27 @@ builds a weekly plan, pushes it to Google Calendar, and generates a shopping
 list grouped by dinner, kept as a browsable weekly history. It ships as a
 single Go service with the React PWA embedded in the binary.
 
-> Status: this repository is the Feature 01 scaffold (Go service with
-> `/health`, embedded PWA skeleton, Makefile, Dockerfile, CI). The planned
-> application is described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Production runs at <https://mealquest.cubecraftlabs.com> for one household,
+signed in through Authentik.
+
+## Stack
+
+- **Backend:** Go 1.25 (`CGO_ENABLED=0`, one static binary), chi router,
+  SQLite through `modernc.org/sqlite` with sqlc queries and embedded
+  migrations, Authentik OIDC, `log/slog`. AI calls go to an
+  OpenAI-compatible, Anthropic or Ollama endpoint over plain HTTP; recipes
+  come from SearXNG or Brave search and the recipe page's schema.org data.
+  Google Calendar, Google Chat and Web Push are the integrations.
+- **Frontend:** React 19, TypeScript, Vite, React Router 7, TanStack Query 5,
+  `vite-plugin-pwa`, CSS Modules over the design tokens; tests with Vitest,
+  Testing Library and jsdom.
+- **Deployment:** a Docker Compose stack (the service, Litestream
+  replication to the NAS, a SearXNG sidecar) behind Traefik, with systemd
+  units for the firewall, nightly media backup and the automated deploy of
+  `main`.
+
+The approved dependency list is in [AGENTS.md](AGENTS.md); nothing else is
+added without the owner's approval.
 
 ## Running it locally
 
@@ -28,6 +46,15 @@ invalid variable.
 | `make test`    | `gofmt` check, `go vet`, `go test -race`, web typecheck and tests. |
 | `make build`   | Build the PWA, embed it, build the static binary `bin/mealquest`. |
 | `make docker`  | Build the container image from the root `Dockerfile`.           |
+| `make sqlc-check` | Regenerate `internal/db` with sqlc and fail if it drifted.   |
+
+## Deploying and operating
+
+[deploy/RUNBOOK.md](deploy/RUNBOOK.md) is the deploy runbook: build, ship and
+restart, verifying the deployed version, rollback and the automated deploy.
+Database restore, the boot configuration and other host procedures are in
+CTXD: project `mealquest`, file `RUNBOOKS.MD`. Only `overseer` releases, by
+merging `dev` into `main`.
 
 ## Where to read next
 

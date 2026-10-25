@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { HOME } from '../test/ApiProviders.tsx'
-import { parseHome, parseUpdates } from './api.ts'
+import { parseHome, parseUpdates, showArchived } from './api.ts'
 
 const origin = 'https://mealquest.example'
 const where = 'GET /api/v1/updates'
@@ -8,7 +8,7 @@ const where = 'GET /api/v1/updates'
 // body is a GET /api/v1/updates body holding one update that opens url.
 function body(url: string) {
   return {
-    updates: [{ type: 'plan_ready', title: 'Your week is drafted', body: '', url, created_at: '2026-10-10T16:00:00.000Z' }],
+    updates: [{ type: 'plan_ready', title: 'Your week is drafted', body: '', url, dinner: null, created_at: '2026-10-10T16:00:00.000Z' }],
   }
 }
 
@@ -41,12 +41,22 @@ describe('parseUpdates', () => {
 
 describe('parseHome', () => {
   it("keeps the household's zone, and refuses one that is not an IANA zone", () => {
-    expect(parseHome('GET /api/v1/home', HOME).timezone).toBe('America/New_York')
-    expect(() => parseHome('GET /api/v1/home', { ...HOME, timezone: 'Mars/Olympus' })).toThrow(
+    expect(parseHome('GET /api/v1/home', HOME, false).timezone).toBe('America/New_York')
+    expect(() => parseHome('GET /api/v1/home', { ...HOME, timezone: 'Mars/Olympus' }, false)).toThrow(
       'GET /api/v1/home: timezone "Mars/Olympus" is not an IANA zone',
     )
-    expect(() => parseHome('GET /api/v1/home', { ...HOME, timezone: undefined })).toThrow(
+    expect(() => parseHome('GET /api/v1/home', { ...HOME, timezone: undefined }, false)).toThrow(
       'GET /api/v1/home: timezone undefined is not an IANA zone',
     )
+  })
+})
+
+describe('showArchived', () => {
+  it("shows tonight's dinner archived when the server archived it, whatever the read said", () => {
+    const home = parseHome('GET /api/v1/home', HOME, false)
+
+    expect(showArchived(home, new Set(['other']))).toBe(home)
+    expect(showArchived(home, new Set(['d1'])).tonight).toMatchObject({ id: 'd1', name: 'Pizza night', status: 'archived' })
+    expect(home.tonight?.status).toBe('regular')
   })
 })

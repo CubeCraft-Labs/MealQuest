@@ -197,6 +197,9 @@ type Group struct {
 	ID         string `json:"id"`
 	DinnerID   string `json:"dinner_id"`
 	DinnerName string `json:"dinner_name"`
+	// DinnerStatus is the dinner's status now (dinners.Status*); a dinner
+	// removed from Regulars since the list was made is archived.
+	DinnerStatus string `json:"dinner_status"`
 	// Date is the plan day, household-local YYYY-MM-DD.
 	Date     string `json:"date"`
 	Position int    `json:"position"`
@@ -513,7 +516,7 @@ func readList(ctx context.Context, q *db.Queries, list db.ShoppingList) (List, e
 	for _, r := range rows {
 		g := r.ShoppingGroup
 		groups = append(groups, Group{
-			ID: g.ID, DinnerID: g.DinnerID, DinnerName: r.DinnerName, Date: g.Date, Position: int(g.Position),
+			ID: g.ID, DinnerID: g.DinnerID, DinnerName: r.DinnerName, DinnerStatus: r.DinnerStatus, Date: g.Date, Position: int(g.Position),
 			Items: byGroup[g.ID],
 		})
 	}
@@ -586,8 +589,8 @@ func listOf(list db.ShoppingList, groups []Group) List {
 
 // wantGroup is a group the plan asks for, before it is stored.
 type wantGroup struct {
-	date, dinnerID, dinnerName string
-	items                      []wantItem
+	date, dinnerID, dinnerName, dinnerStatus string
+	items                                    []wantItem
 }
 
 type wantItem struct {
@@ -631,7 +634,7 @@ func wanted(ctx context.Context, q *db.Queries, planID string) ([]wantGroup, []S
 			continue
 		}
 		manual := dinners.IsManualRecipe(recipe.SourceUrl)
-		g := wantGroup{date: day.Date, dinnerID: d.ID, dinnerName: d.Name}
+		g := wantGroup{date: day.Date, dinnerID: d.ID, dinnerName: d.Name, dinnerStatus: d.Status}
 		for _, ing := range ings {
 			it, err := item(ing, manual)
 			if err != nil {
@@ -699,7 +702,7 @@ func reconcile(ctx context.Context, q *db.Queries, listID string, want []wantGro
 
 	groups := make([]Group, 0, len(want))
 	for gi, w := range want {
-		g := Group{DinnerID: w.dinnerID, DinnerName: w.dinnerName, Date: w.date, Position: gi}
+		g := Group{DinnerID: w.dinnerID, DinnerName: w.dinnerName, DinnerStatus: w.dinnerStatus, Date: w.date, Position: gi}
 		if old, ok := groupsByKey[groupKey{w.date, w.dinnerID}]; ok {
 			g.ID = old.ID
 			kept[old.ID] = true

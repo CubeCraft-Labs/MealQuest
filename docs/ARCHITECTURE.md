@@ -2,10 +2,8 @@
 
 This mirrors the architecture section of `CONTEXT.MD` in the CTXD project
 `mealquest`, which is the source of record; if the two disagree, CTXD wins and
-this file should be updated. It describes the **planned** application. The
-repository today is the Feature 01 scaffold: `cmd/server`, `internal/config`,
-`internal/server` (`/health`), `internal/frontend` (embedded PWA with SPA
-fallback), the `web/` skeleton, `Makefile`, `Dockerfile` and CI.
+this file should be updated. It describes the application as built; nothing
+it names is still only planned.
 
 Decision numbers (D-NNN) refer to `DECISIONS.MD` in CTXD.
 
@@ -46,20 +44,22 @@ headers, so sign-in works whichever peer the request arrives from.
 | `cmd/vapidgen` | Prints a new VAPID key pair for Web Push. |
 | `internal/config` | Env-only `MEALQUEST_*` config; secrets from `*_FILE`. |
 | `internal/server` | HTTP server, router, middleware. |
+| `internal/forwarded` | Client IP and scheme from `X-Forwarded-*`, trusted only from `MEALQUEST_TRUSTED_PROXY`. |
+| `internal/secureurl` | The transport rule for URLs that carry credentials (`secureurl.Check`). |
 | `internal/frontend` | Embedded PWA, SPA fallback. |
 | `internal/auth` | Authentik OIDC, sessions, CSRF. |
-| `internal/db`, `internal/store` | SQLite connections, sqlc queries. |
+| `internal/db`, `internal/store` | sqlc-generated queries; SQLite connections, migrations at boot, transactions. |
 | `internal/secretbox` | AES-256-GCM encryption for `_ct` columns. |
-| `internal/household`, `internal/dinners`, `internal/recipes` | Domain. |
-| `internal/ai/llm`, `internal/ai/harness`, `internal/ai/skills` | AI provider adapters, skill harness, skills. |
-| `internal/suggest`, `internal/plan`, `internal/shopping`, `internal/ideas` | Feature services. |
+| `internal/household`, `internal/dinners`, `internal/recipes` | Domain: household settings and local time, dinners (grounding, photo backfill), recipe search, fetch and grounding. |
+| `internal/ai/llm`, `internal/ai/harness`, `internal/ai/skills`, `internal/ai/aisettings` | AI provider adapters, skill harness, skills, AI settings. |
+| `internal/suggest`, `internal/plan`, `internal/shopping`, `internal/ideas`, `internal/home` | Feature services. |
 | `internal/gcal`, `internal/notify`, `internal/push`, `internal/chat` | Integrations. |
 | `internal/vapid` | VAPID key generation and validation. |
 | `internal/jobs`, `internal/scheduler` | Background jobs and schedules. |
-| `migrations/` | SQL migrations (no goose or golang-migrate). |
+| `migrations/` | SQL migrations, embedded and applied at boot by `internal/store` (no goose or golang-migrate); sqlc queries in `migrations/queries/`. |
 | `web/` | React PWA. |
-| `deploy/` | Deployment files. |
-| `docs/` | Documentation. |
+| `deploy/` | Production compose stack, systemd units, the [deploy runbook](../deploy/RUNBOOK.md) and the automated deploy (see Deployment). |
+| `docs/` | Documentation (this file). |
 | `design/` | Requirements and UI handoff (read-only reference). |
 
 ## Backend stack and conventions
@@ -203,7 +203,9 @@ automatic** (D-021).
   (`stovetop` / `oven` / `crockpot` / `grill` / `other`), `minutes_total`
   (1–1440) and `difficulty` (`easy` / `medium` / `hard`); invalid values
   are 400 `invalid_dinner` and change nothing. `DELETE /api/v1/dinners/{id}`
-  sets status `archived` and keeps the row; `POST
+  sets status `archived` and keeps the row; sent again it succeeds, so the
+  PWA sends a removal until it is answered, and a dinner this device has
+  begun to remove it never again shows with a recipe to open; `POST
   /api/v1/dinners/{id}/favorite` toggles `is_favorite`. Every write records
   the session's subject as `updated_by`; an unknown id is 404.
   `GET /api/v1/dinners/{id}` returns the dinner with its recipe, read in
@@ -475,7 +477,9 @@ automatic** (D-021).
   /api/v1/plans/{weekStart}` returns `{id, week_start, week_label, status,
   ai_note, calendar_synced_at, updated_at, days}`, or 404 when the week has
   no plan; `days` are the seven days Monday first, each `{date, dinner: {id,
-  name, photo, minutes, method, origin}, is_new, start_by}`. `is_new` means
+  name, status, photo, minutes, method, origin}, is_new, start_by}`. The
+  dinner's `status` is its status now — `archived` once it was removed after
+  the plan was made, when it has no detail to open. `is_new` means
   the dinner was planned from the Quest log; `start_by` is the household's
   dinner time on that date minus `minutes_total`, computed on read, for a
   crock-pot dinner with known minutes, else null. `POST
@@ -811,6 +815,20 @@ purge are fixed and not configurable.
 
 Runs are recorded in `schedule_runs` and executed through `jobs`.
 
+Job kinds (`internal/jobs`; each registered when `cmd/server` builds the
+service named, before the runner starts). `POST /api/v1/jobs` refuses a
+service-only kind; `GET /api/v1/jobs/{id}` reports any job.
+
+| Kind | Registered by | Enqueued by | Service-only |
+| --- | --- | --- | --- |
+| `noop` | `jobs.RegisterBuiltins` | `POST /api/v1/jobs` (does nothing; proves the runner works) | no |
+| `ground_dinner` | `dinners.Service` | Adding or renaming a `pending` dinner | no |
+| `backfill_dinner_photos` | `dinners.Service` | `POST /api/v1/settings/photo-backfill` | yes |
+| `suggestion_batch` | `suggest.Service` | `POST /api/v1/suggestions/batches`, a deck decision (replenish), `suggestions_weekly` | no |
+| `draft_week` | `plan.Service` | `POST /api/v1/plans/{weekStart}/draft`, `plan_draft` | yes |
+| `title_supply_run` | `shopping.Service` | Generating an untitled Supply run | yes |
+| `ideas_from_ingredients`, `quick_ideas` | `ideas.Service` | `POST /api/v1/ideas/from-ingredients`, `POST /api/v1/ideas/quick` | yes |
+
 `internal/scheduler` runs them. A schedule registers a name, a rule read
 from the settings (`scheduler.Daily`, `Weekly` or `WeeklyForNextWeek`, or `DailyAt` for a time read from data) and a
 run function; settings changes reach it through `SettingsService.Subscribe`
@@ -928,6 +946,27 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
     {time}" with the dinner's name, only for a crock-pot dinner whose
     `start_by` is earlier than `reminder_time`. The `day_of_reminder`
     schedule calls it 15 minutes before `start_by`.
+  - A reminder offers its dinner's recipe only while the dinner has one.
+    It then names the dinner (`notify.Event.Dinner`, the payload's
+    `dinner` `{id, name}`), and its URL is that recipe's
+    (`notify.RecipePath`); `notify.Emit` refuses a recipe URL naming no
+    dinner, or a dinner with another URL. A dinner archived since it was
+    planned has no recipe, so both reminders of it name no dinner and open
+    the week's plan (`/plan?week={weekStart}`): the day-of reminder is
+    "Tonight: {dinner}" with "This dinner was removed, so its recipe is
+    gone.", and the Google Chat message closes with "Open the plan →".
+    The same holds when a stored reminder is delivered: the outbox worker
+    checks its dinner again before sending (`notify` `recipeNow`), so a
+    reminder queued while its dinner was viewable and archived (or gone)
+    before delivery is sent, on every channel, as one emitted after the
+    archival is (title without " · Recipe →", "This dinner was removed, so
+    its recipe is gone." when it has no other body, the week's plan, no
+    dinner), and a reminder stored before reminders named their dinner is
+    sent naming it while it still has a recipe. The Web Push message
+    carries `dinner` with `title`, `body`, `url` and `tag`, so a tap
+    checks that recipe with the server before it opens it.
+    A Chat message's call to action follows the path its event opens
+    (`chat.Text`). No other event opens a recipe.
   - `rotation_review:{dinnerId}:{planDate}` (URL `/`, where the Home card
     asks) through `plan.Service.MarkTried(planDate)`, "How was {dinner}?
     Keep it in rotation?", once per Rotation check it opens. The
@@ -1159,8 +1198,10 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
 - `GET /api/v1/shopping/{weekStart}` returns `{weekStart, label, title,
   status, sent_to_chat_at, chat_send_unconfirmed_at, needed_count,
   total_count, groups: [{dinner:
-  {id, name}, date, day, items: [{id, name, qty, needed}]}]}`: `label` is
-  the week label (shown while `title` is null), `day` the plan day's
+  {id, name, status}, date, day, items: [{id, name, qty, needed}]}]}`:
+  `label` is the week label (shown while `title` is null), the dinner's
+  `status` its status now (`archived` once it was removed after the Supply
+  run was made, when it has no detail to open), `day` the plan day's
   weekday ("Monday"), `qty` null when the recipe gives none,
   `needed_count` the items still needed and `total_count` all items. 404
   when the week has no Supply run, 400 `invalid_week`.
@@ -1219,7 +1260,7 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
   {
     "dateLabel": "Friday, Oct 2",
     "timezone": "America/Chicago",
-    "tonight": {"id": "…", "name": "…", "photo": "/media/…", "origin": "regular", "minutes_total": 40},
+    "tonight": {"id": "…", "name": "…", "status": "regular", "photo": "/media/…", "origin": "regular", "minutes_total": 40},
     "sideQuestCount": 10,
     "shoppingList": {"weekStart": "2026-10-05", "label": "Week 41 · Oct 5 – 11", "ready": true, "sentToChatAt": null},
     "recentUpdates": {"unread": true}
@@ -1229,7 +1270,9 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
   `tonight` is today's day of the current week's plan (`plan.Get`), null
   when the week has no plan; it changes at the household's local
   midnight, so the PWA reads Home again at the next local midnight of
-  `timezone`, the household's IANA zone. `photo` and `minutes_total` are
+  `timezone`, the household's IANA zone. `tonight.status` is the dinner's
+  status now — `archived` once it was removed after the plan was made, when
+  Home shows no Recipe pill. `photo` and `minutes_total` are
   null when unknown. `sideQuestCount` is the pending cards of the deck,
   read without writing (`suggest.PendingCount`): a Home read never fails
   orphaned batches the way a `suggest.Deck` read does.
@@ -1247,11 +1290,14 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
   one update):
 
   ```json
-  {"updates": [{"type": "plan_ready", "title": "…", "body": "…", "url": "/plan?week=2026-10-12", "created_at": "2026-10-09T14:00:00.000Z"}]}
+  {"updates": [{"type": "plan_ready", "title": "…", "body": "…", "url": "/plan?week=2026-10-12", "dinner": null, "created_at": "2026-10-09T14:00:00.000Z"}]}
   ```
 
   Every field comes from the stored payload, which never holds a webhook
-  URL or secret; `url` is the same-origin path the event opens.
+  URL or secret; `url` is the same-origin path the event opens, and
+  `dinner` (`{id, name}`, or `null`) the dinner whose recipe `url` is. An
+  event stored with a recipe URL before events named their dinner offers
+  no recipe: its `url` is its week's plan and its `dinner` `null`.
 - `POST /api/v1/updates/seen` with `{"through": "<created_at>"}` (CSRF
   header required) records that the household has seen its updates
   through the newest one it was shown, and answers 204. The last-seen
@@ -1271,7 +1317,47 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
 - CSS Modules over `tokens.css`; no Tailwind, no Framer Motion, no
   hard-coded hex. Self-hosted Bagel Fat One and Figtree.
 - Tests: Vitest, Testing Library, jsdom.
-- Offline cache for the current plan, shopping list and recipes.
+- Offline cache for the current plan, shopping list and recipes. The
+  service worker answers `/api/v1/plans`, `/api/v1/home`,
+  `/api/v1/shopping`, `/api/v1/dinners` and `/api/v1/recipes` network
+  first (3 s), then from its API cache (`mealquest-api-v4`), marking such
+  an answer `X-MealQuest-Cache-Fallback`. A plan, Home, Supply run,
+  Regulars or Quest log read so answered — or the Supply run saved on the
+  device — may be stale: another device may have archived a dinner since.
+  Its dinners offer no recipe (their names, or Regulars and Quest log
+  rows, are plain) until the server answers a read again; then only
+  dinners whose `status` is not `archived`, and that this device has not
+  removed (its local removal mark), offer their recipes. A dinner's recipe
+  is offered as a button, never a link: a server read may stay on screen
+  while another device archives the dinner, so activating it asks the
+  server for the dinner's detail with `cache: 'no-store'`, which the
+  service worker leaves to the network (an answer still marked
+  `X-MealQuest-Cache-Fallback`, from a worker of an earlier build, is
+  refused), even when this page read that detail moments ago, and opens
+  `/dinner/{id}` only with the server's answer. A 404 opens nothing: the
+  screen says the dinner was removed, and at once that dinner shows
+  archived on every plan, Home and Supply run held in memory and leaves the
+  Regulars and the Quest log held in memory — staying out of them while
+  they, with the plans, Home and Supply runs, are read again, and if that
+  read fails. The server's answer may have been read before another tab
+  removed the dinner, so once it arrives the dinner's removal mark is
+  read again from the device itself (not from what the page last heard):
+  a dinner marked by then opens nothing, caches nothing, and the screen
+  says it was removed. A check that cannot reach the server opens nothing
+  either, and offers Retry. A Recent update or a notification offering a recipe
+  opens it the same way: a Recent update in the sheet, saying there that
+  the dinner was removed; a tapped notification opens Home with
+  `?recipe={id}&name={name}` (`recipeOpenPath`), which checks the recipe
+  and says so on Home, and a notification whose recipe URL names no
+  dinner opens Home. The detail screen, opened from a typed URL, reads
+  with the same 404 handling. The API cache's
+  version is raised whenever a cached response's shape stops being one the
+  app accepts — v4 retired the v3 cache, whose plans, Home and Supply runs
+  had no dinner `status` — and activation deletes the retired cache, so
+  offline such a read fails as one never made (the screen offers Retry)
+  rather than as a broken response. A Supply run saved on the device by a
+  build from before dinner `status` is still accepted, its dinners' status
+  unknown and unlinked, until it is read again.
 - Logout (`POST /auth/logout`) answers with `Clear-Site-Data: "storage",
   "cache"`, wiping the offline marker, the service worker and its caches; the
   worker leaves that request to the browser, as it does every network-only one.
@@ -1319,10 +1405,12 @@ fewer the server answers 400 `invalid_settings` naming
 `onboarding_completed` and changes nothing. Step 3 can be reached with
 fewer — by its URL, or after another member removes a Regular — so it then
 shows the server's reason with an "Add Regulars" button back to step 2.
-Notification permission is never asked for on page load; until Feature 19
-wires Web Push, "Turn on notifications" asks for nothing and says plainly
-that notifications are not on yet, offering "Finish setting up" (which
-completes onboarding as above) instead of a silent success. Offline on the
+Notification permission is never asked for on page load. "Turn on
+notifications" subscribes this device to Web Push from the tap and says
+how it ended — on, blocked by the browser, or unsupported (on iPhone and
+iPad, until MealQuest is on the Home Screen) — then offers only "Finish
+setting up" (which completes onboarding as above); a dismissed permission
+prompt can be asked again. Offline on the
 saved pages the settings cannot be read (the service worker never caches `/api/v1/settings`),
 so the saved pages open as they are.
 
@@ -1331,13 +1419,59 @@ Regular dinners (`/settings/regulars`) lists the Regulars from
 minutes", favorite heart and grounding badge ("Finding recipe…" while
 `pending`, "Recipe found" when `grounded` or `manual`, "Needs a recipe" when
 `failed`). The add field takes a name or a pasted `https://` recipe link.
-Tapping a Regular opens an edit sheet (name, method, minutes, difficulty;
-remove archives it after a confirmation); tapping one that needs a recipe
-opens "Fix recipe" (pick one of the recipe candidates, paste a link or type
-the ingredients and steps in). Adds, removals and the heart show at once and
-are undone if the server refuses them. While any Regular is `pending`, the
+Tapping a Regular's row opens its recipe (`/dinner/{id}`) once the server
+answers that it is there, unless the list is the service worker's cached
+copy, when the row is plain (see the offline cache above); its pencil
+button opens the edit sheet (name, method, minutes, difficulty; remove
+archives it after a confirmation), or, for one that needs a recipe, "Fix
+recipe" (pick one of the recipe candidates, paste a link or type the
+ingredients and steps in). Adds, removals and the heart show at once.
+An add or a heart change is put back if the server refuses it. A removal
+is not: before its `DELETE` is sent the device records the dinner's
+write-once removal mark (`archiveDinner`), and a removal that was sent
+stays hidden on this device even if the server refuses it or does not
+answer. It is sent again when the app starts and each time the server can
+be reached again (`checkRemovals`), and only the server's own answer to
+that idempotent `DELETE` — 2xx, or 404 for a dinner it does not have —
+settles it, marking it archived. A removal is put back in the list only
+if it was never sent. While any Regular is `pending`, the
 list is read again every 3 seconds (not while a change is in flight), and
 polling stops once none is.
+
+## Deployment
+
+Production is the compose project `mealquest` on 10.60.1.14
+([`deploy/compose.yaml`](../deploy/compose.yaml)): the `mealquest` image built
+from the root `Dockerfile`, `litestream` replicating the database to the
+NAS over SFTP, and `searxng` on the internal network only. Configuration is
+`deploy/.env` and file secrets in `deploy/secrets/`, neither committed. The
+services never restart themselves; systemd units in `deploy/systemd/` own
+the host:
+
+| Unit | Does |
+| --- | --- |
+| `mealquest-firewall.service` | Restricts port 8090 to Traefik in `DOCKER-USER`; required before the stack starts. |
+| `mealquest.service` | Starts and stops the compose stack. |
+| `mealquest-media-backup.timer` / `.service` | Backs up cached photos to the NAS nightly at 03:30. |
+| `mealquest-auto-deploy.timer` / `.service` | Automated deploy of `main` (below). |
+
+Releases: only `overseer` merges `dev` into `main`. The image carries its
+version (`git describe`: a release tag, else the short SHA), which
+`/health` reports. A deploy follows
+[`deploy/RUNBOOK.md`](../deploy/RUNBOOK.md) — build, pre-deploy restore
+point, boot-config check, ship and restart, verify the deployed SHA and a
+real screen — with rollback to the previous release. The automated deploy
+([`deploy/auto-deploy.sh`](../deploy/auto-deploy.sh), installed as
+`/usr/local/sbin/mealquest-auto-deploy`) runs those same steps unattended:
+its timer checks every quarter hour (plus up to 5 minutes' random delay),
+and deploys `refs/remotes/origin/main` only when it differs from the last
+SHA in the deploy record `/home/overseer/mealquest-auto-deploy.log`, its
+Gitea CI status is `success`, its last attempt did not fail, and
+`mealquest.service` is active. It stops at the first failure and never
+retries a failed SHA; `--ref <ref>` is the manual override. Installing,
+seeding the record and enabling the timer are host steps in the runbook's
+"Automated deploys". Database restore and the boot configuration are in
+CTXD `RUNBOOKS.MD`.
 
 ## Boundaries and gotchas
 

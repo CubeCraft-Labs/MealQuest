@@ -93,8 +93,9 @@ type supplyRunJSON struct {
 	TotalCount            int     `json:"total_count"`
 	Groups                []struct {
 		Dinner struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
+			ID     string `json:"id"`
+			Name   string `json:"name"`
+			Status string `json:"status"`
 		} `json:"dinner"`
 		Date  string `json:"date"`
 		Day   string `json:"day"`
@@ -206,7 +207,7 @@ func TestSupplyRunShape(t *testing.T) {
 	if k := keys(group); !reflect.DeepEqual(k, []string{"date", "day", "dinner", "items"}) {
 		t.Errorf("group fields = %v", k)
 	}
-	if k := keys(group["dinner"].(map[string]any)); !reflect.DeepEqual(k, []string{"id", "name"}) {
+	if k := keys(group["dinner"].(map[string]any)); !reflect.DeepEqual(k, []string{"id", "name", "status"}) {
 		t.Errorf("dinner fields = %v", k)
 	}
 	if k := keys(group["items"].([]any)[0].(map[string]any)); !reflect.DeepEqual(k, []string{"id", "name", "needed", "qty"}) {
@@ -224,6 +225,22 @@ func TestSupplyRunShape(t *testing.T) {
 	}
 	if got.Groups[0].Dinner.ID == "" || got.Groups[0].Items[0].ID == "" {
 		t.Errorf("ids missing: %+v", got.Groups[0])
+	}
+	if got.Groups[0].Dinner.Status != "regular" {
+		t.Errorf("dinner status = %q, want regular", got.Groups[0].Dinner.Status)
+	}
+
+	// A dinner removed from Regulars since the list was made stays on it,
+	// shown archived so a client offers no detail it cannot open.
+	if _, err := e.st.Writer.Exec(`UPDATE dinners SET status = 'archived' WHERE id = ?`, got.Groups[0].Dinner.ID); err != nil {
+		t.Fatal(err)
+	}
+	var after supplyRunJSON
+	if status, raw := callShopping(t, e, http.MethodGet, shoppingPath+"2026-10-12", "", &after); status != http.StatusOK {
+		t.Fatalf("GET after archiving = %d %v", status, raw)
+	}
+	if after.Groups[0].Dinner.ID != got.Groups[0].Dinner.ID || after.Groups[0].Dinner.Status != "archived" {
+		t.Errorf("group after archiving = %+v, want its dinner archived", after.Groups[0].Dinner)
 	}
 }
 

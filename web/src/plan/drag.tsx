@@ -185,6 +185,10 @@ export function useDropTarget(date: string): Drag | null {
 // DROP_DATE is the attribute naming the date of a day a dinner drops on.
 export const DROP_DATE = 'data-drop-date'
 
+// SWAP_BUTTON marks a day's swap button, which focus moves to once a dinner
+// dropped on the day: the day's recipe button comes before it.
+export const SWAP_BUTTON = 'data-swap-button'
+
 // dateAt is the date of the day under the point (x, y), or null when it is
 // over no day.
 function dateAt(x: number, y: number): string | null {
@@ -326,7 +330,7 @@ export function useDraggable(pickup: Pickup) {
   // focus to that day's swap button.
   function drop(document: Document, date: string | null) {
     if (!plan.end(date)) return
-    const swapButton = document.querySelector<HTMLElement>(`[${DROP_DATE}="${date}"] button`)
+    const swapButton = document.querySelector<HTMLElement>(`[${DROP_DATE}="${date}"] [${SWAP_BUTTON}]`)
     if (swapButton === null) throw new Error(`The day ${date} dropped on has no swap button to focus.`)
     swapButton.focus()
   }

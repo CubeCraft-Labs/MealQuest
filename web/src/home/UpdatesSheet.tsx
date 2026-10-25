@@ -1,6 +1,7 @@
 import { CalendarDays, ChefHat, Compass, Repeat, ShoppingCart, type LucideIcon } from 'lucide-react'
 import { useEffect, useId, useState } from 'react'
 import { useNavigate } from 'react-router'
+import { useOpenRecipe } from '../dinners/useOpenRecipe.tsx'
 import { ago } from '../plan/PlanPage.tsx'
 import { ErrorBanner } from '../ui/ErrorBanner.tsx'
 import { Icon } from '../ui/Icon.tsx'
@@ -19,8 +20,8 @@ const ICONS: Record<UpdateType, LucideIcon> = {
 }
 
 // UpdateRow is one update: its icon, title and body, and how long ago it
-// came. A tap opens its url.
-function UpdateRow({ update, now, onOpen }: { update: Update; now: Date; onOpen: (url: string) => void }) {
+// came. A tap opens it (onOpen).
+function UpdateRow({ update, now, onOpen }: { update: Update; now: Date; onOpen: (update: Update) => void }) {
   return (
     <li>
       <ListRow
@@ -32,17 +33,26 @@ function UpdateRow({ update, now, onOpen }: { update: Update; now: Date; onOpen:
             {ago(new Date(update.created_at), now)}
           </time>
         }
-        onClick={() => onOpen(update.url)}
+        onClick={() => onOpen(update)}
       />
     </li>
   )
 }
 
 // Updates lists the Recent updates, newest first, and marks them seen
-// through the newest once they are shown, so the bell's dot clears.
+// through the newest once they are shown, so the bell's dot clears. A tap
+// on an update offering a dinner's recipe opens it the one way the app opens
+// a recipe (useOpenRecipe): only once the server has it, saying here when
+// the dinner was removed or the server could not be asked. Any other update
+// opens its url (onOpen). Closing the sheet abandons a check still out.
 function Updates({ onOpen }: { onOpen: (url: string) => void }) {
   const updates = useUpdates()
   const markSeen = useMarkUpdatesSeen()
+  const recipe = useOpenRecipe()
+  const open = (update: Update) => {
+    if (update.dinner !== null) recipe.open(update.dinner)
+    else onOpen(update.url)
+  }
   const { mutate } = markSeen
   // fresh says this opening's read has come back; until then a list still
   // held from an earlier opening is neither shown nor marked seen.
@@ -80,9 +90,10 @@ function Updates({ onOpen }: { onOpen: (url: string) => void }) {
           Couldn't mark your updates as seen. {markSeen.error.message}
         </ErrorBanner>
       )}
+      {recipe.notice}
       <ul aria-label="Recent updates" className={styles.rows}>
         {updates.data.map((update, i) => (
-          <UpdateRow key={`${i} ${update.created_at}`} update={update} now={now} onOpen={onOpen} />
+          <UpdateRow key={`${i} ${update.created_at}`} update={update} now={now} onOpen={open} />
         ))}
       </ul>
     </>
@@ -96,7 +107,8 @@ export type UpdatesSheetProps = {
 
 // UpdatesSheet is the Recent updates sheet the Home bell opens: the last
 // ten notification events with how long ago each came, each opening the
-// screen it is about. Opening it marks them seen.
+// screen it is about — a recipe only once the server has it. Opening it
+// marks them seen.
 export function UpdatesSheet({ open, onClose }: UpdatesSheetProps) {
   const titleId = useId()
   const navigate = useNavigate()

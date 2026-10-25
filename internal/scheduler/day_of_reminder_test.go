@@ -3,6 +3,7 @@ package scheduler_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -71,7 +72,7 @@ func (e *env) reminderKeys() []string {
 }
 
 // wantReminder fails unless the reminder keyed key was stored with title,
-// body and the link to the dinner name.
+// body and the link to the recipe of the dinner name, which it names.
 func (p *planEnv) wantReminder(key, title, body, name string) {
 	p.e.t.Helper()
 	for _, r := range p.e.reminders() {
@@ -79,8 +80,11 @@ func (p *planEnv) wantReminder(key, title, body, name string) {
 			continue
 		}
 		week := household.WeekStart(mustLocalDate(key[len(key)-len("YYYY-MM-DD"):]))
-		want := notify.Payload{Event: notify.DayOfReminder, Title: title, Body: body, URL: "/dinner/" + p.ids[name], Tag: key, Week: week.String()}
-		if r.Payload != want {
+		want := notify.Payload{
+			Event: notify.DayOfReminder, Title: title, Body: body, URL: "/dinner/" + p.ids[name], Tag: key,
+			Dinner: &notify.Dinner{ID: p.ids[name], Name: name}, Week: week.String(),
+		}
+		if !reflect.DeepEqual(r.Payload, want) {
 			p.e.t.Errorf("reminder %s = %+v, want %+v", key, r.Payload, want)
 		}
 		return

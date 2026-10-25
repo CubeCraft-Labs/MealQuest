@@ -210,6 +210,19 @@ func TestEmitStoresPayload(t *testing.T) {
 	if want := `{"event":"new_suggestions","title":"New Side quests","body":"","url":"/suggestions","tag":"new_suggestions:batch1"}`; r.Payload != want {
 		t.Errorf("payload = %s, want %s", r.Payload, want)
 	}
+
+	// An event offering a recipe names its dinner, for the push notice.
+	setPref(t, st, DayOfReminder, true, false)
+	if err := svc.Emit(context.Background(), Event{
+		Type: DayOfReminder, Key: "day_of_reminder:2026-10-14", Title: "Tonight: Tacos · Recipe →", URL: RecipePath("01J9TACOS"),
+		Dinner: &Dinner{ID: "01J9TACOS", Name: "Tacos"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r = onlyRow(t, st, "day_of_reminder:2026-10-14", ChannelPush)
+	if want := `{"event":"day_of_reminder","title":"Tonight: Tacos · Recipe →","body":"","url":"/dinner/01J9TACOS","tag":"day_of_reminder:2026-10-14","dinner":{"id":"01J9TACOS","name":"Tacos"}}`; r.Payload != want {
+		t.Errorf("payload = %s, want %s", r.Payload, want)
+	}
 }
 
 func TestEmitIgnoresDuplicateKey(t *testing.T) {
@@ -311,18 +324,25 @@ func TestEmitRejectsInvalidEvents(t *testing.T) {
 	svc, st, _ := newTestService(t)
 	valid := planReady("plan_ready:2026-10-12")
 	for name, mutate := range map[string]func(*Event){
-		"unknown type":         func(e *Event) { e.Type = "dinner_burnt" },
-		"empty key":            func(e *Event) { e.Key = "" },
-		"key without id":       func(e *Event) { e.Key = "plan_ready:" },
-		"key of another type":  func(e *Event) { e.Key = "list_ready:2026-10-12" },
-		"blank title":          func(e *Event) { e.Title = "  " },
-		"empty url":            func(e *Event) { e.URL = "" },
-		"relative url":         func(e *Event) { e.URL = "plan" },
-		"absolute url":         func(e *Event) { e.URL = "https://evil.example/plan" },
-		"protocol-relative":    func(e *Event) { e.URL = "//evil.example/plan" },
-		"backslash url":        func(e *Event) { e.URL = "/\\evil.example" },
-		"url with a tab":       func(e *Event) { e.URL = "/\t/evil.example" },
-		"url with a bad query": func(e *Event) { e.URL = "/plan%zz" },
+		"unknown type":                func(e *Event) { e.Type = "dinner_burnt" },
+		"empty key":                   func(e *Event) { e.Key = "" },
+		"key without id":              func(e *Event) { e.Key = "plan_ready:" },
+		"key of another type":         func(e *Event) { e.Key = "list_ready:2026-10-12" },
+		"blank title":                 func(e *Event) { e.Title = "  " },
+		"empty url":                   func(e *Event) { e.URL = "" },
+		"relative url":                func(e *Event) { e.URL = "plan" },
+		"absolute url":                func(e *Event) { e.URL = "https://evil.example/plan" },
+		"protocol-relative":           func(e *Event) { e.URL = "//evil.example/plan" },
+		"backslash url":               func(e *Event) { e.URL = "/\\evil.example" },
+		"url with a tab":              func(e *Event) { e.URL = "/\t/evil.example" },
+		"url with a bad query":        func(e *Event) { e.URL = "/plan%zz" },
+		"recipe url naming no dinner": func(e *Event) { e.URL = "/dinner/01J9TACOS" },
+		"dinner with another url":     func(e *Event) { e.Dinner = &Dinner{ID: "01J9TACOS", Name: "Tacos"} },
+		"dinner with another recipe": func(e *Event) {
+			e.URL, e.Dinner = "/dinner/01J9OTHER", &Dinner{ID: "01J9TACOS", Name: "Tacos"}
+		},
+		"dinner without a name": func(e *Event) { e.URL, e.Dinner = "/dinner/01J9TACOS", &Dinner{ID: "01J9TACOS", Name: " "} },
+		"dinner without an id":  func(e *Event) { e.URL, e.Dinner = "/dinner/", &Dinner{Name: "Tacos"} },
 	} {
 		t.Run(name, func(t *testing.T) {
 			ev := valid

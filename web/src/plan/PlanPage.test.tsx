@@ -4,6 +4,7 @@ import { Link, MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
+import { DinnerDetailPage } from '../dinners/DinnerDetailPage.tsx'
 import { SupplyRunPage } from '../shopping/SupplyRunPage.tsx'
 import { cacheFallbackHeader } from '../sw/routes.ts'
 import { HOUSEHOLD_SETTINGS } from '../test/ApiProviders.tsx'
@@ -40,6 +41,7 @@ function planBody(status: string, names = NAMES) {
       dinner: {
         id: `d${i}`,
         name: names[i],
+        status: i === 2 || i === 5 ? 'quest_log' : 'regular',
         photo: i === 0 ? '/media/photos/tacos-400.jpg' : null,
         minutes: i === 2 ? 240 : 30,
         method: i === 2 ? 'crockpot' : 'stovetop',
@@ -127,6 +129,30 @@ const lists = {
     jsonResponse(200, { dinners: [dinner('d0', 'Beef tacos', 'easy', 30), dinner('r1', 'Fish tacos', 'medium', 35)] }),
 }
 
+// PIZZA_RECIPE is Friday's pizza night as GET /api/v1/dinners/{id} sends it,
+// with its ingredients and steps.
+const PIZZA_RECIPE = {
+  id: 'd4',
+  name: 'Pizza night',
+  status: 'regular',
+  origin: 'regular',
+  method: 'oven',
+  minutes_total: 30,
+  difficulty: 'easy',
+  cuisine: null,
+  is_favorite: false,
+  photo_urls: null,
+  ingredients: [
+    { name: 'Pizza dough', qty: '1', unit: 'lb', note: null, raw_text: '1 lb pizza dough' },
+    { name: 'Mozzarella', qty: '8', unit: 'oz', note: null, raw_text: '8 oz mozzarella' },
+  ],
+  steps: ['Stretch the dough.', 'Top it and bake at 500°F.'],
+  source: { site_name: 'Example Kitchen' },
+  grounding_status: 'grounded',
+  grounding_error: null,
+  why_picked: null,
+}
+
 // SUPPLY_RUN is the Supply run of a week, as GET /api/v1/shopping/{weekStart}.
 const SUPPLY_RUN = /^GET \/api\/v1\/shopping\/\d{4}-\d{2}-\d{2}$/
 
@@ -163,8 +189,8 @@ function planReads(fetchMock: Mock<typeof fetch>) {
 
 // renderPage loads /me (for the CSRF token every write needs) and renders
 // the Plan page at entry, over queryClient, with shopping as the Supply run
-// screen.
-async function renderPage(queryClient: QueryClient = createQueryClient(), shopping = <Opened />, entry = '/plan') {
+// screen and detail as the dinner detail screen.
+async function renderPage(queryClient: QueryClient = createQueryClient(), shopping = <Opened />, entry = '/plan', detail = <Opened />) {
   const api = createApiClient(fakeLocation('/plan'), createNetworkStatus(window), createVerifiedSession(localStorage))
   await api.loadMe()
   return render(
@@ -182,6 +208,7 @@ async function renderPage(queryClient: QueryClient = createQueryClient(), shoppi
               }
             />
             <Route path="/plan/shopping" element={shopping} />
+            <Route path="/dinner/:id" element={detail} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>
@@ -1195,7 +1222,7 @@ describe('PlanPage', () => {
     // lemon orzo, a Quest-log pick.
     function swappedBody() {
       const body = planBody('draft')
-      body.days[4] = { ...body.days[4]!, dinner: { ...body.days[4]!.dinner, id: 'q1', name: 'Lemon orzo' }, is_new: true }
+      body.days[4] = { ...body.days[4]!, dinner: { ...body.days[4]!.dinner, id: 'q1', name: 'Lemon orzo', status: 'quest_log' }, is_new: true }
       return body
     }
 
@@ -1435,9 +1462,9 @@ describe.each([
   function column(day: string) {
     return within(screen.getByRole('list', { name: 'Dinners this week' })).getByRole('listitem', { name: day })
   }
-  // card is the card in a day's column, holding its dinner.
+  // card is the card in a day's column, holding its dinner's recipe link.
   function card(day: string, dinnerName: string) {
-    return within(column(day)).getByText(dinnerName).parentElement!
+    return within(column(day)).getByRole('button', { name: dinnerName }).parentElement!
   }
 
   it('renders the plan manager: header, actions, sync status and the 7-column grid', async () => {
@@ -1713,6 +1740,96 @@ describe.each([
     })
   }
 
+  it('shows a dinner archived after the plan was made by name with no recipe link, its swap icon still swapping it', async () => {
+    const FRIDAY = `${THIS_WEEK}/days/2026-10-09`
+    const archived = planBody('draft')
+    archived.days[4]!.dinner.status = 'archived'
+    const swapped = planBody('draft')
+    swapped.days[4] = { ...swapped.days[4]!, dinner: { ...swapped.days[4]!.dinner, id: 'q1', name: 'Lemon orzo', status: 'quest_log' }, is_new: true }
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, archived),
+      ...lists,
+      [`PUT ${FRIDAY}`]: () => jsonResponse(200, swapped),
+    })
+    await renderPage()
+
+    // Friday's photo and name are there, plain: the archived dinner has no
+    // detail to open. Every other day still links to its recipe.
+    const friday = await waitFor(() => column('Friday'))
+    expect(within(friday).getByText('Pizza night')).toBeInTheDocument()
+    expect(within(friday).getByRole('img', { hidden: true, name: 'Pizza night' })).toBeInTheDocument()
+    expect(within(friday).queryByRole('button', { name: 'Pizza night' })).not.toBeInTheDocument()
+    expect(within(friday).queryByRole('link')).not.toBeInTheDocument()
+    expect(friday.querySelector('a[href^="/dinner/"]')).toBeNull()
+    expect(within(column('Thursday')).getByRole('button', { name: 'Chicken stir-fry' })).toBeInTheDocument()
+
+    // Its swap icon still opens the swap sheet and swaps the dinner in.
+    fireEvent.click(within(friday).getByRole('button', { name: 'Swap Friday' }))
+    const sheet = await screen.findByRole('dialog', { name: 'Swap Friday' })
+    expect(within(sheet).getByText('Replaces Pizza night')).toBeInTheDocument()
+    fireEvent.click(await within(sheet).findByRole('button', { name: /Lemon orzo/ }))
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(([, init]) => init?.method === 'PUT').map(([input, init]) => `${String(input)} ${String(init?.body)}`),
+      ).toEqual([`${FRIDAY} {"dinner_id":"q1"}`]),
+    )
+    expect(await waitFor(() => within(column('Friday')).getByRole('button', { name: 'Lemon orzo' }))).toBeInTheDocument()
+    expect(screen.queryByText(/^Opened/)).not.toBeInTheDocument()
+  })
+
+  it("opens a day's recipe from its card at the dinner detail screen, with its ingredients and steps", async () => {
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      [`GET ${NEXT_WEEK}`]: () => errorResponse(404, 'not_found'),
+      ...lists,
+      'GET /api/v1/dinners/d4': () => jsonResponse(200, PIZZA_RECIPE),
+    })
+    await renderPage(createQueryClient(), <Opened />, '/plan', <DinnerDetailPage />)
+
+    fireEvent.click(await waitFor(() => within(column('Friday')).getByRole('button', { name: 'Pizza night' })))
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'Pizza night' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 2, name: 'Ingredients' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: 'Steps' })).toBeInTheDocument()
+    expect(screen.getByText('Pizza dough')).toBeInTheDocument()
+    expect(screen.getByText('Mozzarella')).toBeInTheDocument()
+    expect(screen.getByText('Stretch the dough.')).toBeInTheDocument()
+    expect(screen.getByText('Top it and bake at 500°F.')).toBeInTheDocument()
+    expect(screen.queryByText(/^Opened/)).not.toBeInTheDocument()
+  })
+
+  it("opens a day's recipe from its card's photo and name, the swap icon still opening the swap sheet", async () => {
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      ...lists,
+      'GET /api/v1/dinners/d4': () => jsonResponse(200, PIZZA_RECIPE),
+    })
+    await renderPage()
+
+    // The recipe button is the photo and name only: the method, tag and
+    // swap icon are outside it, the swap icon still a button of its own.
+    const tacos = await waitFor(() => within(column('Monday')).getByRole('button', { name: 'Beef tacos' }))
+    expect(tacos.tagName).toBe('BUTTON')
+    expect(within(tacos).getByRole('img', { hidden: true, name: 'Beef tacos' })).toBeInTheDocument()
+    expect(tacos).toHaveTextContent(/^Beef tacos$/)
+    expect(within(tacos).queryByRole('button')).not.toBeInTheDocument()
+    const swap = within(column('Monday')).getByRole('button', { name: 'Swap Monday' })
+    expect(tacos).not.toContainElement(swap)
+    expect(declaredStyle(tacos).color).toBe('inherit')
+    expect(declaredStyle(tacos).textDecoration).toBe('none')
+
+    // The swap icon opens the swap sheet and no recipe.
+    fireEvent.click(swap)
+    const sheet = await screen.findByRole('dialog', { name: 'Swap Monday' })
+    expect(within(sheet).getByText('Replaces Beef tacos')).toBeInTheDocument()
+    expect(screen.queryByText(/^Opened/)).not.toBeInTheDocument()
+    fireEvent.keyDown(sheet, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+
+    fireEvent.click(within(column('Friday')).getByRole('button', { name: 'Pizza night' }))
+    expect(await screen.findByText('Opened /dinner/d4')).toBeInTheDocument()
+  })
+
   it("opens the swap sheet from a day's swap icon and swaps the dinner in", async () => {
     const FRIDAY = `${THIS_WEEK}/days/2026-10-09`
     const fetchMock = stubServer({
@@ -1848,7 +1965,7 @@ describe.each([
   // orzo, a Quest-log pick.
   function swappedBody() {
     const body = planBody('draft')
-    body.days[4] = { ...body.days[4]!, dinner: { ...body.days[4]!.dinner, id: 'q1', name: 'Lemon orzo' }, is_new: true }
+    body.days[4] = { ...body.days[4]!, dinner: { ...body.days[4]!.dinner, id: 'q1', name: 'Lemon orzo', status: 'quest_log' }, is_new: true }
     return body
   }
 
@@ -1942,7 +2059,7 @@ describe.each([
     expect(announcer()).toHaveTextContent('Dropped Lemon orzo on Friday, replacing Pizza night.')
 
     // Optimistic: Friday is the Side quest at once.
-    const friday = await waitFor(() => within(column('Friday')).getByText('Lemon orzo').parentElement!)
+    const friday = await waitFor(() => within(column('Friday')).getByRole('button', { name: 'Lemon orzo' }).parentElement!)
     expect(within(friday).getByText('Side quest')).toBeInTheDocument()
     await waitFor(() => expect(puts(fetchMock)).toEqual([`${FRIDAY} {"dinner_id":"q1"}`]))
 
@@ -2006,6 +2123,52 @@ describe.each([
     expect(within(column('Friday')).getByText('Pizza night')).toBeInTheDocument()
     expect(within(column('Monday')).getByText('Beef tacos')).toBeInTheDocument()
     expect(puts(fetchMock)).toEqual([])
+  })
+
+  it('drops a dinner on a day whose dinner was archived after the plan was made, swapping it in', async () => {
+    const archived = planBody('draft')
+    archived.days[4]!.dinner.status = 'archived'
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, archived),
+      ...dragLists,
+      [`PUT ${FRIDAY}`]: () => jsonResponse(200, swappedBody()),
+    })
+    await renderPage()
+    const pizza = await waitFor(() => within(column('Friday')).getByText('Pizza night'))
+    expect(within(column('Friday')).queryByRole('button', { name: 'Pizza night' })).not.toBeInTheDocument()
+    const orzo = await quest('Lemon orzo')
+
+    press(orzo)
+    move(orzo, pizza)
+    expect(within(column('Friday')).getByText('Drop to swap').parentElement).toHaveTextContent('Drop to swapReplaces Pizza night')
+    release(orzo)
+
+    expect(announcer()).toHaveTextContent('Dropped Lemon orzo on Friday, replacing Pizza night.')
+    await waitFor(() => expect(puts(fetchMock)).toEqual([`${FRIDAY} {"dinner_id":"q1"}`]))
+    expect(await waitFor(() => within(column('Friday')).getByRole('button', { name: 'Lemon orzo' }))).toBeInTheDocument()
+  })
+
+  it("drops a dinner let go over a day's recipe link, swapping it in and opening no recipe", async () => {
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      ...dragLists,
+      [`PUT ${FRIDAY}`]: () => jsonResponse(200, swappedBody()),
+    })
+    await renderPage()
+    const pizza = await waitFor(() => within(column('Friday')).getByRole('button', { name: 'Pizza night' }))
+    const orzo = await quest('Lemon orzo')
+
+    // The day's column, holding the link, is the drop target.
+    expect(pizza.closest(`[data-drop-date]`)).toBe(column('Friday'))
+    press(orzo)
+    move(orzo, pizza)
+    expect(within(column('Friday')).getByText('Drop to swap').parentElement).toHaveTextContent('Drop to swapReplaces Pizza night')
+    release(orzo)
+
+    expect(announcer()).toHaveTextContent('Dropped Lemon orzo on Friday, replacing Pizza night.')
+    await waitFor(() => expect(puts(fetchMock)).toEqual([`${FRIDAY} {"dinner_id":"q1"}`]))
+    expect(await waitFor(() => within(column('Friday')).getByRole('button', { name: 'Lemon orzo' }))).toBeInTheDocument()
+    expect(screen.queryByText(/^Opened/)).not.toBeInTheDocument()
   })
 
   it('puts the day back and shows the failure when the dropped swap is refused', async () => {
@@ -2151,7 +2314,9 @@ describe.each([
       press(fish)
       move(fish, column('Wednesday'))
       release(fish)
-      await waitFor(() => expect(within(column('Wednesday')).getByText('Fish tacos').parentElement).toHaveTextContent('Regular'))
+      await waitFor(() =>
+        expect(within(column('Wednesday')).getByRole('button', { name: 'Fish tacos' }).parentElement).toHaveTextContent('Regular'),
+      )
       await waitFor(() => expect(puts(fetchMock)).toEqual([`${THIS_WEEK}/days/2026-10-07 {"dinner_id":"r1"}`]))
     })
   }
@@ -2217,7 +2382,7 @@ describe('duration', () => {
 })
 
 describe('cooking', () => {
-  const dinner = { id: 'd1', name: 'Tikka masala', photo_id: undefined }
+  const dinner = { id: 'd1', name: 'Tikka masala', status: 'regular' as const, photo_id: undefined }
   it.each([
     [{ method: 'crockpot' as const, minutes: 360 }, 'Crock pot · 6\u00a0hr'],
     [{ method: 'crockpot' as const, minutes: null }, 'Crock pot'],

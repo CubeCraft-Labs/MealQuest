@@ -306,7 +306,7 @@ func TestSendThreadsByWeek(t *testing.T) {
 	events := []notify.Event{
 		PlanReady(week, week, []string{"Tacos", "Bolognese", "Tikka masala", "A", "B", "C", "D"}),
 		ListReady(week, 19, 7),
-		DayOfReminder(mustDate(t, "2026-10-18"), "01J9DINNER", "Tacos"),
+		DayOfReminder(mustDate(t, "2026-10-18"), "01J9DINNER", "Tacos", true),
 		NewSuggestions("01J9BATCH", week, []string{"Pho"}),
 		RotationReview("01J9DINNER", "Pho", mustDate(t, "2026-10-14")),
 	}

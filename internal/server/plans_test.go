@@ -173,16 +173,32 @@ func TestGetPlan(t *testing.T) {
 		t.Errorf("Monday = %v", monday)
 	}
 	d := monday["dinner"].(map[string]any)
-	for _, key := range []string{"id", "name", "photo", "minutes", "method", "origin"} {
+	for _, key := range []string{"id", "name", "status", "photo", "minutes", "method", "origin"} {
 		if _, ok := d[key]; !ok {
 			t.Errorf("dinner has no %s: %v", key, d)
 		}
 	}
-	if d["name"] != "Beef Chili" || d["minutes"] != 240.0 || d["method"] != "crockpot" || d["origin"] != "regular" || d["photo"] != nil {
+	if d["name"] != "Beef Chili" || d["status"] != "regular" || d["minutes"] != 240.0 || d["method"] != "crockpot" || d["origin"] != "regular" || d["photo"] != nil {
 		t.Errorf("Monday dinner = %v", d)
 	}
 	if tuesday := days[1].(map[string]any); tuesday["start_by"] != nil {
 		t.Errorf("Tuesday start_by = %v, want null for a stovetop dinner", tuesday["start_by"])
+	}
+
+	// A dinner archived after the plan was made stays on it, archived.
+	if _, err := e.st.Writer.ExecContext(t.Context(), `UPDATE dinners SET status = 'archived' WHERE id = ?`, d["id"]); err != nil {
+		t.Fatal(err)
+	}
+	rec, body = callDinners(t, e.h, http.MethodGet, plansPath+"2026-10-12", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET plan after archive = %d: %s", rec.Code, rec.Body)
+	}
+	days, _ = body["days"].([]any)
+	if len(days) != 7 {
+		t.Fatalf("days after archive = %v, want 7", body["days"])
+	}
+	if d := days[0].(map[string]any)["dinner"].(map[string]any); d["name"] != "Beef Chili" || d["status"] != "archived" {
+		t.Errorf("Monday dinner after archive = %v, want Beef Chili archived", d)
 	}
 
 	rec, body = callDinners(t, e.h, http.MethodGet, plansPath+"2026-10-19", "")

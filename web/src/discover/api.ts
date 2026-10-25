@@ -1,7 +1,9 @@
-import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useMutationState, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { useCallback } from 'react'
 import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
-import { DIFFICULTIES, DINNERS_PATH, dinnerPath, oneOf, parseDinner, photoId, type Difficulty, type Regular } from '../dinners/api.ts'
+import { DIFFICULTIES, DINNERS_PATH, oneOf, parseDinner, photoId, useArchiveDinner, type Difficulty, type Regular } from '../dinners/api.ts'
+import { knownArchived, useArchived } from '../dinners/archived.ts'
 
 export const SUGGESTIONS_PATH = '/api/v1/suggestions'
 export const DECK_PATH = `${SUGGESTIONS_PATH}/deck`
@@ -53,7 +55,9 @@ export type BatchResult = { batch_id: string; stage: string; suggestion_ids: str
 // QuestLogDinner is a dinner in the Quest log, as the Quest log sheet lists
 // it: photo, name, difficulty and minutes, with the method a swap carries
 // onto the plan.
-export type QuestLogDinner = Pick<Regular, 'id' | 'name' | 'photo_id' | 'difficulty' | 'method' | 'minutes_total'>
+export type QuestLogDinner = Pick<Regular, 'id' | 'name' | 'photo_id' | 'difficulty' | 'method' | 'minutes_total'> & {
+  cached: boolean
+}
 
 // DECISION_STATUS is the status a suggestion has once each choice is saved.
 const DECISION_STATUS: Record<Choice, string> = { try: 'accepted', pass: 'declined' }
@@ -118,33 +122,52 @@ export function useDeck() {
 
 // useQuestLog is the dinners in the Quest log, in the server's order (GET
 // /api/v1/dinners?status=quest_log). The server leaves out a dinner already
-// on the plan for the current week or a later one: it is scheduled.
+// on the plan for the current week or a later one: it is scheduled. A
+// dinner removed on this device (archived.ts) is left out too, whatever the
+// read — one the service worker saved before, say — said. Each dinner is
+// cached when the service worker answered the read from its cache: it offers
+// no recipe (opensRecipe).
 export function useQuestLog() {
-  const { apiFetch } = useApi()
+  const { apiRead } = useApi()
+  const archived = useArchived()
   return useQuery({
     queryKey: QUEST_LOG_KEY,
     queryFn: async (): Promise<QuestLogDinner[]> => {
       const where = `GET ${QUEST_LOG_PATH}`
-      const body = await apiFetch<unknown>(QUEST_LOG_PATH)
+      const { body, cached } = await apiRead<unknown>(QUEST_LOG_PATH)
       if (!isRecord(body) || !Array.isArray(body.dinners)) throw new Error(`${where}: response has no dinners list`)
       return body.dinners.map((dinner) => {
         const { id, name, photo_id, difficulty, method, minutes_total } = parseDinner(where, dinner)
-        return { id, name, photo_id, difficulty, method, minutes_total }
+        return { id, name, photo_id, difficulty, method, minutes_total, cached }
       })
     },
+    select: useCallback(
+      (dinners: QuestLogDinner[]) => {
+        const ids = knownArchived(archived)
+        return dinners.filter((dinner) => !ids.has(dinner.id))
+      },
+      [archived],
+    ),
   })
 }
 
-// useRemoveFromQuestLog archives a Quest-log dinner (DELETE
-// /api/v1/dinners/{id}). Once the server has archived it, it leaves the
-// Quest log, and the Quest log is read again.
+// dropFromQuestLog takes dinner id out of the Quest log read here, at once:
+// the server just said it has no detail (noDetail in dinners/detail.ts), so
+// its row offers no recipe even while the Quest log is being read again, or
+// when that read fails.
+export function dropFromQuestLog(queryClient: QueryClient, id: string) {
+  queryClient.setQueryData<QuestLogDinner[]>(QUEST_LOG_KEY, (dinners) => dinners?.filter((dinner) => dinner.id !== id))
+}
+
+// useRemoveFromQuestLog removes a Quest-log dinner, which the server
+// archives (useArchiveDinner), so no read answered before shows it again.
+// Once the server has archived it, it leaves the Quest log, and the Quest
+// log is read again.
 export function useRemoveFromQuestLog() {
-  const { apiFetch } = useApi()
   const queryClient = useQueryClient()
+  const archive = useArchiveDinner()
   return useMutation({
-    mutationFn: async (dinner: QuestLogDinner) => {
-      await apiFetch<unknown>(dinnerPath(dinner.id), { method: 'DELETE' })
-    },
+    mutationFn: (dinner: QuestLogDinner) => archive(dinner.id),
     onSuccess: async (_data, dinner) => {
       queryClient.setQueryData<QuestLogDinner[]>(QUEST_LOG_KEY, (dinners) => dinners?.filter((d) => d.id !== dinner.id))
       await queryClient.invalidateQueries({ queryKey: QUEST_LOG_KEY })
@@ -251,8 +274,9 @@ export function useDecide() {
       queryClient.setQueryData<QuestLogDinner[]>(QUEST_LOG_KEY, (dinners) =>
         dinners === undefined || dinners.some((d) => d.id === quest.dinner_id)
           ? dinners
-          : // The deck does not say the method or minutes; the Quest log
-            // read after the decision does.
+          : // The deck does not say the method or minutes, and may be the
+            // service worker's cached copy (cached); the Quest log read
+            // after the decision says.
             dinners.concat({
               id: quest.dinner_id,
               name: quest.name,
@@ -260,6 +284,7 @@ export function useDecide() {
               difficulty: quest.difficulty,
               method: null,
               minutes_total: null,
+              cached: true,
             }),
       )
     },

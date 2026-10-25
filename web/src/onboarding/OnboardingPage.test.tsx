@@ -10,6 +10,7 @@ import { InDataRouter } from '../test/dataRouter.tsx'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { expectMinHitArea, hitArea } from '../test/hitArea.ts'
 import styles from './Onboarding.module.css'
+import { ARCHIVED, archivedKey, REMOVING } from '../dinners/archived.ts'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -295,7 +296,7 @@ describe('onboarding step 2 (mock 1h)', () => {
     expect(server.held[0]).toMatchObject({ method: 'DELETE', path: '/api/v1/dinners/d1' })
   })
 
-  it('puts a removed Regular back in its place when the server refuses', async () => {
+  it('keeps a removed Regular hidden on this device when the server refuses, saying so', async () => {
     const server = await regularsStep([
       dinnerBody('d1', 'Beef tacos'),
       dinnerBody('d2', 'Pizza night'),
@@ -304,11 +305,14 @@ describe('onboarding step 2 (mock 1h)', () => {
     await vi.waitFor(() => expect(server.held).toHaveLength(1))
     server.held[0]!.answer(errorResponse(500, 'internal'))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Could not remove Beef tacos: internal message')
-    expect(regularNames()).toEqual(['Beef tacos', 'Pizza night'])
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not remove Beef tacos: internal message. It could not be removed here; it stays hidden on this device until the server settles it.',
+    )
+    expect(regularNames()).toEqual(['Pizza night'])
+    expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
   })
 
-  it('puts a refused removal back and says why while another removal is still unanswered', async () => {
+  it('keeps a refused removal hidden and says why while another removal is still unanswered', async () => {
     const server = await regularsStep([
       dinnerBody('d1', 'Beef tacos'),
       dinnerBody('d2', 'Pizza night'),
@@ -322,17 +326,20 @@ describe('onboarding step 2 (mock 1h)', () => {
 
     server.held[0]!.answer(errorResponse(500, 'internal'))
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not remove Beef tacos: internal message')
-    expect(regularNames()).toEqual(['Beef tacos', 'Chili'])
+    expect(regularNames()).toEqual(['Chili'])
 
-    // The other removal's answer does not hide the refusal.
+    // The other removal's answer does not hide the refusal, and the reread
+    // list, which still has Beef tacos, does not show it again.
     server.regulars.splice(1, 1)
     server.held[1]!.answer(new Response(null, { status: 204 }))
     await vi.waitFor(() => expect(server.fetchMock.mock.calls.filter(([path]) => String(path).includes('status=regular'))).toHaveLength(2))
-    await vi.waitFor(() => expect(regularNames()).toEqual(['Beef tacos', 'Chili']))
+    await vi.waitFor(() => expect(localStorage.getItem(archivedKey('d2'))).toBe(ARCHIVED))
+    expect(regularNames()).toEqual(['Chili'])
     expect(screen.getByRole('alert')).toHaveTextContent('Could not remove Beef tacos: internal message')
+    expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
   })
 
-  it('puts two refused removals back in their places without rereading the list', async () => {
+  it('keeps two refused removals hidden without rereading the list', async () => {
     const server = await regularsStep([
       dinnerBody('d1', 'Beef tacos'),
       dinnerBody('d2', 'Pizza night'),
@@ -348,12 +355,11 @@ describe('onboarding step 2 (mock 1h)', () => {
     server.held[0]!.answer(errorResponse(500, 'internal'))
     await screen.findByRole('alert')
     server.held[1]!.answer(errorResponse(500, 'internal'))
-    await screen.findByText('Could not remove Pizza night: internal message')
-    // The reread after the last answer fails, so the order is the client's own.
+    await screen.findByText(/^Could not remove Pizza night: internal message\. It could not be removed here/)
+    // The reread after the last answer fails, so the list is the client's
+    // own, both refused removals still hidden.
     expect(await screen.findByText(/Your Regulars could not load/)).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: /^Remove / }).map((button) => button.getAttribute('aria-label'))).toEqual([
-      'Remove Beef tacos',
-      'Remove Pizza night',
       'Remove Chili',
     ])
   })
@@ -374,10 +380,17 @@ describe('onboarding step 2 (mock 1h)', () => {
     await screen.findByRole('button', { name: 'Remove Burgers' })
     expect(next()).toBeEnabled()
 
+    // A refused removal stays hidden on this device, so two Regulars show
+    // and Next waits for a third.
     fireEvent.click(screen.getByRole('button', { name: 'Remove Pizza night' }))
     await vi.waitFor(() => expect(next()).toBeDisabled())
     await vi.waitFor(() => expect(server.held).toHaveLength(2))
     server.held[1]!.answer(errorResponse(500, 'internal'))
+    await screen.findByText(/Could not remove Pizza night: internal message/)
+    expect(next()).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Add Chili' }))
+    await vi.waitFor(() => expect(server.held).toHaveLength(3))
+    created(server, server.held[2]!, 'd4')
     await vi.waitFor(() => expect(next()).toBeEnabled())
 
     fireEvent.click(next())

@@ -59,6 +59,12 @@ export type ApiClient = {
   // apiRead is apiFetch's GET that also says whether the body is the service
   // worker's cached copy rather than the server's answer.
   apiRead<T>(path: string): Promise<ApiRead<T>>
+  // apiCheck is a GET only the server answers: sent with cache 'no-store',
+  // which the service worker leaves to the network (sw/routes.ts), so it
+  // resolves with the server's answer or rejects — with a network error, an
+  // ApiError, or an Error when a worker from an earlier build answered it
+  // from its cache anyway. signal aborts it, as it does an apiFetch.
+  apiCheck<T>(path: string, signal?: AbortSignal): Promise<T>
   // loadMe fetches GET /api/v1/me and caches its CSRF token; signal aborts
   // it, as it does an apiFetch.
   loadMe(signal?: AbortSignal): Promise<Me>
@@ -88,7 +94,8 @@ export function createApiClient(location: ApiLocation, network: NetworkStatus, s
   let forbidden = false
   const listeners = new Set<() => void>()
 
-  async function send(method: string, path: string, body: unknown, signal: AbortSignal | undefined): Promise<Response> {
+  // send fetches path; noStore sends it with cache 'no-store' (apiCheck).
+  async function send(method: string, path: string, body: unknown, signal: AbortSignal | undefined, noStore: boolean): Promise<Response> {
     const headers: Record<string, string> = { Accept: 'application/json' }
     if (body !== undefined) headers['Content-Type'] = 'application/json'
     if (method !== 'GET') {
@@ -107,7 +114,9 @@ export function createApiClient(location: ApiLocation, network: NetworkStatus, s
     }
     let response: Response
     try {
-      response = await fetch(path, { method, headers, credentials: 'same-origin', body: json, signal })
+      const init: RequestInit = { method, headers, credentials: 'same-origin', body: json, signal }
+      if (noStore) init.cache = 'no-store'
+      response = await fetch(path, init)
     } catch (error) {
       // fetch rejects with a TypeError when the network fails; an abort is a
       // DOMException and says nothing about the network.
@@ -165,16 +174,22 @@ export function createApiClient(location: ApiLocation, network: NetworkStatus, s
   }
 
   async function apiFetch<T>(path: string, request: ApiRequest = {}): Promise<T> {
-    return (await exchange<T>(path, request)).body
+    return (await exchange<T>(path, request, false)).body
   }
 
   function apiRead<T>(path: string): Promise<ApiRead<T>> {
-    return exchange<T>(path, {})
+    return exchange<T>(path, {}, false)
+  }
+
+  async function apiCheck<T>(path: string, signal?: AbortSignal): Promise<T> {
+    const read = await exchange<T>(path, { signal }, true)
+    if (read.cached) throw new Error(`GET ${path}: answered from the service worker's cache, not the server`)
+    return read.body
   }
 
   // exchange sends request to path and decodes the response, noting whether
-  // it is the service worker's cached copy.
-  async function exchange<T>(path: string, request: ApiRequest): Promise<ApiRead<T>> {
+  // it is the service worker's cached copy; noStore is send's.
+  async function exchange<T>(path: string, request: ApiRequest, noStore: boolean): Promise<ApiRead<T>> {
     const method = request.method ?? 'GET'
     const url = apiURL(location.origin, method, path)
     // fetch refuses a GET with a body by rejecting with a TypeError, the same
@@ -182,14 +197,14 @@ export function createApiClient(location: ApiLocation, network: NetworkStatus, s
     if (method === 'GET' && request.body !== undefined) {
       throw new Error(`GET ${path}: a GET request cannot carry a body`)
     }
-    let response = await send(method, url, request.body, request.signal)
+    let response = await send(method, url, request.body, request.signal, noStore)
     if (response.status === 403) {
       const error = await parseForbidden(method, path, response)
       // Only a non-GET carries the token, so only it can be refused for it.
       if (error.code !== 'csrf' || method === 'GET') throw error
       // The session's token changed: refresh it once and retry once.
       await refreshMe(request.signal)
-      response = await send(method, url, request.body, request.signal)
+      response = await send(method, url, request.body, request.signal, noStore)
       if (response.status === 403) throw await parseForbidden(method, path, response)
     }
     return { body: await decode<T>(method, path, response), cached: response.headers.has(cacheFallbackHeader) }
@@ -241,6 +256,7 @@ export function createApiClient(location: ApiLocation, network: NetworkStatus, s
   return {
     apiFetch,
     apiRead,
+    apiCheck,
     loadMe,
     forbidden: () => forbidden,
     subscribe(listener) {

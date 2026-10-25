@@ -95,13 +95,18 @@ ci_gate() {
   esac
 }
 
-case "${MEALQUEST_DEPLOY_ALLOW_NO_CI-}" in
-  ""|1) ;;
-  *) fail "MEALQUEST_DEPLOY_ALLOW_NO_CI is \"$MEALQUEST_DEPLOY_ALLOW_NO_CI\": set it to 1 (deploy without forge-verified CI) or leave it unset" ;;
-esac
+# The opt-in is either unset or 1; set but empty is refused, not read as unset.
+optin=()
+if [ -n "${MEALQUEST_DEPLOY_ALLOW_NO_CI+set}" ]; then
+  case "$MEALQUEST_DEPLOY_ALLOW_NO_CI" in
+    1) optin=(MEALQUEST_DEPLOY_ALLOW_NO_CI=1) ;;
+    "") fail "MEALQUEST_DEPLOY_ALLOW_NO_CI is set but empty: set it to 1 (deploy without forge-verified CI) or leave it unset" ;;
+    *) fail "MEALQUEST_DEPLOY_ALLOW_NO_CI is \"$MEALQUEST_DEPLOY_ALLOW_NO_CI\": set it to 1 (deploy without forge-verified CI) or leave it unset" ;;
+  esac
+fi
 
 if [ "$(id -u)" -eq 0 ]; then
-  exec sudo -u overseer -H -- env MEALQUEST_DEPLOY_ALLOW_NO_CI="${MEALQUEST_DEPLOY_ALLOW_NO_CI-}" "$0" "$@"
+  exec sudo -u overseer -H -- env "${optin[@]}" "$0" "$@"
 fi
 [ "$(id -un)" = overseer ] || fail "run as overseer (or root), not $(id -un)"
 

@@ -320,7 +320,8 @@ sudo systemctl edit mealquest-auto-deploy.service
 # Environment=MEALQUEST_DEPLOY_ALLOW_NO_CI=1
 ```
 
-Any value other than `1` (or unset) makes the script refuse to start.
+Any value other than `1` (or unset), including set but empty, makes the
+script refuse to start.
 Remove the drop-in (`sudo systemctl revert mealquest-auto-deploy.service`)
 once GitHub runs CI for `main`.
 

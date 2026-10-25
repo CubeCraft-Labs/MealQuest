@@ -138,6 +138,50 @@ else
   failures=$((failures + 1)); echo "FAIL  $name: exit $st: $out"
 fi
 
+# The real script run as root, with id and sudo stubbed: the stub sudo prints
+# the command the script re-executes as overseer, one [arg] each, and stops.
+mkdir -p "$tmp/bin"
+printf '#!/bin/sh\ncase "$1" in -u) echo 0 ;; -un) echo root ;; *) exit 2 ;; esac\n' > "$tmp/bin/id"
+printf '#!/bin/sh\nprintf "SUDO"; printf "[%%s]" "$@"; echo\n' > "$tmp/bin/sudo"
+chmod +x "$tmp/bin/id" "$tmp/bin/sudo"
+
+# root_run <opt-in value or "unset">: runs the real script as stubbed root.
+root_run() {
+  (
+    unset MEALQUEST_DEPLOY_ALLOW_NO_CI
+    [ "$1" = unset ] || export MEALQUEST_DEPLOY_ALLOW_NO_CI=$1
+    PATH=$tmp/bin:$PATH bash "$script"
+  )
+}
+
+name="a set but empty opt-in is refused at start"
+st=0
+out=$(root_run "" 2>&1) || st=$?
+if [ "$st" = 1 ] && ! grep -q '^SUDO' <<< "$out" \
+  && grep -qF 'MEALQUEST_DEPLOY_ALLOW_NO_CI is set but empty: set it to 1 (deploy without forge-verified CI) or leave it unset' <<< "$out"; then
+  echo "PASS  $name"
+else
+  failures=$((failures + 1)); echo "FAIL  $name: exit $st: $out"
+fi
+
+name="an unset opt-in stays unset when root re-executes as overseer"
+st=0
+out=$(root_run unset 2>&1) || st=$?
+if [ "$st" = 0 ] && grep -qxF "SUDO[-u][overseer][-H][--][env][$script]" <<< "$out"; then
+  echo "PASS  $name"
+else
+  failures=$((failures + 1)); echo "FAIL  $name: exit $st: $out"
+fi
+
+name="the opt-in is passed on when root re-executes as overseer"
+st=0
+out=$(root_run 1 2>&1) || st=$?
+if [ "$st" = 0 ] && grep -qxF "SUDO[-u][overseer][-H][--][env][MEALQUEST_DEPLOY_ALLOW_NO_CI=1][$script]" <<< "$out"; then
+  echo "PASS  $name"
+else
+  failures=$((failures + 1)); echo "FAIL  $name: exit $st: $out"
+fi
+
 # The retired Gitea host is gone from the script.
 name="the script calls no Gitea host"
 if grep -qiE 'gitea|code\.cubecraftlabs\.com' "$script"; then

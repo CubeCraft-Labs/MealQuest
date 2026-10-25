@@ -174,7 +174,7 @@ func TestBackfillSkipsDinnersNotMissingAPhoto(t *testing.T) {
 		t.Fatalf("linked dinner = %+v, want failed", row)
 	}
 	archived := e.failedDinner(t, "Old stew")
-	if _, err := e.svc.Archive(t.Context(), archived, newRemoval(), member); err != nil {
+	if _, err := e.svc.Archive(t.Context(), archived, member); err != nil {
 		t.Fatal(err)
 	}
 	searched := len(e.search.Queries())
@@ -210,7 +210,7 @@ func TestPhotoBackfillEligibleIsWhatTheBackfillLists(t *testing.T) {
 	}
 	e.waitJob(t, *linked.GroundingJobID)
 	failed := e.failedDinner(t, "Abalone surprise")
-	archived, err := e.svc.Archive(t.Context(), e.failedDinner(t, "Old stew"), newRemoval(), member)
+	archived, err := e.svc.Archive(t.Context(), e.failedDinner(t, "Old stew"), member)
 	if err != nil {
 		t.Fatal(err)
 	}

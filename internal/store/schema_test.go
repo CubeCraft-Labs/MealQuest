@@ -25,7 +25,6 @@ var schemaTables = []string{
 	"week_plans",
 	"plan_days",
 	"rotation_reviews",
-	"dinner_removals",
 	"shopping_lists",
 	"shopping_groups",
 	"shopping_items",
@@ -129,12 +128,6 @@ func testRow(table string, i int) map[string]any {
 		r["plan_date"] = fmt.Sprintf("2026-01-%02d", i+5)
 		r["status"] = "decided"
 		r["decision"] = "keep"
-	case "dinner_removals":
-		r["dinner_id"] = rowID("dinners", 0)
-		r["outcome"] = "archived"
-		r["created_by"] = "sub"
-		r["created_at"] = testTime
-		return r
 	case "shopping_lists":
 		r["week_start"] = fmt.Sprintf("2026-%02d-05", i+1)
 		r["plan_id"] = rowID("week_plans", 0)
@@ -278,8 +271,8 @@ func wantConstraintError(t *testing.T, err error, kind, what string) {
 
 func TestSchemaTablesExist(t *testing.T) {
 	s := migratedStore(t)
-	if len(schemaTables) != 26 {
-		t.Fatalf("schemaTables lists %d tables, want 26", len(schemaTables))
+	if len(schemaTables) != 25 {
+		t.Fatalf("schemaTables lists %d tables, want 25", len(schemaTables))
 	}
 	for _, table := range schemaTables {
 		if !tableExists(t, s, table) {
@@ -331,7 +324,6 @@ func TestSchemaEnumChecksRejectInvalidValues(t *testing.T) {
 		{"plan_days", "is_new", 2},
 		{"rotation_reviews", "status", "open"},
 		{"rotation_reviews", "decision", "promote"},
-		{"dinner_removals", "outcome", "pending"},
 		{"shopping_lists", "status", "frozen"},
 		{"shopping_items", "needed", 2},
 		{"ai_settings", "provider", "gemini"},
@@ -554,7 +546,6 @@ func TestSchemaDeleteParentWithChildrenRefused(t *testing.T) {
 		{"week_plans", "plan_days", "plan_id"},
 		{"dinners", "plan_days", "dinner_id"},
 		{"dinners", "rotation_reviews", "dinner_id"},
-		{"dinners", "dinner_removals", "dinner_id"},
 		{"week_plans", "shopping_lists", "plan_id"},
 		{"shopping_lists", "shopping_groups", "list_id"},
 		{"dinners", "shopping_groups", "dinner_id"},

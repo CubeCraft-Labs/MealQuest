@@ -1,16 +1,8 @@
 import { useIsMutating, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect } from 'react'
 import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
-import {
-  archiveDinner,
-  checkRemovals,
-  knownArchived,
-  REMOVAL_DINNER_STATUSES,
-  useArchived,
-  type Removals,
-  type Withdrawal,
-} from './archived.ts'
+import { archiveDinner, checkRemovals, knownArchived, useArchived, type SendRemoval } from './archived.ts'
 import type { DinnerDetail } from './detail.ts'
 
 export const DINNERS_PATH = '/api/v1/dinners'
@@ -83,7 +75,8 @@ export type RecipeCandidate = {
 
 // CachedRegular is a Regular as the cache holds it. removing is true while
 // an optimistic removal waits for the server: the entry keeps its place, so
-// a refused removal returns exactly there whatever else changed meanwhile.
+// a removal never sent — the device could not save it — returns exactly
+// there whatever else changed meanwhile.
 type CachedRegular = Regular & { removing?: true }
 
 // shown is the Regulars to show: none being removed, and none the server
@@ -277,34 +270,12 @@ export function useAddRegular() {
   })
 }
 
-// parseWithdrawal is the server's answer to a withdrawal, {outcome,
-// dinner_status}; any other body is an error.
-function parseWithdrawal(body: unknown): Withdrawal {
-  const where = `POST ${DINNERS_PATH}/{id}/removals/{removal}/withdraw`
-  if (!isRecord(body) || (body.outcome !== 'archived' && body.outcome !== 'withdrawn')) {
-    throw new Error(`${where}: response is not an outcome`)
-  }
-  return { outcome: body.outcome, dinnerStatus: oneOf(where, 'dinner_status', REMOVAL_DINNER_STATUSES, body.dinner_status) }
-}
-
-// useRemovals sends a dinner's removal (DELETE
-// /api/v1/dinners/{id}?removal={removal}), which the server archives, and
-// withdraws one (POST /api/v1/dinners/{id}/removals/{removal}/withdraw). A
-// non-GET never reaches the service worker's cache, so only the server
-// answers them.
-function useRemovals(): Removals {
+// useSendRemoval sends a dinner's removal (DELETE /api/v1/dinners/{id}),
+// which the server archives. A non-GET never reaches the service worker's
+// cache, so only the server answers it.
+function useSendRemoval(): SendRemoval {
   const { apiFetch } = useApi()
-  return useMemo(
-    () => ({
-      send: (id: string, removal: string) =>
-        apiFetch<unknown>(`${dinnerPath(id)}?removal=${encodeURIComponent(removal)}`, { method: 'DELETE' }),
-      withdraw: async (id: string, removal: string) =>
-        parseWithdrawal(
-          await apiFetch<unknown>(`${dinnerPath(id)}/removals/${encodeURIComponent(removal)}/withdraw`, { method: 'POST' }),
-        ),
-    }),
-    [apiFetch],
-  )
+  return useCallback((id: string) => apiFetch<unknown>(dinnerPath(id), { method: 'DELETE' }), [apiFetch])
 }
 
 // useArchiveDinner removes a dinner — from Regulars or the Quest log — which
@@ -312,25 +283,25 @@ function useRemovals(): Removals {
 // answered before — in flight, cached or saved — shows it with a recipe to
 // open (archiveDinner).
 export function useArchiveDinner() {
-  const removals = useRemovals()
-  return useCallback((id: string) => archiveDinner(id, removals), [removals])
+  const send = useSendRemoval()
+  return useCallback((id: string) => archiveDinner(id, send), [send])
 }
 
-// useRemovalCheck sends again each removal the server did not settle
+// useRemovalCheck sends again each removal the server has not archived
 // (checkRemovals) when the app starts and each time the server can be
 // reached again.
 export function useRemovalCheck() {
   const { network } = useApi()
-  const removals = useRemovals()
+  const send = useSendRemoval()
   useEffect(() => {
     let offline = network.offline()
-    if (!offline) void checkRemovals(removals)
+    if (!offline) void checkRemovals(send)
     return network.subscribe(() => {
       const now = network.offline()
-      if (offline && !now) void checkRemovals(removals)
+      if (offline && !now) void checkRemovals(send)
       offline = now
     })
-  }, [network, removals])
+  }, [network, send])
 }
 
 // RemovalCheck runs useRemovalCheck for the whole app.
@@ -341,8 +312,9 @@ export function RemovalCheck(): null {
 
 // useRemoveRegular removes a Regular, which the server archives
 // (useArchiveDinner). It leaves the list at once and is put back in its
-// place if the removal fails; one the server may have made stays hidden
-// (UnconfirmedRemovalError).
+// place only if the removal was never sent; one sent and refused or not
+// answered stays hidden, marked removing on this device, until the server
+// archives it (RefusedRemovalError, UnconfirmedRemovalError).
 export function useRemoveRegular() {
   const queryClient = useQueryClient()
   const archive = useArchiveDinner()

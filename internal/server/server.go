@@ -46,8 +46,7 @@ type RouteMounter interface {
 // /api/v1/settings/ai, its /api-key, /verify, /models and /reset-prompt;
 // chatSvc serves GET and PUT /api/v1/settings/chat-webhook and its /test;
 // dinnerSvc serves GET and POST /api/v1/dinners, GET, PATCH and DELETE
-// /api/v1/dinners/{id}, POST /api/v1/dinners/{id}/favorite and
-// /api/v1/dinners/{id}/removals/{removal}/withdraw, GET
+// /api/v1/dinners/{id}, POST /api/v1/dinners/{id}/favorite, GET
 // /api/v1/dinners/{id}/recipe-candidates and POST /api/v1/dinners/{id}/ground;
 // suggestSvc serves POST /api/v1/suggestions/batches, GET
 // /api/v1/suggestions/deck and POST /api/v1/suggestions/{id}/accept and
@@ -169,7 +168,6 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	apiV1.Get("/dinners/{id}", getDinner(logger, dinnerSvc))
 	apiV1.Patch("/dinners/{id}", patchDinner(logger, dinnerSvc))
 	apiV1.Delete("/dinners/{id}", deleteDinner(logger, dinnerSvc))
-	apiV1.Post("/dinners/{id}/removals/{removal}/withdraw", postRemovalWithdraw(logger, dinnerSvc))
 	apiV1.Post("/dinners/{id}/favorite", postDinnerFavorite(logger, dinnerSvc))
 	apiV1.Get("/dinners/{id}/recipe-candidates", getDinnerCandidates(logger, dinnerSvc))
 	apiV1.Post("/dinners/{id}/ground", postDinnerGround(logger, dinnerSvc))

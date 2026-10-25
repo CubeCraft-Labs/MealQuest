@@ -9,7 +9,7 @@ import { Link, Route, Routes } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { dinnerDetailKey, RemovalCheck } from './api.ts'
-import { ARCHIVED, archivedKey, removalLock, resetArchived } from './archived.ts'
+import { ARCHIVED, archivedKey, removalLock, REMOVING, resetArchived } from './archived.ts'
 import { DinnerDetailPage } from './DinnerDetailPage.tsx'
 import { HOME_KEY } from '../home/api.ts'
 import { HomePage } from '../home/HomePage.tsx'
@@ -28,7 +28,6 @@ import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub
 import { deviceLocks } from '../test/locks.ts'
 import { mockViewport } from '../test/matchMedia.ts'
 import { origin, stubFetchThroughWorker, stubWorkerCaches, type FakeCache } from '../test/serviceWorker.ts'
-import { REMOVING_MARK, removalKey, withdrawKey } from '../test/removals.ts'
 
 const WEEK = '2026-10-05'
 const PLAN_SCREEN = '/plan'
@@ -132,7 +131,6 @@ function archiveTacos() {
 
 beforeEach(() => {
   server['DELETE /api/v1/dinners/d1'] = archiveTacos
-  Reflect.deleteProperty(server, withdrawKey('d1'))
   cache = stubWorkerCaches()
   reachable = true
   networkReads = []
@@ -144,7 +142,7 @@ beforeEach(() => {
   vi.spyOn(navigator, 'onLine', 'get').mockImplementation(() => reachable)
   stubFetchThroughWorker(async (request) => {
     const url = new URL(request.url)
-    const key = removalKey(`${request.method} ${url.pathname}${url.search}`)
+    const key = `${request.method} ${url.pathname}${url.search}`
     networkReads.push(key)
     if (!reachable) throw new TypeError('Failed to fetch')
     const respond = Object.hasOwn(server, key) ? server[key] : undefined
@@ -423,7 +421,7 @@ describe('a removal no answer settled', () => {
       'Could not remove Beef tacos: Failed to fetch. The server may have removed it, so this device hides it until the server can say whether it did.',
     )
     await waitFor(() => expect(online.queryClient.isMutating()).toBe(0))
-    expect(localStorage.getItem(archivedKey('d1'))).toMatch(REMOVING_MARK)
+    expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
     expect(savedStatus('d1')).toBe('regular')
 
     // Offline, every read is the worker's from before, yet nothing links.
@@ -453,7 +451,7 @@ describe('a removal no answer settled', () => {
     expect(recipeLinks('d1')).toEqual([])
   })
 
-  it('shows the Regular again, with its recipe, once the server can say it did not archive it', async () => {
+  it('keeps the Regular hidden, linking to its recipe nowhere, while the server refuses it sent again, until it archives it', async () => {
     mockViewport(768)
     const online = await renderApp(PLAN_SCREEN)
     await readOnline()
@@ -464,22 +462,99 @@ describe('a removal no answer settled', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not remove Beef tacos: Failed to fetch. The server may have removed it')
     await waitFor(() => expect(online.queryClient.isMutating()).toBe(0))
     expect(archived).toBe(false)
-    expect(localStorage.getItem(archivedKey('d1'))).toMatch(REMOVING_MARK)
+    expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
     expect(screen.queryByRole('button', { name: 'Edit Beef tacos' })).not.toBeInTheDocument()
 
     // The server can be reached again: sent the removal again, it refuses
-    // it, and asked to withdraw it, says it never made it and never will,
-    // so the mark goes and Beef tacos is a Regular with its recipe again.
+    // it and still has Beef tacos, and every read says so. The mark stays,
+    // so no screen links to its recipe.
     server['DELETE /api/v1/dinners/d1'] = () => errorResponse(500, 'internal')
-    server[withdrawKey('d1')] = () => jsonResponse(200, { outcome: 'withdrawn', dinner_status: 'regular' })
     reachable = true
     networkReads = []
     await readAgain(online.queryClient)
-    await waitFor(() => expect(localStorage.getItem(archivedKey('d1'))).toBeNull())
-    expect(networkReads).toContain(withdrawKey('d1'))
-    expect(await screen.findByRole('button', { name: 'Edit Beef tacos' })).toBeInTheDocument()
-    go('To Plan')
-    await waitFor(() => expect(recipeLinks('d1')).toHaveLength(1))
+    await waitFor(() => expect(networkReads).toContain('DELETE /api/v1/dinners/d1'))
+    await waitFor(() => expect(online.queryClient.isFetching()).toBe(0))
+    expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
+    await expectNoRecipeLink()
+    online.unmount()
+
+    // Next time the app starts it sends the removal again; the server
+    // archives Beef tacos, and it is marked archived for good.
+    server['DELETE /api/v1/dinners/d1'] = archiveTacos
+    networkReads = []
+    await renderApp(PLAN_SCREEN)
+    await waitFor(() => expect(localStorage.getItem(archivedKey('d1'))).toBe(ARCHIVED))
+    expect(networkReads).toContain('DELETE /api/v1/dinners/d1')
+    await expectNoRecipeLink()
+  })
+})
+
+// F3 (review round 7): this device's removal R1 is answered only after
+// another device's removal R2 has archived Beef tacos. Its mark is never
+// taken away, so whatever R1's answer, no screen links to the recipe.
+describe('a removal answered only after another device archived the dinner', () => {
+  it('links to its recipe nowhere — online, from what the worker and this device saved, or after a reload', async () => {
+    mockViewport(768)
+    const online = await renderApp(PLAN_SCREEN)
+    await readOnline()
+    expect(await savedRegular('d1')).toContain(`/api/v1/plans/${WEEK}`)
+
+    // R1 reaches the server, which holds its answer back.
+    let answerR1!: () => void
+    server['DELETE /api/v1/dinners/d1'] = () =>
+      new Promise<Response>((resolve) => {
+        answerR1 = () => resolve(errorResponse(500, 'internal'))
+      })
+    removeTacos()
+    await waitFor(() => expect(answerR1).toBeTypeOf('function'))
+    expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
+
+    // Another device's removal R2 commits: the server archives Beef tacos.
+    archived = true
+    // Only then is R1 answered, refused.
+    answerR1()
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not remove Beef tacos: internal message. It could not be removed here; it stays hidden on this device until the server settles it.',
+    )
+    await waitFor(() => expect(online.queryClient.isMutating()).toBe(0))
+    expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
+    expect(screen.queryByRole('button', { name: 'Edit Beef tacos' })).not.toBeInTheDocument()
+    // The Supply run saved on this device still has Beef tacos a Regular.
+    expect(savedStatus('d1')).toBe('regular')
+
+    // Offline, every read is the worker's from before R2, Beef tacos a
+    // Regular in each, yet nothing links to its recipe.
+    reachable = false
+    networkReads = []
+    await readAgain(online.queryClient)
+    expect(networkReads).toEqual(
+      expect.arrayContaining([`GET /api/v1/plans/${WEEK}`, 'GET /api/v1/home', `GET /api/v1/shopping/${WEEK}`, 'GET /api/v1/dinners/d1']),
+    )
+    expect(await savedRegular('d1')).toContain(`/api/v1/plans/${WEEK}`)
+    await expectNoRecipeLink()
+    online.unmount()
+
+    // A new page offline opens the Supply run saved on this device: no link,
+    // its items still toggling.
+    networkReads = []
+    const runPage = await renderApp(RUN_SCREEN)
+    await read(runPage.queryClient, `/api/v1/shopping/${WEEK}`)
+    const reopened = await waitFor(() => screen.getByRole('region', { name: 'Beef tacos' }))
+    expect(within(reopened).getByRole('checkbox', { name: /Ground beef/ })).toBeEnabled()
+    expect(recipeLinks('d1')).toEqual([])
+    runPage.unmount()
+
+    // A new page online sends R1 again; the server, which has Beef tacos
+    // archived, archives it again and answers, so it is marked archived, the
+    // saved Supply run with it, and still nothing links to the recipe.
+    server['DELETE /api/v1/dinners/d1'] = archiveTacos
+    reachable = true
+    networkReads = []
+    await renderApp(PLAN_SCREEN)
+    await waitFor(() => expect(localStorage.getItem(archivedKey('d1'))).toBe(ARCHIVED))
+    expect(networkReads).toContain('DELETE /api/v1/dinners/d1')
+    await waitFor(() => expect(savedStatus('d1')).toBe('archived'))
+    await expectNoRecipeLink()
   })
 })
 
@@ -494,7 +569,7 @@ describe('a removal another tab is still sending', () => {
     server['DELETE /api/v1/dinners/d1'] = () => new Promise<Response>(() => undefined)
     removeTacos()
     await waitFor(() => expect(networkReads).toContain('DELETE /api/v1/dinners/d1'))
-    expect(localStorage.getItem(archivedKey('d1'))).toMatch(REMOVING_MARK)
+    expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
     tabA.unmount()
 
     // Tab B opens while tab A's removal is unanswered. The server still has
@@ -504,7 +579,7 @@ describe('a removal another tab is still sending', () => {
     const tabB = await renderApp(PLAN_SCREEN)
     await read(tabB.queryClient, `/api/v1/plans/${WEEK}`)
     await new Promise((resolve) => setTimeout(resolve, 50))
-    expect(localStorage.getItem(archivedKey('d1'))).toMatch(REMOVING_MARK)
+    expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
     expect(networkReads).not.toContain('DELETE /api/v1/dinners/d1')
     expect(screen.getByText('Beef tacos')).toBeInTheDocument()
     expect(recipeLinks('d1')).toEqual([])

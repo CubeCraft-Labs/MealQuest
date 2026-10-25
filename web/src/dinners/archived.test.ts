@@ -2,7 +2,6 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../api/errors.ts'
 import { deviceLocks } from '../test/locks.ts'
-import { REMOVING_MARK } from '../test/removals.ts'
 import {
   ARCHIVED,
   archivedKey,
@@ -10,14 +9,12 @@ import {
   checkRemovals,
   knownArchived,
   onArchived,
+  RefusedRemovalError,
   removalLock,
-  removingMark,
+  REMOVING,
   resetArchived,
   UnconfirmedRemovalError,
   useArchived,
-  type RemovalOutcome,
-  type Removals,
-  type Withdrawal,
 } from './archived.ts'
 
 afterEach(() => {
@@ -27,79 +24,43 @@ afterEach(() => {
 const sent = () => Promise.resolve(undefined)
 const internal = () => new ApiError(500, 'internal', 'internal message', true)
 
-// removals is how a test's removals reach the server: send made, unless
-// given, and withdraw failing the test, unless given.
-function removals(over: Partial<Removals> = {}): Removals {
-  return {
-    send: sent,
-    withdraw: () => Promise.reject(new Error('the test did not expect a withdrawal')),
-    ...over,
-  }
-}
-
-// withdrawn is the server withdrawing a removal of a dinner it still has.
-const withdrawn = () => Promise.resolve<Withdrawal>({ outcome: 'withdrawn', dinnerStatus: 'regular' })
-
-// marks is every dinner's mark saved on this device; a removing mark reads
-// as REMOVING_MARK's source, whatever its removal.
+// marks is every dinner's mark saved on this device.
 function marks() {
-  return Object.fromEntries(
-    Object.keys(localStorage)
-      .sort()
-      .map((key) => {
-        const mark = localStorage.getItem(key)
-        return [key, mark !== null && REMOVING_MARK.test(mark) ? 'removing:<id>' : mark]
-      }),
-  )
-}
-const REMOVING_ID = 'removing:<id>'
-
-// removalOf is the removal id dinner id is marked removing with.
-function removalOf(id: string): string {
-  const mark = localStorage.getItem(archivedKey(id)) ?? ''
-  if (!REMOVING_MARK.test(mark)) throw new Error(`${id} is not marked removing: ${mark}`)
-  return mark.slice('removing:'.length)
+  return Object.fromEntries(Object.keys(localStorage).sort().map((key) => [key, localStorage.getItem(key)]))
 }
 
-// Server is the server's record of removals: each made (the dinner
-// archived) or withdrawn once, for good, as dinner_removals records them.
+// Server is the server's dinners as DELETE /api/v1/dinners/{id} archives
+// them: an unconditional UPDATE, so archiving one again succeeds.
 class Server {
   readonly archived = new Set<string>()
-  private outcomes = new Map<string, RemovalOutcome>()
 
-  // arrive is a removal reaching the server: made, unless withdrawn.
-  arrive(id: string, removal: string) {
-    if (this.outcomes.get(removal) === 'withdrawn') throw new ApiError(409, 'removal_withdrawn', 'the removal was withdrawn', false)
-    this.outcomes.set(removal, 'archived')
+  // remove is a removal reaching the server: the dinner archived.
+  remove(id: string) {
     this.archived.add(id)
   }
-
-  // withdraw is a withdrawal reaching the server: the removal settled for
-  // good, and the dinner's status with it.
-  withdraw(id: string, removal: string): Withdrawal {
-    const outcome = this.outcomes.get(removal) ?? 'withdrawn'
-    this.outcomes.set(removal, outcome)
-    return { outcome, dinnerStatus: this.archived.has(id) ? 'archived' : 'regular' }
-  }
 }
+
+// Each way the server can answer a removal, or not answer it.
+const ANSWERS: [string, () => Promise<unknown>][] = [
+  ['archived', sent],
+  ['not found (404)', () => Promise.reject(new ApiError(404, 'not_found', 'dinner not found', false))],
+  ['refused (500)', () => Promise.reject(internal())],
+  ['refused (409)', () => Promise.reject(new ApiError(409, 'conflict', 'conflict message', false))],
+  ['not answered', () => Promise.reject(new TypeError('Failed to fetch'))],
+]
 
 describe('archiveDinner', () => {
   it('marks the dinner removing before the removal is sent, then archived, so a new page knows it', async () => {
     let markWhenSent: string | null = null
-    let removalSent: string | null = null
     await archiveDinner(
       'd1',
-      removals({
-        send: (_id, removal) => {
-          markWhenSent = localStorage.getItem(archivedKey('d1'))
-          removalSent = removal
-          return sent()
-        },
-      }),
+      () => {
+        markWhenSent = localStorage.getItem(archivedKey('d1'))
+        return sent()
+      },
     )
-    await archiveDinner('d2', removals())
-    expect(markWhenSent).toBe(removingMark(removalSent!))
-    expect(markWhenSent).toMatch(REMOVING_MARK)
+    await archiveDinner('d2', sent)
+    expect(markWhenSent).toBe(REMOVING)
     expect(marks()).toEqual({ [archivedKey('d1')]: ARCHIVED, [archivedKey('d2')]: ARCHIVED })
 
     resetArchived()
@@ -114,7 +75,7 @@ describe('archiveDinner', () => {
     const send = vi.fn(sent)
     const { result } = renderHook(() => useArchived())
 
-    await expect(archiveDinner('d1', removals({ send }))).rejects.toThrow(
+    await expect(archiveDinner('d1', send)).rejects.toThrow(
       'this device could not save the removal, so it was not sent: The quota has been exceeded.',
     )
     expect(send).not.toHaveBeenCalled()
@@ -131,9 +92,9 @@ describe('archiveDinner', () => {
     const told = vi.fn()
     const stop = onArchived(told)
 
-    await archiveDinner('d1', removals())
+    await archiveDinner('d1', sent)
     stop()
-    expect(marks()).toEqual({ [archivedKey('d1')]: REMOVING_ID })
+    expect(marks()).toEqual({ [archivedKey('d1')]: REMOVING })
     expect(told).not.toHaveBeenCalled()
 
     resetArchived()
@@ -141,93 +102,73 @@ describe('archiveDinner', () => {
     expect([...knownArchived(result.current)]).toEqual(['d1'])
   })
 
-  it('takes the mark away when the server refuses the removal and then withdraws it', async () => {
+  it('keeps a removal the server refuses hidden, says so, and sends it again at the next check', async () => {
     const { result } = renderHook(() => useArchived())
     const refusal = internal()
-    const withdraw = vi.fn(withdrawn)
+    const send = vi.fn((_id: string) => Promise.reject(refusal))
 
-    await expect(archiveDinner('d1', removals({ send: () => Promise.reject(refusal), withdraw }))).rejects.toBe(refusal)
-    expect(withdraw).toHaveBeenCalledTimes(1)
-    expect(marks()).toEqual({})
-    expect([...knownArchived(result.current)]).toEqual([])
-  })
+    const removal = archiveDinner('d1', send)
+    await expect(removal).rejects.toThrow(RefusedRemovalError)
+    await expect(removal).rejects.toThrow(
+      'internal message. It could not be removed here; it stays hidden on this device until the server settles it.',
+    )
+    await expect(removal).rejects.toHaveProperty('cause', refusal)
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(marks()).toEqual({ [archivedKey('d1')]: REMOVING })
+    expect([...knownArchived(result.current)]).toEqual(['d1'])
 
-  it('marks archived a removal the server refused to answer but, asked to withdraw it, says it made', async () => {
-    const told = vi.fn()
-    const stop = onArchived(told)
-
-    await archiveDinner('d1', removals({ send: () => Promise.reject(internal()), withdraw: () => Promise.resolve<Withdrawal>({ outcome: 'archived', dinnerStatus: 'archived' }) }))
-    stop()
-    expect(marks()).toEqual({ [archivedKey('d1')]: ARCHIVED })
-    expect(told).toHaveBeenCalledWith('d1')
-  })
-
-  // F3: another device archives the dinner with its own removal before this
-  // one's withdrawal settles.
-  it('marks archived a dinner another removal archived, though the server withdraws this one', async () => {
-    const server = new Server()
-    const { result } = renderHook(() => useArchived())
-    const told = vi.fn()
-    const stop = onArchived(told)
-    const R2 = '0190b8c4-7e2a-4c1d-9f3e-2a1b3c4d5e6f'
-    const send = vi.fn((_id: string, _removal: string) => Promise.reject(internal()))
-    const withdraw = vi.fn((id: string, removal: string) => {
-      // Device B's removal R2 reaches the server first.
-      server.arrive(id, R2)
-      return Promise.resolve(server.withdraw(id, removal))
-    })
-
-    await archiveDinner('d1', removals({ send, withdraw }))
-    stop()
-    const r1 = send.mock.calls[0]![1]
-    expect(withdraw.mock.calls).toEqual([['d1', r1]])
-    // R1 is withdrawn for good, and never made, however late it arrives.
-    expect(() => server.arrive('d1', r1)).toThrow('the removal was withdrawn')
+    // The next check sends it again, and the server archives it.
+    await act(() => checkRemovals(sent))
     expect(marks()).toEqual({ [archivedKey('d1')]: ARCHIVED })
     expect([...knownArchived(result.current)]).toEqual(['d1'])
-    expect(told).toHaveBeenCalledWith('d1')
-
-    // A new page still hides it: no earlier read can link to it.
-    resetArchived()
-    const reloaded = renderHook(() => useArchived())
-    expect([...knownArchived(reloaded.result.current)]).toEqual(['d1'])
   })
 
-  it('withdraws the very removal it sent', async () => {
-    const send = vi.fn((_id: string, _removal: string) => Promise.reject(internal()))
-    const withdraw = vi.fn((_id: string, _removal: string) => withdrawn())
+  // The rule that removes the race by construction: no answer, refusal or
+  // read takes a mark away, so no later archive by another device has
+  // anything to race against.
+  it.each(ANSWERS)('never takes a mark away, whatever the server answers: %s', async (answerName, answer) => {
+    const removeItem = vi.spyOn(Storage.prototype, 'removeItem')
+    const { result } = renderHook(() => useArchived())
 
-    await expect(archiveDinner('d1', removals({ send, withdraw }))).rejects.toThrow('internal message')
-    expect(send.mock.calls[0]![1]).toMatch(/^[0-9a-f-]{36}$/)
-    expect(withdraw.mock.calls).toEqual([['d1', send.mock.calls[0]![1]]])
+    await archiveDinner('d1', answer).catch(() => undefined)
+    localStorage.setItem(archivedKey('d2'), REMOVING)
+    await act(() => checkRemovals(answer))
+    // And a dinner marked archived is never marked removing again.
+    localStorage.setItem(archivedKey('d3'), ARCHIVED)
+    await archiveDinner('d3', answer).catch(() => undefined)
+    await act(() => checkRemovals(answer))
+
+    await waitFor(() => expect(deviceLocks().held(removalLock('d1'))).toBe(false))
+    expect(removeItem).not.toHaveBeenCalled()
+    const settled = answer === ANSWERS[0]![1] || answerName.startsWith('not found') ? ARCHIVED : REMOVING
+    expect(marks()).toEqual({ [archivedKey('d1')]: settled, [archivedKey('d2')]: settled, [archivedKey('d3')]: ARCHIVED })
+    expect([...knownArchived(result.current)]).toContain('d1')
+    // A new page hides all three.
+    resetArchived()
+    const reloaded = renderHook(() => useArchived())
+    expect([...knownArchived(reloaded.result.current)].sort()).toEqual(['d1', 'd2', 'd3'])
   })
 
   it('marks archived a dinner the server no longer has (404)', async () => {
     const gone = new ApiError(404, 'not_found', 'dinner not found', false)
 
-    await expect(archiveDinner('d1', removals({ send: () => Promise.reject(gone) }))).rejects.toBe(gone)
+    await expect(archiveDinner('d1', () => Promise.reject(gone))).rejects.toBe(gone)
     expect(marks()).toEqual({ [archivedKey('d1')]: ARCHIVED })
   })
 
-  it('keeps a removal the server did not settle hidden, says so, and sends it again at once', async () => {
-    const send = vi.fn((_id: string, _removal: string) => Promise.reject(new TypeError('Failed to fetch')))
-    const withdraw = vi.fn((_id: string, _removal: string) => Promise.reject(new TypeError('Failed to fetch')))
+  it('keeps a removal no answer settled hidden, says so, and sends it again at once', async () => {
+    const send = vi.fn((_id: string) => Promise.reject(new TypeError('Failed to fetch')))
     const { result } = renderHook(() => useArchived())
 
-    const removal = archiveDinner('d1', removals({ send, withdraw }))
+    const removal = archiveDinner('d1', send)
     await expect(removal).rejects.toThrow(UnconfirmedRemovalError)
     await expect(removal).rejects.toThrow(
       'Failed to fetch. The server may have removed it, so this device hides it until the server can say whether it did.',
     )
-    await waitFor(() => expect(withdraw).toHaveBeenCalledTimes(2))
-    // Sent again with the same removal, so the server makes it at most once.
-    const id = removalOf('d1')
-    expect(send.mock.calls).toEqual([
-      ['d1', id],
-      ['d1', id],
-    ])
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(2))
+    expect(send.mock.calls).toEqual([['d1'], ['d1']])
     await waitFor(() => expect(deviceLocks().held(removalLock('d1'))).toBe(false))
-    expect(marks()).toEqual({ [archivedKey('d1')]: REMOVING_ID })
+    expect(marks()).toEqual({ [archivedKey('d1')]: REMOVING })
     expect([...knownArchived(result.current)]).toEqual(['d1'])
   })
 
@@ -235,15 +176,15 @@ describe('archiveDinner', () => {
     Reflect.deleteProperty(navigator, 'locks')
     const send = vi.fn(sent)
 
-    await expect(archiveDinner('d1', removals({ send }))).rejects.toThrow(
+    await expect(archiveDinner('d1', send)).rejects.toThrow(
       'this browser cannot keep its tabs from settling one removal at once (no Web Locks), so it was not sent',
     )
     expect(send).not.toHaveBeenCalled()
     expect(marks()).toEqual({})
   })
 
-  it.each(['true', 'removing', 'removing:', 'removing:not-a-uuid', 'removing:0190B8C4-7E2A-4C1D-9F3E-2A1B3C4D5E6F'])(
-    'reports a mark saved on this device that MealQuest did not save (%s)',
+  it.each(['true', '', 'Archived', 'removing:0190b8c4-7e2a-4c1d-9f3e-2a1b3c4d5e6f'])(
+    'reports a mark saved on this device that MealQuest did not save (%j)',
     (mark) => {
       localStorage.setItem(archivedKey('d1'), mark)
       const { result } = renderHook(() => useArchived())
@@ -257,7 +198,7 @@ describe('archiveDinner', () => {
     localStorage.setItem(archivedKey('d1'), 'true')
     const send = vi.fn(sent)
 
-    await expect(archiveDinner('d1', removals({ send }))).rejects.toThrow(
+    await expect(archiveDinner('d1', send)).rejects.toThrow(
       'The removed dinner saved on this device (mealquest.archived-dinner.d1) is not one MealQuest saved.',
     )
     expect(send).not.toHaveBeenCalled()
@@ -265,89 +206,48 @@ describe('archiveDinner', () => {
   })
 })
 
-// A1 and A2 are removal ids saved before a check.
-const A1 = '0190b8c4-7e2a-4c1d-9f3e-2a1b3c4d5e61'
-const A2 = '0190b8c4-7e2a-4c1d-9f3e-2a1b3c4d5e62'
-
 describe('checkRemovals', () => {
-  it('sends each removal the server did not settle again: one it makes is marked archived, one it refuses and withdraws loses its mark', async () => {
-    localStorage.setItem(archivedKey('d1'), removingMark(A1))
-    localStorage.setItem(archivedKey('d2'), removingMark(A2))
+  it('sends each removal no answer settled again: one the server archives is marked archived, one it refuses stays marked removing', async () => {
+    localStorage.setItem(archivedKey('d1'), REMOVING)
+    localStorage.setItem(archivedKey('d2'), REMOVING)
     localStorage.setItem(archivedKey('d3'), ARCHIVED)
     const told = vi.fn()
     const stop = onArchived(told)
-    const send = vi.fn((id: string, _removal: string) => (id === 'd1' ? Promise.reject(internal()) : sent()))
-    const withdraw = vi.fn((_id: string, _removal: string) => withdrawn())
+    const send = vi.fn((id: string) => (id === 'd1' ? Promise.reject(new ApiError(500, 'internal', 'internal message', true)) : sent()))
     const { result } = renderHook(() => useArchived())
 
-    await act(() => checkRemovals(removals({ send, withdraw })))
+    await act(() => checkRemovals(send))
     stop()
-    expect(send.mock.calls.sort()).toEqual([
-      ['d1', A1],
-      ['d2', A2],
-    ])
-    expect(withdraw.mock.calls).toEqual([['d1', A1]])
-    expect(marks()).toEqual({ [archivedKey('d2')]: ARCHIVED, [archivedKey('d3')]: ARCHIVED })
-    expect([...knownArchived(result.current)].sort()).toEqual(['d2', 'd3'])
+    expect(send.mock.calls.map(([id]) => id).sort()).toEqual(['d1', 'd2'])
+    expect(marks()).toEqual({ [archivedKey('d1')]: REMOVING, [archivedKey('d2')]: ARCHIVED, [archivedKey('d3')]: ARCHIVED })
+    expect([...knownArchived(result.current)].sort()).toEqual(['d1', 'd2', 'd3'])
     expect(told).toHaveBeenCalledWith('d2')
   })
 
   it('marks archived a removal the server answers not found (404)', async () => {
-    localStorage.setItem(archivedKey('d1'), removingMark(A1))
+    localStorage.setItem(archivedKey('d1'), REMOVING)
 
-    await checkRemovals(removals({ send: () => Promise.reject(new ApiError(404, 'not_found', 'dinner not found', false)) }))
+    await checkRemovals(() => Promise.reject(new ApiError(404, 'not_found', 'dinner not found', false)))
     expect(marks()).toEqual({ [archivedKey('d1')]: ARCHIVED })
-  })
-
-  it('marks archived a removal whose withdrawal finds the dinner gone (404)', async () => {
-    localStorage.setItem(archivedKey('d1'), removingMark(A1))
-
-    await checkRemovals(
-      removals({
-        send: () => Promise.reject(internal()),
-        withdraw: () => Promise.reject(new ApiError(404, 'not_found', 'dinner not found', false)),
-      }),
-    )
-    expect(marks()).toEqual({ [archivedKey('d1')]: ARCHIVED })
-  })
-
-  it.each([
-    ['no answer', () => Promise.reject(new TypeError('Failed to fetch'))],
-    ['refused', () => Promise.reject(internal())],
-    ['no outcome', () => Promise.reject(new Error('POST /api/v1/dinners/{id}/removals/{removal}/withdraw: response is not an outcome'))],
-    [
-      'no dinner status',
-      () =>
-        Promise.reject(
-          new Error('POST /api/v1/dinners/{id}/removals/{removal}/withdraw: dinner_status undefined is not one of suggested, quest_log, tried, regular, archived'),
-        ),
-    ],
-  ])('leaves a refused removal marked removing when its withdrawal is not settled either (%s)', async (_case, withdraw) => {
-    localStorage.setItem(archivedKey('d1'), removingMark(A1))
-
-    await checkRemovals(removals({ send: () => Promise.reject(internal()), withdraw }))
-    expect(localStorage.getItem(archivedKey('d1'))).toBe(removingMark(A1))
   })
 
   it('leaves a dinner marked removing when the server does not answer', async () => {
-    localStorage.setItem(archivedKey('d1'), removingMark(A1))
+    localStorage.setItem(archivedKey('d1'), REMOVING)
 
-    await checkRemovals(
-      removals({ send: () => Promise.reject(new TypeError('Failed to fetch')), withdraw: () => Promise.reject(new TypeError('Failed to fetch')) }),
-    )
-    expect(localStorage.getItem(archivedKey('d1'))).toBe(removingMark(A1))
+    await checkRemovals(() => Promise.reject(new TypeError('Failed to fetch')))
+    expect(marks()).toEqual({ [archivedKey('d1')]: REMOVING })
   })
 
   it('leaves alone a removal this page is still sending', async () => {
     let answer!: () => void
-    const removal = archiveDinner('d1', removals({ send: () => new Promise<void>((resolve) => (answer = resolve)) }))
+    const removal = archiveDinner('d1', () => new Promise<void>((resolve) => (answer = resolve)))
     const send = vi.fn(sent)
 
-    const check = checkRemovals(removals({ send }))
+    await waitFor(() => expect(answer).toBeTypeOf('function'))
+    const check = checkRemovals(send)
     await Promise.resolve()
     expect(send).not.toHaveBeenCalled()
-    await waitFor(() => expect(answer).toBeTypeOf('function'))
-    expect(marks()).toEqual({ [archivedKey('d1')]: REMOVING_ID })
+    expect(marks()).toEqual({ [archivedKey('d1')]: REMOVING })
 
     answer()
     await removal
@@ -375,18 +275,17 @@ describe('a removal in one tab and a check in another', () => {
   it("does not settle a dinner while another tab's removal of it is unanswered, whatever the server would say", async () => {
     const { tabA, tabB, refusedB } = await twoTabs()
     let answerA!: () => void
-    const inFlightA = tabA.archiveDinner('d1', removals({ send: () => new Promise<void>((resolve) => (answerA = resolve)) }))
+    const inFlightA = tabA.archiveDinner('d1', () => new Promise<void>((resolve) => (answerA = resolve)))
     await waitFor(() => expect(answerA).toBeTypeOf('function'))
 
     // Tab B checks before tab A's removal commits: the server, which still
     // has the dinner, would refuse, but tab B sends nothing and the mark
     // stays.
-    const sendB = vi.fn((_id: string, _removal: string) => refusedB())
-    const withdrawB = vi.fn(withdrawn)
-    const checkB = tabB.checkRemovals(removals({ send: sendB, withdraw: withdrawB }))
+    const sendB = vi.fn((_id: string) => refusedB())
+    const checkB = tabB.checkRemovals(sendB)
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(sendB).not.toHaveBeenCalled()
-    expect(marks()).toEqual({ [archivedKey('d1')]: REMOVING_ID })
+    expect(marks()).toEqual({ [archivedKey('d1')]: REMOVING })
 
     // Tab A's removal is answered: archived, and tab B's check, holding the
     // lock after it, finds it settled and sends nothing.
@@ -394,32 +293,31 @@ describe('a removal in one tab and a check in another', () => {
     await inFlightA
     await checkB
     expect(sendB).not.toHaveBeenCalled()
-    expect(withdrawB).not.toHaveBeenCalled()
     expect(marks()).toEqual({ [archivedKey('d1')]: ARCHIVED })
   })
 
   it('settles, in the tab still open, a removal whose tab closed before its answer, by sending it again', async () => {
     const { tabA, tabB } = await twoTabs()
-    const sendA = vi.fn((_id: string, _removal: string) => new Promise<void>(() => undefined))
-    void tabA.archiveDinner('d1', removals({ send: sendA }))
+    const sendA = vi.fn((_id: string) => new Promise<void>(() => undefined))
+    void tabA.archiveDinner('d1', sendA)
     await waitFor(() => expect(sendA).toHaveBeenCalled())
-    const sendB = vi.fn((_id: string, _removal: string) => sent())
-    const checkB = tabB.checkRemovals(removals({ send: sendB }))
+    const sendB = vi.fn(sent)
+    const checkB = tabB.checkRemovals(sendB)
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(sendB).not.toHaveBeenCalled()
 
     // Tab A closes: the browser lets its lock go.
     deviceLocks().close(removalLock('d1'))
     await checkB
-    expect(sendB.mock.calls).toEqual([['d1', sendA.mock.calls[0]![1]]])
+    expect(sendB.mock.calls).toEqual([['d1']])
     expect(marks()).toEqual({ [archivedKey('d1')]: ARCHIVED })
   })
 
   it('after the only tab closed mid-removal, a reload hides the dinner and settles it either way', async () => {
     const { tabA } = await twoTabs()
-    const sendA = vi.fn((_id: string, _removal: string) => new Promise<void>(() => undefined))
-    void tabA.archiveDinner('d1', removals({ send: sendA }))
-    void tabA.archiveDinner('d2', removals({ send: sendA }))
+    const sendA = vi.fn((_id: string) => new Promise<void>(() => undefined))
+    void tabA.archiveDinner('d1', sendA)
+    void tabA.archiveDinner('d2', sendA)
     await waitFor(() => expect(sendA).toHaveBeenCalledTimes(2))
     deviceLocks().close(removalLock('d1'))
     deviceLocks().close(removalLock('d2'))
@@ -433,32 +331,28 @@ describe('a removal in one tab and a check in another', () => {
     const page = renderHook(() => reloaded.useArchived())
     expect([...reloaded.knownArchived(page.result.current)].sort()).toEqual(['d1', 'd2'])
 
-    // Sent again, the server makes d1 and refuses d2, which it still has and
-    // then withdraws: d1 stays hidden for good, d2 shows again.
+    // Sent again, the server archives d1 and refuses d2: d1 is marked
+    // archived, and d2 — which tab A's send, unanswered, may still archive —
+    // stays hidden, marked removing, until the server archives it.
     const send = vi.fn((id: string) => (id === 'd2' ? Promise.reject(new PageApiError(500, 'internal', 'internal message', true)) : sent()))
-    await act(() => reloaded.checkRemovals(removals({ send, withdraw: withdrawn })))
-    expect(marks()).toEqual({ [archivedKey('d1')]: ARCHIVED })
-    expect([...reloaded.knownArchived(page.result.current)]).toEqual(['d1'])
+    await act(() => reloaded.checkRemovals(send))
+    expect(marks()).toEqual({ [archivedKey('d1')]: ARCHIVED, [archivedKey('d2')]: REMOVING })
+    expect([...reloaded.knownArchived(page.result.current)].sort()).toEqual(['d1', 'd2'])
   })
 
-  // F1: a tab still showing a dinner another tab has archived.
+  // A tab still showing a dinner another tab has archived.
   it('keeps archived, after a reload, a dinner a stale tab removes again and the server would refuse', async () => {
     const { tabA, tabB, refusedB } = await twoTabs()
-    await tabA.archiveDinner('d1', removals())
+    await tabA.archiveDinner('d1', sent)
     expect(marks()).toEqual({ [archivedKey('d1')]: ARCHIVED })
 
     // Tab B still shows d1 and removes it: the server would refuse, but it
     // is archived, so tab B sends nothing and the mark stays.
-    const sendB = vi.fn((_id: string, _removal: string) => refusedB())
-    const withdrawB = vi.fn(withdrawn)
-    await tabB.archiveDinner('d1', removals({ send: sendB, withdraw: withdrawB }))
+    const sendB = vi.fn((_id: string) => refusedB())
+    await tabB.archiveDinner('d1', sendB)
+    await tabB.checkRemovals(sendB)
     expect(sendB).not.toHaveBeenCalled()
-    expect(withdrawB).not.toHaveBeenCalled()
     expect(marks()).toEqual({ [archivedKey('d1')]: ARCHIVED })
-
-    // A check in tab B leaves it archived too.
-    await tabB.checkRemovals(removals({ send: sendB, withdraw: withdrawB }))
-    expect(sendB).not.toHaveBeenCalled()
 
     vi.resetModules()
     const reloaded = await import('./archived.ts')
@@ -466,15 +360,15 @@ describe('a removal in one tab and a check in another', () => {
     expect([...reloaded.knownArchived(page.result.current)]).toEqual(['d1'])
   })
 
-  // F1: tab B removes while tab A holds the lock settling the same dinner.
+  // Tab B removes while tab A holds the lock settling the same dinner.
   it('does not mark removing again a dinner archived while a stale tab waited for its lock', async () => {
     const { tabA, tabB, refusedB } = await twoTabs()
     let answerA!: () => void
-    const inFlightA = tabA.archiveDinner('d1', removals({ send: () => new Promise<void>((resolve) => (answerA = resolve)) }))
+    const inFlightA = tabA.archiveDinner('d1', () => new Promise<void>((resolve) => (answerA = resolve)))
     await waitFor(() => expect(answerA).toBeTypeOf('function'))
 
-    const sendB = vi.fn((_id: string, _removal: string) => refusedB())
-    const inFlightB = tabB.archiveDinner('d1', removals({ send: sendB, withdraw: withdrawn }))
+    const sendB = vi.fn((_id: string) => refusedB())
+    const inFlightB = tabB.archiveDinner('d1', sendB)
     await new Promise((resolve) => setTimeout(resolve, 20))
     answerA()
     await inFlightA
@@ -483,54 +377,84 @@ describe('a removal in one tab and a check in another', () => {
     expect(marks()).toEqual({ [archivedKey('d1')]: ARCHIVED })
   })
 
-  // F2: a tab closes with its removal unanswered; the removal reaches the
+  // A tab closes with its removal unanswered; the removal reaches the
   // server only after another tab's send of it again was refused.
-  async function closedTabThenRefusedRetry(lateBeforeWithdrawal: boolean) {
+  it('keeps hidden, after a reload, a removal from a closed tab that the server archives after refusing it sent again', async () => {
     const server = new Server()
     const { tabA, tabB, refusedB } = await twoTabs()
     let arriveLate!: () => void
     const sendA = vi.fn(
-      (id: string, removal: string) =>
+      (id: string) =>
         new Promise<void>(() => {
-          arriveLate = () => server.arrive(id, removal)
+          arriveLate = () => server.remove(id)
         }),
     )
-    void tabA.archiveDinner('d1', removals({ send: sendA }))
+    void tabA.archiveDinner('d1', sendA)
     await waitFor(() => expect(sendA).toHaveBeenCalled())
-    // Tab A closes before its removal reaches the server.
     deviceLocks().close(removalLock('d1'))
 
-    // Tab B sends it again; the server, busy, refuses that.
-    const sendB = vi.fn((_id: string, _removal: string) => refusedB())
-    const withdrawB = vi.fn(async (id: string, removal: string) => {
-      if (lateBeforeWithdrawal) arriveLate()
-      return server.withdraw(id, removal)
-    })
-    await tabB.checkRemovals(removals({ send: sendB, withdraw: withdrawB }))
-    expect(sendB.mock.calls).toEqual([['d1', sendA.mock.calls[0]![1]]])
-    expect(withdrawB.mock.calls).toEqual([['d1', sendA.mock.calls[0]![1]]])
-
-    // Tab A's removal reaches the server now, if it has not yet.
-    if (!lateBeforeWithdrawal) expect(() => arriveLate()).toThrow('the removal was withdrawn')
+    // Tab B sends it again; the server, busy, refuses that, and then tab A's
+    // removal reaches it.
+    const sendB = vi.fn((_id: string) => refusedB())
+    await tabB.checkRemovals(sendB)
+    expect(sendB.mock.calls).toEqual([['d1']])
+    arriveLate()
+    expect([...server.archived]).toEqual(['d1'])
+    expect(marks()).toEqual({ [archivedKey('d1')]: REMOVING })
 
     vi.resetModules()
     const reloaded = await import('./archived.ts')
     const page = renderHook(() => reloaded.useArchived())
-    return { server, hidden: [...reloaded.knownArchived(page.result.current)] }
-  }
+    expect([...reloaded.knownArchived(page.result.current)]).toEqual(['d1'])
 
-  it('marks archived, after a reload, a removal from a closed tab the server made after refusing it sent again', async () => {
-    const { server, hidden } = await closedTabThenRefusedRetry(true)
-    expect([...server.archived]).toEqual(['d1'])
+    // The next check sends it again; archiving again succeeds.
+    await act(() => reloaded.checkRemovals(async (id) => server.remove(id)))
     expect(marks()).toEqual({ [archivedKey('d1')]: ARCHIVED })
-    expect(hidden).toEqual(['d1'])
   })
+})
 
-  it('shows again a dinner whose removal from a closed tab was withdrawn, and the server never makes it, however late it arrives', async () => {
-    const { server, hidden } = await closedTabThenRefusedRetry(false)
-    expect([...server.archived]).toEqual([])
-    expect(marks()).toEqual({})
-    expect(hidden).toEqual([])
+// F3 (review round 7): device A's removal R1 is settled only after device
+// B's removal R2 has archived the dinner. Nothing device A learns from R1
+// can show the dinner again: its mark is never taken away.
+describe('a removal settled only after another device archived the dinner', () => {
+  it.each([
+    ['refused', () => Promise.reject(internal())],
+    ['not answered', () => Promise.reject(new TypeError('Failed to fetch'))],
+    ['archived', sent],
+  ] as [string, () => Promise<unknown>][])('keeps the dinner hidden, after a reload too, when R1 is %s after R2 commits', async (_case, r1Answer) => {
+    const server = new Server()
+    const { result } = renderHook(() => useArchived())
+    let settleR1!: () => void
+    // R1's first send is answered only once R2 has committed; any send of
+    // it again (at once, with no answer) is answered the same way.
+    const send = vi.fn((_id: string) =>
+      send.mock.calls.length > 1
+        ? r1Answer()
+        : new Promise<unknown>((resolve, reject) => {
+            settleR1 = () => r1Answer().then(resolve, reject)
+          }),
+    )
+    const r1 = archiveDinner('d1', send)
+    await waitFor(() => expect(settleR1).toBeTypeOf('function'))
+
+    // Device B's removal R2 commits: the server archives d1.
+    server.remove('d1')
+    expect([...server.archived]).toEqual(['d1'])
+    // Only now does device A hear R1's answer.
+    settleR1()
+    await r1.catch(() => undefined)
+    await waitFor(() => expect(deviceLocks().held(removalLock('d1'))).toBe(false))
+
+    expect(localStorage.getItem(archivedKey('d1'))).not.toBeNull()
+    expect([...knownArchived(result.current)]).toEqual(['d1'])
+    resetArchived()
+    const reloaded = renderHook(() => useArchived())
+    expect([...knownArchived(reloaded.result.current)]).toEqual(['d1'])
+
+    // Sent again, the server — which has it archived — archives it again
+    // and answers: marked archived for good.
+    await act(() => checkRemovals(async (id) => server.remove(id)))
+    expect(marks()).toEqual({ [archivedKey('d1')]: ARCHIVED })
   })
 })
 
@@ -562,8 +486,8 @@ describe('useArchived', () => {
     // heard of tab B's dinner, saves last.
     let answerA!: () => void
     let answerB!: () => void
-    const inFlightA = tabA.archiveDinner('d1', removals({ send: () => new Promise<void>((resolve) => (answerA = resolve)) }))
-    const inFlightB = tabB.archiveDinner('d2', removals({ send: () => new Promise<void>((resolve) => (answerB = resolve)) }))
+    const inFlightA = tabA.archiveDinner('d1', () => new Promise<void>((resolve) => (answerA = resolve)))
+    const inFlightB = tabB.archiveDinner('d2', () => new Promise<void>((resolve) => (answerB = resolve)))
     // Each is sent once its tab holds the dinner's lock.
     await waitFor(() => {
       expect(answerA).toBeTypeOf('function')

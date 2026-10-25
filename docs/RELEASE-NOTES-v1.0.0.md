@@ -22,8 +22,8 @@ dinners, shipped as a single Go service with the React PWA embedded
 
 ## What shipped
 
-Features are listed in the order they merged into `dev` (`git log --oneline
-dev`). Each one names the commit that brought it in.
+Features are grouped by area. Each one names the commit that brought it
+into `dev` (`git log --oneline dev`).
 
 ### Foundations (Features 01–11)
 
@@ -76,13 +76,13 @@ dev`). Each one names the commit that brought it in.
   plan's recipes with no model call. When the week ends it is frozen into
   the blog-style Supply archive.
 - **Cook from what I have and Quick dinners** (Feature 18, `47a5b5c`;
-  release-review fixes `14f7141`): ideas from the ingredients on hand, and
+  release-review fixes `14f7141`; follow-up `4dcfc3c` withholds unsafe
+  recipe sources from idea results): ideas from the ingredients on hand, and
   Quick dinners (a crock pot, or 30 minutes or less from prep to table).
 - **Recipe detail and Kitchen reading mode** (Feature 15, `4b592fd`):
   `/dinner/:id` shows a dinner's recipe, in Kitchen reading mode on a
   tablet.
-- **Notifications and Google Chat** (Feature 19, `dcd35e7`; follow-up
-  `4dcfc3c` withholds unsafe recipe sources from idea results): Web Push and
+- **Notifications and Google Chat** (Feature 19, `dcd35e7`): Web Push and
   Google Chat for `plan_ready`, `list_ready`, `day_of_reminder`,
   `new_suggestions` and `rotation_review`, chosen per event.
 - **The Scheduler's weekly rhythm** (Feature 20, `ecf7c6b`), on household
@@ -117,7 +117,7 @@ dev`). Each one names the commit that brought it in.
 The Launch readiness feature branch
 (`feature/7383c2cb-3179-4b45-b558-bf1bc1833fad-launch-readiness`, head
 `48c4c0e`) has **not been merged into `dev`**. It is 21 commits ahead of
-`dev` and contains:
+`dev`. Among them are:
 
 - the empty, loading and error state sweep (#187)
 - portrait tablet layouts (#188)
@@ -227,11 +227,13 @@ CTXD project `mealquest`, file `RUNBOOKS.MD`, and in
   - "Authentik"
   - "Google Calendar OAuth client"
   - "Google Chat webhook"
+  - "Stack unit"
   - "Recipe search (SearXNG)"
+  - "Routine deploy and rollback"
   - "Backups" ("Database — Litestream", "Media — nightly rsync")
   - "Restore the database"
   - "Restore photos (media)"
-  - "Secret rotation"
+  - "Secret rotation", including "VAPID keys (Web Push)"
 - [deploy/RUNBOOK.md](../deploy/RUNBOOK.md) covers:
   - build, ship and restart
   - verifying the deployed version and a real screen

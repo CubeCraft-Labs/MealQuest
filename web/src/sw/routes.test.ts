@@ -3,8 +3,8 @@ import { cacheFallbackHeader, cacheNames, cacheVersions, markCacheFallback, rout
 
 const origin = 'https://mealquest.test'
 
-function route(path: string, method = 'GET', mode: RequestMode = 'cors'): Route {
-  return routeFor({ method, url: new URL(path, origin), mode }, origin)
+function route(path: string, method = 'GET', mode: RequestMode = 'cors', cache: RequestCache = 'default'): Route {
+  return routeFor({ method, url: new URL(path, origin), mode, cache }, origin)
 }
 
 const apiCache: Route = { strategy: 'network-first', cacheName: cacheNames.api }
@@ -123,10 +123,18 @@ describe('routeFor', () => {
     expect(route('/api/v1/ideas', 'GET', 'navigate')).toEqual(networkOnly)
   })
 
+  // The recipe check (apiCheck) must reach the server or fail.
+  it('leaves a read that asks for no cache network-only, on a cached API path too', () => {
+    for (const path of ['/api/v1/dinners/d1', '/api/v1/plans/2026-10-05', '/api/v1/home']) {
+      expect(route(path)).toEqual(apiCache)
+      expect(route(path, 'GET', 'cors', 'no-store')).toEqual(networkOnly)
+    }
+  })
+
   it('leaves cross-origin requests network-only', () => {
     for (const path of ['/api/v1/plans', '/media/a.jpg', '/assets/a.woff2']) {
       const url = new URL(path, 'https://cdn.example')
-      expect(routeFor({ method: 'GET', url, mode: 'no-cors' }, origin)).toEqual(networkOnly)
+      expect(routeFor({ method: 'GET', url, mode: 'no-cors', cache: 'default' }, origin)).toEqual(networkOnly)
     }
   })
 

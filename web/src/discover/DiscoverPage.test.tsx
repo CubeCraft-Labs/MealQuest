@@ -6,7 +6,7 @@ import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession 
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
 import { stubAnimate, type FakeAnimation } from '../test/animate.ts'
 import { declaredStyle } from '../test/cssRules.ts'
-import { dinnerBody, type DinnerBody } from '../test/dinners.ts'
+import { dinnerBody, recipeBody, type DinnerBody } from '../test/dinners.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
 import { mockViewport } from '../test/matchMedia.ts'
@@ -830,8 +830,10 @@ describe('DiscoverPage', () => {
       expect(server.fetchMock.mock.calls.map(([input]) => String(input)).filter((path) => path.startsWith('/api/v1/plans'))).toEqual([])
     })
 
-    it('opens /dinner/:id from a row', async () => {
-      stubQuestLog([PAD_THAI, GUMBO])
+    it('opens /dinner/:id from a row once the server answers that the dinner is there', async () => {
+      stubQuestLog([PAD_THAI, GUMBO], {
+        'GET /api/v1/dinners/q2': () => jsonResponse(200, recipeBody('q2', 'Shrimp gumbo', { status: 'quest_log' })),
+      })
       await renderPage()
       const sheet = await openSheet(2)
       fireEvent.click(within(sheet).getByRole('button', { name: /^Shrimp gumbo/ }))

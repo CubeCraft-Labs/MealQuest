@@ -1,12 +1,13 @@
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useSyncExternalStore } from 'react'
-import { ApiError, useApi, type ApiRead } from '../api/index.ts'
+import { ApiError, useApi, type ApiClient, type ApiRead } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import {
   DIFFICULTIES,
   dinnerDetailKey,
   dinnerPath,
   DINNERS_PATH,
+  dropRegular,
   GROUNDING_POLL_MS,
   GROUNDING_STATUSES,
   METHODS,
@@ -18,7 +19,7 @@ import {
   type Method,
 } from './api.ts'
 import { ArchivedDinnerError, knownArchived, useArchived } from './archived.ts'
-import { QUEST_LOG_KEY } from '../discover/api.ts'
+import { dropFromQuestLog, QUEST_LOG_KEY } from '../discover/api.ts'
 import { HOME_KEY, showArchived as showHomeArchived, type Home } from '../home/api.ts'
 import { showArchived as showPlanArchived, type Plan } from '../plan/api.ts'
 import { showArchived as showRunArchived, type SupplyRun } from '../shopping/api.ts'
@@ -152,17 +153,41 @@ export function parseDinnerDetail(where: string, body: unknown, cached: boolean)
 }
 
 // noDetail shows dinner id, which the server just said has no detail (404),
-// archived on each plan, Home and Supply run read here — a read from before
-// another device archived it may still offer its recipe — and reads each of
-// them, the Regulars and the Quest log again.
+// archived on each plan, Home and Supply run read here and takes it out of
+// the Regulars and the Quest log read here — a read from before another
+// device archived it may still offer its recipe — at once, so none offers it
+// while they are read again, nor after that read fails, and reads each of
+// them again.
 function noDetail(queryClient: QueryClient, id: string) {
   const gone = new Set([id])
+  dropRegular(queryClient, id)
+  dropFromQuestLog(queryClient, id)
   queryClient.setQueriesData<Plan | null>({ queryKey: ['plans'] }, (plan) => (plan === undefined ? plan : showPlanArchived(plan, gone)))
   queryClient.setQueriesData<Home>({ queryKey: HOME_KEY }, (home) => (home === undefined ? home : showHomeArchived(home, gone)))
   queryClient.setQueriesData<SupplyRun | null>({ queryKey: ['shopping'] }, (run) =>
     run === undefined ? run : showRunArchived(run, gone),
   )
   for (const queryKey of [['plans'], HOME_KEY, ['shopping'], REGULARS_KEY, QUEST_LOG_KEY]) void queryClient.invalidateQueries({ queryKey })
+}
+
+// checkDinnerDetail asks the server itself for dinner id with its recipe
+// (apiCheck): never the service worker's cached copy, nor one this page
+// read before. A 404 — the dinner was archived, here or on another device —
+// leaves no read here offering its recipe (noDetail) and rejects.
+export async function checkDinnerDetail(
+  apiCheck: ApiClient['apiCheck'],
+  queryClient: QueryClient,
+  id: string,
+  signal: AbortSignal,
+): Promise<DinnerDetail> {
+  let body: unknown
+  try {
+    body = await apiCheck<unknown>(dinnerPath(id), signal)
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) noDetail(queryClient, id)
+    throw error
+  }
+  return parseDinnerDetail(`GET ${DINNERS_PATH}/{id}`, body, false)
 }
 
 // useDinnerDetail is dinner id with its recipe (GET /api/v1/dinners/{id}).

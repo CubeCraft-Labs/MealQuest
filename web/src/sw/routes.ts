@@ -6,7 +6,9 @@
 // non-GET request are network-only and never reach a cache. Paths are matched
 // as the server sees them — percent-decoded, before and after dot segments are
 // resolved — so /%61uth/login is /auth/login; a malformed encoding is
-// network-only.
+// network-only. So is a request that asks for no cache (cache: 'no-store'):
+// the app's recipe check (apiCheck) must reach the server or fail, never be
+// answered from a cached copy.
 
 export type Route =
   // Network with a 3 s timeout, then the last cached response.
@@ -22,6 +24,7 @@ export interface RouteRequest {
   method: string
   url: URL
   mode: RequestMode
+  cache: RequestCache
 }
 
 // Each cache carries its own version. Bumping one renames only that cache;
@@ -96,8 +99,9 @@ function cleanPath(path: string): string {
 const networkOnly: Route = { strategy: 'network-only' }
 
 export function routeFor(request: RouteRequest, origin: string): Route {
-  const { method, url, mode } = request
+  const { method, url, mode, cache } = request
   if (method !== 'GET') return networkOnly
+  if (cache === 'no-store') return networkOnly
   if (url.origin !== origin) return networkOnly
   const path = decodePath(url.pathname)
   if (path === undefined) return networkOnly

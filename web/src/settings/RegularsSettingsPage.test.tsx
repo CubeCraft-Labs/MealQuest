@@ -355,7 +355,7 @@ describe('RegularsSettingsPage', () => {
     await renderPage()
 
     openRow('Beef tacos')
-    expect(path()).toHaveTextContent('/dinner/d1')
+    await waitFor(() => expect(path()).toHaveTextContent('/dinner/d1'))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(await screen.findByRole('heading', { level: 2, name: 'Ingredients' })).toBeInTheDocument()
     const [ingredients, steps] = screen.getAllByRole('list')
@@ -402,7 +402,7 @@ describe('RegularsSettingsPage', () => {
     await renderPage()
 
     openRow('Pizza night')
-    expect(path()).toHaveTextContent('/dinner/d3')
+    await waitFor(() => expect(path()).toHaveTextContent('/dinner/d3'))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     const missing = await screen.findByRole('region', { name: 'No recipe' })
     expect(missing).toHaveTextContent("We couldn't find a recipe for this dinner, so there are no ingredients or steps yet.")
@@ -579,8 +579,7 @@ describe('RegularsSettingsPage', () => {
       })
       const app = await renderApp(RUN_SCREEN)
 
-      const tacos = await waitFor(() => within(card('Beef tacos')).getByRole('link', { name: 'Beef tacos' }))
-      expect(tacos).toHaveAttribute('href', '/dinner/d1')
+      expect(await waitFor(() => within(card('Beef tacos')).getByRole('button', { name: 'Beef tacos' }))).toBeInTheDocument()
       await waitFor(() => expect(savedStatus('d1')).toBe('regular'))
 
       fireEvent.click(screen.getByRole('link', { name: 'To Regulars' }))
@@ -602,9 +601,9 @@ describe('RegularsSettingsPage', () => {
       const archived = await waitFor(() => card('Beef tacos'))
       expect(runReads).toBe(1)
       expect(within(archived).getByRole('heading', { name: 'Beef tacos' })).toBeInTheDocument()
-      expect(within(archived).queryByRole('link')).not.toBeInTheDocument()
+      expect(within(archived).queryByRole('button')).not.toBeInTheDocument()
       expect(within(archived).getByRole('checkbox', { name: /Ground beef/ })).toBeEnabled()
-      expect(within(card('Pot roast')).getByRole('link', { name: 'Pot roast' })).toHaveAttribute('href', '/dinner/d4')
+      expect(within(card('Pot roast')).getByRole('button', { name: 'Pot roast' })).toBeInTheDocument()
 
       // A new page, with nothing cached, opens the saved Supply run while its
       // read is not answered: the record saved on this device leaves no
@@ -615,15 +614,15 @@ describe('RegularsSettingsPage', () => {
       resetArchived()
       await renderApp(RUN_SCREEN)
       const reopened = await waitFor(() => card('Beef tacos'))
-      expect(within(reopened).queryByRole('link')).not.toBeInTheDocument()
-      expect(within(card('Pot roast')).queryByRole('link')).not.toBeInTheDocument()
+      expect(within(reopened).queryByRole('button')).not.toBeInTheDocument()
+      expect(within(card('Pot roast')).queryByRole('button')).not.toBeInTheDocument()
       await waitFor(() => expect(runReads).toBe(2))
 
       // The server answers: Pot roast links to its recipe again, Beef tacos,
       // marked here, still does not.
       answerReopened(jsonResponse(200, run))
-      expect(await within(card('Pot roast')).findByRole('link', { name: 'Pot roast' })).toHaveAttribute('href', '/dinner/d4')
-      expect(within(card('Beef tacos')).queryByRole('link')).not.toBeInTheDocument()
+      expect(await within(card('Pot roast')).findByRole('button', { name: 'Pot roast' })).toBeInTheDocument()
+      expect(within(card('Beef tacos')).queryByRole('button')).not.toBeInTheDocument()
     })
 
     // F1 (review round 8): the server archived it, so the Supply run cached
@@ -653,7 +652,7 @@ describe('RegularsSettingsPage', () => {
         setItem.call(this, key, value)
       })
       const app = await renderApp(RUN_SCREEN)
-      await waitFor(() => expect(within(card('Beef tacos')).getByRole('link', { name: 'Beef tacos' })).toBeInTheDocument())
+      await waitFor(() => expect(within(card('Beef tacos')).getByRole('button', { name: 'Beef tacos' })).toBeInTheDocument())
       await waitFor(() => expect(savedStatus('d1')).toBe('regular'))
 
       fireEvent.click(screen.getByRole('link', { name: 'To Regulars' }))
@@ -678,7 +677,7 @@ describe('RegularsSettingsPage', () => {
       fireEvent.click(screen.getByRole('link', { name: 'To Supply run' }))
       const cached = await waitFor(() => card('Beef tacos'))
       expect(runReads).toBe(1)
-      expect(within(cached).queryByRole('link')).not.toBeInTheDocument()
+      expect(within(cached).queryByRole('button')).not.toBeInTheDocument()
       expect(within(cached).getByRole('checkbox', { name: /Ground beef/ })).toBeEnabled()
 
       // A new page, with nothing cached, opens that saved Supply run while
@@ -688,14 +687,14 @@ describe('RegularsSettingsPage', () => {
       resetArchived()
       await renderApp(RUN_SCREEN)
       const reopened = await waitFor(() => card('Beef tacos'))
-      expect(within(reopened).queryByRole('link')).not.toBeInTheDocument()
-      expect(within(card('Pot roast')).queryByRole('link')).not.toBeInTheDocument()
+      expect(within(reopened).queryByRole('button')).not.toBeInTheDocument()
+      expect(within(card('Pot roast')).queryByRole('button')).not.toBeInTheDocument()
       await waitFor(() => expect(runReads).toBe(2))
 
       // The server answers: Pot roast links again, Beef tacos still does not.
       answerReopened(jsonResponse(200, run))
-      expect(await within(card('Pot roast')).findByRole('link', { name: 'Pot roast' })).toHaveAttribute('href', '/dinner/d4')
-      expect(within(card('Beef tacos')).queryByRole('link')).not.toBeInTheDocument()
+      expect(await within(card('Pot roast')).findByRole('button', { name: 'Pot roast' })).toBeInTheDocument()
+      expect(within(card('Beef tacos')).queryByRole('button')).not.toBeInTheDocument()
     })
   })
 

@@ -228,6 +228,14 @@ export function useRegulars() {
   })
 }
 
+// dropRegular takes dinner id out of the Regulars read here, at once: the
+// server just said it has no detail (noDetail in detail.ts), so its row
+// offers no recipe even while the Regulars are being read again, or when
+// that read fails.
+export function dropRegular(queryClient: QueryClient, id: string) {
+  queryClient.setQueryData<CachedRegular[]>(REGULARS_LIST_KEY, (list) => list?.filter((regular) => regular.id !== id))
+}
+
 // changeOptimistically stops Regulars reads in flight, so they cannot
 // overwrite the optimistic list, then applies change to it.
 async function changeOptimistically(queryClient: QueryClient, change: (list: CachedRegular[]) => CachedRegular[]) {

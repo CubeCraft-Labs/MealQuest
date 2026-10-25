@@ -1,4 +1,4 @@
-import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useMutationState, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useCallback } from 'react'
 import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
@@ -149,6 +149,14 @@ export function useQuestLog() {
       [archived],
     ),
   })
+}
+
+// dropFromQuestLog takes dinner id out of the Quest log read here, at once:
+// the server just said it has no detail (noDetail in dinners/detail.ts), so
+// its row offers no recipe even while the Quest log is being read again, or
+// when that read fails.
+export function dropFromQuestLog(queryClient: QueryClient, id: string) {
+  queryClient.setQueryData<QuestLogDinner[]>(QUEST_LOG_KEY, (dinners) => dinners?.filter((dinner) => dinner.id !== id))
 }
 
 // useRemoveFromQuestLog removes a Quest-log dinner, which the server

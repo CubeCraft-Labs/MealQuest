@@ -68,7 +68,7 @@ function strategyFor(route: AnsweredRoute): Strategy {
 }
 
 function routeOf({ request, url }: { request: Request; url: URL }): Route {
-  return routeFor({ method: request.method, url, mode: request.mode }, self.location.origin)
+  return routeFor({ method: request.method, url, mode: request.mode, cache: request.cache }, self.location.origin)
 }
 
 // answered matches every request the worker answers: all but network-only.

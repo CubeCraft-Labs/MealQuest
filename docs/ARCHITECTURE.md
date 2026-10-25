@@ -1300,15 +1300,24 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
   an answer `X-MealQuest-Cache-Fallback`. A plan, Home, Supply run,
   Regulars or Quest log read so answered — or the Supply run saved on the
   device — may be stale: another device may have archived a dinner since.
-  Its dinners offer no recipe link (their names, or Regulars and Quest log
+  Its dinners offer no recipe (their names, or Regulars and Quest log
   rows, are plain) until the server answers a read again; then only
   dinners whose `status` is not `archived`, and that this device has not
-  removed (its local removal mark), link to their recipes. A recipe
-  link from a server read stays on screen until the next read; if the
-  dinner was archived elsewhere meanwhile, opening it reads the server's
-  404 ("Dinner not found"), which shows that dinner archived on every plan,
-  Home and Supply run held in memory and reads each of them, the Regulars
-  and the Quest log again. The API cache's
+  removed (its local removal mark), offer their recipes. A dinner's recipe
+  is offered as a button, never a link: a server read may stay on screen
+  while another device archives the dinner, so activating it asks the
+  server for the dinner's detail with `cache: 'no-store'`, which the
+  service worker leaves to the network (an answer still marked
+  `X-MealQuest-Cache-Fallback`, from a worker of an earlier build, is
+  refused), even when this page read that detail moments ago, and opens
+  `/dinner/{id}` only with the server's answer. A 404 opens nothing: the
+  screen says the dinner was removed, and at once that dinner shows
+  archived on every plan, Home and Supply run held in memory and leaves the
+  Regulars and the Quest log held in memory — staying out of them while
+  they, with the plans, Home and Supply runs, are read again, and if that
+  read fails. A check that cannot reach the server opens nothing either,
+  and offers Retry. The detail screen, opened from a typed or notified
+  URL, reads with the same 404 handling. The API cache's
   version is raised whenever a cached response's shape stops being one the
   app accepts — v4 retired the v3 cache, whose plans, Home and Supply runs
   had no dinner `status` — and activation deletes the retired cache, so
@@ -1377,9 +1386,9 @@ Regular dinners (`/settings/regulars`) lists the Regulars from
 minutes", favorite heart and grounding badge ("Finding recipe…" while
 `pending`, "Recipe found" when `grounded` or `manual`, "Needs a recipe" when
 `failed`). The add field takes a name or a pasted `https://` recipe link.
-Tapping a Regular's row opens its recipe (`/dinner/{id}`), unless the list
-is the service worker's cached copy, when the row is plain (see the offline
-cache above); its pencil
+Tapping a Regular's row opens its recipe (`/dinner/{id}`) once the server
+answers that it is there, unless the list is the service worker's cached
+copy, when the row is plain (see the offline cache above); its pencil
 button opens the edit sheet (name, method, minutes, difficulty; remove
 archives it after a confirmation), or, for one that needs a recipe, "Fix
 recipe" (pick one of the recipe candidates, paste a link or type the

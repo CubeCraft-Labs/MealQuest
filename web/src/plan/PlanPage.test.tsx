@@ -1464,7 +1464,7 @@ describe.each([
   }
   // card is the card in a day's column, holding its dinner's recipe link.
   function card(day: string, dinnerName: string) {
-    return within(column(day)).getByRole('link', { name: dinnerName }).parentElement!
+    return within(column(day)).getByRole('button', { name: dinnerName }).parentElement!
   }
 
   it('renders the plan manager: header, actions, sync status and the 7-column grid', async () => {
@@ -1758,9 +1758,10 @@ describe.each([
     const friday = await waitFor(() => column('Friday'))
     expect(within(friday).getByText('Pizza night')).toBeInTheDocument()
     expect(within(friday).getByRole('img', { hidden: true, name: 'Pizza night' })).toBeInTheDocument()
+    expect(within(friday).queryByRole('button', { name: 'Pizza night' })).not.toBeInTheDocument()
     expect(within(friday).queryByRole('link')).not.toBeInTheDocument()
     expect(friday.querySelector('a[href^="/dinner/"]')).toBeNull()
-    expect(within(column('Thursday')).getByRole('link', { name: 'Chicken stir-fry' })).toHaveAttribute('href', '/dinner/d3')
+    expect(within(column('Thursday')).getByRole('button', { name: 'Chicken stir-fry' })).toBeInTheDocument()
 
     // Its swap icon still opens the swap sheet and swaps the dinner in.
     fireEvent.click(within(friday).getByRole('button', { name: 'Swap Friday' }))
@@ -1772,7 +1773,7 @@ describe.each([
         fetchMock.mock.calls.filter(([, init]) => init?.method === 'PUT').map(([input, init]) => `${String(input)} ${String(init?.body)}`),
       ).toEqual([`${FRIDAY} {"dinner_id":"q1"}`]),
     )
-    expect(await waitFor(() => within(column('Friday')).getByRole('link', { name: 'Lemon orzo' }))).toHaveAttribute('href', '/dinner/q1')
+    expect(await waitFor(() => within(column('Friday')).getByRole('button', { name: 'Lemon orzo' }))).toBeInTheDocument()
     expect(screen.queryByText(/^Opened/)).not.toBeInTheDocument()
   })
 
@@ -1785,7 +1786,7 @@ describe.each([
     })
     await renderPage(createQueryClient(), <Opened />, '/plan', <DinnerDetailPage />)
 
-    fireEvent.click(await waitFor(() => within(column('Friday')).getByRole('link', { name: 'Pizza night' })))
+    fireEvent.click(await waitFor(() => within(column('Friday')).getByRole('button', { name: 'Pizza night' })))
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Pizza night' })).toBeInTheDocument()
     expect(await screen.findByRole('heading', { level: 2, name: 'Ingredients' })).toBeInTheDocument()
@@ -1798,18 +1799,22 @@ describe.each([
   })
 
   it("opens a day's recipe from its card's photo and name, the swap icon still opening the swap sheet", async () => {
-    stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')), ...lists })
+    stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      ...lists,
+      'GET /api/v1/dinners/d4': () => jsonResponse(200, PIZZA_RECIPE),
+    })
     await renderPage()
 
-    // The link is the photo and name only: the method, tag and swap icon
-    // are outside it, the swap icon still a button of its own.
-    const tacos = await waitFor(() => within(column('Monday')).getByRole('link', { name: 'Beef tacos' }))
-    expect(tacos).toHaveAttribute('href', '/dinner/d0')
+    // The recipe button is the photo and name only: the method, tag and
+    // swap icon are outside it, the swap icon still a button of its own.
+    const tacos = await waitFor(() => within(column('Monday')).getByRole('button', { name: 'Beef tacos' }))
+    expect(tacos.tagName).toBe('BUTTON')
     expect(within(tacos).getByRole('img', { hidden: true, name: 'Beef tacos' })).toBeInTheDocument()
     expect(tacos).toHaveTextContent(/^Beef tacos$/)
     expect(within(tacos).queryByRole('button')).not.toBeInTheDocument()
     const swap = within(column('Monday')).getByRole('button', { name: 'Swap Monday' })
-    expect(swap.closest('a')).toBeNull()
+    expect(tacos).not.toContainElement(swap)
     expect(declaredStyle(tacos).color).toBe('inherit')
     expect(declaredStyle(tacos).textDecoration).toBe('none')
 
@@ -1821,7 +1826,7 @@ describe.each([
     fireEvent.keyDown(sheet, { key: 'Escape' })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 
-    fireEvent.click(within(column('Friday')).getByRole('link', { name: 'Pizza night' }))
+    fireEvent.click(within(column('Friday')).getByRole('button', { name: 'Pizza night' }))
     expect(await screen.findByText('Opened /dinner/d4')).toBeInTheDocument()
   })
 
@@ -2054,7 +2059,7 @@ describe.each([
     expect(announcer()).toHaveTextContent('Dropped Lemon orzo on Friday, replacing Pizza night.')
 
     // Optimistic: Friday is the Side quest at once.
-    const friday = await waitFor(() => within(column('Friday')).getByRole('link', { name: 'Lemon orzo' }).parentElement!)
+    const friday = await waitFor(() => within(column('Friday')).getByRole('button', { name: 'Lemon orzo' }).parentElement!)
     expect(within(friday).getByText('Side quest')).toBeInTheDocument()
     await waitFor(() => expect(puts(fetchMock)).toEqual([`${FRIDAY} {"dinner_id":"q1"}`]))
 
@@ -2130,7 +2135,7 @@ describe.each([
     })
     await renderPage()
     const pizza = await waitFor(() => within(column('Friday')).getByText('Pizza night'))
-    expect(within(column('Friday')).queryByRole('link')).not.toBeInTheDocument()
+    expect(within(column('Friday')).queryByRole('button', { name: 'Pizza night' })).not.toBeInTheDocument()
     const orzo = await quest('Lemon orzo')
 
     press(orzo)
@@ -2140,7 +2145,7 @@ describe.each([
 
     expect(announcer()).toHaveTextContent('Dropped Lemon orzo on Friday, replacing Pizza night.')
     await waitFor(() => expect(puts(fetchMock)).toEqual([`${FRIDAY} {"dinner_id":"q1"}`]))
-    expect(await waitFor(() => within(column('Friday')).getByRole('link', { name: 'Lemon orzo' }))).toHaveAttribute('href', '/dinner/q1')
+    expect(await waitFor(() => within(column('Friday')).getByRole('button', { name: 'Lemon orzo' }))).toBeInTheDocument()
   })
 
   it("drops a dinner let go over a day's recipe link, swapping it in and opening no recipe", async () => {
@@ -2150,7 +2155,7 @@ describe.each([
       [`PUT ${FRIDAY}`]: () => jsonResponse(200, swappedBody()),
     })
     await renderPage()
-    const pizza = await waitFor(() => within(column('Friday')).getByRole('link', { name: 'Pizza night' }))
+    const pizza = await waitFor(() => within(column('Friday')).getByRole('button', { name: 'Pizza night' }))
     const orzo = await quest('Lemon orzo')
 
     // The day's column, holding the link, is the drop target.
@@ -2162,7 +2167,7 @@ describe.each([
 
     expect(announcer()).toHaveTextContent('Dropped Lemon orzo on Friday, replacing Pizza night.')
     await waitFor(() => expect(puts(fetchMock)).toEqual([`${FRIDAY} {"dinner_id":"q1"}`]))
-    expect(await waitFor(() => within(column('Friday')).getByRole('link', { name: 'Lemon orzo' }))).toHaveAttribute('href', '/dinner/q1')
+    expect(await waitFor(() => within(column('Friday')).getByRole('button', { name: 'Lemon orzo' }))).toBeInTheDocument()
     expect(screen.queryByText(/^Opened/)).not.toBeInTheDocument()
   })
 
@@ -2310,7 +2315,7 @@ describe.each([
       move(fish, column('Wednesday'))
       release(fish)
       await waitFor(() =>
-        expect(within(column('Wednesday')).getByRole('link', { name: 'Fish tacos' }).parentElement).toHaveTextContent('Regular'),
+        expect(within(column('Wednesday')).getByRole('button', { name: 'Fish tacos' }).parentElement).toHaveTextContent('Regular'),
       )
       await waitFor(() => expect(puts(fetchMock)).toEqual([`${THIS_WEEK}/days/2026-10-07 {"dinner_id":"r1"}`]))
     })

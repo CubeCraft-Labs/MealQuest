@@ -3,6 +3,7 @@ import { createMemoryRouter, RouterProvider, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiProviders, HOME } from '../test/ApiProviders.tsx'
 import { declaredStyle } from '../test/cssRules.ts'
+import { recipeBody } from '../test/dinners.ts'
 import { errorResponse, jsonResponse, stubFetchByPath } from '../test/fetchStub.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
 import { HOME_PATH } from './api.ts'
@@ -61,7 +62,7 @@ describe('HomePage', () => {
     expect(within(tonight).getByRole('heading', { name: 'Pizza night' })).toBeInTheDocument()
     expect(within(tonight).getByText('Regular · 40 min')).toBeInTheDocument()
     expect(within(tonight).getByRole('img', { name: 'Pizza night' })).toHaveAttribute('src', '/media/photos/p1-400.jpg')
-    expect(within(tonight).getByRole('link', { name: 'Recipe' })).toHaveAttribute('href', '/dinner/d1')
+    expect(within(tonight).getByRole('button', { name: 'Recipe' })).toBeInTheDocument()
 
     expect(screen.getByRole('link', { name: 'Quick dinner' })).toHaveAttribute('href', '/quick')
     expect(screen.getByRole('link', { name: 'Cook from what I have' })).toHaveAttribute('href', '/cook-from-pantry')
@@ -167,8 +168,21 @@ describe('HomePage', () => {
     expect(await screen.findByRole('link', { name: 'Shopping list ready · Sep 28–Oct 4' })).toBeInTheDocument()
   })
 
+  it('Recipe goes to /dinner/d1 once the server answers that Pizza night is there', async () => {
+    const fetchMock = stubFetchByPath({
+      [HOME_PATH]: () => jsonResponse(200, HOME),
+      [ROTATION_REVIEWS_PATH]: () => jsonResponse(200, { reviews: [] }),
+      '/api/v1/dinners/d1': () => jsonResponse(200, recipeBody('d1', 'Pizza night')),
+    })
+    renderRouter()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Recipe' }))
+    expect(await screen.findByTestId('where')).toHaveTextContent('/dinner/d1')
+    const check = fetchMock.mock.calls.find(([input]) => String(input) === '/api/v1/dinners/d1')
+    expect(check?.[1]?.cache).toBe('no-store')
+  })
+
   it.each([
-    ['Recipe', '/dinner/d1'],
     ['Quick dinner', '/quick'],
     ['Cook from what I have', '/cook-from-pantry'],
     ['10 new side quests to swipe', '/discover'],
@@ -198,7 +212,7 @@ describe('HomePage', () => {
 
     expect(declaredStyle(screen.getByText('Friday, Oct 2')).fontSize).toBe('12px')
 
-    expectMinHitArea(within(tonight).getByRole('link', { name: 'Recipe' }))
+    expectMinHitArea(within(tonight).getByRole('button', { name: 'Recipe' }))
     // The tiles are 104 px tall (above); the status rows fill the width at 44 px or more.
     for (const row of within(screen.getByRole('list', { name: 'Status' })).getAllByRole('link')) {
       expect(declaredStyle(row).minHeight).toBe('44px')
@@ -247,6 +261,7 @@ describe('HomePage', () => {
 
     const tonight = await screen.findByRole('region', { name: 'Tonight' })
     expect(within(tonight).getByRole('heading', { name: 'Pizza night' })).toBeInTheDocument()
+    expect(within(tonight).queryByRole('button', { name: 'Recipe' })).not.toBeInTheDocument()
     expect(within(tonight).queryByRole('link')).not.toBeInTheDocument()
   })
 

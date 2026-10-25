@@ -1297,16 +1297,18 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
   service worker answers `/api/v1/plans`, `/api/v1/home`,
   `/api/v1/shopping`, `/api/v1/dinners` and `/api/v1/recipes` network
   first (3 s), then from its API cache (`mealquest-api-v4`), marking such
-  an answer `X-MealQuest-Cache-Fallback`. A plan, Home or Supply run read so
-  answered — or the Supply run saved on the device — may be stale: another
-  device may have archived a dinner since. Its dinners offer no recipe link
-  (their names are plain text) until the server answers a read again; then
-  only dinners whose `status` is not `archived`, and that this device has
-  not removed (its local removal mark), link to their recipes. A recipe
+  an answer `X-MealQuest-Cache-Fallback`. A plan, Home, Supply run,
+  Regulars or Quest log read so answered — or the Supply run saved on the
+  device — may be stale: another device may have archived a dinner since.
+  Its dinners offer no recipe link (their names, or Regulars and Quest log
+  rows, are plain) until the server answers a read again; then only
+  dinners whose `status` is not `archived`, and that this device has not
+  removed (its local removal mark), link to their recipes. A recipe
   link from a server read stays on screen until the next read; if the
   dinner was archived elsewhere meanwhile, opening it reads the server's
   404 ("Dinner not found"), which shows that dinner archived on every plan,
-  Home and Supply run held in memory and reads each again. The API cache's
+  Home and Supply run held in memory and reads each of them, the Regulars
+  and the Quest log again. The API cache's
   version is raised whenever a cached response's shape stops being one the
   app accepts — v4 retired the v3 cache, whose plans, Home and Supply runs
   had no dinner `status` — and activation deletes the retired cache, so
@@ -1375,7 +1377,9 @@ Regular dinners (`/settings/regulars`) lists the Regulars from
 minutes", favorite heart and grounding badge ("Finding recipe…" while
 `pending`, "Recipe found" when `grounded` or `manual`, "Needs a recipe" when
 `failed`). The add field takes a name or a pasted `https://` recipe link.
-Tapping a Regular's row opens its recipe (`/dinner/{id}`); its pencil
+Tapping a Regular's row opens its recipe (`/dinner/{id}`), unless the list
+is the service worker's cached copy, when the row is plain (see the offline
+cache above); its pencil
 button opens the edit sheet (name, method, minutes, difficulty; remove
 archives it after a confirmation), or, for one that needs a recipe, "Fix
 recipe" (pick one of the recipe candidates, paste a link or type the

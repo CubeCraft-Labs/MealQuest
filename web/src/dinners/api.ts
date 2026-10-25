@@ -27,8 +27,8 @@ export type Difficulty = (typeof DIFFICULTIES)[number]
 export type GroundingStatus = (typeof GROUNDING_STATUSES)[number]
 export type PlannedDinnerStatus = (typeof PLANNED_DINNER_STATUSES)[number]
 
-// opensRecipe says whether a dinner on a plan day, Home or a Supply run
-// offers its recipe: only when the server itself just said it is not
+// opensRecipe says whether a dinner on a plan day, Home, a Supply run, the
+// Regulars or the Quest log offers its recipe: only when the server itself just said it is not
 // archived. A status from a read the service worker answered from its cache,
 // or one saved on this device (cached), may be stale — another device may
 // have archived the dinner since — so it offers no recipe, whose detail
@@ -84,15 +84,26 @@ export type RecipeCandidate = {
   minutes: number | null
 }
 
+// ListedRegular is a Regular in the Regulars list. cached says its state is
+// the service worker's cached copy of the list, not the server's answer: it
+// offers no recipe (opensRecipe).
+export type ListedRegular = Regular & { cached: boolean }
+
 // CachedRegular is a Regular as the cache holds it. removing is true while
 // an optimistic removal waits for the server: the entry keeps its place, so
 // a removal never sent — the device could not save it — returns exactly
 // there whatever else changed meanwhile.
-type CachedRegular = Regular & { removing?: true }
+type CachedRegular = ListedRegular & { removing?: true }
+
+// answered is a dinner as the server answered a change to it: a non-GET
+// never reaches the service worker's cache.
+function answered(dinner: Regular): CachedRegular {
+  return { ...dinner, cached: false }
+}
 
 // shown is the Regulars to show: none being removed, and none the server
 // archived (archived), whatever the read said.
-function shown(list: CachedRegular[], archived: ReadonlySet<string>): Regular[] {
+function shown(list: CachedRegular[], archived: ReadonlySet<string>): ListedRegular[] {
   return list.filter((regular) => !regular.removing && !archived.has(regular.id))
 }
 
@@ -193,9 +204,10 @@ export function dinnerDetailKey(id: string) {
 // GROUNDING_POLL_MS, except while any change is in flight (whose settling
 // reads it again anyway), so a poll never overwrites a change being saved.
 // Watching the changes in flight re-renders the hook as each one starts and
-// settles, which pauses and resumes the poll.
+// settles, which pauses and resumes the poll. Each Regular is cached when
+// the service worker answered the read from its cache.
 export function useRegulars() {
-  const { apiFetch } = useApi()
+  const { apiRead } = useApi()
   const changing = useIsMutating({ mutationKey: REGULARS_MUTATION_KEY }) > 0
   const archived = useArchived()
   const select = useCallback((list: CachedRegular[]) => shown(list, knownArchived(archived)), [archived])
@@ -203,9 +215,9 @@ export function useRegulars() {
     queryKey: REGULARS_LIST_KEY,
     queryFn: async () => {
       const where = `GET ${REGULARS_PATH}`
-      const body = await apiFetch<unknown>(REGULARS_PATH)
+      const { body, cached } = await apiRead<unknown>(REGULARS_PATH)
       if (!isRecord(body) || !Array.isArray(body.dinners)) throw new Error(`${where}: response has no dinners list`)
-      return body.dinners.map((dinner): CachedRegular => parseDinner(where, dinner))
+      return body.dinners.map((dinner): CachedRegular => ({ ...parseDinner(where, dinner), cached }))
     },
     select,
     refetchInterval: (query) => {
@@ -229,7 +241,7 @@ function setRegulars(queryClient: QueryClient, change: (list: CachedRegular[]) =
 
 // replace puts the server's answer for a dinner in its place in the list.
 function replace(queryClient: QueryClient, dinner: Regular) {
-  setRegulars(queryClient, (list) => list.map((regular) => (regular.id === dinner.id ? dinner : regular)))
+  setRegulars(queryClient, (list) => list.map((regular) => (regular.id === dinner.id ? answered(dinner) : regular)))
 }
 
 // settle refetches the Regulars once the last change in flight is done, so
@@ -266,12 +278,13 @@ export function useAddRegular() {
         grounding_error: null,
         photo_backfill_eligible: false,
         pending: true,
+        cached: false,
       }
       await changeOptimistically(queryClient, (list) => [...list, optimistic])
       return { id }
     },
     onSuccess: (dinner, _add, context) => {
-      setRegulars(queryClient, (list) => list.map((regular) => (regular.id === context.id ? dinner : regular)))
+      setRegulars(queryClient, (list) => list.map((regular) => (regular.id === context.id ? answered(dinner) : regular)))
     },
     onError: (_error, _add, context) => {
       if (context === undefined) return
@@ -394,7 +407,7 @@ export function useToggleFavorite() {
       setFavorite(queryClient, dinner.id, !dinner.is_favorite)
     },
     onSuccess: (dinner) => {
-      queryClient.setQueryData<CachedRegular[]>(REGULARS_LIST_KEY, (list) => list?.map((r) => (r.id === dinner.id ? dinner : r)))
+      queryClient.setQueryData<CachedRegular[]>(REGULARS_LIST_KEY, (list) => list?.map((r) => (r.id === dinner.id ? answered(dinner) : r)))
       queryClient.setQueryData<DinnerDetail>(dinnerDetailKey(dinner.id), (detail) => detail && { ...detail, is_favorite: dinner.is_favorite })
     },
     onError: (_error, dinner) => setFavorite(queryClient, dinner.id, dinner.is_favorite),

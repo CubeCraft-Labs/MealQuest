@@ -8,9 +8,11 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { Link, Route, Routes } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
-import { dinnerDetailKey, RemovalCheck } from './api.ts'
+import { dinnerDetailKey, REGULARS_KEY, RemovalCheck } from './api.ts'
 import { ARCHIVED, archivedKey, removalLock, REMOVING, resetArchived } from './archived.ts'
 import { DinnerDetailPage } from './DinnerDetailPage.tsx'
+import { QUEST_LOG_KEY } from '../discover/api.ts'
+import { DiscoverPage } from '../discover/DiscoverPage.tsx'
 import { HOME_KEY } from '../home/api.ts'
 import { HomePage } from '../home/HomePage.tsx'
 import { planKey } from '../plan/api.ts'
@@ -33,9 +35,14 @@ const WEEK = '2026-10-05'
 const PLAN_SCREEN = '/plan'
 const RUN_SCREEN = `/plan/shopping?week=${WEEK}`
 const REGULARS_SCREEN = '/settings/regulars'
+const DISCOVER_SCREEN = '/discover'
 
 const TACOS = dinnerBody('d1', 'Beef tacos')
 const ROAST = dinnerBody('d4', 'Pot roast')
+// The Quest log: Shrimp gumbo, which another device archives in some tests
+// (questArchived), and Pad thai, which the server always has.
+const GUMBO = dinnerBody('q1', 'Shrimp gumbo', { status: 'quest_log', origin: 'side_quest' })
+const PAD_THAI = dinnerBody('q2', 'Pad thai', { status: 'quest_log', origin: 'side_quest' })
 
 const DAYS = ['2026-10-05', '2026-10-06', '2026-10-07', '2026-10-08', '2026-10-09', '2026-10-10', '2026-10-11']
 const NAMES = ['Pot roast', 'Chili', 'Beef tacos', 'Chicken stir-fry', 'Pizza night', 'Korean beef bowls', 'Sheet-pan salmon']
@@ -99,8 +106,10 @@ let reachable: boolean
 // networkReads is every "METHOD path?search" the network was asked for,
 // reached or not.
 let networkReads: string[]
-// archived says the server has archived Beef tacos.
+// archived says the server has archived Beef tacos; questArchived, Shrimp
+// gumbo.
 let archived: boolean
+let questArchived: boolean
 // While holding, the server takes each read of HELD as it comes, answering
 // it as things are then, and keeps the answer back until release is called;
 // held lists each release.
@@ -113,7 +122,10 @@ const server: Record<string, () => Response | Promise<Response>> = {
   'GET /api/v1/me': () => jsonResponse(200, ME),
   'GET /api/v1/settings/household': () => jsonResponse(200, HOUSEHOLD_SETTINGS),
   'GET /api/v1/dinners?status=regular': () => jsonResponse(200, { dinners: archived ? [ROAST] : [TACOS, ROAST] }),
-  'GET /api/v1/dinners?status=quest_log': () => jsonResponse(200, { dinners: [] }),
+  'GET /api/v1/dinners?status=quest_log': () => jsonResponse(200, { dinners: questArchived ? [PAD_THAI] : [GUMBO, PAD_THAI] }),
+  // Shrimp gumbo's detail is read only once another device archived it.
+  'GET /api/v1/dinners/q1': () => (questArchived ? errorResponse(404, 'not_found') : Promise.reject(new Error('Shrimp gumbo read before it is archived'))),
+  'GET /api/v1/suggestions/deck': () => jsonResponse(200, { suggestions: [], active_batch: null, failed_batch: null }),
   'GET /api/v1/dinners/d1': () => (archived ? errorResponse(404, 'not_found') : jsonResponse(200, TACOS_RECIPE)),
   [`GET /api/v1/plans/${WEEK}`]: () => jsonResponse(200, planWith(archived ? 'archived' : 'regular')),
   'GET /api/v1/plans/2026-10-12': () => errorResponse(404, 'not_found'),
@@ -135,6 +147,7 @@ beforeEach(() => {
   reachable = true
   networkReads = []
   archived = false
+  questArchived = false
   holding = false
   held = []
   vi.useFakeTimers({ toFake: ['Date'] })
@@ -182,6 +195,7 @@ async function renderApp(path: string): Promise<{ queryClient: QueryClient; unmo
             <Route path="/plan" element={<PlanPage />} />
             <Route path="/plan/shopping" element={<SupplyRunPage />} />
             <Route path="/settings/regulars" element={<RegularsSettingsPage />} />
+            <Route path="/discover" element={<DiscoverPage />} />
             <Route path="/dinner/:id" element={<DinnerDetailPage />} />
           </Routes>
           <nav>
@@ -189,6 +203,7 @@ async function renderApp(path: string): Promise<{ queryClient: QueryClient; unmo
             <Link to={PLAN_SCREEN}>To Plan</Link>
             <Link to={RUN_SCREEN}>To Supply run</Link>
             <Link to={REGULARS_SCREEN}>To Regulars</Link>
+            <Link to={DISCOVER_SCREEN}>To Discover</Link>
             {/* Not a recipe link (recipeLinks): its search sets it apart. */}
             <Link to="/dinner/d1?typed=1">To Beef tacos</Link>
           </nav>
@@ -730,5 +745,148 @@ describe('a dinner another device archived, read here from what was saved before
     reachable = true
     await readAgain(page.queryClient)
     await expectLinks(['d1', 'd4'])
+  })
+})
+
+// The Regulars and the Quest log follow the same rule (Maestro 440ddb44):
+// a row opens its dinner's recipe only from the server's answer. Another
+// device archives Beef tacos (a Regular) and Shrimp gumbo (in the Quest
+// log); this device has no mark of either, and what the worker saved still
+// lists both.
+describe('a Regular or Quest-log dinner another device archived, read here from what was saved before', () => {
+  // opening lists the names of the rows in list that open their dinner's
+  // recipe: the row's own button, not its pencil, heart or remove button.
+  function opening(list: HTMLElement) {
+    return within(list)
+      .getAllByRole('listitem')
+      .map((row) => {
+        const name = within(row).getByRole('button', { name: /^(Edit|Fix recipe for|Remove) / }).getAttribute('aria-label')!
+        return name.replace(/^(Edit|Fix recipe for|Remove) /, '')
+      })
+      .filter((name) => within(list).queryByRole('button', { name: new RegExp(`^${name}`) }) !== null)
+  }
+
+  async function regulars() {
+    await screen.findByRole('heading', { level: 2, name: /^On rotation/ })
+    return screen.getByRole('list', { name: 'Regulars' })
+  }
+
+  async function questLog(count: number) {
+    fireEvent.click(await screen.findByRole('button', { name: `Quest log · ${count}` }))
+    return within(screen.getByRole('dialog', { name: 'Quest log' })).getByRole('list', { name: 'Quest log' })
+  }
+
+  it('offers no recipe from the Regulars or the Quest log the worker saved, keeps their other controls, and the server’s answer offers it again for a dinner it still has', async () => {
+    mockViewport(768)
+    // Online, each list links every row, and the worker saves each read.
+    let page = await renderApp(REGULARS_SCREEN)
+    expect(opening(await regulars())).toEqual(['Beef tacos', 'Pot roast'])
+    page.unmount()
+    page = await renderApp(DISCOVER_SCREEN)
+    expect(opening(await questLog(2))).toEqual(['Shrimp gumbo', 'Pad thai'])
+    page.unmount()
+
+    archived = true
+    questArchived = true
+    expect(localStorage.getItem(archivedKey('d1'))).toBeNull()
+    expect(localStorage.getItem(archivedKey('q1'))).toBeNull()
+
+    // Offline, a new page reads each list from what the worker saved: every
+    // row shows, none opens a recipe, and the pencil, heart and remove
+    // buttons work as before.
+    reachable = false
+    networkReads = []
+    page = await renderApp(REGULARS_SCREEN)
+    const saved = await regulars()
+    expect(networkReads).toContain('GET /api/v1/dinners?status=regular')
+    expect(within(saved).getAllByRole('listitem')).toHaveLength(2)
+    expect(opening(saved)).toEqual([])
+    expect(screen.getByRole('button', { name: 'Favorite Beef tacos' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Beef tacos' }))
+    expect(await screen.findByRole('button', { name: 'Remove from Regulars' })).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Offline — showing saved data')
+    page.unmount()
+
+    page = await renderApp(DISCOVER_SCREEN)
+    const savedLog = await questLog(2)
+    expect(networkReads).toContain('GET /api/v1/dinners?status=quest_log')
+    expect(opening(savedLog)).toEqual([])
+    fireEvent.click(within(savedLog).getByRole('button', { name: 'Remove Shrimp gumbo' }))
+    expect(screen.getByRole('dialog', { name: 'Remove Shrimp gumbo?' })).toBeInTheDocument()
+    page.unmount()
+
+    // The server answers again: only the dinners it still has show, and each
+    // opens its recipe.
+    reachable = true
+    page = await renderApp(REGULARS_SCREEN)
+    await waitFor(() => expect(opening(screen.getByRole('list', { name: 'Regulars' }))).toEqual(['Pot roast']))
+    page.unmount()
+    page = await renderApp(DISCOVER_SCREEN)
+    expect(opening(await questLog(1))).toEqual(['Pad thai'])
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('stops offering each list’s recipes once a read again comes from what the worker saved, and offers them again once the server answers', async () => {
+    mockViewport(768)
+    const page = await renderApp(REGULARS_SCREEN)
+    expect(opening(await regulars())).toEqual(['Beef tacos', 'Pot roast'])
+    go('To Discover')
+    const log = await questLog(2)
+    expect(opening(log)).toEqual(['Shrimp gumbo', 'Pad thai'])
+
+    // Offline, both lists are read again from what the worker saved.
+    reachable = false
+    await Promise.all(
+      [REGULARS_KEY, QUEST_LOG_KEY].map((queryKey) => page.queryClient.refetchQueries({ queryKey, type: 'all' })),
+    )
+    await waitFor(() => expect(opening(log)).toEqual([]))
+    fireEvent.keyDown(screen.getByRole('dialog', { name: 'Quest log' }), { key: 'Escape' })
+    go('To Regulars')
+    expect(opening(await regulars())).toEqual([])
+
+    // The server answers again and still has every dinner: each row opens.
+    reachable = true
+    await Promise.all(
+      [REGULARS_KEY, QUEST_LOG_KEY].map((queryKey) => page.queryClient.refetchQueries({ queryKey, type: 'all' })),
+    )
+    await waitFor(() => expect(opening(screen.getByRole('list', { name: 'Regulars' }))).toEqual(['Beef tacos', 'Pot roast']))
+    go('To Discover')
+    expect(opening(await questLog(2))).toEqual(['Shrimp gumbo', 'Pad thai'])
+  })
+
+  it('reads the Regulars and the Quest log again once a row read before the archive opens a dinner the server no longer has', async () => {
+    mockViewport(768)
+    const page = await renderApp(REGULARS_SCREEN)
+    await regulars()
+    go('To Discover')
+    await questLog(2)
+    fireEvent.keyDown(screen.getByRole('dialog', { name: 'Quest log' }), { key: 'Escape' })
+
+    // A minute later — the details no longer fresh — both lists are read
+    // again from the server, then another device archives both dinners.
+    vi.setSystemTime(new Date('2026-10-07T16:01:00Z'))
+    go('To Regulars')
+    await read(page.queryClient, '/api/v1/dinners?status=regular')
+    expect(opening(await regulars())).toEqual(['Beef tacos', 'Pot roast'])
+    go('To Discover')
+    await read(page.queryClient, '/api/v1/dinners?status=quest_log')
+    const log = await questLog(2)
+    archived = true
+    questArchived = true
+
+    // Shrimp gumbo's row opens a dinner the server no longer has.
+    fireEvent.click(within(log).getByRole('button', { name: /^Shrimp gumbo/ }))
+    expect(await screen.findByText('Dinner not found')).toBeInTheDocument()
+    await waitFor(() => expect(page.queryClient.isFetching()).toBe(0))
+
+    // Back on the Regulars, read seconds ago, its list is read again, and
+    // Beef tacos' row — read before the archive — is gone with it.
+    networkReads = []
+    go('To Regulars')
+    await waitFor(() => expect(networkReads).toContain('GET /api/v1/dinners?status=regular'))
+    await waitFor(() => expect(opening(screen.getByRole('list', { name: 'Regulars' }))).toEqual(['Pot roast']))
+    go('To Discover')
+    await waitFor(() => expect(networkReads).toContain('GET /api/v1/dinners?status=quest_log'))
+    expect(opening(await questLog(1))).toEqual(['Pad thai'])
   })
 })

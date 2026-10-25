@@ -12,11 +12,13 @@ import {
   METHODS,
   oneOf,
   photoId,
+  REGULARS_KEY,
   type Difficulty,
   type GroundingStatus,
   type Method,
 } from './api.ts'
 import { ArchivedDinnerError, knownArchived, useArchived } from './archived.ts'
+import { QUEST_LOG_KEY } from '../discover/api.ts'
 import { HOME_KEY, showArchived as showHomeArchived, type Home } from '../home/api.ts'
 import { showArchived as showPlanArchived, type Plan } from '../plan/api.ts'
 import { showArchived as showRunArchived, type SupplyRun } from '../shopping/api.ts'
@@ -151,8 +153,8 @@ export function parseDinnerDetail(where: string, body: unknown, cached: boolean)
 
 // noDetail shows dinner id, which the server just said has no detail (404),
 // archived on each plan, Home and Supply run read here — a read from before
-// another device archived it may still offer its recipe — and reads each
-// again.
+// another device archived it may still offer its recipe — and reads each of
+// them, the Regulars and the Quest log again.
 function noDetail(queryClient: QueryClient, id: string) {
   const gone = new Set([id])
   queryClient.setQueriesData<Plan | null>({ queryKey: ['plans'] }, (plan) => (plan === undefined ? plan : showPlanArchived(plan, gone)))
@@ -160,7 +162,7 @@ function noDetail(queryClient: QueryClient, id: string) {
   queryClient.setQueriesData<SupplyRun | null>({ queryKey: ['shopping'] }, (run) =>
     run === undefined ? run : showRunArchived(run, gone),
   )
-  for (const queryKey of [['plans'], HOME_KEY, ['shopping']]) void queryClient.invalidateQueries({ queryKey })
+  for (const queryKey of [['plans'], HOME_KEY, ['shopping'], REGULARS_KEY, QUEST_LOG_KEY]) void queryClient.invalidateQueries({ queryKey })
 }
 
 // useDinnerDetail is dinner id with its recipe (GET /api/v1/dinners/{id}).
@@ -177,8 +179,8 @@ function noDetail(queryClient: QueryClient, id: string) {
 //
 // A 404 is the server's own answer — the worker caches no error — that the
 // dinner has no detail: it may have been archived on another device after a
-// plan, Home or Supply run read here offered its recipe, so none of them
-// offers it any more (noDetail).
+// plan, Home, Supply run, Regulars or Quest log read here offered its
+// recipe, so none of them offers it any more (noDetail).
 export function useDinnerDetail(id: string) {
   const { apiRead, network } = useApi()
   const queryClient = useQueryClient()

@@ -614,7 +614,9 @@ describe('RegularsSettingsPage', () => {
       await waitFor(() => expect(runReads).toBe(2))
     })
 
-    it('shows no recipe link after a reload, from the Supply run saved before, when the device could not mark it archived', async () => {
+    // F1 (review round 8): the server archived it, so the Supply run cached
+    // and saved shows it archived even though the device could not mark it.
+    it('shows it archived, with no recipe link, on the Supply run cached and saved, and says why, when the device could not mark it archived', async () => {
       mockViewport(390)
       vi.useFakeTimers({ toFake: ['Date'] })
       vi.setSystemTime(new Date('2026-10-07T16:00:00Z'))
@@ -643,13 +645,25 @@ describe('RegularsSettingsPage', () => {
       editRow('Beef tacos')
       fireEvent.click(screen.getByRole('button', { name: 'Remove from Regulars' }))
       fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'Could not remove Beef tacos: this device could not save that the server removed it, so it stays hidden here and is asked about again: The quota has been exceeded.',
+      )
       await waitFor(() => expect(rows()).toHaveLength(1))
       expect(sent(server.fetchMock)).toContainEqual({ request: 'DELETE /api/v1/dinners/d1', body: undefined })
-      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
 
-      // Still marked removing; the saved Supply run is the one read before.
+      // Still marked removing, while the Supply run saved here is saved again
+      // with it archived.
       expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
-      expect(savedStatus('d1')).toBe('regular')
+      expect(savedStatus('d1')).toBe('archived')
+      expect(savedStatus('d4')).toBe('regular')
+
+      // Back on the Supply run, from the cache, not read again: no recipe
+      // link to the archived dinner.
+      fireEvent.click(screen.getByRole('link', { name: 'To Supply run' }))
+      const cached = await waitFor(() => card('Beef tacos'))
+      expect(runReads).toBe(1)
+      expect(within(cached).queryByRole('link')).not.toBeInTheDocument()
+      expect(within(cached).getByRole('checkbox', { name: /Ground beef/ })).toBeEnabled()
 
       // A new page, with nothing cached, opens that saved Supply run while
       // its read is not answered: no recipe link to the archived dinner.

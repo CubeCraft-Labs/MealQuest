@@ -14,6 +14,7 @@ import {
   REMOVING,
   resetArchived,
   UnconfirmedRemovalError,
+  UnsavedArchiveError,
   useArchived,
 } from './archived.ts'
 
@@ -83,24 +84,33 @@ describe('archiveDinner', () => {
     expect(marks()).toEqual({})
   })
 
-  it('keeps it marked removing, hidden after a reload, when the device refuses to mark it archived', async () => {
-    const setItem = Storage.prototype.setItem
-    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
-      if (value === ARCHIVED) throw new Error('The quota has been exceeded.')
-      setItem.call(this, key, value)
-    })
-    const told = vi.fn()
-    const stop = onArchived(told)
+  // F1 (review round 8): the server answered, so those listening are told
+  // even though the device refused to save the mark.
+  it.each(ANSWERS.slice(0, 2))(
+    'keeps it marked removing, hidden after a reload, tells those listening and says why when the server answered %s and the device refuses to mark it archived',
+    async (_answer, send) => {
+      const setItem = Storage.prototype.setItem
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
+        if (value === ARCHIVED) throw new Error('The quota has been exceeded.')
+        setItem.call(this, key, value)
+      })
+      const told = vi.fn()
+      const stop = onArchived(told)
 
-    await archiveDinner('d1', sent)
-    stop()
-    expect(marks()).toEqual({ [archivedKey('d1')]: REMOVING })
-    expect(told).not.toHaveBeenCalled()
+      const removal = archiveDinner('d1', send)
+      await expect(removal).rejects.toBeInstanceOf(UnsavedArchiveError)
+      await expect(removal).rejects.toThrow(
+        'this device could not save that the server removed it, so it stays hidden here and is asked about again: The quota has been exceeded.',
+      )
+      stop()
+      expect(marks()).toEqual({ [archivedKey('d1')]: REMOVING })
+      expect(told.mock.calls).toEqual([['d1']])
 
-    resetArchived()
-    const { result } = renderHook(() => useArchived())
-    expect([...knownArchived(result.current)]).toEqual(['d1'])
-  })
+      resetArchived()
+      const { result } = renderHook(() => useArchived())
+      expect([...knownArchived(result.current)]).toEqual(['d1'])
+    },
+  )
 
   it('keeps a removal the server refuses hidden, says so, and sends it again at the next check', async () => {
     const { result } = renderHook(() => useArchived())
@@ -229,6 +239,22 @@ describe('checkRemovals', () => {
 
     await checkRemovals(() => Promise.reject(new ApiError(404, 'not_found', 'dinner not found', false)))
     expect(marks()).toEqual({ [archivedKey('d1')]: ARCHIVED })
+  })
+
+  it('tells those listening of a removal the server archives that the device refuses to mark archived, and leaves it marked removing', async () => {
+    localStorage.setItem(archivedKey('d1'), REMOVING)
+    const setItem = Storage.prototype.setItem
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
+      if (value === ARCHIVED) throw new Error('The quota has been exceeded.')
+      setItem.call(this, key, value)
+    })
+    const told = vi.fn()
+    const stop = onArchived(told)
+
+    await checkRemovals(sent)
+    stop()
+    expect(told.mock.calls).toEqual([['d1']])
+    expect(marks()).toEqual({ [archivedKey('d1')]: REMOVING })
   })
 
   it('leaves a dinner marked removing when the server does not answer', async () => {

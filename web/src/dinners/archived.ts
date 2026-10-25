@@ -72,6 +72,18 @@ export class RefusedRemovalError extends Error {
   }
 }
 
+// UnsavedArchiveError is a removal the server archived that this device
+// could not save as archived: it stays marked removing, so hidden, and is
+// sent again until the device saves it (checkRemovals).
+export class UnsavedArchiveError extends Error {
+  constructor(cause: Error) {
+    super(`this device could not save that the server removed it, so it stays hidden here and is asked about again: ${cause.message}`, {
+      cause,
+    })
+    this.name = 'UnsavedArchiveError'
+  }
+}
+
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error))
 }
@@ -131,17 +143,22 @@ function changed() {
   listeners.forEach((listener) => listener())
 }
 
-// archived marks dinner id archived and tells those listening (onArchived).
-// The device refusing to save it leaves it marked removing, which hides it
-// as well; sending the removal again (checkRemovals) tries again.
+// archived marks dinner id, which the server has archived, archived and
+// tells those listening (onArchived). The device refusing to save the mark
+// leaves it marked removing, which hides it as well, and sending the removal
+// again (checkRemovals) tries again; those listening are told all the same,
+// since the server did archive it, and the refusal fails with
+// UnsavedArchiveError.
 function archived(id: string) {
+  let refused: Error | null = null
   try {
     window.localStorage.setItem(archivedKey(id), ARCHIVED)
-  } catch {
-    return
+  } catch (error) {
+    refused = asError(error)
   }
-  changed()
+  if (refused === null) changed()
   archivedListeners.forEach((listener) => listener(id))
+  if (refused !== null) throw new UnsavedArchiveError(refused)
 }
 
 // Another tab of the app that marks a dinner changes the record here.
@@ -212,10 +229,11 @@ const checking = new Set<string>()
 export type SendRemoval = (id: string) => Promise<unknown>
 
 // settle sends dinner id's removal while this page holds its lock. Archived
-// — or not found, so it has no detail either — it is marked archived.
-// Refused, it stays marked removing and the removal fails with
-// RefusedRemovalError; with no answer, it stays marked removing and fails
-// with UnconfirmedRemovalError. No answer takes a mark away.
+// — or not found, so it has no detail either — it is marked archived
+// (archived; a device that refuses to save that fails with
+// UnsavedArchiveError). Refused, it stays marked removing and the removal
+// fails with RefusedRemovalError; with no answer, it stays marked removing
+// and fails with UnconfirmedRemovalError. No answer takes a mark away.
 async function settle(id: string, send: SendRemoval): Promise<void> {
   try {
     await send(id)

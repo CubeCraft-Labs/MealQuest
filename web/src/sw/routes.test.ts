@@ -3,8 +3,8 @@ import { cacheFallbackHeader, cacheNames, cacheVersions, markCacheFallback, rout
 
 const origin = 'https://mealquest.test'
 
-function route(path: string, method = 'GET', mode: RequestMode = 'cors'): Route {
-  return routeFor({ method, url: new URL(path, origin), mode }, origin)
+function route(path: string, method = 'GET', mode: RequestMode = 'cors', cache: RequestCache = 'default'): Route {
+  return routeFor({ method, url: new URL(path, origin), mode, cache }, origin)
 }
 
 const apiCache: Route = { strategy: 'network-first', cacheName: cacheNames.api }
@@ -123,10 +123,18 @@ describe('routeFor', () => {
     expect(route('/api/v1/ideas', 'GET', 'navigate')).toEqual(networkOnly)
   })
 
+  // The recipe check (apiCheck) must reach the server or fail.
+  it('leaves a read that asks for no cache network-only, on a cached API path too', () => {
+    for (const path of ['/api/v1/dinners/d1', '/api/v1/plans/2026-10-05', '/api/v1/home']) {
+      expect(route(path)).toEqual(apiCache)
+      expect(route(path, 'GET', 'cors', 'no-store')).toEqual(networkOnly)
+    }
+  })
+
   it('leaves cross-origin requests network-only', () => {
     for (const path of ['/api/v1/plans', '/media/a.jpg', '/assets/a.woff2']) {
       const url = new URL(path, 'https://cdn.example')
-      expect(routeFor({ method: 'GET', url, mode: 'no-cors' }, origin)).toEqual(networkOnly)
+      expect(routeFor({ method: 'GET', url, mode: 'no-cors', cache: 'default' }, origin)).toEqual(networkOnly)
     }
   })
 
@@ -147,13 +155,14 @@ describe('cache names', () => {
     for (const name of Object.values(cacheNames)) expect(name).toMatch(/^mealquest-/)
   })
 
-  it('retire only the v1 and v2 API caches', () => {
+  it('retire only the v1, v2 and v3 API caches', () => {
     // v1 API responses held dinners with the pasted recipe_url and v2 ones
     // recipe candidates whose candidate_id was the full URL; either can carry
-    // a personal token, and offline the worker would still serve them.
-    // The precache, photos and fonts keep their v1 caches.
+    // a personal token, and offline the worker would still serve them. v3
+    // plans, Home and Supply runs have no dinner status, which their reads
+    // now require. The precache, photos and fonts keep their v1 caches.
     expect(cacheNames).toEqual({
-      api: 'mealquest-api-v3',
+      api: 'mealquest-api-v4',
       media: 'mealquest-media-v1',
       fonts: 'mealquest-fonts-v1',
     })

@@ -208,17 +208,18 @@ describe('SupplyRunPage', () => {
 
     const tacos = await screen.findByRole('region', { name: 'Beef tacos' })
     // The dinner's name is the card's one way to its recipe: no Recipe pill.
-    expect(within(tacos).getAllByRole('link')).toHaveLength(1)
-    const tacosName = within(within(tacos).getByRole('heading', { level: 2, name: 'Beef tacos' })).getByRole('link', { name: 'Beef tacos' })
-    expect(tacosName).toHaveAttribute('href', '/dinner/d0')
+    expect(within(tacos).getAllByRole('button')).toHaveLength(1)
+    expect(within(tacos).queryByRole('link')).not.toBeInTheDocument()
+    const tacosName = within(within(tacos).getByRole('heading', { level: 2, name: 'Beef tacos' })).getByRole('button', { name: 'Beef tacos' })
     expect(declaredStyle(tacosName).color).toBe('inherit')
     expect(declaredStyle(tacosName).textDecoration).toBe('none')
     expectMinHitArea(tacosName)
     expect(screen.queryByRole('link', { name: /Recipe/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Recipe/ })).not.toBeInTheDocument()
 
     const tikka = screen.getByRole('region', { name: 'Crock pot tikka masala' })
-    fireEvent.click(within(tikka).getByRole('link', { name: 'Crock pot tikka masala' }))
-    expect(screen.getByRole('status', { name: 'Path' })).toHaveTextContent('/dinner/d2')
+    fireEvent.click(within(tikka).getByRole('button', { name: 'Crock pot tikka masala' }))
+    await waitFor(() => expect(screen.getByRole('status', { name: 'Path' })).toHaveTextContent('/dinner/d2'))
     expect(await screen.findByRole('heading', { level: 2, name: 'Ingredients' })).toBeInTheDocument()
     const [ingredients, steps] = screen.getAllByRole('list')
     expect(within(ingredients!).getAllByRole('listitem').map((item) => item.firstElementChild!.textContent)).toEqual([
@@ -250,7 +251,7 @@ describe('SupplyRunPage', () => {
     await renderPage()
 
     const tacos = await screen.findByRole('region', { name: 'Beef tacos' })
-    expect(within(tacos).getByRole('link', { name: 'Beef tacos' })).toHaveAttribute('href', '/dinner/d0')
+    expect(within(tacos).getByRole('button', { name: 'Beef tacos' })).toBeInTheDocument()
   })
 
   it('shows a dinner removed from Regulars since by name only, its card still working', async () => {
@@ -263,11 +264,11 @@ describe('SupplyRunPage', () => {
 
     const tacos = await screen.findByRole('region', { name: 'Beef tacos' })
     expect(within(tacos).getByRole('heading', { level: 2, name: 'Beef tacos' })).toBeInTheDocument()
+    expect(within(tacos).queryByRole('button', { name: 'Beef tacos' })).not.toBeInTheDocument()
     expect(within(tacos).queryByRole('link')).not.toBeInTheDocument()
-    expect(within(screen.getByRole('region', { name: 'Crock pot tikka masala' })).getByRole('link', { name: 'Crock pot tikka masala' })).toHaveAttribute(
-      'href',
-      '/dinner/d2',
-    )
+    expect(
+      within(screen.getByRole('region', { name: 'Crock pot tikka masala' })).getByRole('button', { name: 'Crock pot tikka masala' }),
+    ).toBeInTheDocument()
 
     fireEvent.click(within(tacos).getByText('Beef tacos'))
     expect(screen.getByRole('status', { name: 'Path' })).toHaveTextContent('/plan/shopping')

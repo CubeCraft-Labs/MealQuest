@@ -6,7 +6,9 @@
 // non-GET request are network-only and never reach a cache. Paths are matched
 // as the server sees them — percent-decoded, before and after dot segments are
 // resolved — so /%61uth/login is /auth/login; a malformed encoding is
-// network-only.
+// network-only. So is a request that asks for no cache (cache: 'no-store'):
+// the app's recipe check (apiCheck) must reach the server or fail, never be
+// answered from a cached copy.
 
 export type Route =
   // Network with a 3 s timeout, then the last cached response.
@@ -22,6 +24,7 @@ export interface RouteRequest {
   method: string
   url: URL
   mode: RequestMode
+  cache: RequestCache
 }
 
 // Each cache carries its own version. Bumping one renames only that cache;
@@ -30,9 +33,12 @@ export interface RouteRequest {
 export const cacheVersions = {
   precache: 'v1',
   // v2 retired the v1 API cache, whose dinner responses still carried the
-  // pasted recipe_url; v3 retires the v2 API cache, whose recipe-candidate
-  // responses used the full URL as candidate_id.
-  api: 'v3',
+  // pasted recipe_url; v3 retired the v2 API cache, whose recipe-candidate
+  // responses used the full URL as candidate_id; v4 retires the v3 API
+  // cache, whose plan, Home and Supply run responses carry no dinner status,
+  // which those reads now require: offline, a read the v4 cache has no copy
+  // of fails as one never made does, rather than as a broken response.
+  api: 'v4',
   media: 'v1',
   fonts: 'v1',
 } as const
@@ -93,8 +99,9 @@ function cleanPath(path: string): string {
 const networkOnly: Route = { strategy: 'network-only' }
 
 export function routeFor(request: RouteRequest, origin: string): Route {
-  const { method, url, mode } = request
+  const { method, url, mode, cache } = request
   if (method !== 'GET') return networkOnly
+  if (cache === 'no-store') return networkOnly
   if (url.origin !== origin) return networkOnly
   const path = decodePath(url.pathname)
   if (path === undefined) return networkOnly

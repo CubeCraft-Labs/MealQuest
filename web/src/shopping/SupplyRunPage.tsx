@@ -3,6 +3,8 @@ import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { defaultWeek, isMonday, localNow, weekdayKicker, weekLabel } from '../plan/week.ts'
 import { ApiError } from '../api/errors.ts'
+import { opensRecipe } from '../dinners/api.ts'
+import { useOpenRecipe } from '../dinners/useOpenRecipe.tsx'
 import { formatClockTime, useHouseholdSettings } from '../settings/api.ts'
 import { useBreakpoint, type Breakpoint } from '../shell/useBreakpoint.ts'
 import { Button } from '../ui/Button.tsx'
@@ -76,22 +78,34 @@ function ItemRow({ item, toggles }: { item: SupplyRunItem; toggles: Toggles | nu
 }
 
 // GroupCard is one dinner's items: its name in Bagel over its day. The name
-// opens the dinner's recipe, unless the dinner was archived (removed from
+// is a button that opens the dinner's recipe once the server has it
+// (onRecipe, useOpenRecipe), unless the dinner was archived (removed from
 // Regulars) after the Supply run was made — it has no detail to open — or
-// its status is not known yet (a Supply run saved by an earlier build, until
-// it is read again): then its name is plain text.
-function GroupCard({ group, toggles }: { group: SupplyRunGroup; toggles: Toggles | null }) {
+// the Supply run is one saved on this device or the service worker's cached
+// copy (cached), whose status may be stale or, saved by an earlier build, not
+// known (opensRecipe): then its name is plain text, until it is read again.
+function GroupCard({
+  group,
+  cached,
+  toggles,
+  onRecipe,
+}: {
+  group: SupplyRunGroup
+  cached: boolean
+  toggles: Toggles | null
+  onRecipe: () => void
+}) {
   const { dinner } = group
   return (
     <section className={styles.group} aria-label={dinner.name}>
       <header className={styles.groupHeader}>
         <h2 className={styles.dinner}>
-          {dinner.status === null || dinner.status === 'archived' ? (
-            dinner.name
-          ) : (
-            <Link to={`/dinner/${encodeURIComponent(dinner.id)}`} className={styles.dinnerLink}>
+          {opensRecipe(dinner.status, cached) ? (
+            <button type="button" className={styles.dinnerLink} onClick={onRecipe}>
               {dinner.name}
-            </Link>
+            </button>
+          ) : (
+            dinner.name
           )}
         </h2>
         <span className={styles.day}>{weekdayKicker(group.date)}</span>
@@ -174,6 +188,7 @@ function SupplyRunList({ weekStart, timezone, layout, readOnly }: WeekProps) {
   const wide = layout !== 'mobile'
   const failed = toggles.failed
   const failedItem = failed && run.groups.flatMap((group) => group.items).find((item) => item.id === failed.toggle.id)
+  const recipe = useOpenRecipe()
 
   return (
     <div className={`${styles.page} ${styles[layout]}`}>
@@ -213,6 +228,7 @@ function SupplyRunList({ weekStart, timezone, layout, readOnly }: WeekProps) {
           Couldn't send the shopping list to Google Chat. {send.error.message}
         </ErrorBanner>
       )}
+      {recipe.notice}
       {wide && run.sent_to_chat_at !== null && <SentStatus at={run.sent_to_chat_at} timezone={timezone} />}
       {wide && unconfirmed}
       {run.groups.length === 0 ? (
@@ -220,7 +236,13 @@ function SupplyRunList({ weekStart, timezone, layout, readOnly }: WeekProps) {
       ) : (
         <div className={styles.groups} data-testid="supply-run-groups">
           {run.groups.map((group) => (
-            <GroupCard key={`${group.date} ${group.dinner.id}`} group={group} toggles={viewOnly ? null : toggles} />
+            <GroupCard
+              key={`${group.date} ${group.dinner.id}`}
+              group={group}
+              cached={run.cached}
+              toggles={viewOnly ? null : toggles}
+              onRecipe={() => recipe.open(group.dinner)}
+            />
           ))}
         </div>
       )}

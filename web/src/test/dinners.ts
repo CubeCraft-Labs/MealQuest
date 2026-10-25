@@ -43,3 +43,18 @@ export function dinnerBody(id: string, name: string, overrides: Partial<DinnerBo
     ...overrides,
   }
 }
+
+// recipeBody is dinner id with its recipe as GET /api/v1/dinners/{id} sends
+// it: a Regular, typed in, with one ingredient and one step unless overrides
+// set them.
+export function recipeBody(id: string, name: string, overrides: Record<string, unknown> = {}) {
+  return {
+    ...dinnerBody(id, name),
+    photo_urls: null,
+    ingredients: [{ name: 'Salt', qty: null, unit: null, note: null, raw_text: 'Salt' }],
+    steps: [`Cook the ${name.toLowerCase()}.`],
+    source: null,
+    why_picked: null,
+    ...overrides,
+  }
+}

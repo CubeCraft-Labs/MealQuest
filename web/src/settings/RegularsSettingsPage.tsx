@@ -1,9 +1,11 @@
 import { ChevronLeft, Heart, Pencil, Plus } from 'lucide-react'
 import { useId, useState, type FormEvent, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
+import { useOpenRecipe } from '../dinners/useOpenRecipe.tsx'
 import {
   DIFFICULTIES,
   METHODS,
+  opensRecipe,
   useAddRegular,
   useEditRegular,
   useGroundRegular,
@@ -17,6 +19,7 @@ import {
   type Method,
   type NewRegular,
   type RecipeFix,
+  type ListedRegular,
   type Regular,
   type RegularPatch,
 } from '../dinners/api.ts'
@@ -83,7 +86,7 @@ export function RegularsSettingsPage() {
 type Open = { sheet: 'edit' | 'fix'; id: string } | null
 
 function RegularsManager() {
-  const navigate = useNavigate()
+  const recipe = useOpenRecipe()
   const regulars = useRegulars()
   const add = useAddRegular()
   const remove = useRemoveRegular()
@@ -169,6 +172,7 @@ function RegularsManager() {
           Your Regulars could not load: {regulars.error.message}
         </ErrorBanner>
       )}
+      {recipe.notice}
       {regulars.isSuccess && (
         <section aria-labelledby={headingId} className={styles.section}>
           <h2 id={headingId} className={styles.groupLabel}>
@@ -183,7 +187,7 @@ function RegularsManager() {
                   <RegularRow
                     key={regular.id}
                     regular={regular}
-                    onOpen={() => void navigate(`/dinner/${encodeURIComponent(regular.id)}`)}
+                    onOpen={() => recipe.open(regular)}
                     onEdit={() =>
                       setOpen({ sheet: regular.grounding_status === 'failed' ? 'fix' : 'edit', id: regular.id })
                     }
@@ -323,14 +327,17 @@ function FindMissingPhotos({ backfill }: { backfill: PhotoBackfill }) {
 }
 
 type RegularRowProps = {
-  regular: Regular
+  regular: ListedRegular
   onOpen: () => void
   onEdit: () => void
   onFavorite: () => void
 }
 
-// RegularRow opens the Regular's recipe; its pencil opens the edit sheet,
-// or the fix-recipe sheet when its recipe was not found. The pencil and the
+// RegularRow opens the Regular's recipe once the server has it (onOpen,
+// useOpenRecipe), unless it is still being added or
+// the list is the service worker's cached copy, whose Regular another device
+// may have archived since (opensRecipe), when the row is plain; its pencil
+// opens the edit sheet, or the fix-recipe sheet when its recipe was not found. The pencil and the
 // heart sit apart, so their 44 px hit boxes never overlap.
 function RegularRow({ regular, onOpen, onEdit, onFavorite }: RegularRowProps) {
   const line = details(regular)
@@ -347,7 +354,7 @@ function RegularRow({ regular, onOpen, onEdit, onFavorite }: RegularRowProps) {
             <GroundingBadge status={regular.grounding_status} />
           </span>
         }
-        onClick={regular.pending ? undefined : onOpen}
+        onClick={!regular.pending && opensRecipe('regular', regular.cached) ? onOpen : undefined}
         trailing={
           <span className={styles.rowActions}>
             <IconButton

@@ -411,6 +411,7 @@ describe('Supply run saved by an earlier build', () => {
     const tacos = await screen.findByRole('region', { name: 'Beef tacos' })
     expect(screen.getByText('2 / 3')).toBeInTheDocument()
     expect(within(tacos).getByRole('heading', { level: 2, name: 'Beef tacos' })).toBeInTheDocument()
+    expect(within(tacos).queryByRole('button', { name: 'Beef tacos' })).not.toBeInTheDocument()
     expect(within(tacos).queryByRole('link')).not.toBeInTheDocument()
     expect(screen.queryByText(/can't be kept on this device/)).not.toBeInTheDocument()
 
@@ -433,8 +434,7 @@ describe('Supply run saved by an earlier build', () => {
     // name opens its recipe, and the saved run has the status too.
     reload(first)
     await openPage()
-    const read = await screen.findByRole('link', { name: 'Beef tacos' })
-    expect(read).toHaveAttribute('href', '/dinner/d0')
+    expect(await screen.findByRole('button', { name: 'Beef tacos' })).toBeInTheDocument()
     expect(checkbox('Taco seasoning')).toBeChecked()
     expect(screen.getByText('3 / 3')).toBeInTheDocument()
     expect(screen.queryByText(/can't be kept on this device/)).not.toBeInTheDocument()
@@ -446,7 +446,7 @@ describe('Supply run saved by an earlier build', () => {
     saveLegacyRun(run)
     await openPage()
 
-    expect(await screen.findByRole('link', { name: 'Beef tacos' })).toHaveAttribute('href', '/dinner/d0')
+    expect(await screen.findByRole('button', { name: 'Beef tacos' })).toBeInTheDocument()
     expect(screen.getByText('2 / 3')).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(screen.queryByText(/can't be kept on this device/)).not.toBeInTheDocument()
@@ -738,7 +738,7 @@ describe('Supply run saved on this device, refused', () => {
     reload(first)
     onLine = true
     await openPage()
-    expect(await screen.findByRole('link', { name: 'Beef tacos' })).toHaveAttribute('href', '/dinner/d0')
+    expect(await screen.findByRole('button', { name: 'Beef tacos' })).toBeInTheDocument()
     await waitFor(() => expect(screen.queryByText(/can't be kept on this device/)).not.toBeInTheDocument())
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })

@@ -8,9 +8,11 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { Link, Route, Routes } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
-import { dinnerDetailKey, RemovalCheck } from './api.ts'
+import { dinnerDetailKey, REGULARS_KEY, RemovalCheck } from './api.ts'
 import { ARCHIVED, archivedKey, removalLock, REMOVING, resetArchived } from './archived.ts'
 import { DinnerDetailPage } from './DinnerDetailPage.tsx'
+import { QUEST_LOG_KEY } from '../discover/api.ts'
+import { DiscoverPage } from '../discover/DiscoverPage.tsx'
 import { HOME_KEY } from '../home/api.ts'
 import { HomePage } from '../home/HomePage.tsx'
 import { planKey } from '../plan/api.ts'
@@ -33,9 +35,14 @@ const WEEK = '2026-10-05'
 const PLAN_SCREEN = '/plan'
 const RUN_SCREEN = `/plan/shopping?week=${WEEK}`
 const REGULARS_SCREEN = '/settings/regulars'
+const DISCOVER_SCREEN = '/discover'
 
 const TACOS = dinnerBody('d1', 'Beef tacos')
 const ROAST = dinnerBody('d4', 'Pot roast')
+// The Quest log: Shrimp gumbo, which another device archives in some tests
+// (questArchived), and Pad thai, which the server always has.
+const GUMBO = dinnerBody('q1', 'Shrimp gumbo', { status: 'quest_log', origin: 'side_quest' })
+const PAD_THAI = dinnerBody('q2', 'Pad thai', { status: 'quest_log', origin: 'side_quest' })
 
 const DAYS = ['2026-10-05', '2026-10-06', '2026-10-07', '2026-10-08', '2026-10-09', '2026-10-10', '2026-10-11']
 const NAMES = ['Pot roast', 'Chili', 'Beef tacos', 'Chicken stir-fry', 'Pizza night', 'Korean beef bowls', 'Sheet-pan salmon']
@@ -99,13 +106,25 @@ let reachable: boolean
 // networkReads is every "METHOD path?search" the network was asked for,
 // reached or not.
 let networkReads: string[]
-// archived says the server has archived Beef tacos.
+// archived says the server has archived Beef tacos; questArchived, Shrimp
+// gumbo.
 let archived: boolean
+let questArchived: boolean
 // While holding, the server takes each read of HELD as it comes, answering
 // it as things are then, and keeps the answer back until release is called;
 // held lists each release.
 let holding: boolean
 let held: Array<() => void>
+// While listsHeld, the server takes each read of the Regulars or the Quest
+// log and keeps it back until failLists, which answers each with a 503.
+let listsHeld: boolean
+let heldLists: Array<() => void>
+const LISTS = ['GET /api/v1/dinners?status=regular', 'GET /api/v1/dinners?status=quest_log']
+// checks is every "METHOD path?search" sent with cache 'no-store' — the
+// recipe check (apiCheck), which the worker never answers.
+let checks: string[]
+// tacosRecipe is Beef tacos' detail as the server has it now.
+let tacosRecipe: typeof TACOS_RECIPE
 const HELD = [`/api/v1/plans/${WEEK}`, '/api/v1/home', `/api/v1/shopping/${WEEK}`, '/api/v1/dinners/d1']
 
 // server answers "METHOD path?search" while it can be reached.
@@ -113,8 +132,11 @@ const server: Record<string, () => Response | Promise<Response>> = {
   'GET /api/v1/me': () => jsonResponse(200, ME),
   'GET /api/v1/settings/household': () => jsonResponse(200, HOUSEHOLD_SETTINGS),
   'GET /api/v1/dinners?status=regular': () => jsonResponse(200, { dinners: archived ? [ROAST] : [TACOS, ROAST] }),
-  'GET /api/v1/dinners?status=quest_log': () => jsonResponse(200, { dinners: [] }),
-  'GET /api/v1/dinners/d1': () => (archived ? errorResponse(404, 'not_found') : jsonResponse(200, TACOS_RECIPE)),
+  'GET /api/v1/dinners?status=quest_log': () => jsonResponse(200, { dinners: questArchived ? [PAD_THAI] : [GUMBO, PAD_THAI] }),
+  // Shrimp gumbo's detail is read only once another device archived it.
+  'GET /api/v1/dinners/q1': () => (questArchived ? errorResponse(404, 'not_found') : Promise.reject(new Error('Shrimp gumbo read before it is archived'))),
+  'GET /api/v1/suggestions/deck': () => jsonResponse(200, { suggestions: [], active_batch: null, failed_batch: null }),
+  'GET /api/v1/dinners/d1': () => (archived ? errorResponse(404, 'not_found') : jsonResponse(200, tacosRecipe)),
   [`GET /api/v1/plans/${WEEK}`]: () => jsonResponse(200, planWith(archived ? 'archived' : 'regular')),
   'GET /api/v1/plans/2026-10-12': () => errorResponse(404, 'not_found'),
   'GET /api/v1/home': () => jsonResponse(200, homeWith(archived ? 'archived' : 'regular')),
@@ -135,8 +157,13 @@ beforeEach(() => {
   reachable = true
   networkReads = []
   archived = false
+  questArchived = false
   holding = false
   held = []
+  listsHeld = false
+  heldLists = []
+  checks = []
+  tacosRecipe = TACOS_RECIPE
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(new Date('2026-10-07T16:00:00Z'))
   vi.spyOn(navigator, 'onLine', 'get').mockImplementation(() => reachable)
@@ -144,7 +171,12 @@ beforeEach(() => {
     const url = new URL(request.url)
     const key = `${request.method} ${url.pathname}${url.search}`
     networkReads.push(key)
+    if (request.cache === 'no-store') checks.push(key)
     if (!reachable) throw new TypeError('Failed to fetch')
+    if (listsHeld && LISTS.includes(key)) {
+      await new Promise<void>((fail) => heldLists.push(fail))
+      return errorResponse(503, 'unavailable')
+    }
     const respond = Object.hasOwn(server, key) ? server[key] : undefined
     if (respond === undefined) throw new Error(`unexpected network fetch: ${key}`)
     const response = await respond()
@@ -182,6 +214,7 @@ async function renderApp(path: string): Promise<{ queryClient: QueryClient; unmo
             <Route path="/plan" element={<PlanPage />} />
             <Route path="/plan/shopping" element={<SupplyRunPage />} />
             <Route path="/settings/regulars" element={<RegularsSettingsPage />} />
+            <Route path="/discover" element={<DiscoverPage />} />
             <Route path="/dinner/:id" element={<DinnerDetailPage />} />
           </Routes>
           <nav>
@@ -189,8 +222,10 @@ async function renderApp(path: string): Promise<{ queryClient: QueryClient; unmo
             <Link to={PLAN_SCREEN}>To Plan</Link>
             <Link to={RUN_SCREEN}>To Supply run</Link>
             <Link to={REGULARS_SCREEN}>To Regulars</Link>
+            <Link to={DISCOVER_SCREEN}>To Discover</Link>
             {/* Not a recipe link (recipeLinks): its search sets it apart. */}
             <Link to="/dinner/d1?typed=1">To Beef tacos</Link>
+            <Link to="/dinner/q1?typed=1">To Shrimp gumbo</Link>
           </nav>
         </InDataRouter>
         <OfflinePill />
@@ -200,9 +235,19 @@ async function renderApp(path: string): Promise<{ queryClient: QueryClient; unmo
   return { queryClient, unmount }
 }
 
-// recipeLinks lists every link on the page to dinner id's recipe.
+// NAMES_BY_ID names the dinners recipeLinks looks for.
+const NAMES_BY_ID: Record<string, string> = { d1: 'Beef tacos', d4: 'Pot roast' }
+
+// recipeLinks lists every control on the page that opens dinner id's recipe
+// (useOpenRecipe): a plan card's or Supply run card's button named for the
+// dinner, Home's Recipe pill while tonight is the dinner, and any link
+// straight to its detail, which no screen offers any more.
 function recipeLinks(id: string) {
-  return screen.queryAllByRole('link').filter((link) => link.getAttribute('href') === `/dinner/${id}`)
+  const name = NAMES_BY_ID[id]!
+  const tonight = screen.queryByRole('region', { name: 'Tonight' })
+  const pill = tonight !== null && within(tonight).queryByRole('heading', { name }) !== null ? within(tonight).queryAllByRole('button', { name: 'Recipe' }) : []
+  const links = screen.queryAllByRole('link').filter((link) => link.getAttribute('href') === `/dinner/${id}`)
+  return [...screen.queryAllByRole('button', { name }), ...pill, ...links]
 }
 
 function go(name: string) {
@@ -250,7 +295,7 @@ async function readOnline() {
   go('To Home')
   await waitFor(() => expect(recipeLinks('d1')).toHaveLength(1))
   go('To Supply run')
-  await waitFor(() => expect(within(screen.getByRole('region', { name: 'Beef tacos' })).getByRole('link')).toHaveAttribute('href', '/dinner/d1'))
+  await waitFor(() => expect(within(screen.getByRole('region', { name: 'Beef tacos' })).getByRole('button', { name: 'Beef tacos' })).toBeInTheDocument())
   await waitFor(() => expect(savedStatus('d1')).toBe('regular'))
   go('To Beef tacos')
   expect(await screen.findByText('Brown the beef.')).toBeInTheDocument()
@@ -267,11 +312,16 @@ function removeTacos() {
 // expectNoRecipeLink checks, screen by screen, that nothing links to Beef
 // tacos' recipe or shows its detail: the plan and Home show it archived, the
 // Supply run's card is plain with its items still toggling, the Regulars no
-// longer have it and its detail is not found. Pot roast still links.
-async function expectNoRecipeLink() {
+// longer have it and its detail is not found. Pot roast still links when the
+// server answered the reads (from 'server'); answered from what the worker
+// or this device saved (from 'saved'), nothing on the plan or Supply run
+// links, as no status there is verified (F1, feature review round 3).
+async function expectNoRecipeLink(from: 'server' | 'saved') {
   go('To Plan')
   await screen.findByRole('heading', { level: 1, name: 'Oct 5 – 11' })
-  await waitFor(() => expect(recipeLinks('d4')).toHaveLength(1))
+  await waitFor(() => expect(screen.getByText('Pot roast')).toBeInTheDocument())
+  if (from === 'server') await waitFor(() => expect(recipeLinks('d4')).toHaveLength(1))
+  else expect(recipeLinks('d4')).toEqual([])
   expect(screen.getByText('Beef tacos')).toBeInTheDocument()
   expect(recipeLinks('d1')).toEqual([])
 
@@ -282,9 +332,12 @@ async function expectNoRecipeLink() {
 
   go('To Supply run')
   const card = await waitFor(() => screen.getByRole('region', { name: 'Beef tacos' }))
+  expect(within(card).queryByRole('button')).not.toBeInTheDocument()
   expect(within(card).queryByRole('link')).not.toBeInTheDocument()
   expect(within(card).getByRole('checkbox', { name: /Ground beef/ })).toBeEnabled()
-  expect(within(screen.getByRole('region', { name: 'Pot roast' })).getByRole('link')).toHaveAttribute('href', '/dinner/d4')
+  const roast = screen.getByRole('region', { name: 'Pot roast' })
+  if (from === 'server') expect(within(roast).getByRole('button', { name: 'Pot roast' })).toBeInTheDocument()
+  else expect(within(roast).queryByRole('button')).not.toBeInTheDocument()
 
   go('To Regulars')
   await screen.findByRole('heading', { level: 2, name: /^On rotation/ })
@@ -327,7 +380,7 @@ describe('a removed Regular read offline from what the worker saved before', () 
       expect.arrayContaining([`GET /api/v1/plans/${WEEK}`, 'GET /api/v1/home', `GET /api/v1/shopping/${WEEK}`, 'GET /api/v1/dinners/d1']),
     )
     expect(await savedRegular('d1')).toContain(`/api/v1/plans/${WEEK}`)
-    await expectNoRecipeLink()
+    await expectNoRecipeLink('saved')
     expect(screen.getByRole('status')).toHaveTextContent('Offline — showing saved data')
     online.unmount()
 
@@ -339,7 +392,7 @@ describe('a removed Regular read offline from what the worker saved before', () 
     const reopened = await waitFor(() => screen.getByRole('region', { name: 'Beef tacos' }))
     expect(within(reopened).getByRole('checkbox', { name: /Ground beef/ })).toBeEnabled()
     expect(recipeLinks('d1')).toEqual([])
-    expect(within(screen.getByRole('region', { name: 'Pot roast' })).getByRole('link')).toHaveAttribute('href', '/dinner/d4')
+    expect(recipeLinks('d4')).toEqual([])
     expect(screen.getByRole('status')).toHaveTextContent('Offline — showing saved data')
   })
 })
@@ -377,7 +430,7 @@ describe('a read answered before a Regular is removed that arrives after', () =>
     expect(savedStatus('d1')).toBe('archived')
 
     // Online, no screen links to its recipe.
-    await expectNoRecipeLink()
+    await expectNoRecipeLink('server')
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
 
     // The server can no longer be reached: the worker answers every read
@@ -389,7 +442,7 @@ describe('a read answered before a Regular is removed that arrives after', () =>
     expect(networkReads).toEqual(
       expect.arrayContaining([`GET /api/v1/plans/${WEEK}`, 'GET /api/v1/home', `GET /api/v1/shopping/${WEEK}`, 'GET /api/v1/dinners/d1']),
     )
-    await expectNoRecipeLink()
+    await expectNoRecipeLink('saved')
     expect(screen.getByRole('status')).toHaveTextContent('Offline — showing saved data')
     online.unmount()
 
@@ -427,7 +480,7 @@ describe('a removal no answer settled', () => {
     // Offline, every read is the worker's from before, yet nothing links.
     networkReads = []
     await readAgain(online.queryClient)
-    await expectNoRecipeLink()
+    await expectNoRecipeLink('saved')
     online.unmount()
 
     // A new page offline opens the saved Supply run: still no link.
@@ -475,7 +528,7 @@ describe('a removal no answer settled', () => {
     await waitFor(() => expect(networkReads).toContain('DELETE /api/v1/dinners/d1'))
     await waitFor(() => expect(online.queryClient.isFetching()).toBe(0))
     expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
-    await expectNoRecipeLink()
+    await expectNoRecipeLink('server')
     online.unmount()
 
     // Next time the app starts it sends the removal again; the server
@@ -485,7 +538,7 @@ describe('a removal no answer settled', () => {
     await renderApp(PLAN_SCREEN)
     await waitFor(() => expect(localStorage.getItem(archivedKey('d1'))).toBe(ARCHIVED))
     expect(networkReads).toContain('DELETE /api/v1/dinners/d1')
-    await expectNoRecipeLink()
+    await expectNoRecipeLink('server')
   })
 })
 
@@ -531,7 +584,7 @@ describe('a removal answered only after another device archived the dinner', () 
       expect.arrayContaining([`GET /api/v1/plans/${WEEK}`, 'GET /api/v1/home', `GET /api/v1/shopping/${WEEK}`, 'GET /api/v1/dinners/d1']),
     )
     expect(await savedRegular('d1')).toContain(`/api/v1/plans/${WEEK}`)
-    await expectNoRecipeLink()
+    await expectNoRecipeLink('saved')
     online.unmount()
 
     // A new page offline opens the Supply run saved on this device: no link,
@@ -554,7 +607,7 @@ describe('a removal answered only after another device archived the dinner', () 
     await waitFor(() => expect(localStorage.getItem(archivedKey('d1'))).toBe(ARCHIVED))
     expect(networkReads).toContain('DELETE /api/v1/dinners/d1')
     await waitFor(() => expect(savedStatus('d1')).toBe('archived'))
-    await expectNoRecipeLink()
+    await expectNoRecipeLink('server')
   })
 })
 
@@ -606,5 +659,458 @@ describe('a removal another tab is still sending', () => {
     expect(within(card).getByRole('checkbox', { name: /Ground beef/ })).toBeEnabled()
     expect(recipeLinks('d1')).toEqual([])
     expect(localStorage.getItem(archivedKey('d1'))).toBe(ARCHIVED)
+  })
+})
+
+// F1 (feature review round 3): another device archives Beef tacos. This
+// device has no mark of it, and what the worker and this device saved still
+// say it is a Regular: a status from such a read is not verified, so it
+// offers no recipe link. The server's own answer offers it again, only to a
+// dinner the server still has.
+describe('a dinner another device archived, read here from what was saved before', () => {
+  // expectLinks checks the plan, Home and Supply run link to the recipes of
+  // exactly the dinners of ids among Beef tacos (d1) and Pot roast (d4).
+  async function expectLinks(ids: string[]) {
+    go('To Plan')
+    await screen.findByRole('heading', { level: 1, name: 'Oct 5 – 11' })
+    await waitFor(() => expect(screen.getByText('Pot roast')).toBeInTheDocument())
+    expect(screen.getByText('Beef tacos')).toBeInTheDocument()
+    expect(recipeLinks('d1')).toHaveLength(ids.includes('d1') ? 1 : 0)
+    expect(recipeLinks('d4')).toHaveLength(ids.includes('d4') ? 1 : 0)
+
+    go('To Home')
+    const tonight = await screen.findByRole('region', { name: 'Tonight' })
+    expect(within(tonight).getByRole('heading', { name: 'Beef tacos' })).toBeInTheDocument()
+    expect(within(tonight).queryAllByRole('button', { name: 'Recipe' })).toHaveLength(ids.includes('d1') ? 1 : 0)
+    expect(within(tonight).queryAllByRole('link')).toHaveLength(0)
+
+    go('To Supply run')
+    const tacos = await waitFor(() => screen.getByRole('region', { name: 'Beef tacos' }))
+    expect(within(tacos).getByRole('checkbox', { name: /Ground beef/ })).toBeEnabled()
+    expect(within(tacos).queryAllByRole('button')).toHaveLength(ids.includes('d1') ? 1 : 0)
+    expect(within(screen.getByRole('region', { name: 'Pot roast' })).queryAllByRole('button')).toHaveLength(ids.includes('d4') ? 1 : 0)
+  }
+
+  it('offers no recipe link from the worker’s or this device’s saved reads, and only the server’s answer offers one again, for a dinner it still has', async () => {
+    mockViewport(768)
+    const page = await renderApp(PLAN_SCREEN)
+    await readOnline()
+    await expectLinks(['d1', 'd4'])
+
+    // Another device archives Beef tacos; this one never removed it.
+    archived = true
+    expect(localStorage.getItem(archivedKey('d1'))).toBeNull()
+
+    // The server cannot be reached and everything is read again: the worker
+    // answers from what it saved, Beef tacos a Regular in each, and no
+    // dinner links to its recipe.
+    reachable = false
+    networkReads = []
+    await readAgain(page.queryClient)
+    expect(networkReads).toEqual(
+      expect.arrayContaining([`GET /api/v1/plans/${WEEK}`, 'GET /api/v1/home', `GET /api/v1/shopping/${WEEK}`]),
+    )
+    expect(await savedRegular('d1')).toEqual(expect.arrayContaining(['/api/v1/home', `/api/v1/plans/${WEEK}`, `/api/v1/shopping/${WEEK}`]))
+    await expectLinks([])
+    expect(screen.getByRole('status')).toHaveTextContent('Offline — showing saved data')
+    page.unmount()
+
+    // A new page offline opens the Supply run saved on this device, Beef
+    // tacos a Regular on it: no dinner links to its recipe.
+    expect(savedStatus('d1')).toBe('regular')
+    const runPage = await renderApp(RUN_SCREEN)
+    await read(runPage.queryClient, `/api/v1/shopping/${WEEK}`)
+    await waitFor(() => screen.getByRole('region', { name: 'Beef tacos' }))
+    expect(recipeLinks('d1')).toEqual([])
+    expect(recipeLinks('d4')).toEqual([])
+    runPage.unmount()
+
+    // The server can be reached again: its answers say Beef tacos is
+    // archived, so only Pot roast links to its recipe.
+    reachable = true
+    const fresh = await renderApp(PLAN_SCREEN)
+    await read(fresh.queryClient, `/api/v1/plans/${WEEK}`)
+    await expectLinks(['d4'])
+    await waitFor(() => expect(fresh.queryClient.isFetching()).toBe(0))
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(localStorage.getItem(archivedKey('d1'))).toBeNull()
+  })
+
+  it('reads the plan, Home and Supply run again once a recipe link shown before the archive opens a dinner the server no longer has', async () => {
+    mockViewport(768)
+    const page = await renderApp(PLAN_SCREEN)
+    await readOnline()
+    go('To Plan')
+    await waitFor(() => expect(recipeLinks('d1')).toHaveLength(1))
+
+    // Another device archives Beef tacos while its recipe button is on
+    // screen here, from the server's answer of a minute ago. Opening it asks
+    // the server, which says it is not found: no detail opens, the plan says
+    // why in place and shows Beef tacos plain at once.
+    archived = true
+    vi.setSystemTime(new Date('2026-10-07T16:01:00Z'))
+    networkReads = []
+    fireEvent.click(recipeLinks('d1')[0]!)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Beef tacos was removed, so its recipe is gone.')
+    expect(checks).toEqual(['GET /api/v1/dinners/d1'])
+    expect(recipeLinks('d1')).toEqual([])
+    expect(screen.queryByText('Dinner not found')).not.toBeInTheDocument()
+
+    // Back on the plan, Home and Supply run, each is read again, and only
+    // Pot roast links.
+    await waitFor(() => expect(page.queryClient.isFetching()).toBe(0))
+    await expectLinks(['d4'])
+    await waitFor(() => expect(page.queryClient.isFetching()).toBe(0))
+    expect(networkReads).toEqual(
+      expect.arrayContaining([`GET /api/v1/plans/${WEEK}`, 'GET /api/v1/home', `GET /api/v1/shopping/${WEEK}`]),
+    )
+    await expectLinks(['d4'])
+  })
+
+  it('offers each recipe link again once the server answers that the dinner is still there', async () => {
+    mockViewport(768)
+    const page = await renderApp(PLAN_SCREEN)
+    await readOnline()
+
+    // Offline, every read is what the worker saved: no recipe links.
+    reachable = false
+    await readAgain(page.queryClient)
+    await expectLinks([])
+
+    // The server answers again and still has every dinner: each links.
+    reachable = true
+    await readAgain(page.queryClient)
+    await expectLinks(['d1', 'd4'])
+  })
+})
+
+// The Regulars and the Quest log follow the same rule (Maestro 440ddb44):
+// a row opens its dinner's recipe only from the server's answer. Another
+// device archives Beef tacos (a Regular) and Shrimp gumbo (in the Quest
+// log); this device has no mark of either, and what the worker saved still
+// lists both.
+describe('a Regular or Quest-log dinner another device archived, read here from what was saved before', () => {
+  // opening lists the names of the rows in list that open their dinner's
+  // recipe: the row's own button, not its pencil, heart or remove button.
+  function opening(list: HTMLElement) {
+    return within(list)
+      .getAllByRole('listitem')
+      .map((row) => {
+        const name = within(row).getByRole('button', { name: /^(Edit|Fix recipe for|Remove) / }).getAttribute('aria-label')!
+        return name.replace(/^(Edit|Fix recipe for|Remove) /, '')
+      })
+      .filter((name) => within(list).queryByRole('button', { name: new RegExp(`^${name}`) }) !== null)
+  }
+
+  async function regulars() {
+    await screen.findByRole('heading', { level: 2, name: /^On rotation/ })
+    return screen.getByRole('list', { name: 'Regulars' })
+  }
+
+  async function questLog(count: number) {
+    fireEvent.click(await screen.findByRole('button', { name: `Quest log · ${count}` }))
+    return within(screen.getByRole('dialog', { name: 'Quest log' })).getByRole('list', { name: 'Quest log' })
+  }
+
+  it('offers no recipe from the Regulars or the Quest log the worker saved, keeps their other controls, and the server’s answer offers it again for a dinner it still has', async () => {
+    mockViewport(768)
+    // Online, each list links every row, and the worker saves each read.
+    let page = await renderApp(REGULARS_SCREEN)
+    expect(opening(await regulars())).toEqual(['Beef tacos', 'Pot roast'])
+    page.unmount()
+    page = await renderApp(DISCOVER_SCREEN)
+    expect(opening(await questLog(2))).toEqual(['Shrimp gumbo', 'Pad thai'])
+    page.unmount()
+
+    archived = true
+    questArchived = true
+    expect(localStorage.getItem(archivedKey('d1'))).toBeNull()
+    expect(localStorage.getItem(archivedKey('q1'))).toBeNull()
+
+    // Offline, a new page reads each list from what the worker saved: every
+    // row shows, none opens a recipe, and the pencil, heart and remove
+    // buttons work as before.
+    reachable = false
+    networkReads = []
+    page = await renderApp(REGULARS_SCREEN)
+    const saved = await regulars()
+    expect(networkReads).toContain('GET /api/v1/dinners?status=regular')
+    expect(within(saved).getAllByRole('listitem')).toHaveLength(2)
+    expect(opening(saved)).toEqual([])
+    expect(screen.getByRole('button', { name: 'Favorite Beef tacos' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Beef tacos' }))
+    expect(await screen.findByRole('button', { name: 'Remove from Regulars' })).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Offline — showing saved data')
+    page.unmount()
+
+    page = await renderApp(DISCOVER_SCREEN)
+    const savedLog = await questLog(2)
+    expect(networkReads).toContain('GET /api/v1/dinners?status=quest_log')
+    expect(opening(savedLog)).toEqual([])
+    fireEvent.click(within(savedLog).getByRole('button', { name: 'Remove Shrimp gumbo' }))
+    expect(screen.getByRole('dialog', { name: 'Remove Shrimp gumbo?' })).toBeInTheDocument()
+    page.unmount()
+
+    // The server answers again: only the dinners it still has show, and each
+    // opens its recipe.
+    reachable = true
+    page = await renderApp(REGULARS_SCREEN)
+    await waitFor(() => expect(opening(screen.getByRole('list', { name: 'Regulars' }))).toEqual(['Pot roast']))
+    page.unmount()
+    page = await renderApp(DISCOVER_SCREEN)
+    expect(opening(await questLog(1))).toEqual(['Pad thai'])
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('stops offering each list’s recipes once a read again comes from what the worker saved, and offers them again once the server answers', async () => {
+    mockViewport(768)
+    const page = await renderApp(REGULARS_SCREEN)
+    expect(opening(await regulars())).toEqual(['Beef tacos', 'Pot roast'])
+    go('To Discover')
+    const log = await questLog(2)
+    expect(opening(log)).toEqual(['Shrimp gumbo', 'Pad thai'])
+
+    // Offline, both lists are read again from what the worker saved.
+    reachable = false
+    await Promise.all(
+      [REGULARS_KEY, QUEST_LOG_KEY].map((queryKey) => page.queryClient.refetchQueries({ queryKey, type: 'all' })),
+    )
+    await waitFor(() => expect(opening(log)).toEqual([]))
+    fireEvent.keyDown(screen.getByRole('dialog', { name: 'Quest log' }), { key: 'Escape' })
+    go('To Regulars')
+    expect(opening(await regulars())).toEqual([])
+
+    // The server answers again and still has every dinner: each row opens.
+    reachable = true
+    await Promise.all(
+      [REGULARS_KEY, QUEST_LOG_KEY].map((queryKey) => page.queryClient.refetchQueries({ queryKey, type: 'all' })),
+    )
+    await waitFor(() => expect(opening(screen.getByRole('list', { name: 'Regulars' }))).toEqual(['Beef tacos', 'Pot roast']))
+    go('To Discover')
+    expect(opening(await questLog(2))).toEqual(['Shrimp gumbo', 'Pad thai'])
+  })
+
+  it('reads the Regulars and the Quest log again once a row read before the archive opens a dinner the server no longer has', async () => {
+    mockViewport(768)
+    const page = await renderApp(REGULARS_SCREEN)
+    await regulars()
+    go('To Discover')
+    await questLog(2)
+    fireEvent.keyDown(screen.getByRole('dialog', { name: 'Quest log' }), { key: 'Escape' })
+
+    // A minute later — the details no longer fresh — both lists are read
+    // again from the server, then another device archives both dinners.
+    vi.setSystemTime(new Date('2026-10-07T16:01:00Z'))
+    go('To Regulars')
+    await read(page.queryClient, '/api/v1/dinners?status=regular')
+    expect(opening(await regulars())).toEqual(['Beef tacos', 'Pot roast'])
+    go('To Discover')
+    await read(page.queryClient, '/api/v1/dinners?status=quest_log')
+    const log = await questLog(2)
+    archived = true
+    questArchived = true
+
+    // Shrimp gumbo's row asks the server for a dinner it no longer has: no
+    // detail opens, the sheet says why, and the row is gone at once; the
+    // Quest log, on screen, is read again.
+    networkReads = []
+    fireEvent.click(within(log).getByRole('button', { name: /^Shrimp gumbo/ }))
+    const sheet = screen.getByRole('dialog', { name: 'Quest log' })
+    expect(await within(sheet).findByRole('alert')).toHaveTextContent('Shrimp gumbo was removed, so its recipe is gone.')
+    expect(checks).toEqual(['GET /api/v1/dinners/q1'])
+    expect(opening(log)).toEqual(['Pad thai'])
+    expect(screen.queryByText('Dinner not found')).not.toBeInTheDocument()
+    await waitFor(() => expect(networkReads).toContain('GET /api/v1/dinners?status=quest_log'))
+    await waitFor(() => expect(page.queryClient.isFetching()).toBe(0))
+    fireEvent.keyDown(sheet, { key: 'Escape' })
+
+    // Back on the Regulars, read seconds ago, its list is read again, and
+    // Beef tacos' row — read before the archive — is gone with it.
+    networkReads = []
+    go('To Regulars')
+    await waitFor(() => expect(networkReads).toContain('GET /api/v1/dinners?status=regular'))
+    await waitFor(() => expect(opening(screen.getByRole('list', { name: 'Regulars' }))).toEqual(['Pot roast']))
+    go('To Discover')
+    expect(opening(await questLog(1))).toEqual(['Pad thai'])
+  })
+})
+
+// F1-1, F1-2 and F1-3 (Maestro 440ddb44, review round 1 of PR #6): a page
+// read from the server may stay open while another device archives one of
+// its dinners. Its recipe opens only once the server, asked when it is
+// activated, answers that the dinner is there (useOpenRecipe) — never from
+// the worker's cache, nor from a detail this page read moments ago — and a
+// 404 opens nothing and leaves no read here offering that recipe.
+describe('a recipe opened from a page read before another device archived its dinner', () => {
+  // rowButton is a Regulars or Quest-log row's own button, the one that
+  // opens its recipe, or null when the row is plain or gone.
+  function rowButton(list: HTMLElement, name: string) {
+    return within(list).queryByRole('button', { name: new RegExp(`^${name}`) })
+  }
+
+  async function regulars() {
+    await screen.findByRole('heading', { level: 2, name: /^On rotation/ })
+    return screen.getByRole('list', { name: 'Regulars' })
+  }
+
+  async function questLog(count: number) {
+    fireEvent.click(await screen.findByRole('button', { name: `Quest log · ${count}` }))
+    return within(screen.getByRole('dialog', { name: 'Quest log' })).getByRole('list', { name: 'Quest log' })
+  }
+
+  // Each screen, read from the server, offers Beef tacos' recipe (Shrimp
+  // gumbo's on the Quest log); open finds that control.
+  it.each([
+    {
+      screenName: 'plan',
+      path: PLAN_SCREEN,
+      id: 'd1',
+      open: () =>
+        waitFor(() => {
+          const [control] = recipeLinks('d1')
+          expect(control).toBeDefined()
+          return control!
+        }),
+    },
+    {
+      screenName: 'Home',
+      path: '/',
+      id: 'd1',
+      open: async () => within(await screen.findByRole('region', { name: 'Tonight' })).findByRole('button', { name: 'Recipe' }),
+    },
+    {
+      screenName: 'Supply run',
+      path: RUN_SCREEN,
+      id: 'd1',
+      open: async () => within(await screen.findByRole('region', { name: 'Beef tacos' })).findByRole('button', { name: 'Beef tacos' }),
+    },
+    { screenName: 'Regulars', path: REGULARS_SCREEN, id: 'd1', open: async () => rowButton(await regulars(), 'Beef tacos')! },
+    { screenName: 'Quest log', path: DISCOVER_SCREEN, id: 'q1', open: async () => rowButton(await questLog(2), 'Shrimp gumbo')! },
+  ])(
+    'asks the server when the $screenName’s recipe is activated, and on its 404 opens nothing and offers it no more',
+    async ({ path, id, open }) => {
+      mockViewport(768)
+      const page = await renderApp(path)
+      const control = await open()
+      await waitFor(() => expect(page.queryClient.isFetching()).toBe(0))
+
+      // Another device archives the dinner while this page stays open; no
+      // read here is made again.
+      archived = true
+      questArchived = true
+      networkReads = []
+      fireEvent.click(control)
+
+      // The server is asked, with nothing cached, and answers 404: the page
+      // stays, says why in place, and no longer offers that recipe — before
+      // any read again is answered.
+      const name = id === 'd1' ? 'Beef tacos' : 'Shrimp gumbo'
+      expect(await screen.findByRole('alert')).toHaveTextContent(`${name} was removed, so its recipe is gone.`)
+      expect(checks).toEqual([`GET /api/v1/dinners/${id}`])
+      expect(control).not.toBeInTheDocument()
+      if (id === 'd1') expect(recipeLinks('d1')).toEqual([])
+      else expect(rowButton(screen.getByRole('list', { name: 'Quest log' }), 'Shrimp gumbo')).toBeNull()
+      expect(screen.queryByText('Dinner not found')).not.toBeInTheDocument()
+      expect(screen.queryByText('Brown the beef.')).not.toBeInTheDocument()
+    },
+  )
+
+  it('asks the server even for a detail this page read seconds ago, and shows what the server answers', async () => {
+    mockViewport(768)
+    const page = await renderApp(PLAN_SCREEN)
+    // Beef tacos' detail is read and still fresh here.
+    await readOnline()
+    go('To Plan')
+    await waitFor(() => expect(recipeLinks('d1')).toHaveLength(1))
+    await waitFor(() => expect(page.queryClient.isFetching()).toBe(0))
+
+    // The recipe changes on another device: opening it shows the server's
+    // answer, not the detail read seconds ago.
+    tacosRecipe = { ...TACOS_RECIPE, steps: ['Brown the beef in a hot pan.'] }
+    fireEvent.click(recipeLinks('d1')[0]!)
+    expect(await screen.findByText('Brown the beef in a hot pan.')).toBeInTheDocument()
+    expect(screen.queryByText('Brown the beef.')).not.toBeInTheDocument()
+    expect(checks).toEqual(['GET /api/v1/dinners/d1'])
+
+    // Back on the plan, its detail just checked and fresh, another device
+    // archives it: opening it asks the server again, which says it is gone.
+    go('To Plan')
+    await waitFor(() => expect(recipeLinks('d1')).toHaveLength(1))
+    archived = true
+    fireEvent.click(recipeLinks('d1')[0]!)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Beef tacos was removed, so its recipe is gone.')
+    expect(checks).toEqual(['GET /api/v1/dinners/d1', 'GET /api/v1/dinners/d1'])
+    expect(screen.queryByText('Brown the beef in a hot pan.')).not.toBeInTheDocument()
+    expect(recipeLinks('d1')).toEqual([])
+  })
+
+  it('opens nothing when the server cannot be asked, not even the detail the worker saved, and opens it once it can', async () => {
+    mockViewport(768)
+    const page = await renderApp(PLAN_SCREEN)
+    await readOnline()
+    expect(await savedRegular('d1')).toContain('/api/v1/dinners/d1')
+    go('To Plan')
+    await waitFor(() => expect(recipeLinks('d1')).toHaveLength(1))
+    await waitFor(() => expect(page.queryClient.isFetching()).toBe(0))
+
+    // The connection drops before anything is read again.
+    reachable = false
+    fireEvent.click(recipeLinks('d1')[0]!)
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't check the recipe for Beef tacos with the server, so it didn't open.")
+    expect(checks).toEqual(['GET /api/v1/dinners/d1'])
+    expect(screen.queryByText('Brown the beef.')).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1, name: 'Oct 5 – 11' })).toBeInTheDocument()
+
+    // Back online, trying again opens it from the server's answer.
+    reachable = true
+    fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('Brown the beef.')).toBeInTheDocument()
+    expect(checks).toEqual(['GET /api/v1/dinners/d1', 'GET /api/v1/dinners/d1'])
+  })
+
+  it('takes a dinner the server says is gone out of the Regulars and the Quest log at once, through a read again held and then failed', async () => {
+    mockViewport(768)
+    const page = await renderApp(REGULARS_SCREEN)
+    expect(rowButton(await regulars(), 'Beef tacos')).not.toBeNull()
+    go('To Discover')
+    expect(rowButton(await questLog(2), 'Shrimp gumbo')).not.toBeNull()
+    fireEvent.keyDown(screen.getByRole('dialog', { name: 'Quest log' }), { key: 'Escape' })
+
+    // Another device archives both; the Regulars and Quest log reads here
+    // are kept back from now on.
+    archived = true
+    questArchived = true
+    listsHeld = true
+
+    // Beef tacos' detail is read: the server says it is not found. Back on
+    // the Regulars, read again but not yet answered, its row is gone.
+    go('To Beef tacos')
+    expect(await screen.findByText('Dinner not found')).toBeInTheDocument()
+    networkReads = []
+    go('To Regulars')
+    const list = await regulars()
+    await waitFor(() => expect(networkReads).toContain('GET /api/v1/dinners?status=regular'))
+    expect(rowButton(list, 'Beef tacos')).toBeNull()
+    expect(rowButton(list, 'Pot roast')).not.toBeNull()
+
+    // So with Shrimp gumbo on the Quest log.
+    go('To Shrimp gumbo')
+    expect(await screen.findByText('Dinner not found')).toBeInTheDocument()
+    go('To Discover')
+    const log = await questLog(1)
+    await waitFor(() => expect(networkReads).toContain('GET /api/v1/dinners?status=quest_log'))
+    expect(rowButton(log, 'Shrimp gumbo')).toBeNull()
+    expect(rowButton(log, 'Pad thai')).not.toBeNull()
+    expect(heldLists.length).toBeGreaterThan(0)
+
+    // The reads again fail: neither list holds the dinner the server said
+    // is gone.
+    heldLists.splice(0).forEach((fail) => fail())
+    await waitFor(() => expect(page.queryClient.isFetching()).toBe(0))
+    const held = page.queryClient
+      .getQueriesData<Array<{ id: string }>>({ queryKey: REGULARS_KEY })
+      .flatMap(([, data]) => (Array.isArray(data) ? data.map((dinner) => dinner.id) : []))
+    expect(held).toEqual(['d4'])
+    expect(page.queryClient.getQueryData<Array<{ id: string }>>(QUEST_LOG_KEY)!.map((dinner) => dinner.id)).toEqual(['q2'])
   })
 })

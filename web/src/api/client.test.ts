@@ -212,6 +212,54 @@ describe('apiFetch', () => {
   })
 })
 
+// apiCheck is the recipe check (dinners/useOpenRecipe.tsx): only the
+// server's own answer will do.
+describe('apiCheck', () => {
+  it("sends a GET with cache 'no-store', which the worker leaves to the network, and resolves with the server's answer", async () => {
+    const fetchMock = stubFetch(jsonResponse(200, { id: 'd1' }))
+    const api = createApiClient(fakeLocation(), createNetworkStatus(window), createVerifiedSession(localStorage))
+
+    await expect(api.apiCheck('/api/v1/dinners/d1')).resolves.toEqual({ id: 'd1' })
+    expect(request(fetchMock, 0)).toMatchObject({ path: '/api/v1/dinners/d1', method: 'GET', credentials: 'same-origin' })
+    expect(fetchMock.mock.calls[0]![1]!.cache).toBe('no-store')
+  })
+
+  it('leaves the cache mode of every other request alone', async () => {
+    const fetchMock = stubFetch(jsonResponse(200, { id: 'd1' }), jsonResponse(200, { id: 'd1' }))
+    const api = createApiClient(fakeLocation(), createNetworkStatus(window), createVerifiedSession(localStorage))
+
+    await api.apiRead('/api/v1/dinners/d1')
+    await api.apiFetch('/api/v1/dinners/d1')
+    expect(fetchMock.mock.calls.map(([, init]) => init!.cache)).toEqual([undefined, undefined])
+  })
+
+  it("rejects an answer from the service worker's cache, which a worker from an earlier build may still give", async () => {
+    const cached = jsonResponse(200, { id: 'd1' })
+    cached.headers.set(cacheFallbackHeader, '1')
+    stubFetch(cached)
+    const api = createApiClient(fakeLocation(), createNetworkStatus(window), createVerifiedSession(localStorage))
+
+    await expect(api.apiCheck('/api/v1/dinners/d1')).rejects.toThrow(
+      "GET /api/v1/dinners/d1: answered from the service worker's cache, not the server",
+    )
+  })
+
+  it('rejects with the API error the server answers, and with its signal when aborted', async () => {
+    stubFetch(errorResponse(404, 'not_found'))
+    const api = createApiClient(fakeLocation(), createNetworkStatus(window), createVerifiedSession(localStorage))
+    const error = await api.apiCheck('/api/v1/dinners/d1').catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(ApiError)
+    expect((error as ApiError).status).toBe(404)
+
+    const fetchMock = vi.fn<typeof fetch>((_input, init) => new Promise((_resolve, reject) => init!.signal!.addEventListener('abort', () => reject(init!.signal!.reason as Error))))
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+    const check = api.apiCheck('/api/v1/dinners/d1', controller.signal)
+    controller.abort(new DOMException('left the page', 'AbortError'))
+    await expect(check).rejects.toThrow('left the page')
+  })
+})
+
 describe('loadMe', () => {
   it('aborts /me with its signal', async () => {
     vi.stubGlobal(

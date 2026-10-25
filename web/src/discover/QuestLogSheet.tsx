@@ -1,6 +1,7 @@
 import { Trash2 } from 'lucide-react'
 import { useEffect, useId, useRef, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { opensRecipe } from '../dinners/api.ts'
+import { useOpenRecipe } from '../dinners/useOpenRecipe.tsx'
 import { Confirm } from '../settings/LeaveGuard.tsx'
 import { Icon } from '../ui/Icon.tsx'
 import { IconButton } from '../ui/IconButton.tsx'
@@ -29,11 +30,14 @@ export function details(dinner: QuestLogDinner): string | null {
 }
 
 // QuestLogSheet is the Quest log as a bottom sheet: each dinner with its
-// washed photo, name, difficulty and minutes. A row opens the dinner; its
-// remove button, once confirmed, archives the dinner.
+// washed photo, name, difficulty and minutes. A row opens the dinner once
+// the server has it (useOpenRecipe), unless
+// the Quest log is the service worker's cached copy, whose dinner another
+// device may have archived since (opensRecipe), when it is plain; its remove
+// button, once confirmed, archives the dinner.
 export function QuestLogSheet({ open, dinners, onClose }: QuestLogSheetProps) {
   const titleId = useId()
-  const navigate = useNavigate()
+  const recipe = useOpenRecipe()
   const remove = useRemoveFromQuestLog()
   // The dinner whose removal is being confirmed.
   const [removing, setRemoving] = useState<QuestLogDinner | null>(null)
@@ -92,6 +96,7 @@ export function QuestLogSheet({ open, dinners, onClose }: QuestLogSheetProps) {
           <h2 id={titleId} className={styles.title}>
             Quest log
           </h2>
+          {recipe.notice}
           {dinners.length === 0 ? (
             <p className={styles.empty}>Your Quest log is empty — swipe right on a side quest to add one.</p>
           ) : (
@@ -107,7 +112,7 @@ export function QuestLogSheet({ open, dinners, onClose }: QuestLogSheetProps) {
                     }
                     title={dinner.name}
                     meta={details(dinner)}
-                    onClick={() => navigate(`/dinner/${encodeURIComponent(dinner.id)}`)}
+                    onClick={opensRecipe('quest_log', dinner.cached) ? () => recipe.open(dinner) : undefined}
                     trailing={
                       <IconButton
                         ref={(button) => {

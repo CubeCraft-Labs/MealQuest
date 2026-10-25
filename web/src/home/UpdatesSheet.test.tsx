@@ -1,10 +1,11 @@
 import { QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
 import { HOME } from '../test/ApiProviders.tsx'
+import { recipeBody } from '../test/dinners.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { HOME_KEY, HOME_PATH, UPDATES_PATH, UPDATES_SEEN_PATH } from './api.ts'
 import { ROTATION_REVIEWS_PATH } from './rotation.ts'
@@ -29,14 +30,16 @@ const UPDATES = {
       title: 'Your week is drafted',
       body: 'Take a look at the Draft board.',
       url: '/plan?week=2026-10-12',
+      dinner: null,
       created_at: minutesAgo(5),
     },
-    { type: 'new_suggestions', title: '5 new Side quests', body: '', url: '/discover', created_at: minutesAgo(3 * 60) },
+    { type: 'new_suggestions', title: '5 new Side quests', body: '', url: '/discover', dinner: null, created_at: minutesAgo(3 * 60) },
     {
       type: 'list_ready',
       title: 'Supply run ready',
       body: 'Week 41 · Oct 5 – 11',
       url: '/plan/shopping?week=2026-10-05',
+      dinner: null,
       created_at: minutesAgo(2 * 24 * 60),
     },
   ],
@@ -190,6 +193,7 @@ describe('Recent updates sheet', () => {
       title: 'Tacos tonight',
       body: 'Dinner at 6:00.',
       url: '/plan',
+      dinner: null,
       created_at: new Date().toISOString(),
     }
     stored.unshift(reminder)
@@ -234,6 +238,7 @@ describe('Recent updates sheet', () => {
       title: 'Tacos tonight',
       body: 'Dinner at 6:00.',
       url: '/plan',
+      dinner: null,
       created_at: new Date().toISOString(),
     }
     stored.unshift(reminder)
@@ -292,6 +297,7 @@ describe('Recent updates sheet', () => {
       title: 'Tacos tonight',
       body: 'Dinner at 6:00.',
       url: '/plan',
+      dinner: null,
       created_at: new Date().toISOString(),
     }
     stored.unshift(reminder)
@@ -379,5 +385,121 @@ describe('Recent updates sheet', () => {
     )
     expect(within(sheet).queryByRole('list')).not.toBeInTheDocument()
     expect(posts(fetchMock)).toEqual([])
+  })
+
+  it('refuses an update whose url opens a recipe but names no dinner, or names another dinner', async () => {
+    const recipeOnly = { ...REMINDER, dinner: null }
+    const mismatched = { ...REMINDER, dinner: { id: 'd9', name: 'Chili' } }
+    for (const [update, problem] of [
+      [recipeOnly, 'update url "/dinner/d7" opens a recipe but names no dinner'],
+      [mismatched, 'update url "/dinner/d7" is not its dinner\'s recipe'],
+    ] as const) {
+      stubServer({ [`GET ${UPDATES_PATH}`]: () => jsonResponse(200, { updates: [update] }) })
+      await renderHome()
+      const sheet = await openSheet()
+      expect(await within(sheet).findByRole('alert')).toHaveTextContent(problem)
+      expect(within(sheet).queryByRole('list')).not.toBeInTheDocument()
+      cleanup()
+    }
+  })
+})
+
+// REMINDER is a day-of reminder offering the recipe of Tacos, d7.
+const REMINDER = {
+  type: 'day_of_reminder',
+  title: 'Tonight: Tacos · Recipe →',
+  body: '',
+  url: '/dinner/d7',
+  dinner: { id: 'd7', name: 'Tacos' },
+  created_at: minutesAgo(1),
+}
+
+// recipeChecks are the GET /api/v1/dinners/d7 requests sent, each the
+// server's own answer (no-store), never the service worker's cache.
+function recipeChecks(fetchMock: Mock<typeof fetch>) {
+  return fetchMock.mock.calls
+    .filter(([input]) => String(input) === '/api/v1/dinners/d7')
+    .map(([, init]) => {
+      expect(init?.cache).toBe('no-store')
+      return init?.method ?? 'GET'
+    })
+}
+
+describe('Recent updates reminders', () => {
+  it("opens a viewable dinner's reminder recipe only once the server has it", async () => {
+    const fetchMock = stubServer({
+      [`GET ${UPDATES_PATH}`]: () => jsonResponse(200, { updates: [REMINDER, ...UPDATES.updates] }),
+      'GET /api/v1/dinners/d7': () => jsonResponse(200, recipeBody('d7', 'Tacos')),
+    })
+    await renderHome()
+    const sheet = await openSheet()
+
+    fireEvent.click(within((await rows(sheet))[0]!).getByRole('button', { name: /Tonight: Tacos/ }))
+    expect(await screen.findByTestId('where')).toHaveTextContent('/dinner/d7')
+    expect(recipeChecks(fetchMock)).toEqual(['GET'])
+  })
+
+  it("opens nothing for an archived dinner's reminder and says in place that its recipe is gone", async () => {
+    const fetchMock = stubServer({
+      [`GET ${UPDATES_PATH}`]: () => jsonResponse(200, { updates: [REMINDER, ...UPDATES.updates] }),
+      'GET /api/v1/dinners/d7': () => errorResponse(404, 'not_found'),
+    })
+    await renderHome()
+    const sheet = await openSheet()
+
+    fireEvent.click(within((await rows(sheet))[0]!).getByRole('button', { name: /Tonight: Tacos/ }))
+    expect(await within(sheet).findByRole('alert')).toHaveTextContent('Tacos was removed, so its recipe is gone.')
+    expect(within(sheet).queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('where')).not.toBeInTheDocument()
+    expect(screen.queryByText('Dinner not found')).not.toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Recent updates' })).toBe(sheet)
+    expect(recipeChecks(fetchMock)).toEqual(['GET'])
+  })
+
+  it('offers Retry when the server cannot be asked, and opens the recipe once it answers', async () => {
+    let reachable = false
+    const fetchMock = stubServer({
+      [`GET ${UPDATES_PATH}`]: () => jsonResponse(200, { updates: [REMINDER] }),
+      'GET /api/v1/dinners/d7': () => {
+        if (!reachable) throw new TypeError('Failed to fetch')
+        return jsonResponse(200, recipeBody('d7', 'Tacos'))
+      },
+    })
+    await renderHome()
+    const sheet = await openSheet()
+
+    fireEvent.click(within((await rows(sheet))[0]!).getByRole('button', { name: /Tonight: Tacos/ }))
+    expect(await within(sheet).findByRole('alert')).toHaveTextContent(
+      "Couldn't check the recipe for Tacos with the server, so it didn't open.",
+    )
+    expect(screen.queryByTestId('where')).not.toBeInTheDocument()
+
+    reachable = true
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByTestId('where')).toHaveTextContent('/dinner/d7')
+    expect(recipeChecks(fetchMock)).toEqual(['GET', 'GET'])
+  })
+
+  it("opens an archived dinner's reminder, which offers no recipe, at its week's plan without asking for a recipe", async () => {
+    const fetchMock = stubServer({
+      [`GET ${UPDATES_PATH}`]: () =>
+        jsonResponse(200, {
+          updates: [
+            {
+              ...REMINDER,
+              title: 'Tonight: Tacos',
+              body: 'This dinner was removed, so its recipe is gone.',
+              url: '/plan?week=2026-10-12',
+              dinner: null,
+            },
+          ],
+        }),
+    })
+    await renderHome()
+    const sheet = await openSheet()
+
+    fireEvent.click(within((await rows(sheet))[0]!).getByRole('button', { name: /Tonight: Tacos/ }))
+    expect(await screen.findByTestId('where')).toHaveTextContent('/plan?week=2026-10-12')
+    expect(recipeChecks(fetchMock)).toEqual([])
   })
 })

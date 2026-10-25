@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -430,8 +431,59 @@ func TestEmitDayOfReminder(t *testing.T) {
 	}
 	r := rows[0]
 	if r.Key != "day_of_reminder:2026-10-14" || r.Channel != notify.ChannelPush || r.Payload.Title != "Tonight: Pad Thai · Recipe →" ||
-		r.Payload.Body != "" || r.Payload.URL != "/dinner/"+e.ids["Pad Thai"] || r.Payload.Week != "2026-10-12" {
+		r.Payload.Body != "" || r.Payload.URL != "/dinner/"+e.ids["Pad Thai"] || r.Payload.Week != "2026-10-12" ||
+		r.Payload.Dinner == nil || *r.Payload.Dinner != (notify.Dinner{ID: e.ids["Pad Thai"], Name: "Pad Thai"}) {
 		t.Errorf("day_of_reminder row = %+v", r)
+	}
+}
+
+// TestEmitDayOfReminderArchivedDinnerOffersNoRecipe: a dinner archived
+// after the plan was made has no recipe, so neither its day-of reminder nor
+// its crock-pot start reminder carries or offers one: no recipe URL, no
+// dinner and no "Recipe →"; each opens the week's plan and says the recipe
+// is gone. Another night's dinner still offers its recipe.
+func TestEmitDayOfReminderArchivedDinnerOffersNoRecipe(t *testing.T) {
+	e := newEnv(t)
+	e.start(t)
+	e.reply("", fullWeek...)
+	e.mustDraft(t, false)
+	if _, err := e.st.Writer.ExecContext(t.Context(), `UPDATE dinners SET status = 'archived' WHERE id = ?`, e.ids["Beef Chili"]); err != nil {
+		t.Fatal(err)
+	}
+	for _, date := range []string{"2026-10-12", "2026-10-14"} {
+		if ok, err := e.svc.EmitDayOfReminder(t.Context(), mustDate(date)); !ok || err != nil {
+			t.Fatalf("EmitDayOfReminder(%s) = %v, %v, want true", date, ok, err)
+		}
+	}
+	if ok, err := e.svc.EmitStartReminder(t.Context(), mustDate("2026-10-12")); !ok || err != nil {
+		t.Fatalf("EmitStartReminder = %v, %v, want true", ok, err)
+	}
+	got := map[string]notify.Payload{}
+	for _, r := range notifytest.Rows(t, e.st, notify.DayOfReminder) {
+		got[r.Key] = r.Payload
+	}
+	for key, want := range map[string]notify.Payload{
+		"day_of_reminder:2026-10-12": {
+			Event: notify.DayOfReminder, Title: "Tonight: Beef Chili", Body: "This dinner was removed, so its recipe is gone.",
+			URL: "/plan?week=2026-10-12", Tag: "day_of_reminder:2026-10-12", Week: "2026-10-12",
+		},
+		"day_of_reminder:start:2026-10-12": {
+			Event: notify.DayOfReminder, Title: "Start the crock pot by 1:30 pm", Body: "Beef Chili",
+			URL: "/plan?week=2026-10-12", Tag: "day_of_reminder:start:2026-10-12", Week: "2026-10-12",
+		},
+		"day_of_reminder:2026-10-14": {
+			Event: notify.DayOfReminder, Title: "Tonight: Pad Thai · Recipe →", URL: "/dinner/" + e.ids["Pad Thai"],
+			Tag: "day_of_reminder:2026-10-14", Dinner: &notify.Dinner{ID: e.ids["Pad Thai"], Name: "Pad Thai"}, Week: "2026-10-12",
+		},
+	} {
+		if p, ok := got[key]; !ok || !reflect.DeepEqual(p, want) {
+			t.Errorf("%s = %+v (stored %v), want %+v", key, p, ok, want)
+		}
+	}
+	for key, p := range got {
+		if p.URL != "/dinner/"+e.ids["Pad Thai"] && (strings.HasPrefix(p.URL, "/dinner/") || p.Dinner != nil || strings.Contains(p.Title, "Recipe")) {
+			t.Errorf("%s offers a recipe for the archived Beef Chili: %+v", key, p)
+		}
 	}
 }
 

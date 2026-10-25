@@ -9,6 +9,8 @@ import {
   openNotification,
   parsePushPayload,
   planClick,
+  recipeOpenPath,
+  recipePathId,
   showPush,
   type ClickWindow,
 } from './notification.ts'
@@ -241,5 +243,72 @@ describe('openNotification', () => {
     const all = clients([])
     await openNotification({ url: '/plan/../discover' }, all, origin)
     expect(all.openWindow).toHaveBeenCalledWith(`${origin}/discover`)
+  })
+})
+
+// The day-of reminder payloads as the server stores them: a viewable
+// dinner's names it and its recipe url; an archived dinner's names none and
+// opens the week's plan.
+const VIEWABLE_REMINDER = {
+  event: 'day_of_reminder',
+  title: 'Tonight: Tacos · Recipe →',
+  body: '',
+  url: '/dinner/d7',
+  tag: 'day_of_reminder:2026-10-14',
+  dinner: { id: 'd7', name: 'Tacos' },
+  week: '2026-10-12',
+}
+const ARCHIVED_REMINDER = {
+  event: 'day_of_reminder',
+  title: 'Tonight: Tacos',
+  body: 'This dinner was removed, so its recipe is gone.',
+  url: '/plan?week=2026-10-12',
+  tag: 'day_of_reminder:2026-10-14',
+  week: '2026-10-12',
+}
+
+describe('reminder notifications', () => {
+  // tap shows payload as the worker does and taps it with no window open,
+  // answering the url the new window opens at.
+  async function tap(payload: unknown): Promise<string> {
+    const registration = { showNotification: vi.fn(async (_title: string, _options: NotificationOptions) => {}) }
+    await showPush(JSON.stringify(payload), registration, origin, () => {})
+    const data = registration.showNotification.mock.calls[0]![1].data
+    const all = { matchAll: vi.fn(async () => []), openWindow: vi.fn(async (_url: string) => null) }
+    await openNotification(data, all, origin)
+    return all.openWindow.mock.calls[0]![0]
+  }
+
+  it("carries a viewable dinner's reminder dinner, and a tap asks Home to check its recipe instead of opening it unchecked", async () => {
+    expect(parsePushPayload(JSON.stringify(VIEWABLE_REMINDER), origin)).toEqual({
+      notice: { title: 'Tonight: Tacos · Recipe →', body: '', tag: 'day_of_reminder:2026-10-14', url: '/dinner/d7', dinner: { id: 'd7', name: 'Tacos' } },
+      problem: null,
+    })
+    const opened = await tap(VIEWABLE_REMINDER)
+    expect(opened).toBe(`${origin}${recipeOpenPath({ id: 'd7', name: 'Tacos' })}`)
+    expect(opened).toBe(`${origin}/?recipe=d7&name=Tacos`)
+  })
+
+  it("offers no recipe for an archived dinner's reminder: a tap opens the week's plan", async () => {
+    const { notice } = parsePushPayload(JSON.stringify(ARCHIVED_REMINDER), origin)
+    expect(notice.dinner).toBeUndefined()
+    expect(recipePathId(notice.url)).toBeNull()
+    expect(await tap(ARCHIVED_REMINDER)).toBe(`${origin}/plan?week=2026-10-12`)
+  })
+
+  it('never opens the detail of a recipe url naming no dinner, as a reminder sent before reminders named their dinner', async () => {
+    const legacy = { ...VIEWABLE_REMINDER, dinner: undefined }
+    expect(await tap(legacy)).toBe(`${origin}/`)
+    expect(clickPath({ url: '/dinner/d7' }, origin)).toBe('/')
+    expect(clickPath({ url: '/dinner/d7', dinner: { id: 'd9', name: 'Chili' } }, origin)).toBe('/')
+  })
+
+  it.each([
+    ['a dinner of another recipe', { ...VIEWABLE_REMINDER, dinner: { id: 'd9', name: 'Chili' } }, "push payload url is not its dinner's recipe"],
+    ['a dinner off a recipe url', { ...ARCHIVED_REMINDER, dinner: { id: 'd7', name: 'Tacos' } }, "push payload url is not its dinner's recipe"],
+    ['a dinner with no name', { ...VIEWABLE_REMINDER, dinner: { id: 'd7', name: ' ' } }, 'push payload dinner is not a dinner with an id and a name'],
+    ['a dinner that is not an object', { ...VIEWABLE_REMINDER, dinner: 'd7' }, 'push payload dinner is not a dinner with an id and a name'],
+  ])('shows the generic notification for %s', (_, payload, problem) => {
+    expect(parsePushPayload(JSON.stringify(payload), origin)).toEqual({ notice: GENERIC_NOTICE, problem })
   })
 })

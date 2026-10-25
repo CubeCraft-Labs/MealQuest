@@ -5,7 +5,7 @@ import { isRecord } from '../api/errors.ts'
 import { knownArchived, useArchived } from '../dinners/archived.ts'
 import { oneOf, photoId, PLANNED_DINNER_STATUSES, type PlannedDinnerStatus } from '../dinners/api.ts'
 import { untilLocalMidnight, weekLabel } from '../plan/week.ts'
-import { appPath } from '../push/notification.ts'
+import { appPath, opensRecipeOf, parseNoticeDinner, recipePathId, type NoticeDinner } from '../push/notification.ts'
 
 export const HOME_PATH = '/api/v1/home'
 export const HOME_KEY = ['home'] as const
@@ -166,14 +166,24 @@ export const UPDATE_TYPES = ['plan_ready', 'list_ready', 'day_of_reminder', 'new
 export type UpdateType = (typeof UPDATE_TYPES)[number]
 
 // Update is one of the Recent updates: a notification event, whatever
-// channels it went to. url is the same-origin path it opens; created_at is
-// when it was stored, the UTC RFC 3339 instant POST /api/v1/updates/seen
-// takes back.
-export type Update = { type: UpdateType; title: string; body: string; url: string; created_at: string }
+// channels it went to. url is the same-origin path it opens; dinner is the
+// dinner whose recipe that path is, or null when it opens no recipe — the
+// sheet opens a recipe only once the server has it (useOpenRecipe), never
+// the url itself; created_at is when it was stored, the UTC RFC 3339
+// instant POST /api/v1/updates/seen takes back.
+export type Update = {
+  type: UpdateType
+  title: string
+  body: string
+  url: string
+  dinner: NoticeDinner | null
+  created_at: string
+}
 
 // parseUpdate checks one update. Its url must stay on origin once parsed, as
 // the server only ever stores a path on the app's own origin; url is that
-// path as parsed.
+// path as parsed. A url opening a recipe comes with the dinner it is the
+// recipe of, and a dinner only with its recipe's url.
 function parseUpdate(where: string, body: unknown, origin: string): Update {
   if (
     !isRecord(body) ||
@@ -189,11 +199,21 @@ function parseUpdate(where: string, body: unknown, origin: string): Update {
   if (Number.isNaN(Date.parse(body.created_at))) {
     throw new Error(`${where}: update created_at "${body.created_at}" is not a time`)
   }
+  if (!('dinner' in body)) throw new Error(`${where}: update has no dinner`)
+  let dinner: NoticeDinner | null = null
+  if (body.dinner !== null) {
+    dinner = parseNoticeDinner(body.dinner)
+    if (dinner === null) throw new Error(`${where}: update dinner is not a dinner with an id and a name`)
+    if (!opensRecipeOf(url, dinner)) throw new Error(`${where}: update url ${JSON.stringify(url)} is not its dinner's recipe`)
+  } else if (recipePathId(url) !== null) {
+    throw new Error(`${where}: update url ${JSON.stringify(url)} opens a recipe but names no dinner`)
+  }
   return {
     type: oneOf(where, 'type', UPDATE_TYPES, body.type),
     title: body.title,
     body: body.body,
     url,
+    dinner,
     created_at: body.created_at,
   }
 }

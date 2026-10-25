@@ -9,9 +9,13 @@
 export const APP_ICON = '/icons/icon-192.png'
 export const APP_BADGE = '/icons/icon-192.png'
 
-// PushNotice is a notification to show: its title, body and tag, and the
-// same-origin path a tap opens.
-export type PushNotice = { title: string; body: string; tag?: string; url: string }
+// NoticeDinner is the dinner whose recipe a notification offers.
+export type NoticeDinner = { id: string; name: string }
+
+// PushNotice is a notification to show: its title, body and tag, the
+// same-origin path a tap opens, and the dinner whose recipe that path is,
+// when it is one.
+export type PushNotice = { title: string; body: string; tag?: string; url: string; dinner?: NoticeDinner }
 
 // GENERIC_NOTICE is shown for a push whose payload is not a notice: the
 // household still learns that MealQuest has something for them.
@@ -19,6 +23,46 @@ export const GENERIC_NOTICE: PushNotice = {
   title: 'MealQuest',
   body: "There's something new in MealQuest.",
   url: '/',
+}
+
+// recipePathId is the id of the dinner whose recipe the same-origin path
+// opens (/dinner/{id}), or null when it opens none.
+export function recipePathId(path: string): string | null {
+  const pathname = new URL(path, 'https://mealquest.invalid').pathname
+  const encoded = /^\/dinner\/([^/]+)$/.exec(pathname)?.[1]
+  if (encoded === undefined) return null
+  try {
+    return decodeURIComponent(encoded)
+  } catch {
+    return null
+  }
+}
+
+// opensRecipeOf reports whether path opens the recipe of dinner and nothing
+// else.
+export function opensRecipeOf(path: string, dinner: NoticeDinner): boolean {
+  return path === `/dinner/${encodeURIComponent(dinner.id)}`
+}
+
+// parseNoticeDinner reads the dinner of a notification or update: an object
+// with a non-empty string id and name, or null when it is not one.
+export function parseNoticeDinner(value: unknown): NoticeDinner | null {
+  if (!isRecord(value)) return null
+  const { id, name } = value
+  if (typeof id !== 'string' || id === '' || typeof name !== 'string' || name.trim() === '') return null
+  return { id, name }
+}
+
+// RECIPE_PARAM and RECIPE_NAME_PARAM are the Home search params of a
+// notification's recipe (recipeOpenPath): Home checks the dinner with the
+// server before it opens its recipe, as every recipe button does.
+export const RECIPE_PARAM = 'recipe'
+export const RECIPE_NAME_PARAM = 'name'
+
+// recipeOpenPath is the path a tap on a notification offering dinner's
+// recipe opens: Home, asked to open that recipe once the server has it.
+export function recipeOpenPath(dinner: NoticeDinner): string {
+  return `/?${new URLSearchParams({ [RECIPE_PARAM]: dinner.id, [RECIPE_NAME_PARAM]: dinner.name }).toString()}`
 }
 
 // ParsedPush is the notice to show for a push, and why its payload was not
@@ -49,8 +93,10 @@ export function appPath(raw: string, origin: string): string | null {
 
 // parsePushPayload reads a push message's payload, which may be any bytes:
 // a JSON object with a non-empty string title, and optionally a string body,
-// a non-empty string tag and a url that is a same-origin path. Other fields
-// are ignored. Anything else — no payload, not JSON, a missing title, a
+// a non-empty string tag, a url that is a same-origin path and the dinner
+// (id and name) whose recipe that url is. Other fields are ignored. A url
+// opening a recipe with no dinner was sent before notifications named their
+// dinner: its notice offers no recipe (clickPath). Anything else — no payload, not JSON, a missing title, a
 // field of the wrong type, a url off origin — is shown as GENERIC_NOTICE,
 // with the problem for the worker to log. It never throws.
 export function parsePushPayload(text: string | null, origin: string): ParsedPush {
@@ -63,7 +109,7 @@ export function parsePushPayload(text: string | null, origin: string): ParsedPus
     return generic('push payload is not JSON')
   }
   if (!isRecord(payload)) return generic('push payload is not a JSON object')
-  const { title, body, tag, url } = payload
+  const { title, body, tag, url, dinner } = payload
   if (typeof title !== 'string' || title.trim() === '') return generic('push payload has no title')
   if (body !== undefined && typeof body !== 'string') return generic('push payload body is not a string')
   if (tag !== undefined && (typeof tag !== 'string' || tag === '')) {
@@ -77,14 +123,21 @@ export function parsePushPayload(text: string | null, origin: string): ParsedPus
   }
   const notice: PushNotice = { title, body: body ?? '', url: path }
   if (tag !== undefined) notice.tag = tag
+  if (dinner !== undefined) {
+    const named = parseNoticeDinner(dinner)
+    if (named === null) return generic('push payload dinner is not a dinner with an id and a name')
+    if (!opensRecipeOf(path, named)) return generic("push payload url is not its dinner's recipe")
+    notice.dinner = named
+  }
   return { notice, problem: null }
 }
 
 // NoticeData is the data a shown notification carries for its click.
-export type NoticeData = { url: string }
+export type NoticeData = { url: string; dinner?: NoticeDinner }
 
 // notificationOptions is what showNotification is given for notice: its body
-// and tag, the app icon and badge, and the path to open as its data.
+// and tag, the app icon and badge, and the path to open, with the dinner
+// whose recipe it is, as its data.
 export function notificationOptions(notice: PushNotice): NotificationOptions & { data: NoticeData } {
   const options: NotificationOptions & { data: NoticeData } = {
     body: notice.body,
@@ -92,6 +145,7 @@ export function notificationOptions(notice: PushNotice): NotificationOptions & {
     badge: APP_BADGE,
     data: { url: notice.url },
   }
+  if (notice.dinner !== undefined) options.data.dinner = notice.dinner
   if (notice.tag !== undefined) options.tag = notice.tag
   return options
 }
@@ -115,13 +169,19 @@ export function showPush(
 
 // clickPath is the same-origin path a tapped notification opens: the url in
 // its data, which showPush put there, or the app's home when the data is not
-// ours (a notification shown by an older worker).
+// ours (a notification shown by an older worker). A url opening a dinner's
+// recipe never opens it unchecked: with the dinner it names, the tap opens
+// Home asked to open that recipe (recipeOpenPath), which it does only once
+// the server has it, and says so in place when the dinner was removed; a
+// recipe url naming no dinner (a notification sent before notifications
+// named their dinner) opens Home, whose Tonight card checks its recipe.
 export function clickPath(data: unknown, origin: string): string {
-  if (isRecord(data) && typeof data.url === 'string') {
-    const path = appPath(data.url, origin)
-    if (path !== null) return path
-  }
-  return '/'
+  if (!isRecord(data) || typeof data.url !== 'string') return '/'
+  const path = appPath(data.url, origin)
+  if (path === null) return '/'
+  if (recipePathId(path) === null) return path
+  const dinner = parseNoticeDinner(data.dinner)
+  return dinner !== null && opensRecipeOf(path, dinner) ? recipeOpenPath(dinner) : '/'
 }
 
 // AppWindow is the part of a window client a click reads.

@@ -77,8 +77,13 @@ type Event struct {
 	// Body is the notification's text; it may be empty.
 	Body string
 	// URL is the path-absolute, same-origin path a tap on the notification
-	// opens, such as "/plan".
+	// opens, such as "/plan". It is RecipePath(Dinner.ID) when the event
+	// offers a dinner's recipe, and never a recipe path otherwise.
 	URL string
+	// Dinner is the dinner whose recipe the event offers, or nil when it
+	// offers none: the app checks with the server that the dinner still has
+	// a recipe before it opens one, and names it when it does not.
+	Dinner *Dinner
 	// Week is the Monday of the week the event concerns, for the senders'
 	// message builders; zero when the event concerns no week.
 	Week store.LocalDate
@@ -98,8 +103,27 @@ type Payload struct {
 	// Tag is the event key, so a notification shown again for the same
 	// event replaces the first.
 	Tag string `json:"tag"`
+	// Dinner is the dinner whose recipe URL opens, or absent.
+	Dinner *Dinner `json:"dinner,omitempty"`
 	// Week is the YYYY-MM-DD Monday of the event's week, or absent.
 	Week string `json:"week,omitempty"`
+}
+
+// Dinner is the dinner whose recipe an event offers.
+type Dinner struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// RecipePath is the app path of the recipe of dinner id.
+func RecipePath(id string) string {
+	return "/dinner/" + url.PathEscape(id)
+}
+
+// OpensRecipe reports whether the app path raw opens a dinner's recipe.
+func OpensRecipe(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && strings.HasPrefix(u.Path, "/dinner/")
 }
 
 // ErrInvalidEvent is returned by Emit for an event it refuses; nothing is
@@ -213,6 +237,11 @@ type Stored struct {
 	Body  string
 	// URL is the path-absolute, same-origin path the event opens.
 	URL string
+	// Dinner is the dinner whose recipe URL opens; nil when URL opens no
+	// recipe, and for an event stored before events named their dinner.
+	Dinner *Dinner
+	// Week is the YYYY-MM-DD Monday of the event's week, or empty.
+	Week string
 	// CreatedAt is when the event was last stored, for any channel: the
 	// instant StoredSince must be given for it not to count.
 	CreatedAt time.Time
@@ -240,7 +269,7 @@ func (s *Service) Recent(ctx context.Context, n int) ([]Stored, error) {
 		if err != nil {
 			return nil, fmt.Errorf("notify: created_at of %s: %w", r.EventKey, err)
 		}
-		out = append(out, Stored{Type: p.Event, Title: p.Title, Body: p.Body, URL: p.URL, CreatedAt: created})
+		out = append(out, Stored{Type: p.Event, Title: p.Title, Body: p.Body, URL: p.URL, Dinner: p.Dinner, Week: p.Week, CreatedAt: created})
 	}
 	return out, nil
 }
@@ -251,7 +280,7 @@ func (s *Service) emitTx(ctx context.Context, tx *sql.Tx, ev Event, channels fun
 	if err := validate(ev); err != nil {
 		return err
 	}
-	payload := Payload{Event: ev.Type, Title: ev.Title, Body: ev.Body, URL: ev.URL, Tag: ev.Key}
+	payload := Payload{Event: ev.Type, Title: ev.Title, Body: ev.Body, URL: ev.URL, Tag: ev.Key, Dinner: ev.Dinner}
 	if !ev.Week.IsZero() {
 		payload.Week = ev.Week.String()
 	}
@@ -333,6 +362,18 @@ func validate(ev Event) error {
 	}
 	if !isAppPath(ev.URL) {
 		return fmt.Errorf("%w: %s url %q is not a path-absolute same-origin path", ErrInvalidEvent, ev.Key, ev.URL)
+	}
+	if ev.Dinner == nil {
+		if OpensRecipe(ev.URL) {
+			return fmt.Errorf("%w: %s url %q opens a recipe but the event names no dinner", ErrInvalidEvent, ev.Key, ev.URL)
+		}
+		return nil
+	}
+	if ev.Dinner.ID == "" || strings.TrimSpace(ev.Dinner.Name) == "" {
+		return fmt.Errorf("%w: %s names a dinner without an id and a name", ErrInvalidEvent, ev.Key)
+	}
+	if ev.URL != RecipePath(ev.Dinner.ID) {
+		return fmt.Errorf("%w: %s url %q is not the recipe of its dinner %s", ErrInvalidEvent, ev.Key, ev.URL, ev.Dinner.ID)
 	}
 	return nil
 }

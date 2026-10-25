@@ -10,6 +10,10 @@ import { expectMinHitArea } from '../test/hitArea.ts'
 import { HOME_PATH } from './api.ts'
 import { HomePage } from './HomePage.tsx'
 import { ROTATION_REVIEWS_PATH } from './rotation.ts'
+import { clickPath, notificationOptions, parsePushPayload } from '../push/notification.ts'
+// The push message the server's Web Push sender delivers for a viewable
+// dinner's reminder, byte for byte (internal/push/delivered_test.go).
+import deliveredViewable from '../push/delivered/reminder-viewable.json?raw'
 
 // NOTHING_YET is the home of a household with no plan, no Side quests, no
 // Supply run and nothing unread.
@@ -229,6 +233,37 @@ describe('HomePage', () => {
       reachable = true
       fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
       expect(await screen.findByTestId('where')).toHaveTextContent('/dinner/d7')
+    })
+
+    describe("the server's delivered reminder, tapped", () => {
+      const origin = 'https://mealquest.example'
+      const tapped = clickPath(notificationOptions(parsePushPayload(deliveredViewable, origin).notice).data, origin)
+      function stubDelivered(answer: () => Response) {
+        return stubFetchByPath({
+          [HOME_PATH]: () => jsonResponse(200, HOME),
+          [ROTATION_REVIEWS_PATH]: () => jsonResponse(200, { reviews: [] }),
+          '/api/v1/dinners/01TACOS': answer,
+        })
+      }
+
+      it('opens the recipe of a viewable dinner once the server has it', async () => {
+        const fetchMock = stubDelivered(() => jsonResponse(200, recipeBody('01TACOS', 'Tacos')))
+        renderRouter(tapped)
+
+        expect(await screen.findByTestId('where')).toHaveTextContent('/dinner/01TACOS')
+        const checks = fetchMock.mock.calls.filter(([input]) => String(input) === '/api/v1/dinners/01TACOS')
+        expect(checks.length).toBeGreaterThan(0)
+        for (const [, init] of checks) expect(init?.cache).toBe('no-store')
+      })
+
+      it('opens nothing when the dinner was archived after the notification was shown', async () => {
+        stubDelivered(() => errorResponse(404, 'not_found'))
+        renderRouter(tapped)
+
+        expect(await screen.findByText('Tacos was removed, so its recipe is gone.')).toBeInTheDocument()
+        expect(screen.queryByTestId('where')).not.toBeInTheDocument()
+        expect(screen.queryByText('Dinner not found')).not.toBeInTheDocument()
+      })
     })
 
     it('says so, and asks for nothing, when the link names no dinner', async () => {

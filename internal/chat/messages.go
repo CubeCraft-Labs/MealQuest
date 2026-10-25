@@ -65,14 +65,9 @@ func PlanReady(week, thisWeek store.LocalDate, dinners []string) notify.Event {
 		Key:   string(notify.PlanReady) + ":" + week.String(),
 		Title: planTitle(week, thisWeek),
 		Body:  nameList(dinners),
-		URL:   PlanPath(week),
+		URL:   notify.PlanPath(week),
 		Week:  week,
 	}
-}
-
-// PlanPath is the app path of the plan of the week starting on week.
-func PlanPath(week store.LocalDate) string {
-	return "/plan?" + url.Values{"week": {week.String()}}.Encode()
 }
 
 // ListReady is the list_ready event of the Supply run of the week starting
@@ -88,15 +83,11 @@ func ListReady(week store.LocalDate, needed, dinners int) notify.Event {
 	}
 }
 
-// ArchivedBody is the body of a day_of_reminder event whose dinner was
-// archived after it was planned: it has no recipe to open.
-const ArchivedBody = "This dinner was removed, so its recipe is gone."
-
 // DayOfReminder is the day_of_reminder event of the dinner dinnerID, named
 // name, planned on date. A dinner with a recipe (viewable) is "Tonight:
 // Tacos · Recipe →", a title carrying its own call to action, opening its
 // recipe. One archived since it was planned has no recipe: it is "Tonight:
-// Tacos" with ArchivedBody, opening the week's plan, and offers no recipe.
+// Tacos" with notify.ArchivedBody, opening the week's plan, and offers no recipe.
 func DayOfReminder(date store.LocalDate, dinnerID, name string, viewable bool) notify.Event {
 	week := household.WeekStart(date)
 	ev := notify.Event{
@@ -106,11 +97,11 @@ func DayOfReminder(date store.LocalDate, dinnerID, name string, viewable bool) n
 	}
 	if !viewable {
 		ev.Title = "Tonight: " + name
-		ev.Body = ArchivedBody
-		ev.URL = PlanPath(week)
+		ev.Body = notify.ArchivedBody
+		ev.URL = notify.PlanPath(week)
 		return ev
 	}
-	ev.Title = "Tonight: " + name + " · Recipe →"
+	ev.Title = "Tonight: " + name + notify.RecipeCallToAction
 	ev.URL = notify.RecipePath(dinnerID)
 	ev.Dinner = &notify.Dinner{ID: dinnerID, Name: name}
 	return ev
@@ -129,7 +120,7 @@ func StartReminder(date store.LocalDate, dinnerID, name string, startBy time.Tim
 		Key:   string(notify.DayOfReminder) + ":start:" + date.String(),
 		Title: "Start the crock pot by " + startBy.Format("3:04 pm"),
 		Body:  name,
-		URL:   PlanPath(week),
+		URL:   notify.PlanPath(week),
 		Week:  week,
 	}
 	if viewable {

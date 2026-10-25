@@ -955,6 +955,16 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
     the week's plan (`/plan?week={weekStart}`): the day-of reminder is
     "Tonight: {dinner}" with "This dinner was removed, so its recipe is
     gone.", and the Google Chat message closes with "Open the plan →".
+    The same holds when a stored reminder is delivered: the outbox worker
+    checks its dinner again before sending (`notify` `recipeNow`), so a
+    reminder queued while its dinner was viewable and archived (or gone)
+    before delivery is sent, on every channel, as one emitted after the
+    archival is (title without " · Recipe →", "This dinner was removed, so
+    its recipe is gone." when it has no other body, the week's plan, no
+    dinner), and a reminder stored before reminders named their dinner is
+    sent naming it while it still has a recipe. The Web Push message
+    carries `dinner` with `title`, `body`, `url` and `tag`, so a tap
+    checks that recipe with the server before it opens it.
     A Chat message's call to action follows the path its event opens
     (`chat.Text`). No other event opens a recipe.
   - `rotation_review:{dinnerId}:{planDate}` (URL `/`, where the Home card

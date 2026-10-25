@@ -90,9 +90,11 @@ type Event struct {
 }
 
 // Payload is the JSON stored in notification_outbox.payload and handed to
-// a Sender: the one shape every channel delivers from. Its title, body, tag
-// and url are the notice the service worker shows (web/src/push/notification.ts),
-// which ignores the other fields.
+// a Sender: the one shape every channel delivers from. Its title, body, tag,
+// url and dinner are the notice the service worker shows
+// (web/src/push/notification.ts), which ignores the other fields. A payload
+// offering a recipe is delivered only as the worker's check of its dinner
+// at delivery allows (recipeNow).
 type Payload struct {
 	Event EventType `json:"event"`
 	Title string    `json:"title"`
@@ -119,6 +121,20 @@ type Dinner struct {
 func RecipePath(id string) string {
 	return "/dinner/" + url.PathEscape(id)
 }
+
+// PlanPath is the app path of the plan of the week starting on week.
+func PlanPath(week store.LocalDate) string {
+	return "/plan?" + url.Values{"week": {week.String()}}.Encode()
+}
+
+// RecipeCallToAction ends the title of an event whose title carries its own
+// call to action to open the dinner's recipe: "Tonight: Tacos · Recipe →".
+const RecipeCallToAction = " · Recipe →"
+
+// ArchivedBody is the body of an event that would have offered a dinner's
+// recipe and has no other text, when that dinner was archived: it has no
+// recipe to open.
+const ArchivedBody = "This dinner was removed, so its recipe is gone."
 
 // OpensRecipe reports whether the app path raw opens a dinner's recipe.
 func OpensRecipe(raw string) bool {

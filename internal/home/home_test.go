@@ -527,7 +527,7 @@ func TestUpdatesOfferARecipeOnlyThroughItsDinner(t *testing.T) {
 	if u := byTitle["Tonight: Tacos · Recipe →"]; u.URL != "/dinner/01J9TACOS" || u.Dinner == nil || *u.Dinner != (notify.Dinner{ID: "01J9TACOS", Name: "Tacos"}) {
 		t.Errorf("viewable reminder = %+v, want the recipe of its dinner Tacos", u)
 	}
-	if u := byTitle["Tonight: Chili"]; u.URL != "/plan?week=2026-10-12" || u.Dinner != nil || u.Body != chat.ArchivedBody {
+	if u := byTitle["Tonight: Chili"]; u.URL != "/plan?week=2026-10-12" || u.Dinner != nil || u.Body != notify.ArchivedBody {
 		t.Errorf("archived reminder = %+v, want the week's plan and no recipe", u)
 	}
 	if u := byTitle["Tonight: Old Stew · Recipe →"]; u.URL != "/plan?week=2026-10-12" || u.Dinner != nil {

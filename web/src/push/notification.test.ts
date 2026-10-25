@@ -14,6 +14,10 @@ import {
   showPush,
   type ClickWindow,
 } from './notification.ts'
+// The push messages the server's Web Push sender delivers, byte for byte
+// (internal/push/delivered_test.go).
+import deliveredArchived from './delivered/reminder-archived.json?raw'
+import deliveredViewable from './delivered/reminder-viewable.json?raw'
 
 const origin = 'https://mealquest.example'
 
@@ -271,8 +275,14 @@ describe('reminder notifications', () => {
   // tap shows payload as the worker does and taps it with no window open,
   // answering the url the new window opens at.
   async function tap(payload: unknown): Promise<string> {
+    return tapText(JSON.stringify(payload))
+  }
+
+  async function tapText(text: string): Promise<string> {
     const registration = { showNotification: vi.fn(async (_title: string, _options: NotificationOptions) => {}) }
-    await showPush(JSON.stringify(payload), registration, origin, () => {})
+    const warn = vi.fn()
+    await showPush(text, registration, origin, warn)
+    expect(warn).not.toHaveBeenCalled()
     const data = registration.showNotification.mock.calls[0]![1].data
     const all = { matchAll: vi.fn(async () => []), openWindow: vi.fn(async (_url: string) => null) }
     await openNotification(data, all, origin)
@@ -301,6 +311,23 @@ describe('reminder notifications', () => {
     expect(await tap(legacy)).toBe(`${origin}/`)
     expect(clickPath({ url: '/dinner/d7' }, origin)).toBe('/')
     expect(clickPath({ url: '/dinner/d7', dinner: { id: 'd9', name: 'Chili' } }, origin)).toBe('/')
+  })
+
+  it("taps the server's delivered reminder of a viewable dinner into Home's check of its recipe", async () => {
+    const { notice } = parsePushPayload(deliveredViewable, origin)
+    expect(notice.dinner).toEqual({ id: '01TACOS', name: 'Tacos' })
+    expect(await tapText(deliveredViewable)).toBe(`${origin}/?recipe=01TACOS&name=Tacos`)
+  })
+
+  it("taps the server's delivered reminder of a dinner archived after it was queued into the week's plan, offering no recipe", async () => {
+    const { notice } = parsePushPayload(deliveredArchived, origin)
+    expect(notice).toEqual({
+      title: 'Tonight: Tacos',
+      body: 'This dinner was removed, so its recipe is gone.',
+      tag: 'day_of_reminder:2026-10-14',
+      url: '/plan?week=2026-10-12',
+    })
+    expect(await tapText(deliveredArchived)).toBe(`${origin}/plan?week=2026-10-12`)
   })
 
   it.each([

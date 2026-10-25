@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"time"
 
-	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/chat"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
@@ -247,7 +246,7 @@ func (s *Service) Updates(ctx context.Context) ([]Update, error) {
 			if err != nil {
 				return nil, fmt.Errorf("home: %s update opening %q has no week: %w", ev.Type, ev.URL, err)
 			}
-			u.URL = chat.PlanPath(week)
+			u.URL = notify.PlanPath(week)
 		}
 		out[i] = u
 	}

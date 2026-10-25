@@ -1425,8 +1425,16 @@ copy, when the row is plain (see the offline cache above); its pencil
 button opens the edit sheet (name, method, minutes, difficulty; remove
 archives it after a confirmation), or, for one that needs a recipe, "Fix
 recipe" (pick one of the recipe candidates, paste a link or type the
-ingredients and steps in). Adds, removals and the heart show at once and
-are undone if the server refuses them. While any Regular is `pending`, the
+ingredients and steps in). Adds, removals and the heart show at once.
+An add or a heart change is put back if the server refuses it. A removal
+is not: before its `DELETE` is sent the device records the dinner's
+write-once removal mark (`archiveDinner`), and a removal that was sent
+stays hidden on this device even if the server refuses it or does not
+answer. It is sent again when the app starts and each time the server can
+be reached again (`checkRemovals`), and only the server's own answer to
+that idempotent `DELETE` — 2xx, or 404 for a dinner it does not have —
+settles it, marking it archived. A removal is put back in the list only
+if it was never sent. While any Regular is `pending`, the
 list is read again every 3 seconds (not while a change is in flight), and
 polling stops once none is.
 

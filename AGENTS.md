@@ -78,17 +78,18 @@ behaviour, exercise it (hit the endpoint, render the page).
 | Path | Purpose |
 | --- | --- |
 | `cmd/server` | Entry point. Wiring only — no business logic. |
+| `cmd/vapidgen` | Prints a new VAPID key pair for Web Push. |
 | `internal/config` | `MEALQUEST_*` environment config; secrets from `*_FILE`. |
 | `internal/server` | HTTP server, routes, `/health`. |
 | `internal/frontend` | `go:embed` of the built PWA with SPA fallback. |
-| `internal/*` (planned) | `auth`, `db`, `store`, `secretbox`, `household`, `dinners`, `recipes`, `ai/llm`, `ai/harness`, `ai/skills`, `suggest`, `plan`, `shopping`, `ideas`, `gcal`, `notify`, `push`, `chat`, `jobs`, `scheduler`. |
-| `migrations/` | SQL migrations (planned). |
+| `internal/*` | `auth`, `forwarded`, `secureurl`, `db`, `store`, `secretbox`, `household`, `dinners`, `recipes`, `ai/llm`, `ai/harness`, `ai/skills`, `ai/aisettings`, `suggest`, `plan`, `shopping`, `ideas`, `home`, `gcal`, `notify`, `push`, `chat`, `vapid`, `jobs`, `scheduler` — one line each in [ARCHITECTURE.md](docs/ARCHITECTURE.md#repository-layout). |
+| `migrations/` | SQL migrations, embedded and applied at boot by `internal/store`; sqlc queries in `migrations/queries/`. |
 | `web/` | React PWA source. |
-| `deploy/` | Deployment files (planned). |
+| `deploy/` | Deployment files: compose stack, systemd units, [deploy runbook](deploy/RUNBOOK.md) and the automated deploy (`auto-deploy.sh` with `systemd/mealquest-auto-deploy.*`). |
 | `docs/` | Project documentation, including [ARCHITECTURE.md](docs/ARCHITECTURE.md), launch evidence in [LAUNCH.md](docs/LAUNCH.md), and Lighthouse reports in `docs/lighthouse/`. |
 | `design/` | Requirements and UI handoff. **Read-only reference** — do not edit. |
 | `Dockerfile` | Multi-stage image build, at the repository root. |
-| `Makefile` | `dev`, `test`, `build`, `docker`. |
+| `Makefile` | `dev`, `test`, `build`, `docker`; `sqlc` and `sqlc-check` regenerate and check `internal/db`. |
 | `.gitea/workflows/ci.yml` | CI quality floor. |
 
 Design references:
@@ -104,7 +105,10 @@ Design references:
 - **Task branches:** `task/<slug>_<task-uuid>`, branched from the feature branch.
 - Task pull requests **squash-merge into the feature branch**.
 - The feature pull request merges into `dev`.
-- **Only `overseer` merges `dev` → `main`** (a release).
+- **Only `overseer` merges `dev` → `main`** (a release). On the production
+  host, `mealquest-auto-deploy.timer` then deploys the new `main` once its
+  CI passes ([deploy/RUNBOOK.md](deploy/RUNBOOK.md) "Automated deploys");
+  nothing deploys `dev` or a feature branch.
 - Never push directly to `dev` or `main`.
 - Authors never review, approve, merge or close their own work.
 - Never store credentials in the repository; environment or ignored files only.

@@ -3,6 +3,8 @@ import { CalendarDays, Check, ChevronLeft, ChevronRight, Plus, RefreshCw, Shoppi
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { ApiError, useJob } from '../api/index.ts'
+import { opensRecipe } from '../dinners/api.ts'
+import { useOpenRecipe } from '../dinners/useOpenRecipe.tsx'
 import { QUEST_LOG_KEY } from '../discover/api.ts'
 import { Confirm } from '../settings/LeaveGuard.tsx'
 import { methodLabels } from '../settings/RegularsSettingsPage.tsx'
@@ -33,7 +35,7 @@ import {
   type PushedSupplyRun,
   type Swap,
 } from './api.ts'
-import { DragAnnouncer, DROP_DATE, DropBoard, PlanDragProvider, useDropTarget } from './drag.tsx'
+import { DragAnnouncer, DROP_DATE, DropBoard, PlanDragProvider, SWAP_BUTTON, useDropTarget } from './drag.tsx'
 import { PlanPanel, QuestLogStrip } from './PlanPanel.tsx'
 import { SwapSheet } from './SwapSheet.tsx'
 import {
@@ -165,15 +167,44 @@ function DayTile({ day, timezone, swapping, onSwap }: { day: PlanDay; timezone: 
 // DayColumn is one day of the plan manager's 7-column grid: its day label
 // over a card with the dinner's washed photo, name, method and time, a
 // crock-pot dinner's start-by time in the household's zone, and its Regular
-// or Side quest tag, a Side quest's card in teal. The swap icon opens the swap
-// sheet; while that is open the card is swapping, ringed in grape. A dinner
-// dragged over the day drops on it: the card is swapping, covered by a
-// dashed grape "Drop to swap" saying which dinner it replaces.
-function DayColumn({ day, timezone, swapping, onSwap }: { day: PlanDay; timezone: string; swapping: boolean; onSwap: () => void }) {
+// or Side quest tag, a Side quest's card in teal. The photo and name are a
+// button that opens the dinner's recipe once the server has it (onRecipe,
+// useOpenRecipe), unless the dinner was archived (removed from Regulars)
+// after the plan was made — it has no detail to open — or the plan is the
+// service worker's cached copy (cached), whose status may be stale
+// (opensRecipe), when they are plain; the swap icon opens the swap sheet;
+// while that is open
+// the card is swapping, ringed in grape. A dinner dragged over the day drops
+// on it: the card is swapping, covered by a dashed grape "Drop to swap"
+// saying which dinner it replaces.
+function DayColumn({
+  day,
+  cached,
+  timezone,
+  swapping,
+  onSwap,
+  onRecipe,
+}: {
+  day: PlanDay
+  cached: boolean
+  timezone: string
+  swapping: boolean
+  onSwap: () => void
+  onRecipe: () => void
+}) {
   const { dinner } = day
   const time = cooking(dinner)
   const target = useDropTarget(day.date) !== null
   const classes = [styles.card, day.is_new && styles.sideQuestCard, (swapping || target) && styles.swapping].filter(Boolean).join(' ')
+  const recipe = (
+    <>
+      {/* The card's name already says what the photo shows. */}
+      <span aria-hidden="true">
+        <Photo id={dinner.photo_id} name={dinner.name} radius="18px" sizes="160px" className={styles.cardPhoto} />
+      </span>
+      <span className={styles.cardName}>{dinner.name}</span>
+    </>
+  )
   return (
     <li className={styles.column} aria-label={weekdayName(day.date)} {...{ [DROP_DATE]: day.date }}>
       <p className={styles.dayLabel} aria-hidden="true">
@@ -181,18 +212,25 @@ function DayColumn({ day, timezone, swapping, onSwap }: { day: PlanDay; timezone
         <span className={styles.dayNumber}>{dayOfMonth(day.date)}</span>
       </p>
       <div className={classes}>
-        {/* The card's name already says what the photo shows. */}
-        <span aria-hidden="true">
-          <Photo id={dinner.photo_id} name={dinner.name} radius="18px" sizes="160px" className={styles.cardPhoto} />
-        </span>
-        <p className={styles.cardName}>{dinner.name}</p>
+        {opensRecipe(dinner.status, cached) ? (
+          <button type="button" className={styles.cardRecipe} onClick={onRecipe}>
+            {recipe}
+          </button>
+        ) : (
+          <div className={styles.cardRecipe}>{recipe}</div>
+        )}
         {time !== null && <p className={styles.cardMinutes}>{time}</p>}
         {day.start_by !== null && (
           <p className={styles.cardStartBy}>Start by {formatClockTime(localNow(timezone, new Date(day.start_by)).time)}</p>
         )}
         <div className={styles.cardFooter}>
           <Tag tone={day.is_new ? 'grape' : 'neutral'} className={styles.cardTag}>{day.is_new ? 'Side quest' : 'Regular'}</Tag>
-          <IconButton label={`Swap ${weekdayName(day.date)}`} className={styles.swapButton} onClick={onSwap}>
+          <IconButton
+            label={`Swap ${weekdayName(day.date)}`}
+            className={styles.swapButton}
+            onClick={onSwap}
+            {...{ [SWAP_BUTTON]: true }}
+          >
             <Icon icon={RefreshCw} size="inline" />
           </IconButton>
         </div>
@@ -274,6 +312,7 @@ function WeekBoard({
   const [confirming, setConfirming] = useState(false)
   const { swap, push, refused, swapIn: sendSwap } = useWeekSwap(weekStart)
   const run = useSupplyRun(weekStart)
+  const recipe = useOpenRecipe()
   // Makes the week's Supply run again after a push could not make it.
   const generate = useGenerateSupplyRun(weekStart)
   const pushing = push.pending
@@ -482,7 +521,7 @@ function WeekBoard({
       </EmptyState>
     )
   } else {
-    const { ai_note, days } = plan.data
+    const { ai_note, days, cached: planCached } = plan.data
     const swappingDay = days.find((day) => day.date === swappingDate)
     const sheet = swappingDay !== undefined && (
       <SwapSheet
@@ -496,14 +535,17 @@ function WeekBoard({
       layout !== 'mobile' ? (
         <>
           <DropBoard days={days} pending={refused} drop={swapIn} />
+          {recipe.notice}
           <ul className={`${styles.week} ${styles[layout]}`} aria-label="Dinners this week">
             {days.map((day) => (
               <DayColumn
                 key={day.date}
                 day={day}
+                cached={planCached}
                 timezone={timezone}
                 swapping={day.date === swappingDate}
                 onSwap={() => openSwap(day.date)}
+                onRecipe={() => recipe.open(day.dinner)}
               />
             ))}
           </ul>

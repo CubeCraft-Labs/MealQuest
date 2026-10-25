@@ -73,14 +73,15 @@ func (s *Service) ReminderSchedules() []scheduler.Schedule {
 // EmitStartReminder emits day_of_reminder:start:{date}, "Start the crock
 // pot by {time}", for the crock-pot dinner planned on date, and reports
 // whether it did: it emits nothing unless date's dinner has a start_by
-// earlier than date's reminder_time. Emitting a date again stores no
-// second notification.
+// earlier than date's reminder_time. A dinner archived since it was planned
+// is still started, but its reminder offers no recipe. Emitting a date again
+// stores no second notification.
 func (s *Service) EmitStartReminder(ctx context.Context, date store.LocalDate) (bool, error) {
 	d, ok, err := s.startReminder(ctx, date)
 	if err != nil || !ok {
 		return false, err
 	}
-	if err := s.notifier.Emit(ctx, chat.StartReminder(date, d.Dinner.ID, d.Dinner.Name, *d.StartBy)); err != nil {
+	if err := s.notifier.Emit(ctx, chat.StartReminder(date, d.Dinner.ID, d.Dinner.Name, *d.StartBy, d.Dinner.viewable())); err != nil {
 		return false, fmt.Errorf("plan: %w", err)
 	}
 	return true, nil

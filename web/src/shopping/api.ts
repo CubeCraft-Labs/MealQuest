@@ -7,11 +7,12 @@ import {
   type MutationObserverOptions,
   type QueryClient,
 } from '@tanstack/react-query'
-import { useEffect, useReducer, useSyncExternalStore } from 'react'
-import { ApiError, useApi, type ApiClient } from '../api/index.ts'
+import { useCallback, useEffect, useReducer, useState, useSyncExternalStore } from 'react'
+import { ApiError, useApi, type ApiClient, type ApiRead } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { meQueryKey } from '../AuthBootstrap.tsx'
-import { oneOf } from '../dinners/api.ts'
+import { archivedNow, knownArchived, onArchived, useArchived } from '../dinners/archived.ts'
+import { oneOf, PLANNED_DINNER_STATUSES, type PlannedDinnerStatus } from '../dinners/api.ts'
 import { settleUnmadePushes } from '../plan/api.ts'
 import type { NetworkStatus } from '../pwa/networkStatus.ts'
 import { HOUSEHOLD_SETTINGS_KEY, type HouseholdSettings } from '../settings/api.ts'
@@ -21,11 +22,17 @@ import {
   keep,
   markWillSync,
   queued,
+  QUEUE_CAUSE,
+  runCause,
   SAVED_KEY,
   saveRun,
   savedRun,
+  savedWeeks,
   saveSchedule,
+  SCHEDULE_CAUSE,
   synced,
+  toggleCause,
+  WEEKS_CAUSE,
   willSync,
 } from './offline.ts'
 
@@ -64,8 +71,15 @@ export type SupplyRunStatus = (typeof SUPPLY_RUN_STATUSES)[number]
 export type SupplyRunItem = { id: string; name: string; qty: string | null; needed: boolean }
 
 // SupplyRunGroup is the items of one plan day's dinner: date is the plan
-// day, household-local YYYY-MM-DD.
-export type SupplyRunGroup = { dinner: { id: string; name: string }; date: string; items: SupplyRunItem[] }
+// day, household-local YYYY-MM-DD. The dinner's status is null while it is
+// not known: the Supply run was saved on this device by a build from before
+// dinners carried their status (see savedDinnerStatus), and has not been read
+// again since.
+export type SupplyRunGroup = {
+  dinner: { id: string; name: string; status: PlannedDinnerStatus | null }
+  date: string
+  items: SupplyRunItem[]
+}
 
 // Counts is how many of a Supply run's items are still to buy (needed) of
 // all of them (total).
@@ -75,7 +89,10 @@ export type Counts = { needed_count: number; total_count: number }
 // "Week 41 · Oct 5 – 11", title the AI's title once written,
 // sent_to_chat_at when it was sent to Google Chat, if it was, and
 // chat_send_unconfirmed_at when a send whose outcome is not known began,
-// if one did: it may or may not have reached Google Chat.
+// if one did: it may or may not have reached Google Chat. cached says it is
+// not the server's answer just now — the service worker answered from its
+// cache, or it is the one saved on this device — so the server may have
+// changed it since.
 export type SupplyRun = Counts & {
   weekStart: string
   label: string
@@ -84,6 +101,7 @@ export type SupplyRun = Counts & {
   sent_to_chat_at: Date | null
   chat_send_unconfirmed_at: Date | null
   groups: SupplyRunGroup[]
+  cached: boolean
 }
 
 function count(where: string, field: string, value: unknown): number {
@@ -110,7 +128,22 @@ function parseItem(where: string, body: unknown): SupplyRunItem {
   return { id: body.id, name: body.name, qty: body.qty, needed: body.needed }
 }
 
-function parseGroup(where: string, body: unknown): SupplyRunGroup {
+// DinnerStatus reads a group's dinner's status.
+type DinnerStatus = (where: string, value: unknown) => PlannedDinnerStatus | null
+
+// serverDinnerStatus is a dinner's status as the server sends it: always one
+// of PLANNED_DINNER_STATUSES.
+const serverDinnerStatus: DinnerStatus = (where, value) => oneOf(where, 'dinner status', PLANNED_DINNER_STATUSES, value)
+
+// savedDinnerStatus is a dinner's status in a Supply run saved on this
+// device. A Supply run saved by a build from before dinners carried their
+// status has none (undefined): its status is not known (null), and the
+// Supply run, saved again before it is read again — a toggle's answer is
+// written over it — keeps it null. Any other status is the server's.
+const savedDinnerStatus: DinnerStatus = (where, value) =>
+  value === undefined || value === null ? null : serverDinnerStatus(where, value)
+
+function parseGroup(where: string, body: unknown, dinnerStatus: DinnerStatus): SupplyRunGroup {
   if (
     !isRecord(body) ||
     !isRecord(body.dinner) ||
@@ -122,7 +155,11 @@ function parseGroup(where: string, body: unknown): SupplyRunGroup {
     throw new Error(`${where}: response has a group that is not a dinner's items`)
   }
   return {
-    dinner: { id: body.dinner.id, name: body.dinner.name },
+    dinner: {
+      id: body.dinner.id,
+      name: body.dinner.name,
+      status: dinnerStatus(where, body.dinner.status),
+    },
     date: body.date,
     items: body.items.map((item) => parseItem(where, item)),
   }
@@ -138,7 +175,13 @@ function instant(where: string, field: string, value: unknown): Date | null {
   return at
 }
 
-export function parseSupplyRun(where: string, weekStart: string, body: unknown): SupplyRun {
+// parseSupplyRun reads a Supply run the server sent; cached says the service
+// worker answered it.
+export function parseSupplyRun(where: string, weekStart: string, body: unknown, cached: boolean): SupplyRun {
+  return parseRun(where, weekStart, body, serverDinnerStatus, cached)
+}
+
+function parseRun(where: string, weekStart: string, body: unknown, dinnerStatus: DinnerStatus, cached: boolean): SupplyRun {
   if (
     !isRecord(body) ||
     body.weekStart !== weekStart ||
@@ -156,37 +199,60 @@ export function parseSupplyRun(where: string, weekStart: string, body: unknown):
     sent_to_chat_at: instant(where, 'sent_to_chat_at', body.sent_to_chat_at),
     chat_send_unconfirmed_at: instant(where, 'chat_send_unconfirmed_at', body.chat_send_unconfirmed_at),
     ...parseCounts(where, body),
-    groups: body.groups.map((group) => parseGroup(where, group)),
+    groups: body.groups.map((group) => parseGroup(where, group, dinnerStatus)),
+    cached,
   }
 }
 
-// savedSupplyRun is the week's Supply run saved on this device, or undefined.
+// savedSupplyRun is the week's Supply run saved on this device, or undefined:
+// always cached, whatever the cached it was saved with, as it is not the
+// server's answer now. One saved by an earlier build may not know its
+// dinners' statuses (savedDinnerStatus).
 function savedSupplyRun(weekStart: string): SupplyRun | undefined {
   const saved = savedRun(weekStart)
-  return saved === undefined ? undefined : parseSupplyRun(`Saved ${SAVED_KEY}`, weekStart, saved)
+  return saved === undefined ? undefined : parseRun(`Saved ${SAVED_KEY}`, weekStart, saved, savedDinnerStatus, true)
+}
+
+// showArchived is run with each dinner the server archived (archived) shown
+// archived — removed from Regulars, so it has no detail to open — whatever
+// the read, or the Supply run saved on this device, said; a Supply run with
+// none is run itself.
+export function showArchived(run: SupplyRun | null, archived: ReadonlySet<string>): SupplyRun | null {
+  if (run === null || !run.groups.some((group) => archived.has(group.dinner.id) && group.dinner.status !== 'archived')) return run
+  return {
+    ...run,
+    groups: run.groups.map((group) => (archived.has(group.dinner.id) ? { ...group, dinner: { ...group.dinner, status: 'archived' } } : group)),
+  }
 }
 
 // useSupplyRun is the Supply run of the week starting on Monday weekStart
 // (GET /api/v1/shopping/{weekStart}), or null when the week has none (404).
 // It starts from the Supply run saved on this device, if there is one, so
-// the list opens offline; the saved one is always read again.
+// the list opens offline; the saved one is always read again. It is read
+// from this device once, not on every render: while the query has no data
+// its initial data is asked for again on each render, and a failed read
+// reports a problem, which renders this again. Each dinner removed on this
+// device shows archived (archived.ts), on the saved one as on every read.
 export function useSupplyRun(weekStart: string) {
   const { apiRead } = useApi()
+  const [saved] = useState(() => keep(runCause(weekStart), () => savedSupplyRun(weekStart)))
+  const archived = useArchived()
   return useQuery({
     queryKey: supplyRunKey(weekStart),
-    initialData: () => keep(() => savedSupplyRun(weekStart)),
+    initialData: saved,
     initialDataUpdatedAt: 0,
     queryFn: async (): Promise<SupplyRun | null> => {
       const path = supplyRunPath(weekStart)
-      let body: unknown
+      let read: ApiRead<unknown>
       try {
-        body = (await apiRead<unknown>(path)).body
+        read = await apiRead<unknown>(path)
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) return null
         throw error
       }
-      return parseSupplyRun(`GET ${path}`, weekStart, body)
+      return parseSupplyRun(`GET ${path}`, weekStart, read.body, read.cached)
     },
+    select: useCallback((run: SupplyRun | null) => showArchived(run, knownArchived(archived)), [archived]),
   })
 }
 
@@ -207,7 +273,7 @@ export function useGenerateSupplyRun(weekStart: string) {
     onMutate: () => settleUnmadePushes(queryClient, weekStart),
     mutationFn: async (): Promise<SupplyRun> => {
       const path = `${supplyRunPath(weekStart)}/generate`
-      return parseSupplyRun(`POST ${path}`, weekStart, await apiFetch<unknown>(path, { method: 'POST' }))
+      return parseSupplyRun(`POST ${path}`, weekStart, await apiFetch<unknown>(path, { method: 'POST' }), false)
     },
     onSuccess: async (run, _, settle) => {
       await queryClient.cancelQueries({ queryKey: key })
@@ -230,7 +296,7 @@ export function useSendToChat(weekStart: string) {
   return useMutation({
     mutationFn: async (resend: boolean): Promise<SupplyRun> => {
       const path = `${supplyRunPath(weekStart)}/send-chat`
-      return parseSupplyRun(`POST ${path}`, weekStart, await apiFetch<unknown>(path, { method: 'POST', body: { resend } }))
+      return parseSupplyRun(`POST ${path}`, weekStart, await apiFetch<unknown>(path, { method: 'POST', body: { resend } }), false)
     },
     onSuccess: (run) => {
       queryClient.setQueryData<SupplyRun | null>(supplyRunKey(weekStart), run)
@@ -395,7 +461,7 @@ function toggleOptions(
       for (const earlier of cache.findAll({ mutationKey, predicate: (m) => m.state.status !== 'pending' })) {
         if ((earlier.state.variables as KeyedToggle).id === id) cache.remove(earlier)
       }
-      keep(() => dequeue(settled))
+      keep(toggleCause(settled), () => dequeue(settled))
       synced(settled)
     },
   }
@@ -418,7 +484,9 @@ function toggleOptions(
 // pending as soon as it is made, and its answer is in the query cache
 // before it stops being pending. Making a toggle renders again at once, so
 // the checkbox clicked never shows its old state; useSupplyRun and
-// useMutationState render again on every later change.
+// useMutationState render again on every later change. Like useSupplyRun's,
+// the Supply run shows each dinner removed on this device archived
+// (showArchived).
 //
 // A failed toggle stays failed, and shown, until a later toggle of its item
 // supersedes it, such as its Retry: a toggle of another item succeeding
@@ -436,7 +504,8 @@ export function useToggles(weekStart: string): Toggles {
   useMutationState({ filters: { mutationKey } })
   const offline = useSyncExternalStore(api.network.subscribe, api.network.offline)
   const [, renderAgain] = useReducer((n: number) => n + 1, 0)
-  const run = queryClient.getQueryData<SupplyRun | null>(key)
+  const archived = useArchived()
+  const run = showArchived(queryClient.getQueryData<SupplyRun | null>(key) ?? null, knownArchived(archived))
   if (!run) throw new Error(`The week of ${weekStart} has no Supply run read to toggle items of.`)
   const toggles = queryClient
     .getMutationCache()
@@ -456,7 +525,7 @@ export function useToggles(weekStart: string): Toggles {
     failed: failed === undefined ? null : { toggle: { id: failed.toggle.id, needed: failed.toggle.needed }, error: failed.error! },
     toggle: ({ id, needed }) => {
       const queuedToggle = { key: crypto.randomUUID(), weekStart, id, needed }
-      keep(() => enqueue(queuedToggle))
+      keep(toggleCause(queuedToggle.key), () => enqueue(queuedToggle))
       mutate({ key: queuedToggle.key, id, needed })
       renderAgain()
     },
@@ -479,6 +548,10 @@ export function useToggles(weekStart: string): Toggles {
 // A replayed toggle's answer is written over the Supply run saved, so the
 // week's Supply run is cached from it first; it is still read again
 // (updatedAt 0) when the Supply run screen opens.
+//
+// Each Supply run is saved with the dinners removed on this device shown
+// archived (showArchived), and once the server archives one, every Supply
+// run saved and cached is saved again with it archived (onArchived).
 export function useSupplyRunSync() {
   const api = useApi()
   const queryClient = useQueryClient()
@@ -488,9 +561,26 @@ export function useSupplyRunSync() {
       const [scope, week] = event.query.queryKey
       const data: unknown = event.query.state.data
       if (scope === 'shopping' && typeof week === 'string' && event.query.queryKey.length === 2) {
-        keep(() => saveRun(week, data as SupplyRun | null))
+        keep(runCause(week), () => saveRun(week, showArchived(data as SupplyRun | null, knownArchived(archivedNow()))))
       } else if (scope === HOUSEHOLD_SETTINGS_KEY[0] && week === HOUSEHOLD_SETTINGS_KEY[1]) {
-        keep(() => saveSchedule(data as HouseholdSettings))
+        keep(SCHEDULE_CAUSE, () => saveSchedule(data as HouseholdSettings))
+      }
+    })
+    // A dinner the server archived, here or in another tab, shows archived
+    // on each Supply run saved on this device and each one cached, so what
+    // is saved says so too.
+    const stopArchived = onArchived((id) => {
+      const ids = new Set([id])
+      for (const week of keep(WEEKS_CAUSE, savedWeeks) ?? []) {
+        keep(runCause(week), () => {
+          const run = savedSupplyRun(week)
+          if (run !== undefined) saveRun(week, showArchived(run, ids))
+        })
+      }
+      for (const query of queryClient.getQueryCache().findAll({ queryKey: ['shopping'] })) {
+        const [, week] = query.queryKey
+        if (typeof week !== 'string' || query.queryKey.length !== 2 || query.state.data === undefined) continue
+        queryClient.setQueryData<SupplyRun | null>(query.queryKey, (run) => showArchived(run ?? null, ids))
       }
     })
     const pending = new Set(
@@ -499,17 +589,20 @@ export function useSupplyRunSync() {
         .findAll({ mutationKey: ['shopping'], predicate: (m) => m.state.status === 'pending' })
         .map((m) => (m.state.variables as KeyedToggle).key),
     )
-    for (const { key, weekStart, id, needed } of keep(queued) ?? []) {
+    for (const { key, weekStart, id, needed } of keep(QUEUE_CAUSE, queued) ?? []) {
       if (pending.has(key)) continue
       const runKey = supplyRunKey(weekStart)
       if (queryClient.getQueryData(runKey) === undefined) {
-        const saved = keep(() => savedSupplyRun(weekStart))
+        const saved = keep(runCause(weekStart), () => savedSupplyRun(weekStart))
         if (saved !== undefined) queryClient.setQueryData(runKey, saved, { updatedAt: 0 })
       }
       // A refusal is the mutation's state, which the Supply run screen shows.
       new MutationObserver(queryClient, toggleOptions(weekStart, api, queryClient)).mutate({ key, id, needed }).catch(() => {})
     }
-    return stop
+    return () => {
+      stop()
+      stopArchived()
+    }
   }, [api, queryClient])
 }
 

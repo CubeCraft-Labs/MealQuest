@@ -4,8 +4,9 @@ import { AppRoutes } from '../App.tsx'
 import { ApiProviders, SETTINGS_API } from '../test/ApiProviders.tsx'
 import { declaredStyle, outerSize } from '../test/cssRules.ts'
 import { InDataRouter } from '../test/dataRouter.tsx'
+import { dinnerBody } from '../test/dinners.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
-import { stubFetchByPath } from '../test/fetchStub.ts'
+import { jsonResponse, stubFetchByPath } from '../test/fetchStub.ts'
 import { mockViewport } from '../test/matchMedia.ts'
 import bottomBarStyles from './BottomBar.module.css'
 import railStyles from './Rail.module.css'
@@ -21,9 +22,9 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-async function renderAt(path: string, width: number) {
+async function renderAt(path: string, width: number, api: Record<string, () => Response> = SETTINGS_API) {
   const resize = mockViewport(width)
-  stubFetchByPath(SETTINGS_API)
+  stubFetchByPath(api)
   render(
     <InDataRouter path={path}>
       <ApiProviders>
@@ -42,6 +43,46 @@ function nav() {
 
 function navLinks() {
   return within(nav()).getAllByRole('link')
+}
+
+// The px part of a `calc(<n>px + env(safe-area-inset-bottom))` declaration.
+function safeAreaCalc(value: string, what: string): number {
+  const match = /^calc\((\d+)px \+ env\(safe-area-inset-bottom\)\)$/.exec(value)
+  expect(match, `${what} ${JSON.stringify(value)}`).not.toBeNull()
+  return Number(match![1])
+}
+
+// The px the mobile scroll area reserves beneath its content, above the
+// safe area.
+function reservedBelowMain(): number {
+  return safeAreaCalc(declaredStyle(screen.getByRole('main')).paddingBottom, 'padding-bottom')
+}
+
+// The px the bottom bar covers at the bottom of the screen, above the safe
+// area: its height plus its offset from the bottom.
+function coveredByBar(): number {
+  return outerSize(nav(), 'height') + safeAreaCalc(declaredStyle(nav()).bottom, 'bottom bar bottom')
+}
+
+const SCROLLS = ['auto', 'scroll']
+
+// The overflow each axis computes to from the declared rules. declaredStyle
+// keeps the shorthand unexpanded, so a longhand wins over it here. Per CSS, an
+// axis left visible beside one that is neither visible nor clip becomes auto.
+function overflow(style: CSSStyleDeclaration): { x: string; y: string } {
+  const [shortX = 'visible', shortY = shortX] = style.overflow.split(' ').filter(Boolean)
+  const x = style.overflowX || shortX
+  const y = style.overflowY || shortY
+  const confines = (value: string) => value !== 'visible' && value !== 'clip'
+  return {
+    x: x === 'visible' && confines(y) ? 'auto' : x,
+    y: y === 'visible' && confines(x) ? 'auto' : y,
+  }
+}
+
+function describeElement(el: Element): string {
+  const label = el.getAttribute('aria-label')
+  return `<${el.tagName.toLowerCase()} class="${el.getAttribute('class') ?? ''}"${label ? ` aria-label="${label}"` : ''}>`
 }
 
 function current() {
@@ -113,10 +154,86 @@ describe('AppShell', () => {
 
   it('reserves at least 100 px below the mobile scroll area', async () => {
     await renderAt('/', MOBILE)
-    const padding = declaredStyle(screen.getByRole('main')).paddingBottom
-    const reserved = /^calc\((\d+)px \+ env\(safe-area-inset-bottom\)\)$/.exec(padding)
-    expect(reserved, `padding-bottom ${JSON.stringify(padding)}`).not.toBeNull()
-    expect(Number(reserved![1])).toBeGreaterThanOrEqual(100)
+    expect(reservedBelowMain()).toBeGreaterThanOrEqual(100)
+    expect(reservedBelowMain()).toBeGreaterThanOrEqual(coveredByBar())
+  })
+
+  // The bar comes before the scroll area in the document, so without a
+  // stacking order of its own anything in a page that forms a stacking
+  // context (a Photo's filter, a pending row's opacity) paints over it.
+  it('paints the mobile bottom bar above the page content', async () => {
+    await renderAt('/', MOBILE)
+    const barZ = Number(declaredStyle(nav()).zIndex)
+    expect(Number.isInteger(barZ) && barZ > 0, `bar z-index ${JSON.stringify(declaredStyle(nav()).zIndex)}`).toBe(true)
+    // The scroll area is one stacking context, so no z-index inside a page
+    // can lift its content past the bar.
+    expect(declaredStyle(screen.getByRole('main')).getPropertyValue('isolation')).toBe('isolate')
+    // Inside the bar, its items still paint above the grape pill.
+    const pill = nav().querySelector<HTMLElement>(`.${bottomBarStyles.pill}`)!
+    for (const link of navLinks()) {
+      expect(Number(declaredStyle(link).zIndex)).toBeGreaterThan(Number(declaredStyle(pill).zIndex))
+    }
+  })
+
+  // jsdom does no layout, so this cannot scroll and measure boxes. It proves
+  // from the declared rules what makes the last row reachable: the row sits
+  // in the one scroll container, nothing between them clips it, the bar is
+  // pinned outside that container, and the container reserves room for it.
+  it('keeps the last of a long Regulars list reachable above the mobile bottom bar', async () => {
+    const regulars = Array.from({ length: 40 }, (_, i) =>
+      dinnerBody(`d${i}`, `Regular ${i}`, { method: 'stovetop', minutes_total: 20 }),
+    )
+    await renderAt('/settings/regulars', MOBILE, {
+      ...SETTINGS_API,
+      '/api/v1/dinners?status=regular': () => jsonResponse(200, { dinners: regulars }),
+    })
+    const rows = within(await screen.findByRole('list', { name: 'Regulars' })).getAllByRole('listitem')
+    expect(rows).toHaveLength(40)
+    const last = rows.at(-1)!
+    expect(last).toHaveTextContent('Regular 39')
+    const main = screen.getByRole('main')
+
+    // <main> is the page's one scroll container.
+    const scrollers = Array.from(document.body.querySelectorAll('*')).filter((el) =>
+      SCROLLS.includes(overflow(declaredStyle(el)).y),
+    )
+    expect(scrollers.map(describeElement)).toEqual([describeElement(main)])
+    expect(overflow(declaredStyle(main))).toEqual({ x: 'auto', y: 'auto' })
+
+    // The last row is inside it, so scrolling it to its end reveals the row.
+    expect(main.contains(last), 'the last row sits inside <main>').toBe(true)
+
+    // Nothing from the row up to <main> clips, scrolls or pins, and <main>
+    // itself clips on neither axis: it only scrolls.
+    for (let el: Element = last; el !== main; el = el.parentElement!) {
+      const style = declaredStyle(el)
+      for (const property of ['overflow', 'overflow-x', 'overflow-y']) {
+        const value = style.getPropertyValue(property)
+        expect(['', 'visible'], `${describeElement(el)} declares ${property}: ${value}`).toContain(value)
+      }
+      expect(['sticky', 'fixed'], `${describeElement(el)} is position: ${style.position}`).not.toContain(style.position)
+    }
+    const mainStyle = declaredStyle(main)
+    expect(mainStyle.overflow, `${describeElement(main)} declares overflow`).toBe('')
+    expect(mainStyle.overflowX, `${describeElement(main)} declares overflow-x`).toBe('')
+
+    // The bar is <main>'s sibling, absolutely placed against the shell, which
+    // does not scroll: it is pinned to the screen and adds no scroll extent.
+    const bar = nav()
+    expect(main.contains(bar), 'the bottom bar sits outside <main>').toBe(false)
+    expect(bar.parentElement).toBe(main.parentElement)
+    expect(declaredStyle(bar).position).toBe('absolute')
+    expect(declaredStyle(main.parentElement!).position).toBe('relative')
+
+    // <main> owns the reserved space, and it covers the bar: both sides carry
+    // one safe-area inset, so the px parts must compare.
+    const reserved = reservedBelowMain()
+    const barHeight = outerSize(bar, 'height')
+    const barBottom = safeAreaCalc(declaredStyle(bar).bottom, 'bottom bar bottom')
+    expect(
+      reserved,
+      `<main> reserves ${reserved}px + inset; the bar covers ${barHeight}px + ${barBottom}px + inset`,
+    ).toBeGreaterThanOrEqual(barHeight + barBottom)
   })
 
   it.each([768, TABLET, 1199])('shows only the tablet rail with the "M" mark at %i px', async (width) => {

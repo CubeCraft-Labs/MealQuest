@@ -597,6 +597,12 @@ func TestDeleteDinnerArchives(t *testing.T) {
 	if got := listNames(t, router, "regular"); len(got) != 0 {
 		t.Errorf("regular after archive = %v", got)
 	}
+	// Sent again — as the PWA sends a removal until it is answered — the
+	// DELETE succeeds and the dinner stays archived.
+	rec, body = callDinners(t, router, http.MethodDelete, dinnersPath+"/"+id, "")
+	if rec.Code != http.StatusOK || body["status"] != "archived" {
+		t.Fatalf("DELETE again = %d %v", rec.Code, body)
+	}
 	// An archived name may be added again.
 	createDinner(t, router, `{"name":"Shepherds Pie"}`)
 

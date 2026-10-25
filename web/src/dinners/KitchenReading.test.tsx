@@ -59,8 +59,8 @@ function planBody(weekStart: string, ...bowlsOn: number[]) {
       date: new Date(start + i * 86_400_000).toISOString().slice(0, 10),
       dinner:
         bowlsOn.includes(i)
-          ? { id: 'd1', name: 'Korean beef bowls', photo: null, minutes: 30, method: 'stovetop' }
-          : { id: `p${i}`, name: `Dinner ${i}`, photo: null, minutes: 30, method: 'stovetop' },
+          ? { id: 'd1', name: 'Korean beef bowls', status: 'quest_log', photo: null, minutes: 30, method: 'stovetop' }
+          : { id: `p${i}`, name: `Dinner ${i}`, status: 'regular', photo: null, minutes: 30, method: 'stovetop' },
       is_new: bowlsOn.includes(i),
       start_by: null,
     })),

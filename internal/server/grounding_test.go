@@ -601,3 +601,43 @@ func TestPostDinnerEnqueueFailureAnswersFailedDinner(t *testing.T) {
 		t.Errorf("listed = %v, want failed", got)
 	}
 }
+
+func TestPostPhotoBackfillGroundsFailedDinners(t *testing.T) {
+	t.Parallel()
+	e := newDinnersEnv(t).withRecipes(t)
+	e.start(t)
+
+	// No model reply is scripted, so grounding on creation fails.
+	rec, created := callDinners(t, e.h, http.MethodPost, dinnersPath, `{"name":"Chicken curry"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST = %d: %s", rec.Code, rec.Body)
+	}
+	id := created["id"].(string)
+	waitJob(t, e.h, created["grounding_job_id"].(string))
+	if d := listedDinner(t, e.h, id); d["grounding_status"] != "failed" || d["photo_url"] != nil {
+		t.Fatalf("dinner = %v, want failed without a photo", d)
+	}
+
+	e.model.QueueGenerate(recipestest.NormalizedReply("stovetop", 40))
+	rec, started := callDinners(t, e.h, http.MethodPost, "/api/v1/settings/photo-backfill", "")
+	jobID, _ := started["id"].(string)
+	if rec.Code != http.StatusAccepted || jobID == "" {
+		t.Fatalf("POST photo-backfill = %d: %s, want 202 with a job id", rec.Code, rec.Body)
+	}
+	job := waitJob(t, e.h, jobID)
+	want := fmt.Sprintf(`map[dinners:[map[dinner_id:%s outcome:grounded reason:<nil>]]]`, id)
+	if job["status"] != "succeeded" || job["kind"] != "backfill_dinner_photos" || fmt.Sprint(job["result"]) != want {
+		t.Fatalf("job = %v, want backfill_dinner_photos succeeded with %s", job, want)
+	}
+	d := listedDinner(t, e.h, id)
+	photo, _ := d["photo_url"].(string)
+	if d["grounding_status"] != "grounded" || d["grounding_error"] != nil || !strings.HasSuffix(photo, "-400.jpg") {
+		t.Errorf("dinner = %v, want grounded with a photo", d)
+	}
+
+	// The backfill is started only by its own endpoint.
+	rec, _ = callDinners(t, e.h, http.MethodPost, "/api/v1/jobs", `{"kind":"backfill_dinner_photos","payload":{}}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "service_only_kind") {
+		t.Errorf("POST /jobs backfill = %d: %s, want 400 service_only_kind", rec.Code, rec.Body)
+	}
+}

@@ -60,9 +60,10 @@ DELETE FROM shopping_items
 WHERE id = ?;
 
 -- name: ListShoppingGroupDinners :many
--- The groups of list list_id with their dinner's name now, in list order.
+-- The groups of list list_id with their dinner's name and status now, in
+-- list order. A group may keep a dinner archived since the list was made.
 -- A group of a frozen list shows its frozen_dinner_name instead.
-SELECT sqlc.embed(shopping_groups), dinners.name AS dinner_name
+SELECT sqlc.embed(shopping_groups), dinners.name AS dinner_name, dinners.status AS dinner_status
 FROM shopping_groups
 JOIN dinners ON dinners.id = shopping_groups.dinner_id
 WHERE shopping_groups.list_id = ?

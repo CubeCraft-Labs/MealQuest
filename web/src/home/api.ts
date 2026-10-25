@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect } from 'react'
+import { useCallback, useEffect } from 'react'
 import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
-import { oneOf, photoId } from '../dinners/api.ts'
+import { knownArchived, useArchived } from '../dinners/archived.ts'
+import { oneOf, photoId, PLANNED_DINNER_STATUSES, type PlannedDinnerStatus } from '../dinners/api.ts'
 import { untilLocalMidnight, weekLabel } from '../plan/week.ts'
-import { appPath } from '../push/notification.ts'
+import { appPath, opensRecipeOf, parseNoticeDinner, recipePathId, type NoticeDinner } from '../push/notification.ts'
 
 export const HOME_PATH = '/api/v1/home'
 export const HOME_KEY = ['home'] as const
@@ -15,10 +16,19 @@ export const UPDATES_KEY = ['updates'] as const
 export const ORIGINS = ['regular', 'side_quest'] as const
 export type Origin = (typeof ORIGINS)[number]
 
-// Tonight is the dinner planned for today: photo_id is its stored photo's
-// id, from photo, and minutes_total its minutes from prep to table, a
-// positive whole number, or null when the recipe does not say.
-export type Tonight = { id: string; name: string; photo_id: string | undefined; origin: Origin; minutes_total: number | null }
+// Tonight is the dinner planned for today: status is its status now —
+// archived once it was removed from Regulars after the plan was made, when
+// it has no detail to open — photo_id is its stored photo's id, from photo,
+// and minutes_total its minutes from prep to table, a positive whole number,
+// or null when the recipe does not say.
+export type Tonight = {
+  id: string
+  name: string
+  status: PlannedDinnerStatus
+  photo_id: string | undefined
+  origin: Origin
+  minutes_total: number | null
+}
 
 // ShoppingListStatus is the Supply run Home points at: next week's once it
 // has one, otherwise this week's, ready when that week has a list.
@@ -31,7 +41,8 @@ export type ShoppingListStatus = { weekStart: string; dates: string; ready: bool
 // Oct 2"; timezone is the household's IANA zone, whose midnight starts the
 // next day; tonight is null when today has no plan; sideQuestCount is how
 // many Side quests wait in the deck; unread says the Recent updates hold
-// something not yet seen.
+// something not yet seen. cached says the service worker answered from its
+// cache: the server may have changed it since.
 export type Home = {
   dateLabel: string
   timezone: string
@@ -39,6 +50,16 @@ export type Home = {
   sideQuestCount: number
   shoppingList: ShoppingListStatus
   unread: boolean
+  cached: boolean
+}
+
+// showArchived is home with tonight's dinner shown archived — removed from
+// Regulars, so it has no detail to open — when the server archived it
+// (archived), whatever the read said; otherwise it is home itself.
+export function showArchived(home: Home, archived: ReadonlySet<string>): Home {
+  const tonight = home.tonight
+  if (tonight === null || !archived.has(tonight.id) || tonight.status === 'archived') return home
+  return { ...home, tonight: { ...tonight, status: 'archived' } }
 }
 
 function parseTonight(where: string, body: unknown): Tonight | null {
@@ -54,6 +75,7 @@ function parseTonight(where: string, body: unknown): Tonight | null {
   return {
     id: body.id,
     name: body.name,
+    status: oneOf(where, 'status', PLANNED_DINNER_STATUSES, body.status),
     photo_id: photoId(where, body.photo),
     origin: oneOf(where, 'origin', ORIGINS, body.origin),
     minutes_total: minutes as number | null,
@@ -77,8 +99,9 @@ function parseShoppingList(where: string, list: unknown): ShoppingListStatus {
   return { weekStart: list.weekStart, dates: week.dates.replace(' – ', '–'), ready: list.ready }
 }
 
-// parseHome checks a GET /api/v1/home body.
-export function parseHome(where: string, body: unknown): Home {
+// parseHome checks a GET /api/v1/home body; cached says the service worker
+// answered it.
+export function parseHome(where: string, body: unknown, cached: boolean): Home {
   if (!isRecord(body) || typeof body.dateLabel !== 'string') throw new Error(`${where}: response is not the home`)
   if (typeof body.timezone !== 'string' || !isZone(body.timezone)) {
     throw new Error(`${where}: timezone ${JSON.stringify(body.timezone)} is not an IANA zone`)
@@ -95,6 +118,7 @@ export function parseHome(where: string, body: unknown): Home {
     sideQuestCount: body.sideQuestCount as number,
     shoppingList: parseShoppingList(where, body.shoppingList),
     unread: updates.unread,
+    cached,
   }
 }
 
@@ -110,13 +134,20 @@ function isZone(zone: string): boolean {
 
 // useHome is the Home screen's summary (GET /api/v1/home). Home is read
 // again at the household's next local midnight, counted from each read, so
-// a Home left open does not keep yesterday's date and dinner.
+// a Home left open does not keep yesterday's date and dinner. Tonight's
+// dinner shows archived once it was removed on this device
+// (archived.ts).
 export function useHome() {
-  const { apiFetch } = useApi()
+  const { apiRead } = useApi()
   const queryClient = useQueryClient()
+  const archived = useArchived()
   const home = useQuery({
     queryKey: HOME_KEY,
-    queryFn: async () => parseHome(`GET ${HOME_PATH}`, await apiFetch<unknown>(HOME_PATH)),
+    queryFn: async () => {
+      const read = await apiRead<unknown>(HOME_PATH)
+      return parseHome(`GET ${HOME_PATH}`, read.body, read.cached)
+    },
+    select: useCallback((home: Home) => showArchived(home, knownArchived(archived)), [archived]),
   })
   const zone = home.data?.timezone
   const readAt = home.dataUpdatedAt
@@ -135,14 +166,24 @@ export const UPDATE_TYPES = ['plan_ready', 'list_ready', 'day_of_reminder', 'new
 export type UpdateType = (typeof UPDATE_TYPES)[number]
 
 // Update is one of the Recent updates: a notification event, whatever
-// channels it went to. url is the same-origin path it opens; created_at is
-// when it was stored, the UTC RFC 3339 instant POST /api/v1/updates/seen
-// takes back.
-export type Update = { type: UpdateType; title: string; body: string; url: string; created_at: string }
+// channels it went to. url is the same-origin path it opens; dinner is the
+// dinner whose recipe that path is, or null when it opens no recipe — the
+// sheet opens a recipe only once the server has it (useOpenRecipe), never
+// the url itself; created_at is when it was stored, the UTC RFC 3339
+// instant POST /api/v1/updates/seen takes back.
+export type Update = {
+  type: UpdateType
+  title: string
+  body: string
+  url: string
+  dinner: NoticeDinner | null
+  created_at: string
+}
 
 // parseUpdate checks one update. Its url must stay on origin once parsed, as
 // the server only ever stores a path on the app's own origin; url is that
-// path as parsed.
+// path as parsed. A url opening a recipe comes with the dinner it is the
+// recipe of, and a dinner only with its recipe's url.
 function parseUpdate(where: string, body: unknown, origin: string): Update {
   if (
     !isRecord(body) ||
@@ -158,11 +199,21 @@ function parseUpdate(where: string, body: unknown, origin: string): Update {
   if (Number.isNaN(Date.parse(body.created_at))) {
     throw new Error(`${where}: update created_at "${body.created_at}" is not a time`)
   }
+  if (!('dinner' in body)) throw new Error(`${where}: update has no dinner`)
+  let dinner: NoticeDinner | null = null
+  if (body.dinner !== null) {
+    dinner = parseNoticeDinner(body.dinner)
+    if (dinner === null) throw new Error(`${where}: update dinner is not a dinner with an id and a name`)
+    if (!opensRecipeOf(url, dinner)) throw new Error(`${where}: update url ${JSON.stringify(url)} is not its dinner's recipe`)
+  } else if (recipePathId(url) !== null) {
+    throw new Error(`${where}: update url ${JSON.stringify(url)} opens a recipe but names no dinner`)
+  }
   return {
     type: oneOf(where, 'type', UPDATE_TYPES, body.type),
     title: body.title,
     body: body.body,
     url,
+    dinner,
     created_at: body.created_at,
   }
 }

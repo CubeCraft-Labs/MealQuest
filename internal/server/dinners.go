@@ -112,6 +112,20 @@ func postDinner(logger *slog.Logger, svc *dinners.Service) http.HandlerFunc {
 	}
 }
 
+// postPhotoBackfill starts a photo backfill over every dinner without a
+// photo and answers 202 with its job id, which GET /jobs/{id} reports on,
+// without waiting for the job.
+func postPhotoBackfill(logger *slog.Logger, svc *dinners.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := svc.StartPhotoBackfill(r.Context())
+		if err != nil {
+			writeDinnerError(w, r, logger, "start photo backfill", err)
+			return
+		}
+		writeJSON(w, r, logger, http.StatusAccepted, jobCreated{ID: id})
+	}
+}
+
 // patchDinner edits a dinner, recording the session's actor as updated_by.
 func patchDinner(logger *slog.Logger, svc *dinners.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

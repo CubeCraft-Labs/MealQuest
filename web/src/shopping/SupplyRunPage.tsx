@@ -3,6 +3,8 @@ import { useState } from 'react'
 import { Link, Navigate, useSearchParams } from 'react-router'
 import { defaultWeek, isMonday, localNow, weekdayKicker, weekLabel } from '../plan/week.ts'
 import { ApiError } from '../api/errors.ts'
+import { opensRecipe } from '../dinners/api.ts'
+import { useOpenRecipe } from '../dinners/useOpenRecipe.tsx'
 import { formatClockTime, useHouseholdSettings } from '../settings/api.ts'
 import { useBreakpoint, type Breakpoint } from '../shell/useBreakpoint.ts'
 import { Button } from '../ui/Button.tsx'
@@ -24,7 +26,7 @@ import {
   type SupplyRunItem,
   type Toggles,
 } from './api.ts'
-import { keep, savedSchedule, useSavedProblem } from './offline.ts'
+import { keep, SCHEDULE_CAUSE, savedSchedule, useSavedProblem } from './offline.ts'
 import styles from './SupplyRunPage.module.css'
 
 // SUPPLY_RUN is the Supply run screen.
@@ -79,12 +81,37 @@ function ItemRow({ item, toggles }: { item: SupplyRunItem; toggles: Toggles | nu
   )
 }
 
-// GroupCard is one dinner's items: its name in Bagel over its day.
-function GroupCard({ group, toggles }: { group: SupplyRunGroup; toggles: Toggles | null }) {
+// GroupCard is one dinner's items: its name in Bagel over its day. The name
+// is a button that opens the dinner's recipe once the server has it
+// (onRecipe, useOpenRecipe), unless the dinner was archived (removed from
+// Regulars) after the Supply run was made — it has no detail to open — or
+// the Supply run is one saved on this device or the service worker's cached
+// copy (cached), whose status may be stale or, saved by an earlier build, not
+// known (opensRecipe): then its name is plain text, until it is read again.
+function GroupCard({
+  group,
+  cached,
+  toggles,
+  onRecipe,
+}: {
+  group: SupplyRunGroup
+  cached: boolean
+  toggles: Toggles | null
+  onRecipe: () => void
+}) {
+  const { dinner } = group
   return (
-    <section className={styles.group} aria-label={group.dinner.name}>
+    <section className={styles.group} aria-label={dinner.name}>
       <header className={styles.groupHeader}>
-        <h2 className={styles.dinner}>{group.dinner.name}</h2>
+        <h2 className={styles.dinner}>
+          {opensRecipe(dinner.status, cached) ? (
+            <button type="button" className={styles.dinnerLink} onClick={onRecipe}>
+              {dinner.name}
+            </button>
+          ) : (
+            dinner.name
+          )}
+        </h2>
         <span className={styles.day}>{weekdayKicker(group.date)}</span>
       </header>
       <ul className={styles.items}>
@@ -165,6 +192,7 @@ function SupplyRunList({ weekStart, timezone, layout }: Omit<WeekProps, 'readOnl
   const wide = layout !== 'mobile'
   const failed = toggles.failed
   const failedItem = failed && run.groups.flatMap((group) => group.items).find((item) => item.id === failed.toggle.id)
+  const recipe = useOpenRecipe()
 
   return (
     <div className={`${styles.page} ${styles[layout]}`}>
@@ -202,6 +230,7 @@ function SupplyRunList({ weekStart, timezone, layout }: Omit<WeekProps, 'readOnl
           Couldn't send the shopping list to Google Chat. {send.error.message}
         </ErrorBanner>
       )}
+      {recipe.notice}
       {wide && run.sent_to_chat_at !== null && <SentStatus at={run.sent_to_chat_at} timezone={timezone} />}
       {wide && unconfirmed}
       {run.groups.length === 0 ? (
@@ -209,7 +238,13 @@ function SupplyRunList({ weekStart, timezone, layout }: Omit<WeekProps, 'readOnl
       ) : (
         <div className={styles.groups} data-testid="supply-run-groups">
           {run.groups.map((group) => (
-            <GroupCard key={`${group.date} ${group.dinner.id}`} group={group} toggles={viewOnly ? null : toggles} />
+            <GroupCard
+              key={`${group.date} ${group.dinner.id}`}
+              group={group}
+              cached={run.cached}
+              toggles={viewOnly ? null : toggles}
+              onRecipe={() => recipe.open(group.dinner)}
+            />
           ))}
         </div>
       )}
@@ -301,7 +336,7 @@ function ChosenSupplyRun({ readOnly }: { readOnly: boolean }) {
   const chosen = params.get(WEEK_PARAM)
   // Read once, not on every render: a failed read reports a problem, which
   // renders this again.
-  const [saved] = useState(() => keep(savedSchedule))
+  const [saved] = useState(() => keep(SCHEDULE_CAUSE, savedSchedule))
 
   if (chosen !== null && !isMonday(chosen)) {
     return <ErrorBanner>{`“${chosen}” is not the Monday of a week, as YYYY-MM-DD.`}</ErrorBanner>

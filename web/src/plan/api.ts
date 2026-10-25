@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useCallback, useEffect } from 'react'
 import {
   useMutation,
   useMutationState,
@@ -11,7 +11,8 @@ import {
 } from '@tanstack/react-query'
 import { ApiError, useApi, type ApiRead } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
-import { METHODS, oneOf, photoId, type Method } from '../dinners/api.ts'
+import { knownArchived, useArchived } from '../dinners/archived.ts'
+import { METHODS, oneOf, photoId, PLANNED_DINNER_STATUSES, type Method, type PlannedDinnerStatus } from '../dinners/api.ts'
 import { QUEST_LOG_KEY } from '../discover/api.ts'
 import { noteGoogleFailure } from '../settings/calendarApi.ts'
 import { supplyRunKey } from '../shopping/api.ts'
@@ -34,10 +35,19 @@ export const PLAN_STATUSES = ['draft', 'synced', 'changed'] as const
 // synced plan makes it changed.
 export type PlanStatus = (typeof PLAN_STATUSES)[number]
 
-// PlanDinner is a planned dinner: photo_id is its stored photo's id, from
-// photo, minutes its minutes from prep to table and method how it is
-// cooked, each when known.
-export type PlanDinner = { id: string; name: string; photo_id: string | undefined; minutes: number | null; method: Method | null }
+// PlanDinner is a planned dinner: status is its status now — archived once
+// it was removed from Regulars after the plan was made, when it has no
+// detail to open — photo_id is its stored photo's id, from photo, minutes
+// its minutes from prep to table and method how it is cooked, each when
+// known.
+export type PlanDinner = {
+  id: string
+  name: string
+  status: PlannedDinnerStatus
+  photo_id: string | undefined
+  minutes: number | null
+  method: Method | null
+}
 
 // PlanDay is one day of a plan: its household-local date, the dinner
 // planned, whether that dinner is a Quest-log pick, and, for a crock-pot
@@ -85,6 +95,7 @@ function parseDay(where: string, body: unknown): PlanDay {
   const dinner: PlanDinner = {
     id: body.dinner.id,
     name: body.dinner.name,
+    status: oneOf(where, 'dinner status', PLANNED_DINNER_STATUSES, body.dinner.status),
     photo_id: photoId(where, body.dinner.photo),
     minutes: body.dinner.minutes as number | null,
     method: body.dinner.method === null ? null : oneOf(where, 'method', METHODS, body.dinner.method),
@@ -97,6 +108,17 @@ function parseDay(where: string, body: unknown): PlanDay {
 // or a time with no offset, which Date would read in this device's zone, is
 // not one.
 const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/
+
+// showArchived is plan with each dinner the server archived (archived)
+// shown archived — removed from Regulars, so it has no detail to open —
+// whatever the read said; a plan with none is plan itself.
+export function showArchived(plan: Plan | null, archived: ReadonlySet<string>): Plan | null {
+  if (plan === null || !plan.days.some((day) => archived.has(day.dinner.id) && day.dinner.status !== 'archived')) return plan
+  return {
+    ...plan,
+    days: plan.days.map((day) => (archived.has(day.dinner.id) ? { ...day, dinner: { ...day.dinner, status: 'archived' } } : day)),
+  }
+}
 
 // syncedAt reads calendar_synced_at, an RFC 3339 instant or null.
 function syncedAt(where: string, value: unknown): Date | null {
@@ -192,9 +214,13 @@ export function parseDraftResult(where: string, weekStart: string, body: unknown
 }
 
 // usePlan is the plan of the week starting on Monday weekStart (GET
-// /api/v1/plans/{weekStart}), or null when the week has none (404).
+// /api/v1/plans/{weekStart}), or null when the week has none (404), with
+// each dinner removed on this device shown archived
+// (archived.ts).
 export function usePlan(weekStart: string) {
   const { apiRead } = useApi()
+  const archived = useArchived()
+  const select = useCallback((plan: Plan | null) => showArchived(plan, knownArchived(archived)), [archived])
   return useQuery({
     queryKey: planKey(weekStart),
     queryFn: async (): Promise<Plan | null> => {
@@ -208,6 +234,7 @@ export function usePlan(weekStart: string) {
       }
       return parsePlan(`GET ${path}`, weekStart, read.body, read.cached)
     },
+    select,
   })
 }
 
@@ -238,6 +265,7 @@ function sameDay(a: PlanDay, b: PlanDay): boolean {
     a.date === b.date &&
     a.dinner.id === b.dinner.id &&
     a.dinner.name === b.dinner.name &&
+    a.dinner.status === b.dinner.status &&
     a.dinner.photo_id === b.dinner.photo_id &&
     a.dinner.minutes === b.dinner.minutes &&
     a.dinner.method === b.dinner.method &&

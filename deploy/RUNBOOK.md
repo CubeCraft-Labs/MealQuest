@@ -110,7 +110,7 @@ git fetch --tags origin
 rollback=$(git rev-parse --verify --quiet "$running^{commit}") \
   || fail "running version $running is not a commit in this repository"
 echo "rollback SHA: $rollback (running version $running)"   # RECORD it for rollback
-git checkout --detach origin/main            # or the release tag, e.g. v1.0.0
+git checkout --detach "refs/remotes/origin/main^{commit}"   # or the release tag, e.g. v1.0.0
 dirty=$(git status --porcelain --untracked-files=no -- . ':(exclude)internal/frontend/dist')
 [ -z "$dirty" ] || fail "the checkout has modified tracked files; clean it first:
 $dirty"
@@ -253,3 +253,105 @@ back="mealquest:$v"
 
 3. **Run step 3 above** unchanged. The rollback is done only when it prints
    `deployed and verified:` with the previous release's version.
+
+## Automated deploys
+
+[`auto-deploy.sh`](auto-deploy.sh), installed as
+`/usr/local/sbin/mealquest-auto-deploy`, runs this runbook's deploy unattended:
+step 1 (build), the prerequisite `deploy/.env` and secrets check, CTXD
+`RUNBOOKS.MD` "Deploy" steps 2 (pre-deploy restore point) and 3
+(boot-required configuration), step 2 (ship and restart) and step 3
+(verify). No check is skipped or weakened, and it stops at the first
+failure. Every failure before the restart leaves production on the previous
+release.
+
+### What runs, and when
+
+[`mealquest-auto-deploy.timer`](systemd/mealquest-auto-deploy.timer) starts
+[`mealquest-auto-deploy.service`](systemd/mealquest-auto-deploy.service)
+at every quarter hour (`OnCalendar=*-*-* *:0/15:00`), plus up to 5 minutes'
+random delay; a check missed while the host was down runs as soon as it is
+back (`Persistent=true`). The service runs the script as `overseer` from the
+checkout, and only while `mealquest.service` is active: a stack stopped on
+purpose (a database or media restore) is skipped, not redeployed. Output goes
+to the journal (`journalctl -u mealquest-auto-deploy`).
+
+Each run fetches `origin` and compares `origin/main` with the last
+`deployed=` SHA in the deploy record `/home/overseer/mealquest-auto-deploy.log`:
+
+| `origin/main` | Result |
+| --- | --- |
+| is the last deployed SHA | No-op: exit 0, no output. |
+| CI (Gitea commit status) `pending` | Exit 0, no output; the next run checks again. |
+| CI `failure`, `error`, `warning`, or no status yet | Error in the journal, exit 1, nothing deployed. |
+| the last record line is `FAILED` for this SHA | Error in the journal, exit 1, nothing deployed: a failed deploy is never retried by the timer. |
+| CI `success` | Deploy. |
+
+The CI status is read from
+`https://code.cubecraftlabs.com/api/v1/repos/Maniacs_Mansion/MealQuest/commits/<SHA>/status`
+(public; no credential). A commit merged moments before a run can briefly
+report no status, which fails that run; the next run reads it again.
+
+A deploy appends one line to the record:
+
+```text
+2026-10-12T15:04:05Z previous=<rollback SHA> deployed=<SHA> restore_point=2026-10-12T15:01:59Z
+```
+
+`previous` is the rollback SHA (from the running release's `/health`,
+never the checkout) and `restore_point` the verified pre-deploy restore
+point: record both in the release's Maestro task. A failed deploy appends
+`<date> FAILED target=<SHA> status=<exit status>` and logs
+`auto-deploy FAILED (status <n>)` to the journal, adding whether it failed
+before the restart (production untouched) or after it (read
+`journalctl -u mealquest`, then fix or roll back). Either way the checkout is
+left at the target commit; the running release on `/health` stays the
+rollback target.
+
+### Install on the host
+
+The script and units are installed copies: repeat this whenever a release
+changes `deploy/auto-deploy.sh` or the units. From the checkout, at a release
+that contains them:
+
+```sh
+cd /home/overseer/mealquest
+sudo install -m 0755 deploy/auto-deploy.sh /usr/local/sbin/mealquest-auto-deploy
+sudo install -m 0644 deploy/systemd/mealquest-auto-deploy.service \
+  deploy/systemd/mealquest-auto-deploy.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+```
+
+The timer refuses to deploy until the record holds a deploy, so seed it with
+one manual deploy of the release production should run (below), then start
+the timer:
+
+```sh
+sudo /usr/local/sbin/mealquest-auto-deploy --ref refs/remotes/origin/main
+sudo systemctl enable --now mealquest-auto-deploy.timer
+systemctl list-timers mealquest-auto-deploy.timer
+```
+
+To stop automated deploys: `sudo systemctl disable --now mealquest-auto-deploy.timer`.
+
+### Manual override
+
+```sh
+sudo /usr/local/sbin/mealquest-auto-deploy --ref <ref>
+```
+
+deploys an explicit ref (a SHA, tag or `origin/<branch>`) through the same
+blocks, bypassing the CI and no-op gates: for a roll-forward fix, a re-run
+after a `FAILED` record, or seeding the record. Run as root, the script
+re-executes itself as `overseer`; it holds a lock, so it never runs alongside
+the timer's run. It prints `deployed and verified:` and exits 0 only when
+step 3 passed.
+
+### Rollback
+
+Rollback is not automated: follow "Rollback to a previous release" above
+and CTXD `RUNBOOKS.MD` "Routine deploy and rollback" > "Rollback to a
+previous SHA", using the `previous` SHA and `restore_point` from the record.
+The timer does not undo a manual rollback: `origin/main` is still the last
+recorded deploy, so its runs are no-ops until `main` moves, and a new `main`
+then deploys as usual. Disable the timer if the rollback must hold.

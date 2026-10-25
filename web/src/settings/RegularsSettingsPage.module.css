@@ -226,6 +226,14 @@
   resize: vertical;
 }
 
+/* The pencil and heart: IconButton's 44 px hit boxes overhang their 40 px
+   footprint by 2 px a side, so the gap must exceed 4 px to keep them apart. */
+.rowActions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .actions {
   display: grid;
   gap: 10px;
@@ -299,4 +307,28 @@
    there. */
 .lock {
   display: contents;
+}
+
+/* Find missing photos: its hint, button and progress, padded like a sheet. */
+.card.backfill {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+/* Why a Regular's recipe was not found. */
+.reason {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: var(--color-neutral-100);
+  color: var(--color-neutral-900);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.reasonLabel {
+  font-weight: 700;
 }

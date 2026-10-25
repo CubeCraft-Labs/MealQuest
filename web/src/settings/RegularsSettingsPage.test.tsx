@@ -1,17 +1,35 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { Route, Routes } from 'react-router'
+import { Link, Route, Routes, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { GROUNDING_POLL_MS } from '../dinners/api.ts'
+import { ARCHIVED, archivedKey, REMOVING, resetArchived } from '../dinners/archived.ts'
+import { DinnerDetailPage } from '../dinners/DinnerDetailPage.tsx'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
+import { SupplyRunSync } from '../shopping/api.ts'
+import { SAVED_KEY } from '../shopping/offline.ts'
+import { SupplyRunPage } from '../shopping/SupplyRunPage.tsx'
+import tokens from '../styles/tokens.css?raw'
+import { declaredStyle } from '../test/cssRules.ts'
+import { HOUSEHOLD_SETTINGS } from '../test/ApiProviders.tsx'
 import { InDataRouter } from '../test/dataRouter.tsx'
 import { dinnerBody, type DinnerBody } from '../test/dinners.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
+import { mockViewport } from '../test/matchMedia.ts'
 import { RegularsSettingsPage } from './RegularsSettingsPage.tsx'
 
 const REGULARS = '/api/v1/dinners?status=regular'
+
+// token is a design token's value as tokens.css declares it, given the
+// var() that names it.
+function token(reference: string): string {
+  const name = /^var\((--[\w-]+)\)$/.exec(reference)?.[1]
+  const value = name && new RegExp(`${name}:\\s*([^;\\s]+);`).exec(tokens)?.[1]
+  if (!value) throw new Error(`${reference} is not a token in tokens.css`)
+  return value
+}
 
 type Responder = (body: unknown) => Response | Promise<Response>
 
@@ -56,10 +74,18 @@ function reads(fetchMock: Mock<typeof fetch>) {
 afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+  Reflect.deleteProperty(window, 'matchMedia')
 })
 
+// Where shows the path the router is at.
+function Where() {
+  return <output aria-label="Path">{useLocation().pathname}</output>
+}
+
 // renderPage loads /me (for the CSRF token every write needs) and renders
-// the page at /settings/regulars once its Regulars have loaded.
+// the page at /settings/regulars once its Regulars have loaded, routed
+// beside the dinner detail screen a row opens.
 async function renderPage() {
   const api = createApiClient(fakeLocation('/settings/regulars'), createNetworkStatus(window), createVerifiedSession(localStorage))
   await api.loadMe()
@@ -69,7 +95,9 @@ async function renderPage() {
         <InDataRouter path="/settings/regulars">
           <Routes>
             <Route path="/settings/regulars" element={<RegularsSettingsPage />} />
+            <Route path="/dinner/:id" element={<DinnerDetailPage />} />
           </Routes>
+          <Where />
         </InDataRouter>
       </QueryClientProvider>
     </ApiProvider>,
@@ -85,8 +113,40 @@ const TACOS = dinnerBody('d1', 'Beef tacos', {
   photo_url: '/media/photos/p1-400.jpg',
 })
 const CHILI = dinnerBody('d2', 'Chili', { method: 'crockpot', minutes_total: 480, grounding_status: 'pending' })
-const PIZZA = dinnerBody('d3', 'Pizza night', { grounding_status: 'failed', grounding_error: 'no_recipe_found' })
+const PIZZA = dinnerBody('d3', 'Pizza night', {
+  grounding_status: 'failed',
+  grounding_error: 'no_recipe_found',
+  photo_backfill_eligible: true,
+})
 const ROAST = dinnerBody('d4', 'Pot roast', { method: 'oven', grounding_status: 'manual' })
+
+// TACOS_RECIPE is Beef tacos as GET /api/v1/dinners/{id} sends it, with its
+// ingredients and steps.
+const TACOS_RECIPE = {
+  id: 'd1',
+  name: 'Beef tacos',
+  status: 'regular',
+  origin: 'regular',
+  method: 'stovetop',
+  minutes_total: 40,
+  difficulty: 'easy',
+  cuisine: null,
+  is_favorite: true,
+  photo_urls: null,
+  ingredients: [
+    { name: 'Ground beef', qty: '1', unit: 'lb', note: null, raw_text: '1 lb ground beef' },
+    { name: 'Corn tortillas', qty: '12', unit: null, note: null, raw_text: '12 corn tortillas' },
+  ],
+  steps: ['Brown the beef.', 'Warm the tortillas and fill them.'],
+  source: { site_name: 'Example Kitchen' },
+  grounding_status: 'grounded',
+  grounding_error: null,
+  why_picked: null,
+}
+
+function path() {
+  return screen.getByRole('status', { name: 'Path' })
+}
 
 function rows() {
   return within(screen.getByRole('list', { name: 'Regulars' })).queryAllByRole('listitem')
@@ -107,8 +167,20 @@ function add(text: string) {
   fireEvent.click(screen.getByRole('button', { name: 'Add Regular' }))
 }
 
+// openRow taps the Regular's row itself, which opens its recipe.
 function openRow(name: string) {
   fireEvent.click(within(row(name)).getByRole('button', { name: new RegExp(`^${name}`) }))
+}
+
+// editRow taps the Regular's pencil, which opens its edit sheet.
+function editRow(name: string) {
+  fireEvent.click(within(row(name)).getByRole('button', { name: `Edit ${name}` }))
+}
+
+// fixRow taps the pencil of a Regular whose recipe was not found, which
+// opens its fix-recipe sheet.
+function fixRow(name: string) {
+  fireEvent.click(within(row(name)).getByRole('button', { name: `Fix recipe for ${name}` }))
 }
 
 describe('RegularsSettingsPage', () => {
@@ -146,7 +218,35 @@ describe('RegularsSettingsPage', () => {
     expectMinHitArea(screen.getByRole('button', { name: 'Add Regular' }))
     expectMinHitArea(screen.getByRole('button', { name: 'Favorite Beef tacos' }))
     expectMinHitArea(within(row('Beef tacos')).getByRole('button', { name: /^Beef tacos/ }))
+    expectMinHitArea(screen.getByRole('button', { name: 'Edit Beef tacos' }))
     expectMinHitArea(screen.getByRole('button', { name: 'Back to Settings' }))
+  })
+
+  it("keeps the pencil's and the heart's hit boxes apart at mobile width", async () => {
+    mockViewport(390)
+    stubServer([TACOS])
+    await renderPage()
+    const pencil = screen.getByRole('button', { name: 'Edit Beef tacos' })
+    const heart = screen.getByRole('button', { name: 'Favorite Beef tacos' })
+    // Side by side in one flex row: nothing else between them.
+    expect(pencil.nextElementSibling).toBe(heart)
+    const actions = pencil.parentElement!
+    expect(declaredStyle(actions).display).toBe('inline-flex')
+    const gap = declaredStyle(actions).getPropertyValue('gap')
+    expect(gap).toMatch(/^var\(--space-\d\)$/)
+
+    // jsdom does no layout, so lay the two out from their declared styles:
+    // each button's border box is its hit box; margins place it in the row.
+    const length = (value: string) => {
+      const match = /^(-?\d+(?:\.\d+)?)px$/.exec(value)
+      if (!match) throw new Error(`${JSON.stringify(value)} is not a px length`)
+      return Number(match[1])
+    }
+    const [pencilStyle, heartStyle] = [declaredStyle(pencil), declaredStyle(heart)]
+    const pencilHitEnd = length(pencilStyle.marginLeft) + length(pencilStyle.width)
+    const heartHitStart =
+      length(pencilStyle.marginLeft) + length(pencilStyle.width) + length(pencilStyle.marginRight) + length(token(gap)) + length(heartStyle.marginLeft)
+    expect(heartHitStart - pencilHitEnd, 'space between the hit boxes').toBeGreaterThan(0)
   })
 
   it('says so when there are no Regulars yet', async () => {
@@ -248,6 +348,85 @@ describe('RegularsSettingsPage', () => {
     expect(screen.getByRole('button', { name: 'Favorite Beef tacos' })).toHaveAttribute('aria-pressed', 'false')
   })
 
+  it("opens a Regular's recipe, its ingredients and steps, from its row", async () => {
+    // The detail screen lays itself out by the viewport: a phone's.
+    mockViewport(390)
+    stubServer([TACOS], { 'GET /api/v1/dinners/d1': () => jsonResponse(200, TACOS_RECIPE) })
+    await renderPage()
+
+    openRow('Beef tacos')
+    await waitFor(() => expect(path()).toHaveTextContent('/dinner/d1'))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 2, name: 'Ingredients' })).toBeInTheDocument()
+    const [ingredients, steps] = screen.getAllByRole('list')
+    expect(within(ingredients!).getAllByRole('listitem').map((item) => item.firstElementChild!.textContent)).toEqual([
+      'Ground beef',
+      'Corn tortillas',
+    ])
+    expect(screen.getByRole('heading', { level: 2, name: 'Steps' })).toBeInTheDocument()
+    expect(within(steps!).getAllByRole('listitem').map((step) => step.textContent)).toEqual([
+      '1Brown the beef.',
+      '2Warm the tortillas and fill them.',
+    ])
+  })
+
+  it('opens a Regular whose recipe was not found at its recipe too, and its pencil fixes the recipe', async () => {
+    stubServer([PIZZA], { 'GET /api/v1/dinners/d3/recipe-candidates': () => jsonResponse(200, { candidates: [] }) })
+    await renderPage()
+
+    fixRow('Pizza night')
+    expect(screen.getByRole('dialog', { name: 'Fix recipe' })).toBeInTheDocument()
+    expect(path()).toHaveTextContent('/settings/regulars')
+    expect(within(row('Pizza night')).queryByRole('button', { name: 'Edit Pizza night' })).not.toBeInTheDocument()
+  })
+
+  it('opens the detail of a Regular whose recipe was not found from its row, saying there is no recipe yet', async () => {
+    mockViewport(390)
+    stubServer([PIZZA], {
+      'GET /api/v1/dinners/d3': () =>
+        jsonResponse(200, {
+          ...TACOS_RECIPE,
+          id: 'd3',
+          name: 'Pizza night',
+          method: null,
+          minutes_total: null,
+          difficulty: null,
+          is_favorite: false,
+          ingredients: [],
+          steps: [],
+          source: null,
+          grounding_status: 'failed',
+          grounding_error: 'no_recipe_found',
+        }),
+    })
+    await renderPage()
+
+    openRow('Pizza night')
+    await waitFor(() => expect(path()).toHaveTextContent('/dinner/d3'))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    const missing = await screen.findByRole('region', { name: 'No recipe' })
+    expect(missing).toHaveTextContent("We couldn't find a recipe for this dinner, so there are no ingredients or steps yet.")
+    expect(within(missing).getByRole('link', { name: 'Fix recipe' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { level: 2, name: 'Ingredients' })).not.toBeInTheDocument()
+  })
+
+  it('keeps the pencil, not the row, opening the edit sheet, and neither while it is being added', async () => {
+    const answer = Promise.withResolvers<Response>()
+    stubServer([TACOS], { 'POST /api/v1/dinners': () => answer.promise })
+    await renderPage()
+
+    editRow('Beef tacos')
+    expect(screen.getByRole('dialog', { name: 'Edit Beef tacos' })).toBeInTheDocument()
+    expect(path()).toHaveTextContent('/settings/regulars')
+
+    add('Chicken enchiladas')
+    const adding = within(await waitFor(() => row('Chicken enchiladas')))
+    expect(adding.getByRole('button', { name: 'Edit Chicken enchiladas' })).toBeDisabled()
+    expect(adding.queryByRole('button', { name: /^Chicken enchiladas/ })).not.toBeInTheDocument()
+    answer.resolve(errorResponse(500, 'internal_error'))
+    await waitFor(() => expect(screen.queryByText('Chicken enchiladas')).not.toBeInTheDocument())
+  })
+
   it('edits a Regular: name, method, minutes and difficulty', async () => {
     const server = stubServer([TACOS], {
       'PATCH /api/v1/dinners/d1': (body) => {
@@ -258,7 +437,7 @@ describe('RegularsSettingsPage', () => {
     })
     await renderPage()
 
-    openRow('Beef tacos')
+    editRow('Beef tacos')
     const sheet = within(screen.getByRole('dialog', { name: 'Edit Beef tacos' }))
     expect(sheet.getByLabelText('Name')).toHaveValue('Beef tacos')
     expect(sheet.getByLabelText('Method')).toHaveValue('stovetop')
@@ -286,7 +465,7 @@ describe('RegularsSettingsPage', () => {
     const server = stubServer([TACOS], { 'PATCH /api/v1/dinners/d1': () => errorResponse(400, 'invalid_dinner') })
     await renderPage()
 
-    openRow('Beef tacos')
+    editRow('Beef tacos')
     const sheet = within(screen.getByRole('dialog', { name: 'Edit Beef tacos' }))
     fireEvent.change(sheet.getByLabelText('Minutes'), { target: { value: '0' } })
     expect(sheet.getByText('Minutes must be a whole number from 1 to 1440.')).toBeInTheDocument()
@@ -307,7 +486,7 @@ describe('RegularsSettingsPage', () => {
     })
     await renderPage()
 
-    openRow('Beef tacos')
+    editRow('Beef tacos')
     fireEvent.click(screen.getByRole('button', { name: 'Remove from Regulars' }))
     const confirm = within(screen.getByRole('dialog', { name: 'Remove Beef tacos?' }))
     fireEvent.click(confirm.getByRole('button', { name: 'Keep it' }))
@@ -322,15 +501,281 @@ describe('RegularsSettingsPage', () => {
     expect(sent(server.fetchMock)).toEqual([{ request: 'DELETE /api/v1/dinners/d1', body: undefined }])
   })
 
-  it('puts a refused removal back and says why', async () => {
-    stubServer([TACOS], { 'DELETE /api/v1/dinners/d1': () => errorResponse(500, 'internal') })
+  describe('a removed Regular on a Supply run already read', () => {
+    const WEEK = '2026-10-05'
+    const SUPPLY_RUN = `/api/v1/shopping/${WEEK}`
+    const RUN_SCREEN = `/plan/shopping?week=${WEEK}`
+
+    // run is the week's Supply run as the server sends it: Beef tacos, the
+    // Regular, and Pot roast, each a Regular when it was read.
+    const run = {
+      weekStart: WEEK,
+      label: 'Week 41 · Oct 5 – 11',
+      title: null,
+      status: 'current',
+      sent_to_chat_at: null,
+      chat_send_unconfirmed_at: null,
+      needed_count: 2,
+      total_count: 2,
+      groups: [
+        { dinner: { id: 'd1', name: 'Beef tacos', status: 'regular' }, date: '2026-10-05', day: 'Monday', items: [{ id: 'i1', name: 'Ground beef', qty: '1 lb', needed: true }] },
+        { dinner: { id: 'd4', name: 'Pot roast', status: 'regular' }, date: '2026-10-06', day: 'Tuesday', items: [{ id: 'i2', name: 'Chuck roast', qty: '3 lb', needed: true }] },
+      ],
+    }
+
+    // renderApp renders, as App does, the Regulars and the Supply run screen
+    // over one query client with SupplyRunSync keeping the Supply run on this
+    // device, starting at path; each screen links to the other.
+    async function renderApp(path: string) {
+      const api = createApiClient(fakeLocation(path), createNetworkStatus(window), createVerifiedSession(localStorage))
+      await api.loadMe()
+      return render(
+        <ApiProvider client={api}>
+          <QueryClientProvider client={createQueryClient()}>
+            <SupplyRunSync />
+            <InDataRouter path={path}>
+              <Routes>
+                <Route path="/settings/regulars" element={<RegularsSettingsPage />} />
+                <Route path="/plan/shopping" element={<SupplyRunPage />} />
+              </Routes>
+              <Link to="/settings/regulars">To Regulars</Link>
+              <Link to={RUN_SCREEN}>To Supply run</Link>
+            </InDataRouter>
+          </QueryClientProvider>
+        </ApiProvider>,
+      )
+    }
+
+    // card is the Supply run's card of a dinner.
+    function card(name: string) {
+      return screen.getByRole('region', { name })
+    }
+
+    // savedStatus is the dinner's status on the week's Supply run saved on
+    // this device.
+    function savedStatus(id: string) {
+      const saved = JSON.parse(localStorage.getItem(SAVED_KEY)!) as { runs: Record<string, typeof run> }
+      return saved.runs[WEEK]!.groups.find((group) => group.dinner.id === id)!.dinner.status
+    }
+
+    it('shows it archived, with no recipe link, on the Supply run cached and saved on this device', async () => {
+      mockViewport(390)
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date('2026-10-07T16:00:00Z'))
+      // The Supply run is read once; any later read never answers, as when
+      // the server cannot be reached, so only what is cached or saved shows.
+      let runReads = 0
+      let answerReopened: (response: Response) => void = () => {
+        throw new Error('the Supply run was not read again')
+      }
+      const server = stubServer([TACOS, ROAST], {
+        'GET /api/v1/settings/household': () => jsonResponse(200, HOUSEHOLD_SETTINGS),
+        [`GET ${SUPPLY_RUN}`]: () =>
+          ++runReads === 1 ? jsonResponse(200, run) : new Promise<Response>((resolve) => (answerReopened = resolve)),
+        'DELETE /api/v1/dinners/d1': () => {
+          server.regulars = [ROAST]
+          return jsonResponse(200, { ...TACOS, status: 'archived' })
+        },
+      })
+      const app = await renderApp(RUN_SCREEN)
+
+      expect(await waitFor(() => within(card('Beef tacos')).getByRole('button', { name: 'Beef tacos' }))).toBeInTheDocument()
+      await waitFor(() => expect(savedStatus('d1')).toBe('regular'))
+
+      fireEvent.click(screen.getByRole('link', { name: 'To Regulars' }))
+      await screen.findByRole('heading', { level: 2, name: /^On rotation/ })
+      editRow('Beef tacos')
+      fireEvent.click(screen.getByRole('button', { name: 'Remove from Regulars' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+      await waitFor(() => expect(rows()).toHaveLength(1))
+
+      // Recorded archived on this device, and the Supply run saved here
+      // saved again with it archived.
+      expect(localStorage.getItem(archivedKey('d1'))).toBe(ARCHIVED)
+      expect(savedStatus('d1')).toBe('archived')
+      expect(savedStatus('d4')).toBe('regular')
+
+      // Back on the Supply run, from the cache, still fresh and not read
+      // again: the card is plain while its items still toggle.
+      fireEvent.click(screen.getByRole('link', { name: 'To Supply run' }))
+      const archived = await waitFor(() => card('Beef tacos'))
+      expect(runReads).toBe(1)
+      expect(within(archived).getByRole('heading', { name: 'Beef tacos' })).toBeInTheDocument()
+      expect(within(archived).queryByRole('button')).not.toBeInTheDocument()
+      expect(within(archived).getByRole('checkbox', { name: /Ground beef/ })).toBeEnabled()
+      expect(within(card('Pot roast')).getByRole('button', { name: 'Pot roast' })).toBeInTheDocument()
+
+      // A new page, with nothing cached, opens the saved Supply run while its
+      // read is not answered: the record saved on this device leaves no
+      // recipe link there either, and what was saved offers none at all
+      // (F1, feature review round 3) — another device may have archived Pot
+      // roast since.
+      app.unmount()
+      resetArchived()
+      await renderApp(RUN_SCREEN)
+      const reopened = await waitFor(() => card('Beef tacos'))
+      expect(within(reopened).queryByRole('button')).not.toBeInTheDocument()
+      expect(within(card('Pot roast')).queryByRole('button')).not.toBeInTheDocument()
+      await waitFor(() => expect(runReads).toBe(2))
+
+      // The server answers: Pot roast links to its recipe again, Beef tacos,
+      // marked here, still does not.
+      answerReopened(jsonResponse(200, run))
+      expect(await within(card('Pot roast')).findByRole('button', { name: 'Pot roast' })).toBeInTheDocument()
+      expect(within(card('Beef tacos')).queryByRole('button')).not.toBeInTheDocument()
+    })
+
+    // F1 (review round 8): the server archived it, so the Supply run cached
+    // and saved shows it archived even though the device could not mark it.
+    it('shows it archived, with no recipe link, on the Supply run cached and saved, and says why, when the device could not mark it archived', async () => {
+      mockViewport(390)
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date('2026-10-07T16:00:00Z'))
+      let runReads = 0
+      let answerReopened: (response: Response) => void = () => {
+        throw new Error('the Supply run was not read again')
+      }
+      const server = stubServer([TACOS, ROAST], {
+        'GET /api/v1/settings/household': () => jsonResponse(200, HOUSEHOLD_SETTINGS),
+        [`GET ${SUPPLY_RUN}`]: () =>
+          ++runReads === 1 ? jsonResponse(200, run) : new Promise<Response>((resolve) => (answerReopened = resolve)),
+        'DELETE /api/v1/dinners/d1': () => {
+          server.regulars = [ROAST]
+          return jsonResponse(200, { ...TACOS, status: 'archived' })
+        },
+      })
+      // The device saves the removal before it is sent, then refuses to save
+      // that the server archived it.
+      const setItem = Storage.prototype.setItem
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
+        if (key === archivedKey('d1') && value === ARCHIVED) throw new Error('The quota has been exceeded.')
+        setItem.call(this, key, value)
+      })
+      const app = await renderApp(RUN_SCREEN)
+      await waitFor(() => expect(within(card('Beef tacos')).getByRole('button', { name: 'Beef tacos' })).toBeInTheDocument())
+      await waitFor(() => expect(savedStatus('d1')).toBe('regular'))
+
+      fireEvent.click(screen.getByRole('link', { name: 'To Regulars' }))
+      await screen.findByRole('heading', { level: 2, name: /^On rotation/ })
+      editRow('Beef tacos')
+      fireEvent.click(screen.getByRole('button', { name: 'Remove from Regulars' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'Could not remove Beef tacos: this device could not save that the server removed it, so it stays hidden here and is asked about again: The quota has been exceeded.',
+      )
+      await waitFor(() => expect(rows()).toHaveLength(1))
+      expect(sent(server.fetchMock)).toContainEqual({ request: 'DELETE /api/v1/dinners/d1', body: undefined })
+
+      // Still marked removing, while the Supply run saved here is saved again
+      // with it archived.
+      expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
+      expect(savedStatus('d1')).toBe('archived')
+      expect(savedStatus('d4')).toBe('regular')
+
+      // Back on the Supply run, from the cache, not read again: no recipe
+      // link to the archived dinner.
+      fireEvent.click(screen.getByRole('link', { name: 'To Supply run' }))
+      const cached = await waitFor(() => card('Beef tacos'))
+      expect(runReads).toBe(1)
+      expect(within(cached).queryByRole('button')).not.toBeInTheDocument()
+      expect(within(cached).getByRole('checkbox', { name: /Ground beef/ })).toBeEnabled()
+
+      // A new page, with nothing cached, opens that saved Supply run while
+      // its read is not answered: no recipe link to the archived dinner, nor
+      // to any other from what was saved (F1, feature review round 3).
+      app.unmount()
+      resetArchived()
+      await renderApp(RUN_SCREEN)
+      const reopened = await waitFor(() => card('Beef tacos'))
+      expect(within(reopened).queryByRole('button')).not.toBeInTheDocument()
+      expect(within(card('Pot roast')).queryByRole('button')).not.toBeInTheDocument()
+      await waitFor(() => expect(runReads).toBe(2))
+
+      // The server answers: Pot roast links again, Beef tacos still does not.
+      answerReopened(jsonResponse(200, run))
+      expect(await within(card('Pot roast')).findByRole('button', { name: 'Pot roast' })).toBeInTheDocument()
+      expect(within(card('Beef tacos')).queryByRole('button')).not.toBeInTheDocument()
+    })
+  })
+
+  it('sends no removal this device cannot save, keeps the Regular and says why', async () => {
+    const server = stubServer([TACOS, ROAST], {
+      'DELETE /api/v1/dinners/d1': () => {
+        server.regulars = [ROAST]
+        return jsonResponse(200, { ...TACOS, status: 'archived' })
+      },
+    })
+    const setItem = Storage.prototype.setItem
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
+      if (key === archivedKey('d1')) throw new Error('The quota has been exceeded.')
+      setItem.call(this, key, value)
+    })
     await renderPage()
 
-    openRow('Beef tacos')
+    editRow('Beef tacos')
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from Regulars' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not remove Beef tacos: this device could not save the removal, so it was not sent: The quota has been exceeded.',
+    )
+    expect(rows()).toHaveLength(2)
+    expect(screen.getByText('Beef tacos')).toBeInTheDocument()
+    expect(sent(server.fetchMock)).toEqual([])
+    expect(localStorage.getItem(archivedKey('d1'))).toBeNull()
+  })
+
+  it('keeps a removal no answer settled hidden and says the server may have made it', async () => {
+    // Asked about at once, the server does not answer either.
+    stubServer([TACOS, ROAST], {
+      'DELETE /api/v1/dinners/d1': () => Promise.reject(new TypeError('Failed to fetch')),
+      'GET /api/v1/dinners/d1': () => new Promise<Response>(() => undefined),
+    })
+    await renderPage()
+
+    editRow('Beef tacos')
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from Regulars' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not remove Beef tacos: Failed to fetch. The server may have removed it, so this device hides it until the server can say whether it did.',
+    )
+    expect(rows()).toHaveLength(1)
+    expect(screen.queryByText('Beef tacos')).not.toBeInTheDocument()
+    expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
+  })
+
+  it('keeps a refused removal hidden on this device and says why', async () => {
+    stubServer([TACOS, ROAST], { 'DELETE /api/v1/dinners/d1': () => errorResponse(500, 'internal') })
+    await renderPage()
+
+    editRow('Beef tacos')
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from Regulars' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not remove Beef tacos: internal message. It could not be removed here; it stays hidden on this device until the server settles it.',
+    )
+    expect(rows()).toHaveLength(1)
+    expect(screen.queryByText('Beef tacos')).not.toBeInTheDocument()
+    expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
+  })
+
+  // F3: another device archived the Regular before this device's removal
+  // was answered, refused.
+  it('keeps a Regular removed when another device archived it before its own removal was refused', async () => {
+    const server = stubServer([TACOS, ROAST], {
+      'DELETE /api/v1/dinners/d1': () => {
+        server.regulars = [ROAST]
+        return errorResponse(500, 'internal')
+      },
+    })
+    await renderPage()
+
+    editRow('Beef tacos')
     fireEvent.click(screen.getByRole('button', { name: 'Remove from Regulars' }))
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not remove Beef tacos: internal message')
-    expect(rows()).toHaveLength(1)
+    expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
+    await waitFor(() => expect(rows()).toHaveLength(1))
+    expect(screen.queryByText('Beef tacos')).not.toBeInTheDocument()
   })
 
   describe('Fix recipe', () => {
@@ -366,7 +811,7 @@ describe('RegularsSettingsPage', () => {
       })
       await renderPage()
 
-      openRow('Pizza night')
+      fixRow('Pizza night')
       const matches = within(await fixSheet().findByRole('list', { name: 'Recipe matches' }))
       const options = matches.getAllByRole('button')
       expect(options.map((option) => option.getAttribute('aria-label'))).toEqual([
@@ -390,7 +835,7 @@ describe('RegularsSettingsPage', () => {
     it('says so when no match was found', async () => {
       stubServer([PIZZA], { 'GET /api/v1/dinners/d3/recipe-candidates': () => jsonResponse(200, { candidates: [] }) })
       await renderPage()
-      openRow('Pizza night')
+      fixRow('Pizza night')
       expect(await fixSheet().findByText('No matches were found. Paste a recipe link or type it in.')).toBeInTheDocument()
     })
 
@@ -403,7 +848,7 @@ describe('RegularsSettingsPage', () => {
       })
       await renderPage()
 
-      openRow('Pizza night')
+      fixRow('Pizza night')
       fireEvent.click(fixSheet().getByRole('radio', { name: 'Paste a link' }))
       fireEvent.change(fixSheet().getByLabelText('Recipe link'), { target: { value: ' https://example.com/blog/pizza ' } })
       fireEvent.click(fixSheet().getByRole('button', { name: 'Use this recipe' }))
@@ -427,7 +872,7 @@ describe('RegularsSettingsPage', () => {
       })
       await renderPage()
 
-      openRow('Pizza night')
+      fixRow('Pizza night')
       fireEvent.click(fixSheet().getByRole('radio', { name: 'Type it in' }))
       const save = fixSheet().getByRole('button', { name: 'Save recipe' })
       expect(save).toBeDisabled()
@@ -465,7 +910,7 @@ describe('RegularsSettingsPage', () => {
       })
       await renderPage()
 
-      openRow('Pizza night')
+      fixRow('Pizza night')
       fireEvent.click(fixSheet().getByRole('radio', { name: 'Type it in' }))
       const save = fixSheet().getByRole('button', { name: 'Save recipe' })
       fireEvent.change(fixSheet().getByLabelText('Ingredients, one per line'), { target: { value: '1 pizza dough' } })
@@ -490,9 +935,207 @@ describe('RegularsSettingsPage', () => {
     it('switches to editing the Regular', async () => {
       stubServer([PIZZA], { 'GET /api/v1/dinners/d3/recipe-candidates': () => jsonResponse(200, CANDIDATES) })
       await renderPage()
-      openRow('Pizza night')
+      fixRow('Pizza night')
       fireEvent.click(fixSheet().getByRole('button', { name: 'Edit or remove Pizza night' }))
       expect(screen.getByRole('dialog', { name: 'Edit Pizza night' })).toBeInTheDocument()
+    })
+  })
+
+  describe('Photo backfill', () => {
+    const BACKFILL = 'POST /api/v1/settings/photo-backfill'
+    const JOB = 'GET /api/v1/jobs/j9'
+
+    // backfillJob is a GET /api/v1/jobs/j9 answer for the photo backfill.
+    function backfillJob(status: string, result: unknown = null, error: string | null = null) {
+      return jsonResponse(200, { id: 'j9', kind: 'backfill_dinner_photos', status, result, error })
+    }
+
+    // polls answers each poll of the job with the next answer, then the last
+    // one again; an answer may change the server first.
+    function polls(...answers: (() => Response)[]) {
+      let next = 0
+      return () => answers[Math.min(next++, answers.length - 1)]!()
+    }
+
+    function fixSheet() {
+      return within(screen.getByRole('dialog', { name: 'Fix recipe' }))
+    }
+
+    const NO_CANDIDATES = { 'GET /api/v1/dinners/d3/recipe-candidates': () => jsonResponse(200, { candidates: [] }) }
+
+    it('shows why the recipe was not found in the fix-recipe sheet', async () => {
+      stubServer([PIZZA], NO_CANDIDATES)
+      await renderPage()
+
+      fixRow('Pizza night')
+      expect(fixSheet().getByText('No recipe page the search found had a recipe we could use.')).toBeInTheDocument()
+      expect(fixSheet().getByRole('button', { name: 'Search again' })).toBeEnabled()
+    })
+
+    it('offers no search again for a pasted link that had no usable recipe', async () => {
+      const linked = { ...PIZZA, grounding_error: 'recipe_unusable', photo_backfill_eligible: false }
+      stubServer([linked], NO_CANDIDATES)
+      await renderPage()
+
+      fixRow('Pizza night')
+      expect(fixSheet().getByText('The pasted recipe link has no recipe we could use.')).toBeInTheDocument()
+      expect(fixSheet().queryByRole('button', { name: 'Search again' })).not.toBeInTheDocument()
+    })
+
+    it('offers no search again for a dinner with a pasted link whatever its reason', async () => {
+      const linked = { ...PIZZA, grounding_error: 'ai_failed', photo_backfill_eligible: false }
+      stubServer([linked], NO_CANDIDATES)
+      await renderPage()
+
+      fixRow('Pizza night')
+      expect(fixSheet().getByText("The AI assistant couldn't read the recipe.")).toBeInTheDocument()
+      expect(fixSheet().queryByRole('button', { name: 'Search again' })).not.toBeInTheDocument()
+    })
+
+    it('searches again from the fix-recipe sheet and shows the new reason when it still fails', async () => {
+      const server = stubServer([PIZZA], {
+        ...NO_CANDIDATES,
+        [BACKFILL]: () => jsonResponse(202, { id: 'j9' }),
+        [JOB]: polls(
+          () => backfillJob('running'),
+          () => {
+            server.regulars = [{ ...PIZZA, grounding_error: 'search_failed' }]
+            return backfillJob('succeeded', { dinners: [{ dinner_id: 'd3', outcome: 'failed', reason: 'search_failed' }] })
+          },
+        ),
+      })
+      await renderPage()
+
+      fixRow('Pizza night')
+      fireEvent.click(fixSheet().getByRole('button', { name: 'Search again' }))
+      expect(await fixSheet().findByRole('button', { name: 'Searching again…' })).toBeDisabled()
+      expect(fixSheet().getByText('Searching again… this can take a few minutes.')).toBeInTheDocument()
+      expect(sent(server.fetchMock)).toEqual([{ request: BACKFILL, body: undefined }])
+
+      expect(await fixSheet().findByText('Searched again: still no recipe found.', {}, { timeout: 3000 })).toBeInTheDocument()
+      expect(await fixSheet().findByText("The recipe search couldn't be reached.")).toBeInTheDocument()
+      expect(fixSheet().getByRole('button', { name: 'Search again' })).toBeEnabled()
+    })
+
+    it('closes the fix-recipe sheet once searching again finds the recipe and its photo', async () => {
+      const server = stubServer([PIZZA], {
+        ...NO_CANDIDATES,
+        [BACKFILL]: () => jsonResponse(202, { id: 'j9' }),
+        [JOB]: () => {
+          server.regulars = [{ ...PIZZA, grounding_status: 'grounded', grounding_error: null, photo_url: '/media/photos/p8-400.jpg' }]
+          return backfillJob('succeeded', { dinners: [{ dinner_id: 'd3', outcome: 'grounded', reason: null }] })
+        },
+      })
+      await renderPage()
+
+      fixRow('Pizza night')
+      fireEvent.click(fixSheet().getByRole('button', { name: 'Search again' }))
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      expect(within(row('Pizza night')).getByText('Recipe found')).toBeInTheDocument()
+      expect(within(row('Pizza night')).getByRole('img', { name: 'Pizza night' })).toHaveAttribute('src', '/media/photos/p8-400.jpg')
+    })
+
+    it('says when a dinner was not included in the search', async () => {
+      stubServer([PIZZA], {
+        ...NO_CANDIDATES,
+        [BACKFILL]: () => jsonResponse(202, { id: 'j9' }),
+        [JOB]: () => backfillJob('succeeded', { dinners: [] }),
+      })
+      await renderPage()
+
+      fixRow('Pizza night')
+      fireEvent.click(fixSheet().getByRole('button', { name: 'Search again' }))
+      expect(await fixSheet().findByText('This dinner was not included in that search.')).toBeInTheDocument()
+    })
+
+    it('finds missing photos: the placeholder shows until the backfill finds a photo', async () => {
+      const found = { ...PIZZA, grounding_status: 'grounded', grounding_error: null, photo_url: '/media/photos/p8-400.jpg' }
+      const server = stubServer([TACOS, PIZZA], {
+        [BACKFILL]: () => jsonResponse(202, { id: 'j9' }),
+        [JOB]: polls(
+          () => backfillJob('queued'),
+          () => {
+            server.regulars = [TACOS, found]
+            return backfillJob('succeeded', { dinners: [{ dinner_id: 'd3', outcome: 'grounded', reason: null }] })
+          },
+        ),
+      })
+      await renderPage()
+
+      // The photoless dinner shows the striped placeholder, not an image.
+      const placeholder = within(row('Pizza night')).getByRole('img', { name: 'Pizza night' })
+      expect(placeholder).not.toHaveAttribute('src')
+      expect(placeholder).toHaveTextContent('dish photo')
+
+      const trigger = screen.getByRole('button', { name: 'Find missing photos' })
+      expectMinHitArea(trigger)
+      fireEvent.click(trigger)
+      expect(await screen.findByRole('button', { name: 'Finding photos…' })).toBeDisabled()
+      expect(await screen.findByText('Finding missing photos… this can take a few minutes.')).toBeInTheDocument()
+      expect(within(row('Pizza night')).getByRole('img', { name: 'Pizza night' })).not.toHaveAttribute('src')
+      expect(sent(server.fetchMock)).toEqual([{ request: BACKFILL, body: undefined }])
+
+      expect(await screen.findByText('Photo search done: 1 photo found.', {}, { timeout: 3000 })).toBeInTheDocument()
+      await waitFor(() =>
+        expect(within(row('Pizza night')).getByRole('img', { name: 'Pizza night' })).toHaveAttribute('src', '/media/photos/p8-400.jpg'),
+      )
+      expect(screen.getByRole('button', { name: 'Find missing photos' })).toBeEnabled()
+      expect(reads(server.fetchMock)).toBe(2)
+    })
+
+    it('sums up what the backfill did', async () => {
+      stubServer([PIZZA], {
+        [BACKFILL]: () => jsonResponse(202, { id: 'j9' }),
+        [JOB]: () =>
+          backfillJob('succeeded', {
+            dinners: [
+              { dinner_id: 'd3', outcome: 'grounded', reason: null },
+              { dinner_id: 'd5', outcome: 'grounded', reason: null },
+              { dinner_id: 'd6', outcome: 'failed', reason: 'no_recipe_found' },
+              { dinner_id: 'd7', outcome: 'skipped', reason: null },
+            ],
+          }),
+      })
+      await renderPage()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Find missing photos' }))
+      expect(
+        await screen.findByText(
+          'Photo search done: 2 photos found · 1 dinner still needs a recipe · 1 dinner changed meanwhile, left as it was.',
+        ),
+      ).toBeInTheDocument()
+    })
+
+    it('says when no dinner was missing a photo', async () => {
+      stubServer([TACOS], {
+        [BACKFILL]: () => jsonResponse(202, { id: 'j9' }),
+        [JOB]: () => backfillJob('succeeded', { dinners: [] }),
+      })
+      await renderPage()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Find missing photos' }))
+      expect(await screen.findByText('No dinners were missing a photo.')).toBeInTheDocument()
+    })
+
+    it('says why the backfill stopped', async () => {
+      stubServer([PIZZA], {
+        [BACKFILL]: () => jsonResponse(202, { id: 'j9' }),
+        [JOB]: () => backfillJob('failed', { dinners: [] }, 'internal_error'),
+      })
+      await renderPage()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Find missing photos' }))
+      expect(await screen.findByRole('alert')).toHaveTextContent('Photo search stopped: Something went wrong on the server.')
+      expect(screen.getByRole('button', { name: 'Find missing photos' })).toBeEnabled()
+    })
+
+    it('says why the backfill could not start', async () => {
+      stubServer([PIZZA], { [BACKFILL]: () => errorResponse(403, 'csrf_failed') })
+      await renderPage()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Find missing photos' }))
+      expect(await screen.findByRole('alert')).toHaveTextContent('Photo search not started: csrf_failed message')
+      expect(screen.getByRole('button', { name: 'Find missing photos' })).toBeEnabled()
     })
   })
 
@@ -537,7 +1180,7 @@ describe('RegularsSettingsPage', () => {
     const server = stubServer([TACOS, CHILI], { 'PATCH /api/v1/dinners/d1': patch.respond })
     await renderPage()
 
-    openRow('Beef tacos')
+    editRow('Beef tacos')
     const sheet = within(screen.getByRole('dialog', { name: 'Edit Beef tacos' }))
     fireEvent.change(sheet.getByLabelText('Name'), { target: { value: 'Fish tacos' } })
     fireEvent.click(sheet.getByRole('button', { name: 'Save changes' }))
@@ -564,7 +1207,7 @@ describe('RegularsSettingsPage', () => {
     })
     await renderPage()
 
-    openRow('Pizza night')
+    fixRow('Pizza night')
     const sheet = within(screen.getByRole('dialog', { name: 'Fix recipe' }))
     fireEvent.click(sheet.getByRole('radio', { name: 'Paste a link' }))
     fireEvent.change(sheet.getByLabelText('Recipe link'), { target: { value: 'https://example.com/pizza' } })

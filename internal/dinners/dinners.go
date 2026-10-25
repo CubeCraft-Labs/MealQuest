@@ -79,6 +79,11 @@ type Dinner struct {
 	UpdatedBy      *string `json:"updated_by"`
 	CreatedAt      string  `json:"created_at"`
 	UpdatedAt      string  `json:"updated_at"`
+
+	// PhotoBackfillEligible is whether a photo backfill grounds the dinner
+	// (PhotoBackfillEligible): false for one with a pasted recipe link,
+	// which a search never replaces.
+	PhotoBackfillEligible bool `json:"photo_backfill_eligible"`
 }
 
 // NewRegular is a Regular to add: its Name, which the household always
@@ -138,6 +143,8 @@ type Service struct {
 	grounder  *recipes.Grounder
 	logger    *slog.Logger
 	groundJob *jobs.Kind[GroundJob]
+	// backfillJob enqueues KindBackfillPhotos jobs.
+	backfillJob *jobs.Kind[BackfillJob]
 	// wake is called after every committed change to a dinner's method or
 	// minutes, which can move its crock-pot start reminder.
 	wake func()
@@ -162,8 +169,8 @@ type Service struct {
 
 // NewService returns a service over st that grounds dinners with grounder,
 // calls wake (the scheduler's Wake) after every committed change to a
-// dinner's method or minutes, and registers the KindGroundDinner job on
-// runner, which must not have started yet.
+// dinner's method or minutes, and registers the KindGroundDinner and
+// KindBackfillPhotos jobs on runner, which must not have started yet.
 func NewService(st *store.Store, grounder *recipes.Grounder, runner *jobs.Runner, wake func(), logger *slog.Logger) (*Service, error) {
 	switch {
 	case st == nil:
@@ -184,6 +191,14 @@ func NewService(st *store.Store, grounder *recipes.Grounder, runner *jobs.Runner
 		return nil, err
 	}
 	s.groundJob = kind
+	backfill, err := jobs.Register(runner, KindBackfillPhotos, s.runBackfillJob)
+	if err != nil {
+		return nil, err
+	}
+	if err := backfill.ServiceOnly(); err != nil {
+		return nil, err
+	}
+	s.backfillJob = backfill
 	return s, nil
 }
 
@@ -702,6 +717,8 @@ func fromRow(r db.Dinner) Dinner {
 		UpdatedBy:       nullString(r.UpdatedBy),
 		CreatedAt:       r.CreatedAt,
 		UpdatedAt:       r.UpdatedAt,
+
+		PhotoBackfillEligible: PhotoBackfillEligible(r),
 	}
 	if r.MinutesTotal.Valid {
 		d.MinutesTotal = &r.MinutesTotal.Int64

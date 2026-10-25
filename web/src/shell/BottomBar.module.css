@@ -1,5 +1,9 @@
+/* The bar comes before the scroll area in the document; its z-index keeps it
+   painted above the page scrolling under it. It also makes the bar its own
+   stacking context, so its items and pill stack only against each other. */
 .bar {
   position: absolute;
+  z-index: 1;
   left: 12px;
   right: 12px;
   bottom: calc(16px + env(safe-area-inset-bottom));

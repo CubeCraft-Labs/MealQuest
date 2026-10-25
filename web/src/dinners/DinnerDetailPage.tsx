@@ -23,6 +23,7 @@ import { Tag } from '../ui/Tag.tsx'
 import { Toggle } from '../ui/Toggle.tsx'
 import { AddToWeekSheet, weekNames, type Added } from './AddToWeekSheet.tsx'
 import { useToggleFavorite, type Difficulty } from './api.ts'
+import { ArchivedDinnerError } from './archived.ts'
 import { useDinnerDetail, type DinnerDetail, type Ingredient, type RecipeSource } from './detail.ts'
 import styles from './DinnerDetailPage.module.css'
 import { useKeepScreenOn } from './keepScreenOn.ts'
@@ -549,7 +550,7 @@ export function DinnerDetailPage() {
         <div className={styles.backRow}>
           <BackButton />
         </div>
-        {dinner.error instanceof ApiError && dinner.error.status === 404 ? (
+        {(dinner.error instanceof ApiError && dinner.error.status === 404) || dinner.error instanceof ArchivedDinnerError ? (
           <>
             <EmptyState title="Dinner not found">This dinner isn't in our kitchen — it may have been removed.</EmptyState>
             <Link to="/" className={[buttonStyles.button, buttonStyles.outline].join(' ')}>

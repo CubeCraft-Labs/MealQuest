@@ -48,6 +48,9 @@ type supplyRunGroup struct {
 type supplyRunDinner struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	// Status is the dinner's status now; an archived dinner has no detail
+	// to open.
+	Status string `json:"status"`
 }
 
 // supplyRunItem is one ingredient to buy; qty is null when the recipe
@@ -291,7 +294,7 @@ func supplyRunOf(week store.LocalDate, l shopping.List) (supplyRun, error) {
 			items[j] = supplyRunItem{ID: it.ID, Name: it.Name, Qty: it.Qty, Needed: it.Needed}
 		}
 		groups[i] = supplyRunGroup{
-			Dinner: supplyRunDinner{ID: g.DinnerID, Name: g.DinnerName},
+			Dinner: supplyRunDinner{ID: g.DinnerID, Name: g.DinnerName, Status: g.DinnerStatus},
 			Date:   g.Date,
 			Day:    date.Weekday().String(),
 			Items:  items,

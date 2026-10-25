@@ -30,7 +30,14 @@ export type Added = { week: string; which: Which; swap: Swap }
 
 // planDinner is the dinner as it is planned on a day.
 function planDinner(dinner: DinnerDetail): PlanDinner {
-  return { id: dinner.id, name: dinner.name, photo_id: dinner.photo_id, minutes: dinner.minutes_total, method: dinner.method }
+  return {
+    id: dinner.id,
+    name: dinner.name,
+    status: dinner.status,
+    photo_id: dinner.photo_id,
+    minutes: dinner.minutes_total,
+    method: dinner.method,
+  }
 }
 
 type WeekDaysProps = {

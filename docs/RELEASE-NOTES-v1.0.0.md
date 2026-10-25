@@ -114,10 +114,12 @@ into `dev` (`git log --oneline dev`).
 
 ### Launch readiness work — not in this release
 
-The Launch readiness feature branch
-(`feature/7383c2cb-3179-4b45-b558-bf1bc1833fad-launch-readiness`, head
-`48c4c0e`) has **not been merged into `dev`**. It is 21 commits ahead of
-`dev`. Among them are:
+When this release was cut (`dev` at `9a7aa12`, promoted to `main` as
+`273cf8f`), the Launch readiness feature branch
+(`feature/7383c2cb-3179-4b45-b558-bf1bc1833fad-launch-readiness`, then at
+`48c4c0e`) had not been merged into `dev`; it was 21 commits ahead of it.
+Its work reaches `dev` through feature pull request #13 and reaches `main`
+only with a later promotion. That work includes:
 
 - the empty, loading and error state sweep (#187)
 - portrait tablet layouts (#188)
@@ -128,7 +130,8 @@ The Launch readiness feature branch
 - the production smoke evidence (#212)
 - the favicon (#213)
 
-None of it is in v1.0.0 as described here.
+None of it is in v1.0.0 as described here (`273cf8f`), whatever the state of
+`dev` when you read this.
 
 ## Known limitations
 

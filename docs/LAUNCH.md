@@ -1,7 +1,9 @@
 # Launch evidence
 
-Evidence that the production PWA meets the launch gates. The raw reports and
-the check script are committed under [lighthouse/](lighthouse/).
+Evidence that the production PWA meets the launch gates: Lighthouse and
+installability (2026-10-11), the end-to-end production smoke (2026-10-11/12)
+and the final restore drill (2026-10-12). The raw Lighthouse reports and the
+installability check script are committed under [lighthouse/](lighthouse/).
 
 ## Run conditions
 
@@ -55,8 +57,9 @@ condition fails on any page.
 
 ## Production smoke — 2026-10-11/12
 
-An end-to-end smoke of the launch flows against production, run in the
-household's owner session.
+An end-to-end smoke of the launch flows against production, run with the
+owner in the owner's signed-in session. Tracked as Maestro task
+`0544e318-9b5f-4264-9884-1ec8cb63fd49`, closed 2026-10-12.
 
 | | |
 | --- | --- |
@@ -78,8 +81,8 @@ auto-deploy path, moving production from `743a155` to `561f249`.
 | Try it | ✓ dinner created with a grounded photo, added to the Quest log |
 | Pass | ✓ declined dinner never re-suggested; deck 10 → 8 |
 | AI draft, Week 42 (Oct 12–18) | ✓ 7 days, no duplicates, Quest-log pick marked `is_new`, `ai_note` cites the Regulars |
-| Day swap | ✓ Monday → Slow Cooker French Dip Sandwiches (crock pot) |
-| Push to Calendar | ✓ synced; owner confirmed 7 events; a second push made no duplicates |
+| Day swap | ✓ `PUT` of the day: Monday → Slow Cooker French Dip Sandwiches (crock pot) |
+| Push to Calendar | ✓ status `synced`; owner confirmed 7 events; a second push made no duplicates |
 | Supply run | ✓ 27 items, AI title "A Beefy Week with Pizza Night" |
 | Have-it toggle | ✓ needed items 27 → 26 |
 | Send to Google Chat | ✓ `sent_to_chat_at` stamped; owner confirmed receipt in the test space |
@@ -89,8 +92,35 @@ auto-deploy path, moving production from `743a155` to `561f249`.
 
 **Result: PASS on every step.**
 
-Evidence form: server-side API responses and timestamps, plus the owner's
-explicit confirmations for the steps that land outside the app (calendar
-events, Google Chat message, push notification on the phone). The owner's
-confirmation quotes are recorded on Maestro task
-`0544e318-9b5f-4264-9884-1ec8cb63fd49`. Phone screenshots were not captured.
+Evidence form: server-side API responses and timestamps for the steps inside
+the app, plus the owner's explicit confirmations for the three steps that
+land outside it — the 7 calendar events, the Google Chat message and the
+push notification on the phone. The owner's confirmation quotes are recorded
+on Maestro task `0544e318-9b5f-4264-9884-1ec8cb63fd49`.
+
+**Deviation: phone screenshots were not captured for any step.** The task
+closed with the owner's explicit confirmations standing in for them. No
+screenshot evidence exists for this smoke; whether the owner supplies
+screenshots or confirms this disposition is pending the owner's decision.
+
+## Final restore drill — 2026-10-12
+
+Both halves of the restore procedure, run on the production stack with live
+household data. Tracked as Maestro task `3b22e48b`, closed 2026-10-12.
+The full record — commands, outputs and
+checks — is in CTXD project `mealquest`, `RUNBOOKS.MD` (v12),
+"Restore drill record — 2026-10-12"; the procedure itself is in the same
+document.
+
+| | |
+| --- | --- |
+| Target | Production stack, live household data |
+| Deployed build | `mealquest:561f249` |
+| Date | 2026-10-12 |
+
+| Half | Checks | Result |
+| --- | --- | --- |
+| Database restore | Replica current; the restored file matched the before-snapshot exactly — dinners 26, week_plans 1, schema_migrations 18, content-sha256 `7d13261040238cd8`, integrity `ok`, zero loss; stack healthy at `561f249` after the restart | ✓ PASS |
+| Media restore | All 102 NAS files byte-identical (`rsync --checksum`); 10 newer local photos preserved; an archived dinner's photo opened (`GET /media/photos/...-400.jpg` → 200 `image/jpeg`, 400×400); timer restarted | ✓ PASS |
+
+**Result: PASS on both halves.**

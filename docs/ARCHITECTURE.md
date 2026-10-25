@@ -946,6 +946,27 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
     {time}" with the dinner's name, only for a crock-pot dinner whose
     `start_by` is earlier than `reminder_time`. The `day_of_reminder`
     schedule calls it 15 minutes before `start_by`.
+  - A reminder offers its dinner's recipe only while the dinner has one.
+    It then names the dinner (`notify.Event.Dinner`, the payload's
+    `dinner` `{id, name}`), and its URL is that recipe's
+    (`notify.RecipePath`); `notify.Emit` refuses a recipe URL naming no
+    dinner, or a dinner with another URL. A dinner archived since it was
+    planned has no recipe, so both reminders of it name no dinner and open
+    the week's plan (`/plan?week={weekStart}`): the day-of reminder is
+    "Tonight: {dinner}" with "This dinner was removed, so its recipe is
+    gone.", and the Google Chat message closes with "Open the plan →".
+    The same holds when a stored reminder is delivered: the outbox worker
+    checks its dinner again before sending (`notify` `recipeNow`), so a
+    reminder queued while its dinner was viewable and archived (or gone)
+    before delivery is sent, on every channel, as one emitted after the
+    archival is (title without " · Recipe →", "This dinner was removed, so
+    its recipe is gone." when it has no other body, the week's plan, no
+    dinner), and a reminder stored before reminders named their dinner is
+    sent naming it while it still has a recipe. The Web Push message
+    carries `dinner` with `title`, `body`, `url` and `tag`, so a tap
+    checks that recipe with the server before it opens it.
+    A Chat message's call to action follows the path its event opens
+    (`chat.Text`). No other event opens a recipe.
   - `rotation_review:{dinnerId}:{planDate}` (URL `/`, where the Home card
     asks) through `plan.Service.MarkTried(planDate)`, "How was {dinner}?
     Keep it in rotation?", once per Rotation check it opens. The
@@ -1269,11 +1290,14 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
   one update):
 
   ```json
-  {"updates": [{"type": "plan_ready", "title": "…", "body": "…", "url": "/plan?week=2026-10-12", "created_at": "2026-10-09T14:00:00.000Z"}]}
+  {"updates": [{"type": "plan_ready", "title": "…", "body": "…", "url": "/plan?week=2026-10-12", "dinner": null, "created_at": "2026-10-09T14:00:00.000Z"}]}
   ```
 
   Every field comes from the stored payload, which never holds a webhook
-  URL or secret; `url` is the same-origin path the event opens.
+  URL or secret; `url` is the same-origin path the event opens, and
+  `dinner` (`{id, name}`, or `null`) the dinner whose recipe `url` is. An
+  event stored with a recipe URL before events named their dinner offers
+  no recipe: its `url` is its week's plan and its `dinner` `null`.
 - `POST /api/v1/updates/seen` with `{"through": "<created_at>"}` (CSRF
   header required) records that the household has seen its updates
   through the newest one it was shown, and answers 204. The last-seen
@@ -1316,8 +1340,13 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
   Regulars and the Quest log held in memory — staying out of them while
   they, with the plans, Home and Supply runs, are read again, and if that
   read fails. A check that cannot reach the server opens nothing either,
-  and offers Retry. The detail screen, opened from a typed or notified
-  URL, reads with the same 404 handling. The API cache's
+  and offers Retry. A Recent update or a notification offering a recipe
+  opens it the same way: a Recent update in the sheet, saying there that
+  the dinner was removed; a tapped notification opens Home with
+  `?recipe={id}&name={name}` (`recipeOpenPath`), which checks the recipe
+  and says so on Home, and a notification whose recipe URL names no
+  dinner opens Home. The detail screen, opened from a typed URL, reads
+  with the same 404 handling. The API cache's
   version is raised whenever a cached response's shape stops being one the
   app accepts — v4 retired the v3 cache, whose plans, Home and Supply runs
   had no dinner `status` — and activation deletes the retired cache, so

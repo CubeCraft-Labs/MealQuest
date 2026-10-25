@@ -7,10 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"strings"
 	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 )
 
 // Delivery timing.
@@ -180,8 +184,8 @@ func (s *Service) deliverDue(ctx context.Context) (time.Duration, error) {
 	return max(due.Sub(s.now()), 0), nil
 }
 
-// deliver sends a claimed row through its channel's sender and records the
-// outcome. A row that cannot be sent at all, because its payload does not
+// deliver sends a claimed row through its channel's sender, offering a
+// recipe only as recipeNow allows, and records the outcome. A row that cannot be sent at all, because its payload does not
 // decode or its channel has no sender, is failed at once: retrying cannot
 // help. A row 24 hours or more past its creation is failed without being
 // sent: it is too stale to deliver.
@@ -223,9 +227,12 @@ func (s *Service) deliver(ctx context.Context, row db.NotificationOutbox) {
 
 	attempt := row.Attempts + 1
 	sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)
-	err = sender.Send(sendCtx, Message{
-		ID: row.ID, EventKey: row.EventKey, Channel: Channel(row.Channel), Payload: payload, Attempt: attempt,
-	})
+	payload, err = s.recipeNow(sendCtx, payload)
+	if err == nil {
+		err = sender.Send(sendCtx, Message{
+			ID: row.ID, EventKey: row.EventKey, Channel: Channel(row.Channel), Payload: payload, Attempt: attempt,
+		})
+	}
 	cancel()
 	now := s.now()
 	if err == nil {
@@ -303,4 +310,55 @@ func retryDelay(attempt int64) time.Duration {
 		d *= 2
 	}
 	return min(d, retryMax)
+}
+
+// recipeNow returns p as it may be delivered now. A payload offering a
+// dinner's recipe was stored when the dinner had one; the dinner may have
+// been archived since. A dinner that still has a recipe is offered, named,
+// with its recipe path, so a payload stored before payloads named their
+// dinner names it too. One archived, or gone, offers none: the payload names
+// no dinner, opens its week's plan, its title loses RecipeCallToAction and,
+// with no body, it says ArchivedBody, as such a reminder emitted after the
+// archival says (chat.DayOfReminder, chat.StartReminder). A recipe payload
+// whose dinner or week cannot be read wraps ErrUndeliverable; a database
+// error is returned as it is, so the row is retried.
+func (s *Service) recipeNow(ctx context.Context, p Payload) (Payload, error) {
+	if !OpensRecipe(p.URL) {
+		return p, nil
+	}
+	var id string
+	if p.Dinner != nil {
+		id = p.Dinner.ID
+	} else {
+		u, err := url.Parse(p.URL)
+		if err != nil {
+			return Payload{}, fmt.Errorf("%w: recipe url %q does not parse: %v", ErrUndeliverable, p.URL, err)
+		}
+		id = strings.TrimPrefix(u.Path, "/dinner/")
+	}
+	if id == "" || strings.Contains(id, "/") {
+		return Payload{}, fmt.Errorf("%w: recipe url %q names no dinner", ErrUndeliverable, p.URL)
+	}
+	d, err := db.New(s.st.Reader).GetDinner(ctx, id)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return Payload{}, fmt.Errorf("notify: read dinner %s of recipe url %q: %w", id, p.URL, err)
+	}
+	if err == nil && d.Status != dinners.StatusArchived {
+		if p.Dinner == nil {
+			p.Dinner = &Dinner{ID: d.ID, Name: d.Name}
+		}
+		p.URL = RecipePath(p.Dinner.ID)
+		return p, nil
+	}
+	week, err := store.ParseLocalDate(p.Week)
+	if err != nil {
+		return Payload{}, fmt.Errorf("%w: recipe url %q of an archived dinner has no week: %v", ErrUndeliverable, p.URL, err)
+	}
+	p.Dinner = nil
+	p.URL = PlanPath(week)
+	p.Title = strings.TrimSuffix(p.Title, RecipeCallToAction)
+	if p.Body == "" {
+		p.Body = ArchivedBody
+	}
+	return p, nil
 }

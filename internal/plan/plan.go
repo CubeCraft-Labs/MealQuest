@@ -228,6 +228,12 @@ type Dinner struct {
 	Origin  string  `json:"origin"`
 }
 
+// viewable reports whether the dinner has a recipe to open: every status
+// but archived.
+func (d Dinner) viewable() bool {
+	return d.Status != dinners.StatusArchived
+}
+
 // Get returns the plan of the week starting weekStart, or ErrNotFound.
 // The plan and the household settings come from one read transaction.
 func (s *Service) Get(ctx context.Context, weekStart store.LocalDate) (p Plan, err error) {
@@ -243,9 +249,11 @@ func (s *Service) Get(ctx context.Context, weekStart store.LocalDate) (p Plan, e
 
 // EmitDayOfReminder emits day_of_reminder for date, keyed by the date,
 // "Tonight: {dinner} · Recipe →" for the dinner planned on it, and reports
-// whether it did: a date whose week has no plan emits nothing. The
-// day_of_reminder schedule calls it at the household's reminder_time
-// (ReminderSchedules); emitting a date again stores no second notification.
+// whether it did: a date whose week has no plan emits nothing. A dinner
+// archived since it was planned has no recipe, so its reminder offers none
+// (chat.DayOfReminder). The day_of_reminder schedule calls it at the
+// household's reminder_time (ReminderSchedules); emitting a date again
+// stores no second notification.
 func (s *Service) EmitDayOfReminder(ctx context.Context, date store.LocalDate) (bool, error) {
 	p, err := s.Get(ctx, household.WeekStart(date))
 	if errors.Is(err, ErrNotFound) {
@@ -258,7 +266,7 @@ func (s *Service) EmitDayOfReminder(ctx context.Context, date store.LocalDate) (
 	if err != nil {
 		return false, err
 	}
-	if err := s.notifier.Emit(ctx, chat.DayOfReminder(date, d.Dinner.ID, d.Dinner.Name)); err != nil {
+	if err := s.notifier.Emit(ctx, chat.DayOfReminder(date, d.Dinner.ID, d.Dinner.Name, d.Dinner.viewable())); err != nil {
 		return false, fmt.Errorf("plan: %w", err)
 	}
 	return true, nil

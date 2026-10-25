@@ -1,8 +1,9 @@
 import { Bell, ChevronRight, Compass, Search, ShoppingCart, Zap, type LucideIcon } from 'lucide-react'
-import { useState } from 'react'
-import { Link, useNavigate } from 'react-router'
+import { useEffect, useState } from 'react'
+import { Link, useNavigate, useSearchParams } from 'react-router'
 import { opensRecipe } from '../dinners/api.ts'
-import { useOpenRecipe } from '../dinners/useOpenRecipe.tsx'
+import { useOpenRecipe, type RecipeDinner } from '../dinners/useOpenRecipe.tsx'
+import { RECIPE_NAME_PARAM, RECIPE_PARAM } from '../push/notification.ts'
 import { duration } from '../plan/PlanPage.tsx'
 import { supplyRunScreen } from '../shopping/api.ts'
 import buttonStyles from '../ui/Button.module.css'
@@ -120,6 +121,29 @@ function Tiles() {
   )
 }
 
+// useNotificationRecipe opens, through open (useOpenRecipe), the recipe a
+// tapped notification asked Home to open (recipeOpenPath, from
+// src/push/notification.ts), once, and takes the ask out of the address so
+// going back to Home does not ask again. It reports whether the ask named no
+// dinner, when nothing opens.
+function useNotificationRecipe(open: (dinner: RecipeDinner) => void): boolean {
+  const [params, setParams] = useSearchParams()
+  const [broken, setBroken] = useState(false)
+  const id = params.get(RECIPE_PARAM)
+  const name = params.get(RECIPE_NAME_PARAM)
+  useEffect(() => {
+    if (id === null && name === null) return
+    setParams({}, { replace: true })
+    if (id === null || id === '' || name === null || name.trim() === '') {
+      setBroken(true)
+      return
+    }
+    setBroken(false)
+    open({ id, name })
+  }, [id, name, open, setParams])
+  return broken
+}
+
 // HomePage is mock 1g, Home: today's date over "Tonight's quest" and the
 // Recent updates bell, the Tonight card (or the way to plan the week), the
 // Quick dinner and Cook from what I have tiles, and the status rows, all
@@ -133,6 +157,7 @@ export function HomePage() {
   const data = home.data
   const [updatesOpen, setUpdatesOpen] = useState(false)
   const recipe = useOpenRecipe()
+  const brokenLink = useNotificationRecipe(recipe.open)
   return (
     <div className={styles.page} aria-busy={home.isPending}>
       <header className={styles.header}>
@@ -159,6 +184,7 @@ export function HomePage() {
       )}
       {data !== undefined && <TonightSlot home={data} onRecipe={recipe.open} />}
       {recipe.notice}
+      {brokenLink && <ErrorBanner>That notification's recipe link names no dinner, so nothing opened.</ErrorBanner>}
       <RotationCheck />
       <Tiles />
       {home.isPending && (

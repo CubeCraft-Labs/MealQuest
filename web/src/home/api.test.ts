@@ -8,7 +8,7 @@ const where = 'GET /api/v1/updates'
 // body is a GET /api/v1/updates body holding one update that opens url.
 function body(url: string) {
   return {
-    updates: [{ type: 'plan_ready', title: 'Your week is drafted', body: '', url, created_at: '2026-10-10T16:00:00.000Z' }],
+    updates: [{ type: 'plan_ready', title: 'Your week is drafted', body: '', url, dinner: null, created_at: '2026-10-10T16:00:00.000Z' }],
   }
 }
 

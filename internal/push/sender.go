@@ -29,11 +29,14 @@ const pushTTL = 12 * time.Hour
 const maxDrainBytes = 4096
 
 // notice is what the service worker shows (web/src/push/notification.ts).
+// Dinner is the dinner whose recipe URL opens, which a tap checks with the
+// server before it opens the recipe; absent when URL opens no recipe.
 type notice struct {
-	Title string `json:"title"`
-	Body  string `json:"body"`
-	URL   string `json:"url"`
-	Tag   string `json:"tag"`
+	Title  string         `json:"title"`
+	Body   string         `json:"body"`
+	URL    string         `json:"url"`
+	Tag    string         `json:"tag"`
+	Dinner *notify.Dinner `json:"dinner,omitempty"`
 }
 
 // Sender is the notify.Sender of the push channel: it sends a notification
@@ -116,7 +119,9 @@ func (s *Sender) Send(ctx context.Context, m notify.Message) error {
 		logger.InfoContext(ctx, "push notification has no subscriptions to send to; nothing sent")
 		return nil
 	}
-	message, err := json.Marshal(notice{Title: m.Payload.Title, Body: m.Payload.Body, URL: m.Payload.URL, Tag: m.Payload.Tag})
+	message, err := json.Marshal(notice{
+		Title: m.Payload.Title, Body: m.Payload.Body, URL: m.Payload.URL, Tag: m.Payload.Tag, Dinner: m.Payload.Dinner,
+	})
 	if err != nil {
 		return fmt.Errorf("push: encode notification: %w", err)
 	}

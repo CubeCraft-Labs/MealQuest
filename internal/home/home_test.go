@@ -477,6 +477,64 @@ func TestUpdates(t *testing.T) {
 	}
 }
 
+// TestUpdatesOfferARecipeOnlyThroughItsDinner: a reminder offers a recipe
+// in Recent updates only with the dinner it names, so the app can check it
+// with the server before opening it. A reminder of a dinner archived since
+// it was planned names none and opens the week's plan, and so does a
+// reminder stored with a recipe URL before reminders named their dinner:
+// neither opens the dinner's detail unchecked.
+func TestUpdatesOfferARecipeOnlyThroughItsDinner(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	ctx := t.Context()
+	at := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	// A reminder stored before reminders named their dinner.
+	legacy, err := json.Marshal(notify.Payload{
+		Event: notify.DayOfReminder, Title: "Tonight: Old Stew · Recipe →", URL: "/dinner/01J9LEGACY",
+		Tag: "day_of_reminder:2026-10-13", Week: "2026-10-12",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := store.Timestamp{Time: at}.String()
+	if _, err := db.New(e.st.Writer).InsertNotification(ctx, db.InsertNotificationParams{
+		ID: store.NewID(), EventKey: "day_of_reminder:2026-10-13", Channel: string(notify.ChannelPush), Payload: string(legacy),
+		NextAttemptAt: sql.NullString{String: ts, Valid: true}, Now: ts,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mustDate := func(s string) store.LocalDate {
+		d, err := store.ParseLocalDate(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	if err := e.notifier.Emit(ctx, chat.DayOfReminder(mustDate("2026-10-14"), "01J9TACOS", "Tacos", true)); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.notifier.Emit(ctx, chat.DayOfReminder(mustDate("2026-10-15"), "01J9CHILI", "Chili", false)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := e.svc.Updates(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byTitle := map[string]home.Update{}
+	for _, u := range got {
+		byTitle[u.Title] = u
+	}
+	if u := byTitle["Tonight: Tacos · Recipe →"]; u.URL != "/dinner/01J9TACOS" || u.Dinner == nil || *u.Dinner != (notify.Dinner{ID: "01J9TACOS", Name: "Tacos"}) {
+		t.Errorf("viewable reminder = %+v, want the recipe of its dinner Tacos", u)
+	}
+	if u := byTitle["Tonight: Chili"]; u.URL != "/plan?week=2026-10-12" || u.Dinner != nil || u.Body != notify.ArchivedBody {
+		t.Errorf("archived reminder = %+v, want the week's plan and no recipe", u)
+	}
+	if u := byTitle["Tonight: Old Stew · Recipe →"]; u.URL != "/plan?week=2026-10-12" || u.Dinner != nil {
+		t.Errorf("legacy reminder = %+v, want the week's plan and no recipe", u)
+	}
+}
+
 // An event emitted to push and Google Chat is one update.
 func TestUpdatesEmittedToTwoChannels(t *testing.T) {
 	t.Parallel()

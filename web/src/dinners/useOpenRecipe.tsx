@@ -7,7 +7,7 @@ import { dinnerDetailKey } from './api.ts'
 import { checkDinnerDetail } from './detail.ts'
 
 // RecipeDinner is the dinner whose recipe a plan day, Home, a Supply run, a
-// Regular or a Quest-log row offers.
+// Regular, a Quest-log row, a Recent update or a notification offers.
 export type RecipeDinner = { id: string; name: string }
 
 // RecipeCheck is the last recipe opened that did not open: gone when the
@@ -26,10 +26,10 @@ export type OpenRecipe = {
 }
 
 // useOpenRecipe is the one way the app opens a dinner's recipe from a plan
-// day, Home, a Supply run, the Regulars or the Quest log. Any of those may
-// have been read before another device archived the dinner, even while the
-// page stayed open, so its recipe opens only from the server's answer when
-// it is activated (checkDinnerDetail): never from the service worker's
+// day, Home, a Supply run, the Regulars, the Quest log, a Recent update or a
+// notification. Any of those may have been read or sent before another
+// device archived the dinner, even while the page stayed open, so its recipe
+// opens only from the server's answer when it is activated (checkDinnerDetail): never from the service worker's
 // cache, nor from a detail this page read before, which may still be fresh
 // here. That answer is what the detail shows. A 404 opens nothing: no read
 // here offers the recipe any more, and notice says the dinner was removed.
@@ -41,7 +41,13 @@ export function useOpenRecipe(): OpenRecipe {
   const navigate = useNavigate()
   const [check, setCheck] = useState<RecipeCheck | null>(null)
   const checking = useRef<AbortController | null>(null)
-  useEffect(() => () => checking.current?.abort(), [])
+  useEffect(
+    () => () => {
+      checking.current?.abort()
+      checking.current = null
+    },
+    [],
+  )
 
   const open = useCallback(
     (dinner: RecipeDinner) => {
@@ -51,13 +57,13 @@ export function useOpenRecipe(): OpenRecipe {
       setCheck(null)
       checkDinnerDetail(apiCheck, queryClient, dinner.id, controller.signal).then(
         (detail) => {
-          checking.current = null
+          if (checking.current === controller) checking.current = null
           if (controller.signal.aborted) return
           queryClient.setQueryData(dinnerDetailKey(dinner.id), detail)
           void navigate(`/dinner/${encodeURIComponent(dinner.id)}`)
         },
         (error: unknown) => {
-          checking.current = null
+          if (checking.current === controller) checking.current = null
           if (controller.signal.aborted) return
           if (error instanceof ApiError && error.status === 404) setCheck({ dinner, outcome: 'gone' })
           else setCheck({ dinner, outcome: 'failed', error: error instanceof Error ? error : new Error(String(error)) })

@@ -143,8 +143,8 @@ func TestGetUpdates(t *testing.T) {
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, signedIn(http.MethodGet, "/api/v1/updates", nil))
 	want := `{"updates":[` +
-		`{"type":"plan_ready","title":"Your week is drafted","body":"Body of plan_ready:2026-10-12","url":"/plan","created_at":"` + newer + `"},` +
-		`{"type":"new_suggestions","title":"New Side quests","body":"Body of new_suggestions:1","url":"/plan","created_at":"` + older + `"}]}`
+		`{"type":"plan_ready","title":"Your week is drafted","body":"Body of plan_ready:2026-10-12","url":"/plan","dinner":null,"created_at":"` + newer + `"},` +
+		`{"type":"new_suggestions","title":"New Side quests","body":"Body of new_suggestions:1","url":"/plan","dinner":null,"created_at":"` + older + `"}]}`
 	if rec.Code != http.StatusOK || rec.Body.String() != want {
 		t.Errorf("GET /api/v1/updates = %d %s, want 200 %s", rec.Code, rec.Body, want)
 	}

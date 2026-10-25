@@ -23,13 +23,31 @@ const TestText = "MealQuest · test message"
 // listedNames is how many names a message lists before "+ N more".
 const listedNames = 3
 
-// actions is the closing call to action of each event's Chat message.
-var actions = map[notify.EventType]string{
-	notify.PlanReady:      "Open the plan",
-	notify.ListReady:      "Open the Supply run",
-	notify.DayOfReminder:  "Open the recipe",
-	notify.NewSuggestions: "Open Discover",
-	notify.RotationReview: "Open MealQuest",
+// actions is the closing call to action of each event's Chat message, by
+// the path the event opens; an event that opens a dinner's recipe closes
+// with recipeAction.
+var actions = map[string]string{
+	"/plan":          "Open the plan",
+	"/plan/shopping": "Open the Supply run",
+	"/discover":      "Open Discover",
+	"/":              "Open MealQuest",
+}
+
+// recipeAction is the call to action of an event that opens a recipe.
+const recipeAction = "Open the recipe"
+
+// action is the call to action of a Chat message whose event opens the app
+// path raw, if it has one.
+func action(raw string) (string, bool) {
+	if notify.OpensRecipe(raw) {
+		return recipeAction, true
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", false
+	}
+	a, ok := actions[u.Path]
+	return a, ok
 }
 
 // carded are the events whose Chat message also has a card with an "Open"
@@ -47,7 +65,7 @@ func PlanReady(week, thisWeek store.LocalDate, dinners []string) notify.Event {
 		Key:   string(notify.PlanReady) + ":" + week.String(),
 		Title: planTitle(week, thisWeek),
 		Body:  nameList(dinners),
-		URL:   "/plan?" + url.Values{"week": {week.String()}}.Encode(),
+		URL:   notify.PlanPath(week),
 		Week:  week,
 	}
 }
@@ -66,31 +84,50 @@ func ListReady(week store.LocalDate, needed, dinners int) notify.Event {
 }
 
 // DayOfReminder is the day_of_reminder event of the dinner dinnerID, named
-// name, planned on date: "Tonight: Tacos · Recipe →", a title carrying its
-// own call to action.
-func DayOfReminder(date store.LocalDate, dinnerID, name string) notify.Event {
-	return notify.Event{
-		Type:  notify.DayOfReminder,
-		Key:   string(notify.DayOfReminder) + ":" + date.String(),
-		Title: "Tonight: " + name + " · Recipe →",
-		URL:   "/dinner/" + dinnerID,
-		Week:  household.WeekStart(date),
+// name, planned on date. A dinner with a recipe (viewable) is "Tonight:
+// Tacos · Recipe →", a title carrying its own call to action, opening its
+// recipe. One archived since it was planned has no recipe: it is "Tonight:
+// Tacos" with notify.ArchivedBody, opening the week's plan, and offers no recipe.
+func DayOfReminder(date store.LocalDate, dinnerID, name string, viewable bool) notify.Event {
+	week := household.WeekStart(date)
+	ev := notify.Event{
+		Type: notify.DayOfReminder,
+		Key:  string(notify.DayOfReminder) + ":" + date.String(),
+		Week: week,
 	}
+	if !viewable {
+		ev.Title = "Tonight: " + name
+		ev.Body = notify.ArchivedBody
+		ev.URL = notify.PlanPath(week)
+		return ev
+	}
+	ev.Title = "Tonight: " + name + notify.RecipeCallToAction
+	ev.URL = notify.RecipePath(dinnerID)
+	ev.Dinner = &notify.Dinner{ID: dinnerID, Name: name}
+	return ev
 }
 
 // StartReminder is the day_of_reminder event, keyed
 // day_of_reminder:start:{date}, reminding the household to start the
 // crock-pot dinner dinnerID, named name and planned on date, by startBy,
-// a time in the household zone: "Start the crock pot by 9:30 am".
-func StartReminder(date store.LocalDate, dinnerID, name string, startBy time.Time) notify.Event {
-	return notify.Event{
+// a time in the household zone: "Start the crock pot by 9:30 am". It opens
+// the dinner's recipe when it has one (viewable), and the week's plan when
+// the dinner was archived since it was planned.
+func StartReminder(date store.LocalDate, dinnerID, name string, startBy time.Time, viewable bool) notify.Event {
+	week := household.WeekStart(date)
+	ev := notify.Event{
 		Type:  notify.DayOfReminder,
 		Key:   string(notify.DayOfReminder) + ":start:" + date.String(),
 		Title: "Start the crock pot by " + startBy.Format("3:04 pm"),
 		Body:  name,
-		URL:   "/dinner/" + dinnerID,
-		Week:  household.WeekStart(date),
+		URL:   notify.PlanPath(week),
+		Week:  week,
 	}
+	if viewable {
+		ev.URL = notify.RecipePath(dinnerID)
+		ev.Dinner = &notify.Dinner{ID: dinnerID, Name: name}
+	}
+	return ev
 }
 
 // NewSuggestions is the new_suggestions event keyed by id, the ISO week
@@ -169,7 +206,7 @@ func SupplyRunText(name string, groups []SupplyRunGroup) string {
 	if !listed {
 		b.WriteString("\n\nNothing left to buy.")
 	}
-	b.WriteString("\n\n" + actions[notify.ListReady] + " →")
+	b.WriteString("\n\n" + actions["/plan/shopping"] + " →")
 	return b.String()
 }
 
@@ -189,7 +226,7 @@ func planTitle(week, thisWeek store.LocalDate) string {
 }
 
 // Text is the Google Chat message of p: its title, its body after a colon
-// and the event's call to action with an arrow. A title ending in an arrow,
+// and the call to action of the path it opens with an arrow. A title ending in an arrow,
 // with no body, carries its own call to action and is the message as it is.
 func Text(p notify.Payload) string {
 	text := p.Title
@@ -207,8 +244,8 @@ func Text(p notify.Payload) string {
 	if !endsSentence(text) {
 		text += "."
 	}
-	if action, ok := actions[p.Event]; ok {
-		text += " " + action + " →"
+	if a, ok := action(p.URL); ok {
+		text += " " + a + " →"
 	}
 	return text
 }

@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { createMemoryRouter, RouterProvider, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiProviders, HOME } from '../test/ApiProviders.tsx'
@@ -9,6 +10,10 @@ import { expectMinHitArea } from '../test/hitArea.ts'
 import { HOME_PATH } from './api.ts'
 import { HomePage } from './HomePage.tsx'
 import { ROTATION_REVIEWS_PATH } from './rotation.ts'
+import { clickPath, notificationOptions, parsePushPayload } from '../push/notification.ts'
+// The push message the server's Web Push sender delivers for a viewable
+// dinner's reminder, byte for byte (internal/push/delivered_test.go).
+import deliveredViewable from '../push/delivered/reminder-viewable.json?raw'
 
 // NOTHING_YET is the home of a household with no plan, no Side quests, no
 // Supply run and nothing unread.
@@ -36,19 +41,21 @@ function renderHome(body: unknown) {
   return renderRouter()
 }
 
-function renderRouter() {
+function renderRouter(entry = '/', strict = false) {
   const router = createMemoryRouter(
     [
       { path: '/', element: <HomePage /> },
       { path: '*', element: <Where /> },
     ],
-    { initialEntries: ['/'] },
+    { initialEntries: [entry] },
   )
-  render(
+  const app = (
     <ApiProviders>
       <RouterProvider router={router} />
-    </ApiProviders>,
+    </ApiProviders>
   )
+  render(strict ? <StrictMode>{app}</StrictMode> : app)
+  return router
 }
 
 describe('HomePage', () => {
@@ -180,6 +187,93 @@ describe('HomePage', () => {
     expect(await screen.findByTestId('where')).toHaveTextContent('/dinner/d1')
     const check = fetchMock.mock.calls.find(([input]) => String(input) === '/api/v1/dinners/d1')
     expect(check?.[1]?.cache).toBe('no-store')
+  })
+
+  // A tapped notification offering a recipe opens Home asked to open it
+  // (src/push/notification.ts recipeOpenPath), never the detail unchecked.
+  describe("a notification's recipe", () => {
+    function stubRecipe(answer: () => Response) {
+      return stubFetchByPath({
+        [HOME_PATH]: () => jsonResponse(200, HOME),
+        [ROTATION_REVIEWS_PATH]: () => jsonResponse(200, { reviews: [] }),
+        '/api/v1/dinners/d7': answer,
+      })
+    }
+
+    it.each([false, true])('opens once the server answers that the dinner has it (StrictMode %s)', async (strict) => {
+      const fetchMock = stubRecipe(() => jsonResponse(200, recipeBody('d7', 'Tacos')))
+      renderRouter('/?recipe=d7&name=Tacos', strict)
+
+      expect(await screen.findByTestId('where')).toHaveTextContent('/dinner/d7')
+      const checks = fetchMock.mock.calls.filter(([input]) => String(input) === '/api/v1/dinners/d7')
+      expect(checks.length).toBeGreaterThan(0)
+      for (const [, init] of checks) expect(init?.cache).toBe('no-store')
+    })
+
+    it('opens nothing for a dinner archived since, says its recipe is gone, and asks only once', async () => {
+      const fetchMock = stubRecipe(() => errorResponse(404, 'not_found'))
+      const router = renderRouter('/?recipe=d7&name=Tacos')
+
+      expect(await screen.findByText('Tacos was removed, so its recipe is gone.')).toBeInTheDocument()
+      expect(screen.queryByTestId('where')).not.toBeInTheDocument()
+      expect(screen.queryByText('Dinner not found')).not.toBeInTheDocument()
+      expect(router.state.location.search).toBe('')
+      expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/v1/dinners/d7')).toHaveLength(1)
+    })
+
+    it('offers Retry when the server cannot be asked', async () => {
+      let reachable = false
+      stubRecipe(() => {
+        if (!reachable) throw new TypeError('Failed to fetch')
+        return jsonResponse(200, recipeBody('d7', 'Tacos'))
+      })
+      renderRouter('/?recipe=d7&name=Tacos')
+
+      expect(await screen.findByText(/Couldn't check the recipe for Tacos with the server, so it didn't open\./)).toBeInTheDocument()
+      reachable = true
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+      expect(await screen.findByTestId('where')).toHaveTextContent('/dinner/d7')
+    })
+
+    describe("the server's delivered reminder, tapped", () => {
+      const origin = 'https://mealquest.example'
+      const tapped = clickPath(notificationOptions(parsePushPayload(deliveredViewable, origin).notice).data, origin)
+      function stubDelivered(answer: () => Response) {
+        return stubFetchByPath({
+          [HOME_PATH]: () => jsonResponse(200, HOME),
+          [ROTATION_REVIEWS_PATH]: () => jsonResponse(200, { reviews: [] }),
+          '/api/v1/dinners/01TACOS': answer,
+        })
+      }
+
+      it('opens the recipe of a viewable dinner once the server has it', async () => {
+        const fetchMock = stubDelivered(() => jsonResponse(200, recipeBody('01TACOS', 'Tacos')))
+        renderRouter(tapped)
+
+        expect(await screen.findByTestId('where')).toHaveTextContent('/dinner/01TACOS')
+        const checks = fetchMock.mock.calls.filter(([input]) => String(input) === '/api/v1/dinners/01TACOS')
+        expect(checks.length).toBeGreaterThan(0)
+        for (const [, init] of checks) expect(init?.cache).toBe('no-store')
+      })
+
+      it('opens nothing when the dinner was archived after the notification was shown', async () => {
+        stubDelivered(() => errorResponse(404, 'not_found'))
+        renderRouter(tapped)
+
+        expect(await screen.findByText('Tacos was removed, so its recipe is gone.')).toBeInTheDocument()
+        expect(screen.queryByTestId('where')).not.toBeInTheDocument()
+        expect(screen.queryByText('Dinner not found')).not.toBeInTheDocument()
+      })
+    })
+
+    it('says so, and asks for nothing, when the link names no dinner', async () => {
+      const fetchMock = stubRecipe(() => jsonResponse(200, recipeBody('d7', 'Tacos')))
+      renderRouter('/?recipe=d7')
+
+      expect(await screen.findByText("That notification's recipe link names no dinner, so nothing opened.")).toBeInTheDocument()
+      expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/v1/dinners/d7')).toHaveLength(0)
+      expect(screen.queryByTestId('where')).not.toBeInTheDocument()
+    })
   })
 
   it.each([

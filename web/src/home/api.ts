@@ -41,7 +41,8 @@ export type ShoppingListStatus = { weekStart: string; dates: string; ready: bool
 // Oct 2"; timezone is the household's IANA zone, whose midnight starts the
 // next day; tonight is null when today has no plan; sideQuestCount is how
 // many Side quests wait in the deck; unread says the Recent updates hold
-// something not yet seen.
+// something not yet seen. cached says the service worker answered from its
+// cache: the server may have changed it since.
 export type Home = {
   dateLabel: string
   timezone: string
@@ -49,6 +50,7 @@ export type Home = {
   sideQuestCount: number
   shoppingList: ShoppingListStatus
   unread: boolean
+  cached: boolean
 }
 
 // showArchived is home with tonight's dinner shown archived — removed from
@@ -97,8 +99,9 @@ function parseShoppingList(where: string, list: unknown): ShoppingListStatus {
   return { weekStart: list.weekStart, dates: week.dates.replace(' – ', '–'), ready: list.ready }
 }
 
-// parseHome checks a GET /api/v1/home body.
-export function parseHome(where: string, body: unknown): Home {
+// parseHome checks a GET /api/v1/home body; cached says the service worker
+// answered it.
+export function parseHome(where: string, body: unknown, cached: boolean): Home {
   if (!isRecord(body) || typeof body.dateLabel !== 'string') throw new Error(`${where}: response is not the home`)
   if (typeof body.timezone !== 'string' || !isZone(body.timezone)) {
     throw new Error(`${where}: timezone ${JSON.stringify(body.timezone)} is not an IANA zone`)
@@ -115,6 +118,7 @@ export function parseHome(where: string, body: unknown): Home {
     sideQuestCount: body.sideQuestCount as number,
     shoppingList: parseShoppingList(where, body.shoppingList),
     unread: updates.unread,
+    cached,
   }
 }
 
@@ -134,12 +138,15 @@ function isZone(zone: string): boolean {
 // dinner shows archived once it was removed on this device
 // (archived.ts).
 export function useHome() {
-  const { apiFetch } = useApi()
+  const { apiRead } = useApi()
   const queryClient = useQueryClient()
   const archived = useArchived()
   const home = useQuery({
     queryKey: HOME_KEY,
-    queryFn: async () => parseHome(`GET ${HOME_PATH}`, await apiFetch<unknown>(HOME_PATH)),
+    queryFn: async () => {
+      const read = await apiRead<unknown>(HOME_PATH)
+      return parseHome(`GET ${HOME_PATH}`, read.body, read.cached)
+    },
     select: useCallback((home: Home) => showArchived(home, knownArchived(archived)), [archived]),
   })
   const zone = home.data?.timezone

@@ -267,11 +267,16 @@ function removeTacos() {
 // expectNoRecipeLink checks, screen by screen, that nothing links to Beef
 // tacos' recipe or shows its detail: the plan and Home show it archived, the
 // Supply run's card is plain with its items still toggling, the Regulars no
-// longer have it and its detail is not found. Pot roast still links.
-async function expectNoRecipeLink() {
+// longer have it and its detail is not found. Pot roast still links when the
+// server answered the reads (from 'server'); answered from what the worker
+// or this device saved (from 'saved'), nothing on the plan or Supply run
+// links, as no status there is verified (F1, feature review round 3).
+async function expectNoRecipeLink(from: 'server' | 'saved') {
   go('To Plan')
   await screen.findByRole('heading', { level: 1, name: 'Oct 5 – 11' })
-  await waitFor(() => expect(recipeLinks('d4')).toHaveLength(1))
+  await waitFor(() => expect(screen.getByText('Pot roast')).toBeInTheDocument())
+  if (from === 'server') await waitFor(() => expect(recipeLinks('d4')).toHaveLength(1))
+  else expect(recipeLinks('d4')).toEqual([])
   expect(screen.getByText('Beef tacos')).toBeInTheDocument()
   expect(recipeLinks('d1')).toEqual([])
 
@@ -284,7 +289,9 @@ async function expectNoRecipeLink() {
   const card = await waitFor(() => screen.getByRole('region', { name: 'Beef tacos' }))
   expect(within(card).queryByRole('link')).not.toBeInTheDocument()
   expect(within(card).getByRole('checkbox', { name: /Ground beef/ })).toBeEnabled()
-  expect(within(screen.getByRole('region', { name: 'Pot roast' })).getByRole('link')).toHaveAttribute('href', '/dinner/d4')
+  const roast = screen.getByRole('region', { name: 'Pot roast' })
+  if (from === 'server') expect(within(roast).getByRole('link')).toHaveAttribute('href', '/dinner/d4')
+  else expect(within(roast).queryByRole('link')).not.toBeInTheDocument()
 
   go('To Regulars')
   await screen.findByRole('heading', { level: 2, name: /^On rotation/ })
@@ -327,7 +334,7 @@ describe('a removed Regular read offline from what the worker saved before', () 
       expect.arrayContaining([`GET /api/v1/plans/${WEEK}`, 'GET /api/v1/home', `GET /api/v1/shopping/${WEEK}`, 'GET /api/v1/dinners/d1']),
     )
     expect(await savedRegular('d1')).toContain(`/api/v1/plans/${WEEK}`)
-    await expectNoRecipeLink()
+    await expectNoRecipeLink('saved')
     expect(screen.getByRole('status')).toHaveTextContent('Offline — showing saved data')
     online.unmount()
 
@@ -339,7 +346,7 @@ describe('a removed Regular read offline from what the worker saved before', () 
     const reopened = await waitFor(() => screen.getByRole('region', { name: 'Beef tacos' }))
     expect(within(reopened).getByRole('checkbox', { name: /Ground beef/ })).toBeEnabled()
     expect(recipeLinks('d1')).toEqual([])
-    expect(within(screen.getByRole('region', { name: 'Pot roast' })).getByRole('link')).toHaveAttribute('href', '/dinner/d4')
+    expect(recipeLinks('d4')).toEqual([])
     expect(screen.getByRole('status')).toHaveTextContent('Offline — showing saved data')
   })
 })
@@ -377,7 +384,7 @@ describe('a read answered before a Regular is removed that arrives after', () =>
     expect(savedStatus('d1')).toBe('archived')
 
     // Online, no screen links to its recipe.
-    await expectNoRecipeLink()
+    await expectNoRecipeLink('server')
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
 
     // The server can no longer be reached: the worker answers every read
@@ -389,7 +396,7 @@ describe('a read answered before a Regular is removed that arrives after', () =>
     expect(networkReads).toEqual(
       expect.arrayContaining([`GET /api/v1/plans/${WEEK}`, 'GET /api/v1/home', `GET /api/v1/shopping/${WEEK}`, 'GET /api/v1/dinners/d1']),
     )
-    await expectNoRecipeLink()
+    await expectNoRecipeLink('saved')
     expect(screen.getByRole('status')).toHaveTextContent('Offline — showing saved data')
     online.unmount()
 
@@ -427,7 +434,7 @@ describe('a removal no answer settled', () => {
     // Offline, every read is the worker's from before, yet nothing links.
     networkReads = []
     await readAgain(online.queryClient)
-    await expectNoRecipeLink()
+    await expectNoRecipeLink('saved')
     online.unmount()
 
     // A new page offline opens the saved Supply run: still no link.
@@ -475,7 +482,7 @@ describe('a removal no answer settled', () => {
     await waitFor(() => expect(networkReads).toContain('DELETE /api/v1/dinners/d1'))
     await waitFor(() => expect(online.queryClient.isFetching()).toBe(0))
     expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
-    await expectNoRecipeLink()
+    await expectNoRecipeLink('server')
     online.unmount()
 
     // Next time the app starts it sends the removal again; the server
@@ -485,7 +492,7 @@ describe('a removal no answer settled', () => {
     await renderApp(PLAN_SCREEN)
     await waitFor(() => expect(localStorage.getItem(archivedKey('d1'))).toBe(ARCHIVED))
     expect(networkReads).toContain('DELETE /api/v1/dinners/d1')
-    await expectNoRecipeLink()
+    await expectNoRecipeLink('server')
   })
 })
 
@@ -531,7 +538,7 @@ describe('a removal answered only after another device archived the dinner', () 
       expect.arrayContaining([`GET /api/v1/plans/${WEEK}`, 'GET /api/v1/home', `GET /api/v1/shopping/${WEEK}`, 'GET /api/v1/dinners/d1']),
     )
     expect(await savedRegular('d1')).toContain(`/api/v1/plans/${WEEK}`)
-    await expectNoRecipeLink()
+    await expectNoRecipeLink('saved')
     online.unmount()
 
     // A new page offline opens the Supply run saved on this device: no link,
@@ -554,7 +561,7 @@ describe('a removal answered only after another device archived the dinner', () 
     await waitFor(() => expect(localStorage.getItem(archivedKey('d1'))).toBe(ARCHIVED))
     expect(networkReads).toContain('DELETE /api/v1/dinners/d1')
     await waitFor(() => expect(savedStatus('d1')).toBe('archived'))
-    await expectNoRecipeLink()
+    await expectNoRecipeLink('server')
   })
 })
 
@@ -606,5 +613,122 @@ describe('a removal another tab is still sending', () => {
     expect(within(card).getByRole('checkbox', { name: /Ground beef/ })).toBeEnabled()
     expect(recipeLinks('d1')).toEqual([])
     expect(localStorage.getItem(archivedKey('d1'))).toBe(ARCHIVED)
+  })
+})
+
+// F1 (feature review round 3): another device archives Beef tacos. This
+// device has no mark of it, and what the worker and this device saved still
+// say it is a Regular: a status from such a read is not verified, so it
+// offers no recipe link. The server's own answer offers it again, only to a
+// dinner the server still has.
+describe('a dinner another device archived, read here from what was saved before', () => {
+  // expectLinks checks the plan, Home and Supply run link to the recipes of
+  // exactly the dinners of ids among Beef tacos (d1) and Pot roast (d4).
+  async function expectLinks(ids: string[]) {
+    go('To Plan')
+    await screen.findByRole('heading', { level: 1, name: 'Oct 5 – 11' })
+    await waitFor(() => expect(screen.getByText('Pot roast')).toBeInTheDocument())
+    expect(screen.getByText('Beef tacos')).toBeInTheDocument()
+    expect(recipeLinks('d1')).toHaveLength(ids.includes('d1') ? 1 : 0)
+    expect(recipeLinks('d4')).toHaveLength(ids.includes('d4') ? 1 : 0)
+
+    go('To Home')
+    const tonight = await screen.findByRole('region', { name: 'Tonight' })
+    expect(within(tonight).getByRole('heading', { name: 'Beef tacos' })).toBeInTheDocument()
+    expect(within(tonight).queryAllByRole('link')).toHaveLength(ids.includes('d1') ? 1 : 0)
+
+    go('To Supply run')
+    const tacos = await waitFor(() => screen.getByRole('region', { name: 'Beef tacos' }))
+    expect(within(tacos).getByRole('checkbox', { name: /Ground beef/ })).toBeEnabled()
+    expect(within(tacos).queryAllByRole('link')).toHaveLength(ids.includes('d1') ? 1 : 0)
+    expect(within(screen.getByRole('region', { name: 'Pot roast' })).queryAllByRole('link')).toHaveLength(ids.includes('d4') ? 1 : 0)
+  }
+
+  it('offers no recipe link from the worker’s or this device’s saved reads, and only the server’s answer offers one again, for a dinner it still has', async () => {
+    mockViewport(768)
+    const page = await renderApp(PLAN_SCREEN)
+    await readOnline()
+    await expectLinks(['d1', 'd4'])
+
+    // Another device archives Beef tacos; this one never removed it.
+    archived = true
+    expect(localStorage.getItem(archivedKey('d1'))).toBeNull()
+
+    // The server cannot be reached and everything is read again: the worker
+    // answers from what it saved, Beef tacos a Regular in each, and no
+    // dinner links to its recipe.
+    reachable = false
+    networkReads = []
+    await readAgain(page.queryClient)
+    expect(networkReads).toEqual(
+      expect.arrayContaining([`GET /api/v1/plans/${WEEK}`, 'GET /api/v1/home', `GET /api/v1/shopping/${WEEK}`]),
+    )
+    expect(await savedRegular('d1')).toEqual(expect.arrayContaining(['/api/v1/home', `/api/v1/plans/${WEEK}`, `/api/v1/shopping/${WEEK}`]))
+    await expectLinks([])
+    expect(screen.getByRole('status')).toHaveTextContent('Offline — showing saved data')
+    page.unmount()
+
+    // A new page offline opens the Supply run saved on this device, Beef
+    // tacos a Regular on it: no dinner links to its recipe.
+    expect(savedStatus('d1')).toBe('regular')
+    const runPage = await renderApp(RUN_SCREEN)
+    await read(runPage.queryClient, `/api/v1/shopping/${WEEK}`)
+    await waitFor(() => screen.getByRole('region', { name: 'Beef tacos' }))
+    expect(recipeLinks('d1')).toEqual([])
+    expect(recipeLinks('d4')).toEqual([])
+    runPage.unmount()
+
+    // The server can be reached again: its answers say Beef tacos is
+    // archived, so only Pot roast links to its recipe.
+    reachable = true
+    const fresh = await renderApp(PLAN_SCREEN)
+    await read(fresh.queryClient, `/api/v1/plans/${WEEK}`)
+    await expectLinks(['d4'])
+    await waitFor(() => expect(fresh.queryClient.isFetching()).toBe(0))
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(localStorage.getItem(archivedKey('d1'))).toBeNull()
+  })
+
+  it('reads the plan, Home and Supply run again once a recipe link shown before the archive opens a dinner the server no longer has', async () => {
+    mockViewport(768)
+    const page = await renderApp(PLAN_SCREEN)
+    await readOnline()
+    go('To Plan')
+    await waitFor(() => expect(recipeLinks('d1')).toHaveLength(1))
+
+    // Another device archives Beef tacos while its link is on screen here,
+    // from the server's answer of a minute ago. Opening it, its detail —
+    // no longer fresh — is read again, and the server says it is not found.
+    archived = true
+    vi.setSystemTime(new Date('2026-10-07T16:01:00Z'))
+    networkReads = []
+    fireEvent.click(recipeLinks('d1')[0]!)
+    expect(await screen.findByText('Dinner not found')).toBeInTheDocument()
+
+    // Back on the plan, Home and Supply run, each is read again, and only
+    // Pot roast links.
+    await waitFor(() => expect(page.queryClient.isFetching()).toBe(0))
+    await expectLinks(['d4'])
+    await waitFor(() => expect(page.queryClient.isFetching()).toBe(0))
+    expect(networkReads).toEqual(
+      expect.arrayContaining([`GET /api/v1/plans/${WEEK}`, 'GET /api/v1/home', `GET /api/v1/shopping/${WEEK}`]),
+    )
+    await expectLinks(['d4'])
+  })
+
+  it('offers each recipe link again once the server answers that the dinner is still there', async () => {
+    mockViewport(768)
+    const page = await renderApp(PLAN_SCREEN)
+    await readOnline()
+
+    // Offline, every read is what the worker saved: no recipe links.
+    reachable = false
+    await readAgain(page.queryClient)
+    await expectLinks([])
+
+    // The server answers again and still has every dinner: each links.
+    reachable = true
+    await readAgain(page.queryClient)
+    await expectLinks(['d1', 'd4'])
   })
 })

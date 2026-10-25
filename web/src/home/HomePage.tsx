@@ -1,6 +1,7 @@
 import { Bell, ChevronRight, Compass, Search, ShoppingCart, Zap, type LucideIcon } from 'lucide-react'
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router'
+import { opensRecipe } from '../dinners/api.ts'
 import { duration } from '../plan/PlanPage.tsx'
 import { supplyRunScreen } from '../shopping/api.ts'
 import buttonStyles from '../ui/Button.module.css'
@@ -26,8 +27,9 @@ function meta({ origin, minutes_total }: Tonight): string {
 // TonightCard is the dinner planned for today: its washed photo, name and
 // meta line, and the dark Recipe pill to its recipe, unless the dinner was
 // archived (removed from Regulars) after the plan was made — it has no
-// detail to open — when there is no pill.
-function TonightCard({ tonight }: { tonight: Tonight }) {
+// detail to open — or Home is the service worker's cached copy (cached),
+// whose status may be stale (opensRecipe), when there is no pill.
+function TonightCard({ tonight, cached }: { tonight: Tonight; cached: boolean }) {
   return (
     <section aria-label="Tonight" className={styles.card}>
       <Photo id={tonight.photo_id} name={tonight.name} inset="10px" sizes="400px" className={styles.photo} />
@@ -36,7 +38,7 @@ function TonightCard({ tonight }: { tonight: Tonight }) {
           <h2 className={styles.name}>{tonight.name}</h2>
           <span className={styles.meta}>{meta(tonight)}</span>
         </div>
-        {tonight.status !== 'archived' && (
+        {opensRecipe(tonight.status, cached) && (
           <Link to={`/dinner/${encodeURIComponent(tonight.id)}`} className={[buttonStyles.button, buttonStyles.dark, styles.recipe].join(' ')}>
             Recipe
           </Link>
@@ -146,7 +148,7 @@ export function HomePage() {
       {home.isError && (
         <ErrorBanner onRetry={() => void home.refetch()}>Couldn't load tonight's quest. {home.error.message}</ErrorBanner>
       )}
-      {data !== undefined && (data.tonight === null ? <NoPlan /> : <TonightCard tonight={data.tonight} />)}
+      {data !== undefined && (data.tonight === null ? <NoPlan /> : <TonightCard tonight={data.tonight} cached={data.cached} />)}
       <RotationCheck />
       <Tiles />
       {home.isPending && (

@@ -147,13 +147,14 @@ describe('cache names', () => {
     for (const name of Object.values(cacheNames)) expect(name).toMatch(/^mealquest-/)
   })
 
-  it('retire only the v1 and v2 API caches', () => {
+  it('retire only the v1, v2 and v3 API caches', () => {
     // v1 API responses held dinners with the pasted recipe_url and v2 ones
     // recipe candidates whose candidate_id was the full URL; either can carry
-    // a personal token, and offline the worker would still serve them.
-    // The precache, photos and fonts keep their v1 caches.
+    // a personal token, and offline the worker would still serve them. v3
+    // plans, Home and Supply runs have no dinner status, which their reads
+    // now require. The precache, photos and fonts keep their v1 caches.
     expect(cacheNames).toEqual({
-      api: 'mealquest-api-v3',
+      api: 'mealquest-api-v4',
       media: 'mealquest-media-v1',
       fonts: 'mealquest-fonts-v1',
     })

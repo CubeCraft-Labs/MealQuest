@@ -565,9 +565,13 @@ describe('RegularsSettingsPage', () => {
       // The Supply run is read once; any later read never answers, as when
       // the server cannot be reached, so only what is cached or saved shows.
       let runReads = 0
+      let answerReopened: (response: Response) => void = () => {
+        throw new Error('the Supply run was not read again')
+      }
       const server = stubServer([TACOS, ROAST], {
         'GET /api/v1/settings/household': () => jsonResponse(200, HOUSEHOLD_SETTINGS),
-        [`GET ${SUPPLY_RUN}`]: () => (++runReads === 1 ? jsonResponse(200, run) : new Promise<Response>(() => undefined)),
+        [`GET ${SUPPLY_RUN}`]: () =>
+          ++runReads === 1 ? jsonResponse(200, run) : new Promise<Response>((resolve) => (answerReopened = resolve)),
         'DELETE /api/v1/dinners/d1': () => {
           server.regulars = [ROAST]
           return jsonResponse(200, { ...TACOS, status: 'archived' })
@@ -604,14 +608,22 @@ describe('RegularsSettingsPage', () => {
 
       // A new page, with nothing cached, opens the saved Supply run while its
       // read is not answered: the record saved on this device leaves no
-      // recipe link there either.
+      // recipe link there either, and what was saved offers none at all
+      // (F1, feature review round 3) — another device may have archived Pot
+      // roast since.
       app.unmount()
       resetArchived()
       await renderApp(RUN_SCREEN)
       const reopened = await waitFor(() => card('Beef tacos'))
       expect(within(reopened).queryByRole('link')).not.toBeInTheDocument()
-      expect(within(card('Pot roast')).getByRole('link', { name: 'Pot roast' })).toHaveAttribute('href', '/dinner/d4')
+      expect(within(card('Pot roast')).queryByRole('link')).not.toBeInTheDocument()
       await waitFor(() => expect(runReads).toBe(2))
+
+      // The server answers: Pot roast links to its recipe again, Beef tacos,
+      // marked here, still does not.
+      answerReopened(jsonResponse(200, run))
+      expect(await within(card('Pot roast')).findByRole('link', { name: 'Pot roast' })).toHaveAttribute('href', '/dinner/d4')
+      expect(within(card('Beef tacos')).queryByRole('link')).not.toBeInTheDocument()
     })
 
     // F1 (review round 8): the server archived it, so the Supply run cached
@@ -621,9 +633,13 @@ describe('RegularsSettingsPage', () => {
       vi.useFakeTimers({ toFake: ['Date'] })
       vi.setSystemTime(new Date('2026-10-07T16:00:00Z'))
       let runReads = 0
+      let answerReopened: (response: Response) => void = () => {
+        throw new Error('the Supply run was not read again')
+      }
       const server = stubServer([TACOS, ROAST], {
         'GET /api/v1/settings/household': () => jsonResponse(200, HOUSEHOLD_SETTINGS),
-        [`GET ${SUPPLY_RUN}`]: () => (++runReads === 1 ? jsonResponse(200, run) : new Promise<Response>(() => undefined)),
+        [`GET ${SUPPLY_RUN}`]: () =>
+          ++runReads === 1 ? jsonResponse(200, run) : new Promise<Response>((resolve) => (answerReopened = resolve)),
         'DELETE /api/v1/dinners/d1': () => {
           server.regulars = [ROAST]
           return jsonResponse(200, { ...TACOS, status: 'archived' })
@@ -666,14 +682,20 @@ describe('RegularsSettingsPage', () => {
       expect(within(cached).getByRole('checkbox', { name: /Ground beef/ })).toBeEnabled()
 
       // A new page, with nothing cached, opens that saved Supply run while
-      // its read is not answered: no recipe link to the archived dinner.
+      // its read is not answered: no recipe link to the archived dinner, nor
+      // to any other from what was saved (F1, feature review round 3).
       app.unmount()
       resetArchived()
       await renderApp(RUN_SCREEN)
       const reopened = await waitFor(() => card('Beef tacos'))
       expect(within(reopened).queryByRole('link')).not.toBeInTheDocument()
-      expect(within(card('Pot roast')).getByRole('link', { name: 'Pot roast' })).toHaveAttribute('href', '/dinner/d4')
+      expect(within(card('Pot roast')).queryByRole('link')).not.toBeInTheDocument()
       await waitFor(() => expect(runReads).toBe(2))
+
+      // The server answers: Pot roast links again, Beef tacos still does not.
+      answerReopened(jsonResponse(200, run))
+      expect(await within(card('Pot roast')).findByRole('link', { name: 'Pot roast' })).toHaveAttribute('href', '/dinner/d4')
+      expect(within(card('Beef tacos')).queryByRole('link')).not.toBeInTheDocument()
     })
   })
 

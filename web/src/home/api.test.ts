@@ -41,11 +41,11 @@ describe('parseUpdates', () => {
 
 describe('parseHome', () => {
   it("keeps the household's zone, and refuses one that is not an IANA zone", () => {
-    expect(parseHome('GET /api/v1/home', HOME).timezone).toBe('America/New_York')
-    expect(() => parseHome('GET /api/v1/home', { ...HOME, timezone: 'Mars/Olympus' })).toThrow(
+    expect(parseHome('GET /api/v1/home', HOME, false).timezone).toBe('America/New_York')
+    expect(() => parseHome('GET /api/v1/home', { ...HOME, timezone: 'Mars/Olympus' }, false)).toThrow(
       'GET /api/v1/home: timezone "Mars/Olympus" is not an IANA zone',
     )
-    expect(() => parseHome('GET /api/v1/home', { ...HOME, timezone: undefined })).toThrow(
+    expect(() => parseHome('GET /api/v1/home', { ...HOME, timezone: undefined }, false)).toThrow(
       'GET /api/v1/home: timezone undefined is not an IANA zone',
     )
   })
@@ -53,7 +53,7 @@ describe('parseHome', () => {
 
 describe('showArchived', () => {
   it("shows tonight's dinner archived when the server archived it, whatever the read said", () => {
-    const home = parseHome('GET /api/v1/home', HOME)
+    const home = parseHome('GET /api/v1/home', HOME, false)
 
     expect(showArchived(home, new Set(['other']))).toBe(home)
     expect(showArchived(home, new Set(['d1'])).tonight).toMatchObject({ id: 'd1', name: 'Pizza night', status: 'archived' })

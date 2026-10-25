@@ -3,6 +3,7 @@ import { CalendarDays, Check, ChevronLeft, ChevronRight, Plus, RefreshCw, Shoppi
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { ApiError, useJob } from '../api/index.ts'
+import { opensRecipe } from '../dinners/api.ts'
 import { QUEST_LOG_KEY } from '../discover/api.ts'
 import { Confirm } from '../settings/LeaveGuard.tsx'
 import { methodLabels } from '../settings/RegularsSettingsPage.tsx'
@@ -161,12 +162,26 @@ function DayTile({ day, timezone, swapping, onSwap }: { day: PlanDay; timezone: 
 // crock-pot dinner's start-by time in the household's zone, and its Regular
 // or Side quest tag, a Side quest's card in teal. The photo and name open the
 // dinner's recipe, unless the dinner was archived (removed from Regulars)
-// after the plan was made — it has no detail to open — when they are plain;
-// the swap icon opens the swap sheet; while that is open
+// after the plan was made — it has no detail to open — or the plan is the
+// service worker's cached copy (cached), whose status may be stale
+// (opensRecipe), when they are plain; the swap icon opens the swap sheet;
+// while that is open
 // the card is swapping, ringed in grape. A dinner dragged over the day drops
 // on it: the card is swapping, covered by a dashed grape "Drop to swap"
 // saying which dinner it replaces.
-function DayColumn({ day, timezone, swapping, onSwap }: { day: PlanDay; timezone: string; swapping: boolean; onSwap: () => void }) {
+function DayColumn({
+  day,
+  cached,
+  timezone,
+  swapping,
+  onSwap,
+}: {
+  day: PlanDay
+  cached: boolean
+  timezone: string
+  swapping: boolean
+  onSwap: () => void
+}) {
   const { dinner } = day
   const time = cooking(dinner)
   const target = useDropTarget(day.date) !== null
@@ -187,12 +202,12 @@ function DayColumn({ day, timezone, swapping, onSwap }: { day: PlanDay; timezone
         <span className={styles.dayNumber}>{dayOfMonth(day.date)}</span>
       </p>
       <div className={classes}>
-        {dinner.status === 'archived' ? (
-          <div className={styles.cardRecipe}>{recipe}</div>
-        ) : (
+        {opensRecipe(dinner.status, cached) ? (
           <Link to={`/dinner/${encodeURIComponent(dinner.id)}`} className={styles.cardRecipe}>
             {recipe}
           </Link>
+        ) : (
+          <div className={styles.cardRecipe}>{recipe}</div>
         )}
         {time !== null && <p className={styles.cardMinutes}>{time}</p>}
         {day.start_by !== null && (
@@ -481,7 +496,7 @@ function WeekBoard({
       </EmptyState>
     )
   } else {
-    const { ai_note, days } = plan.data
+    const { ai_note, days, cached: planCached } = plan.data
     const swappingDay = days.find((day) => day.date === swappingDate)
     const sheet = swappingDay !== undefined && (
       <SwapSheet
@@ -500,6 +515,7 @@ function WeekBoard({
               <DayColumn
                 key={day.date}
                 day={day}
+                cached={planCached}
                 timezone={timezone}
                 swapping={day.date === swappingDate}
                 onSwap={() => openSwap(day.date)}

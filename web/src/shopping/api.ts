@@ -8,7 +8,7 @@ import {
   type QueryClient,
 } from '@tanstack/react-query'
 import { useCallback, useEffect, useReducer, useState, useSyncExternalStore } from 'react'
-import { ApiError, useApi, type ApiClient } from '../api/index.ts'
+import { ApiError, useApi, type ApiClient, type ApiRead } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { meQueryKey } from '../AuthBootstrap.tsx'
 import { archivedNow, knownArchived, onArchived, useArchived } from '../dinners/archived.ts'
@@ -89,7 +89,10 @@ export type Counts = { needed_count: number; total_count: number }
 // "Week 41 · Oct 5 – 11", title the AI's title once written,
 // sent_to_chat_at when it was sent to Google Chat, if it was, and
 // chat_send_unconfirmed_at when a send whose outcome is not known began,
-// if one did: it may or may not have reached Google Chat.
+// if one did: it may or may not have reached Google Chat. cached says it is
+// not the server's answer just now — the service worker answered from its
+// cache, or it is the one saved on this device — so the server may have
+// changed it since.
 export type SupplyRun = Counts & {
   weekStart: string
   label: string
@@ -98,6 +101,7 @@ export type SupplyRun = Counts & {
   sent_to_chat_at: Date | null
   chat_send_unconfirmed_at: Date | null
   groups: SupplyRunGroup[]
+  cached: boolean
 }
 
 function count(where: string, field: string, value: unknown): number {
@@ -171,12 +175,13 @@ function instant(where: string, field: string, value: unknown): Date | null {
   return at
 }
 
-// parseSupplyRun reads a Supply run the server sent.
-export function parseSupplyRun(where: string, weekStart: string, body: unknown): SupplyRun {
-  return parseRun(where, weekStart, body, serverDinnerStatus)
+// parseSupplyRun reads a Supply run the server sent; cached says the service
+// worker answered it.
+export function parseSupplyRun(where: string, weekStart: string, body: unknown, cached: boolean): SupplyRun {
+  return parseRun(where, weekStart, body, serverDinnerStatus, cached)
 }
 
-function parseRun(where: string, weekStart: string, body: unknown, dinnerStatus: DinnerStatus): SupplyRun {
+function parseRun(where: string, weekStart: string, body: unknown, dinnerStatus: DinnerStatus, cached: boolean): SupplyRun {
   if (
     !isRecord(body) ||
     body.weekStart !== weekStart ||
@@ -195,15 +200,17 @@ function parseRun(where: string, weekStart: string, body: unknown, dinnerStatus:
     chat_send_unconfirmed_at: instant(where, 'chat_send_unconfirmed_at', body.chat_send_unconfirmed_at),
     ...parseCounts(where, body),
     groups: body.groups.map((group) => parseGroup(where, group, dinnerStatus)),
+    cached,
   }
 }
 
-// savedSupplyRun is the week's Supply run saved on this device, or undefined.
-// One saved by an earlier build may not know its dinners' statuses
-// (savedDinnerStatus).
+// savedSupplyRun is the week's Supply run saved on this device, or undefined:
+// always cached, whatever the cached it was saved with, as it is not the
+// server's answer now. One saved by an earlier build may not know its
+// dinners' statuses (savedDinnerStatus).
 function savedSupplyRun(weekStart: string): SupplyRun | undefined {
   const saved = savedRun(weekStart)
-  return saved === undefined ? undefined : parseRun(`Saved ${SAVED_KEY}`, weekStart, saved, savedDinnerStatus)
+  return saved === undefined ? undefined : parseRun(`Saved ${SAVED_KEY}`, weekStart, saved, savedDinnerStatus, true)
 }
 
 // showArchived is run with each dinner the server archived (archived) shown
@@ -236,14 +243,14 @@ export function useSupplyRun(weekStart: string) {
     initialDataUpdatedAt: 0,
     queryFn: async (): Promise<SupplyRun | null> => {
       const path = supplyRunPath(weekStart)
-      let body: unknown
+      let read: ApiRead<unknown>
       try {
-        body = (await apiRead<unknown>(path)).body
+        read = await apiRead<unknown>(path)
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) return null
         throw error
       }
-      return parseSupplyRun(`GET ${path}`, weekStart, body)
+      return parseSupplyRun(`GET ${path}`, weekStart, read.body, read.cached)
     },
     select: useCallback((run: SupplyRun | null) => showArchived(run, knownArchived(archived)), [archived]),
   })
@@ -260,7 +267,7 @@ export function useGenerateSupplyRun(weekStart: string) {
     onMutate: () => settleUnmadePushes(queryClient, weekStart),
     mutationFn: async (): Promise<SupplyRun> => {
       const path = `${supplyRunPath(weekStart)}/generate`
-      return parseSupplyRun(`POST ${path}`, weekStart, await apiFetch<unknown>(path, { method: 'POST' }))
+      return parseSupplyRun(`POST ${path}`, weekStart, await apiFetch<unknown>(path, { method: 'POST' }), false)
     },
     onSuccess: (run, _, settle) => {
       queryClient.setQueryData<SupplyRun | null>(supplyRunKey(weekStart), run)
@@ -281,7 +288,7 @@ export function useSendToChat(weekStart: string) {
   return useMutation({
     mutationFn: async (resend: boolean): Promise<SupplyRun> => {
       const path = `${supplyRunPath(weekStart)}/send-chat`
-      return parseSupplyRun(`POST ${path}`, weekStart, await apiFetch<unknown>(path, { method: 'POST', body: { resend } }))
+      return parseSupplyRun(`POST ${path}`, weekStart, await apiFetch<unknown>(path, { method: 'POST', body: { resend } }), false)
     },
     onSuccess: (run) => {
       queryClient.setQueryData<SupplyRun | null>(supplyRunKey(weekStart), run)

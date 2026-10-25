@@ -27,6 +27,17 @@ export type Difficulty = (typeof DIFFICULTIES)[number]
 export type GroundingStatus = (typeof GROUNDING_STATUSES)[number]
 export type PlannedDinnerStatus = (typeof PLANNED_DINNER_STATUSES)[number]
 
+// opensRecipe says whether a dinner on a plan day, Home or a Supply run
+// offers its recipe: only when the server itself just said it is not
+// archived. A status from a read the service worker answered from its cache,
+// or one saved on this device (cached), may be stale — another device may
+// have archived the dinner since — so it offers no recipe, whose detail
+// could be gone; nor does a status not known (null). A read from the server
+// offers it again.
+export function opensRecipe(status: PlannedDinnerStatus | null, cached: boolean): boolean {
+  return !cached && status !== null && status !== 'archived'
+}
+
 // Regular is the part of a dinner the Regulars screens read. photo_id is
 // the stored photo's id, from photo_url. grounding_error is why its
 // grounding failed, a reason code, set only while grounding_status is

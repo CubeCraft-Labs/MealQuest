@@ -30,9 +30,12 @@ export interface RouteRequest {
 export const cacheVersions = {
   precache: 'v1',
   // v2 retired the v1 API cache, whose dinner responses still carried the
-  // pasted recipe_url; v3 retires the v2 API cache, whose recipe-candidate
-  // responses used the full URL as candidate_id.
-  api: 'v3',
+  // pasted recipe_url; v3 retired the v2 API cache, whose recipe-candidate
+  // responses used the full URL as candidate_id; v4 retires the v3 API
+  // cache, whose plan, Home and Supply run responses carry no dinner status,
+  // which those reads now require: offline, a read the v4 cache has no copy
+  // of fails as one never made does, rather than as a broken response.
+  api: 'v4',
   media: 'v1',
   fonts: 'v1',
 } as const

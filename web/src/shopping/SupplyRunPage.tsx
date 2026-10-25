@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { defaultWeek, isMonday, localNow, weekdayKicker, weekLabel } from '../plan/week.ts'
 import { ApiError } from '../api/errors.ts'
+import { opensRecipe } from '../dinners/api.ts'
 import { formatClockTime, useHouseholdSettings } from '../settings/api.ts'
 import { useBreakpoint, type Breakpoint } from '../shell/useBreakpoint.ts'
 import { Button } from '../ui/Button.tsx'
@@ -78,20 +79,21 @@ function ItemRow({ item, toggles }: { item: SupplyRunItem; toggles: Toggles | nu
 // GroupCard is one dinner's items: its name in Bagel over its day. The name
 // opens the dinner's recipe, unless the dinner was archived (removed from
 // Regulars) after the Supply run was made — it has no detail to open — or
-// its status is not known yet (a Supply run saved by an earlier build, until
-// it is read again): then its name is plain text.
-function GroupCard({ group, toggles }: { group: SupplyRunGroup; toggles: Toggles | null }) {
+// the Supply run is one saved on this device or the service worker's cached
+// copy (cached), whose status may be stale or, saved by an earlier build, not
+// known (opensRecipe): then its name is plain text, until it is read again.
+function GroupCard({ group, cached, toggles }: { group: SupplyRunGroup; cached: boolean; toggles: Toggles | null }) {
   const { dinner } = group
   return (
     <section className={styles.group} aria-label={dinner.name}>
       <header className={styles.groupHeader}>
         <h2 className={styles.dinner}>
-          {dinner.status === null || dinner.status === 'archived' ? (
-            dinner.name
-          ) : (
+          {opensRecipe(dinner.status, cached) ? (
             <Link to={`/dinner/${encodeURIComponent(dinner.id)}`} className={styles.dinnerLink}>
               {dinner.name}
             </Link>
+          ) : (
+            dinner.name
           )}
         </h2>
         <span className={styles.day}>{weekdayKicker(group.date)}</span>
@@ -220,7 +222,7 @@ function SupplyRunList({ weekStart, timezone, layout, readOnly }: WeekProps) {
       ) : (
         <div className={styles.groups} data-testid="supply-run-groups">
           {run.groups.map((group) => (
-            <GroupCard key={`${group.date} ${group.dinner.id}`} group={group} toggles={viewOnly ? null : toggles} />
+            <GroupCard key={`${group.date} ${group.dinner.id}`} group={group} cached={run.cached} toggles={viewOnly ? null : toggles} />
           ))}
         </div>
       )}

@@ -477,7 +477,9 @@ automatic** (D-021).
   /api/v1/plans/{weekStart}` returns `{id, week_start, week_label, status,
   ai_note, calendar_synced_at, updated_at, days}`, or 404 when the week has
   no plan; `days` are the seven days Monday first, each `{date, dinner: {id,
-  name, photo, minutes, method, origin}, is_new, start_by}`. `is_new` means
+  name, status, photo, minutes, method, origin}, is_new, start_by}`. The
+  dinner's `status` is its status now — `archived` once it was removed after
+  the plan was made, when it has no detail to open. `is_new` means
   the dinner was planned from the Quest log; `start_by` is the household's
   dinner time on that date minus `minutes_total`, computed on read, for a
   crock-pot dinner with known minutes, else null. `POST
@@ -1175,8 +1177,10 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
 - `GET /api/v1/shopping/{weekStart}` returns `{weekStart, label, title,
   status, sent_to_chat_at, chat_send_unconfirmed_at, needed_count,
   total_count, groups: [{dinner:
-  {id, name}, date, day, items: [{id, name, qty, needed}]}]}`: `label` is
-  the week label (shown while `title` is null), `day` the plan day's
+  {id, name, status}, date, day, items: [{id, name, qty, needed}]}]}`:
+  `label` is the week label (shown while `title` is null), the dinner's
+  `status` its status now (`archived` once it was removed after the Supply
+  run was made, when it has no detail to open), `day` the plan day's
   weekday ("Monday"), `qty` null when the recipe gives none,
   `needed_count` the items still needed and `total_count` all items. 404
   when the week has no Supply run, 400 `invalid_week`.
@@ -1235,7 +1239,7 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
   {
     "dateLabel": "Friday, Oct 2",
     "timezone": "America/Chicago",
-    "tonight": {"id": "…", "name": "…", "photo": "/media/…", "origin": "regular", "minutes_total": 40},
+    "tonight": {"id": "…", "name": "…", "status": "regular", "photo": "/media/…", "origin": "regular", "minutes_total": 40},
     "sideQuestCount": 10,
     "shoppingList": {"weekStart": "2026-10-05", "label": "Week 41 · Oct 5 – 11", "ready": true, "sentToChatAt": null},
     "recentUpdates": {"unread": true}
@@ -1245,7 +1249,9 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
   `tonight` is today's day of the current week's plan (`plan.Get`), null
   when the week has no plan; it changes at the household's local
   midnight, so the PWA reads Home again at the next local midnight of
-  `timezone`, the household's IANA zone. `photo` and `minutes_total` are
+  `timezone`, the household's IANA zone. `tonight.status` is the dinner's
+  status now — `archived` once it was removed after the plan was made, when
+  Home shows no Recipe pill. `photo` and `minutes_total` are
   null when unknown. `sideQuestCount` is the pending cards of the deck,
   read without writing (`suggest.PendingCount`): a Home read never fails
   orphaned batches the way a `suggest.Deck` read does.
@@ -1287,7 +1293,27 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
 - CSS Modules over `tokens.css`; no Tailwind, no Framer Motion, no
   hard-coded hex. Self-hosted Bagel Fat One and Figtree.
 - Tests: Vitest, Testing Library, jsdom.
-- Offline cache for the current plan, shopping list and recipes.
+- Offline cache for the current plan, shopping list and recipes. The
+  service worker answers `/api/v1/plans`, `/api/v1/home`,
+  `/api/v1/shopping`, `/api/v1/dinners` and `/api/v1/recipes` network
+  first (3 s), then from its API cache (`mealquest-api-v4`), marking such
+  an answer `X-MealQuest-Cache-Fallback`. A plan, Home or Supply run read so
+  answered — or the Supply run saved on the device — may be stale: another
+  device may have archived a dinner since. Its dinners offer no recipe link
+  (their names are plain text) until the server answers a read again; then
+  only dinners whose `status` is not `archived`, and that this device has
+  not removed (its local removal mark), link to their recipes. A recipe
+  link from a server read stays on screen until the next read; if the
+  dinner was archived elsewhere meanwhile, opening it reads the server's
+  404 ("Dinner not found"), which shows that dinner archived on every plan,
+  Home and Supply run held in memory and reads each again. The API cache's
+  version is raised whenever a cached response's shape stops being one the
+  app accepts — v4 retired the v3 cache, whose plans, Home and Supply runs
+  had no dinner `status` — and activation deletes the retired cache, so
+  offline such a read fails as one never made (the screen offers Retry)
+  rather than as a broken response. A Supply run saved on the device by a
+  build from before dinner `status` is still accepted, its dinners' status
+  unknown and unlinked, until it is read again.
 - Logout (`POST /auth/logout`) answers with `Clear-Site-Data: "storage",
   "cache"`, wiping the offline marker, the service worker and its caches; the
   worker leaves that request to the browser, as it does every network-only one.
@@ -1349,10 +1375,11 @@ Regular dinners (`/settings/regulars`) lists the Regulars from
 minutes", favorite heart and grounding badge ("Finding recipe…" while
 `pending`, "Recipe found" when `grounded` or `manual`, "Needs a recipe" when
 `failed`). The add field takes a name or a pasted `https://` recipe link.
-Tapping a Regular opens an edit sheet (name, method, minutes, difficulty;
-remove archives it after a confirmation); tapping one that needs a recipe
-opens "Fix recipe" (pick one of the recipe candidates, paste a link or type
-the ingredients and steps in). Adds, removals and the heart show at once and
+Tapping a Regular's row opens its recipe (`/dinner/{id}`); its pencil
+button opens the edit sheet (name, method, minutes, difficulty; remove
+archives it after a confirmation), or, for one that needs a recipe, "Fix
+recipe" (pick one of the recipe candidates, paste a link or type the
+ingredients and steps in). Adds, removals and the heart show at once and
 are undone if the server refuses them. While any Regular is `pending`, the
 list is read again every 3 seconds (not while a change is in flight), and
 polling stops once none is.

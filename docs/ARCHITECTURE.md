@@ -1339,8 +1339,12 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
   archived on every plan, Home and Supply run held in memory and leaves the
   Regulars and the Quest log held in memory — staying out of them while
   they, with the plans, Home and Supply runs, are read again, and if that
-  read fails. A check that cannot reach the server opens nothing either,
-  and offers Retry. A Recent update or a notification offering a recipe
+  read fails. The server's answer may have been read before another tab
+  removed the dinner, so once it arrives the dinner's removal mark is
+  read again from the device itself (not from what the page last heard):
+  a dinner marked by then opens nothing, caches nothing, and the screen
+  says it was removed. A check that cannot reach the server opens nothing
+  either, and offers Retry. A Recent update or a notification offering a recipe
   opens it the same way: a Recent update in the sheet, saying there that
   the dinner was removed; a tapped notification opens Home with
   `?recipe={id}&name={name}` (`recipeOpenPath`), which checks the recipe

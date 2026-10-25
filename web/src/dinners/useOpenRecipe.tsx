@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router'
 import { ApiError, useApi } from '../api/index.ts'
 import { ErrorBanner } from '../ui/ErrorBanner.tsx'
 import { dinnerDetailKey } from './api.ts'
+import { ArchivedDinnerError, markedNow } from './archived.ts'
 import { checkDinnerDetail } from './detail.ts'
 
 // RecipeDinner is the dinner whose recipe a plan day, Home, a Supply run, a
@@ -11,8 +12,9 @@ import { checkDinnerDetail } from './detail.ts'
 export type RecipeDinner = { id: string; name: string }
 
 // RecipeCheck is the last recipe opened that did not open: gone when the
-// server answered that the dinner has no detail (404), failed when it could
-// not be asked or its answer could not be read.
+// server answered that the dinner has no detail (404) or this device marked
+// it removed while the server was asked, failed when it could not be asked
+// or its answer, or this device's mark, could not be read.
 type RecipeCheck = { dinner: RecipeDinner; outcome: 'gone' } | { dinner: RecipeDinner; outcome: 'failed'; error: Error }
 
 export type OpenRecipe = {
@@ -33,6 +35,10 @@ export type OpenRecipe = {
 // cache, nor from a detail this page read before, which may still be fresh
 // here. That answer is what the detail shows. A 404 opens nothing: no read
 // here offers the recipe any more, and notice says the dinner was removed.
+// The answer may have been read before another tab removed the dinner, so
+// once it arrives the dinner's mark is read again from this device
+// (markedNow): a dinner marked by then opens nothing and caches nothing, and
+// notice says it was removed.
 // A check that fails opens nothing either, and notice offers to try again.
 // Leaving the page abandons a check still out.
 export function useOpenRecipe(): OpenRecipe {
@@ -55,20 +61,25 @@ export function useOpenRecipe(): OpenRecipe {
       const controller = new AbortController()
       checking.current = controller
       setCheck(null)
-      checkDinnerDetail(apiCheck, queryClient, dinner.id, controller.signal).then(
-        (detail) => {
-          if (checking.current === controller) checking.current = null
-          if (controller.signal.aborted) return
-          queryClient.setQueryData(dinnerDetailKey(dinner.id), detail)
-          void navigate(`/dinner/${encodeURIComponent(dinner.id)}`)
-        },
-        (error: unknown) => {
-          if (checking.current === controller) checking.current = null
-          if (controller.signal.aborted) return
-          if (error instanceof ApiError && error.status === 404) setCheck({ dinner, outcome: 'gone' })
-          else setCheck({ dinner, outcome: 'failed', error: error instanceof Error ? error : new Error(String(error)) })
-        },
-      )
+      checkDinnerDetail(apiCheck, queryClient, dinner.id, controller.signal)
+        .then((detail) => {
+          if (markedNow(dinner.id)) throw new ArchivedDinnerError()
+          return detail
+        })
+        .then(
+          (detail) => {
+            if (checking.current === controller) checking.current = null
+            if (controller.signal.aborted) return
+            queryClient.setQueryData(dinnerDetailKey(dinner.id), detail)
+            void navigate(`/dinner/${encodeURIComponent(dinner.id)}`)
+          },
+          (error: unknown) => {
+            if (checking.current === controller) checking.current = null
+            if (controller.signal.aborted) return
+            if ((error instanceof ApiError && error.status === 404) || error instanceof ArchivedDinnerError) setCheck({ dinner, outcome: 'gone' })
+            else setCheck({ dinner, outcome: 'failed', error: error instanceof Error ? error : new Error(String(error)) })
+          },
+        )
     },
     [apiCheck, queryClient, navigate],
   )

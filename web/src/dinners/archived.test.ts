@@ -8,6 +8,7 @@ import {
   archiveDinner,
   checkRemovals,
   knownArchived,
+  markedNow,
   onArchived,
   RefusedRemovalError,
   removalLock,
@@ -540,5 +541,26 @@ describe('useArchived', () => {
     const reloaded = await import('./archived.ts')
     const fresh = renderHook(() => reloaded.useArchived())
     expect([...reloaded.knownArchived(fresh.result.current)].sort()).toEqual(['d1', 'd2'])
+  })
+})
+
+describe('markedNow', () => {
+  it("reads another tab's mark from the device before its storage event arrives", () => {
+    resetArchived()
+    const { result } = renderHook(() => useArchived())
+    expect(knownArchived(result.current).has('d1')).toBe(false)
+    expect(markedNow('d1')).toBe(false)
+
+    // Another tab marks Beef tacos; its storage event has not arrived here.
+    localStorage.setItem(archivedKey('d1'), REMOVING)
+    expect(knownArchived(result.current).has('d1')).toBe(false)
+    expect(markedNow('d1')).toBe(true)
+    localStorage.setItem(archivedKey('d1'), ARCHIVED)
+    expect(markedNow('d1')).toBe(true)
+  })
+
+  it('says why, rather than guessing, for a mark MealQuest did not save', () => {
+    localStorage.setItem(archivedKey('d1'), 'gone')
+    expect(() => markedNow('d1')).toThrow('The removed dinner saved on this device (mealquest.archived-dinner.d1) is not one MealQuest saved.')
   })
 })

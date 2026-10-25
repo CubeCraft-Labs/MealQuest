@@ -282,26 +282,61 @@ Each run fetches `origin` and compares `origin/main` with the last
 | `origin/main` | Result |
 | --- | --- |
 | is the last deployed SHA | No-op: exit 0, no output. |
-| CI (Gitea commit status) `pending` | Exit 0, no output; the next run checks again. |
-| CI `failure`, `error`, `warning`, or no status yet | Error in the journal, exit 1, nothing deployed. |
+| CI on GitHub pending (a check run not completed, or a commit status `pending`) | Exit 0, no output; the next run checks again. |
+| CI on GitHub with any check not `success` (`failure`, `error`, `cancelled`, `timed_out`, `skipped`, `neutral`, `action_required`, ...), or the CI cannot be read | Error in the journal, exit 1, nothing deployed. |
+| no CI on GitHub (no check runs and no commit statuses), `MEALQUEST_DEPLOY_ALLOW_NO_CI` unset | Error in the journal naming the missing CI and the opt-in, exit 1, nothing deployed. |
+| no CI on GitHub, `MEALQUEST_DEPLOY_ALLOW_NO_CI=1` | Deploy **without forge-verified CI**: logged to the journal and recorded as `ci=none(MEALQUEST_DEPLOY_ALLOW_NO_CI=1)`. |
 | the last record line is `FAILED` for this SHA | Error in the journal, exit 1, nothing deployed: a failed deploy is never retried by the timer. |
-| CI `success` | Deploy. |
+| CI on GitHub: every check `success` | Deploy, recorded as `ci=success`. |
 
-The CI status is read from
-`https://code.cubecraftlabs.com/api/v1/repos/Maniacs_Mansion/MealQuest/commits/<SHA>/status`
-(public; no credential). A commit merged moments before a run can briefly
-report no status, which fails that run; the next run reads it again.
+The CI gate reads, for the exact `origin/main` SHA it is about to deploy,
+both GitHub's check runs and its commit statuses:
+
+```text
+https://api.github.com/repos/CubeCraft-Labs/MealQuest/commits/<SHA>/check-runs?per_page=100
+https://api.github.com/repos/CubeCraft-Labs/MealQuest/commits/<SHA>/status?per_page=100
+```
+
+The repository is public, so no credential is used or needed. Every check
+GitHub reports for the SHA is treated as required: the deploy needs every
+check run completed with conclusion `success` and every commit status
+`success`. An answer for another SHA, or a list GitHub truncated (more than
+100 entries), fails the run. A commit merged moments before a run can briefly
+report no CI, which fails that run; the next run reads it again.
+[`auto-deploy_test.sh`](auto-deploy_test.sh), run by `make test`, checks
+this gate offline against stubbed GitHub answers.
+
+The repository has no GitHub Actions workflows yet, so today every `main`
+reports no CI and the timer refuses to deploy. Until CI exists on GitHub the
+owner chooses between deploying with `--ref` (below) and the host opt-in
+`MEALQUEST_DEPLOY_ALLOW_NO_CI=1`, which means **deploy without
+forge-verified CI**: when GitHub reports no CI at all for the SHA, the
+timer deploys it anyway. It never overrides a check that is pending or
+failed. Set it only on the host, in a drop-in, never in the repository:
+
+```sh
+sudo systemctl edit mealquest-auto-deploy.service
+# [Service]
+# Environment=MEALQUEST_DEPLOY_ALLOW_NO_CI=1
+```
+
+Any value other than `1` (or unset) makes the script refuse to start.
+Remove the drop-in (`sudo systemctl revert mealquest-auto-deploy.service`)
+once GitHub runs CI for `main`.
 
 A deploy appends one line to the record:
 
 ```text
-2026-10-12T15:04:05Z previous=<rollback SHA> deployed=<SHA> restore_point=2026-10-12T15:01:59Z
+2026-10-12T15:04:05Z previous=<rollback SHA> deployed=<SHA> restore_point=2026-10-12T15:01:59Z ci=success
 ```
 
 `previous` is the rollback SHA (from the running release's `/health`,
 never the checkout) and `restore_point` the verified pre-deploy restore
-point: record both in the release's Maestro task. A failed deploy appends
-`<date> FAILED target=<SHA> status=<exit status>` and logs
+point: record both in the release's Maestro task. `ci` is `success`
+(every check on GitHub passed), `none(MEALQUEST_DEPLOY_ALLOW_NO_CI=1)`
+(deployed without forge-verified CI under the opt-in) or
+`not-checked(--ref)` (manual override). A failed deploy appends
+`<date> FAILED target=<SHA> status=<exit status> ci=<ci>` and logs
 `auto-deploy FAILED (status <n>)` to the journal, adding whether it failed
 before the restart (production untouched) or after it (read
 `journalctl -u mealquest`, then fix or roll back). Either way the checkout is

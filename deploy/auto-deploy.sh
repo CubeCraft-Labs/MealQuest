@@ -10,28 +10,98 @@
 # it re-executes itself as overseer.
 #
 # Without --ref: exit 0 with no output when origin/main is the last deployed
-# SHA in the deploy record or its CI is pending; exit 1, deploying nothing,
-# when its CI failed or reports no status, or when the last attempt to deploy
+# SHA in the deploy record or its CI on GitHub is pending; exit 1, deploying
+# nothing, when its CI failed, cannot be read, or does not exist (unless
+# MEALQUEST_DEPLOY_ALLOW_NO_CI=1, below), or when the last attempt to deploy
 # that SHA failed. Every deploy runs the runbook's blocks in order and stops
 # at the first failure; nothing before the restart touches production. A
 # verified deploy appends one line to the deploy record:
-#   <UTC date> previous=<SHA> deployed=<SHA> restore_point=<UTC date>
+#   <UTC date> previous=<SHA> deployed=<SHA> restore_point=<UTC date> ci=<ci>
 # a failed one appends:
-#   <UTC date> FAILED target=<SHA> status=<exit status>
+#   <UTC date> FAILED target=<SHA> status=<exit status> ci=<ci>
+# where <ci> is success (every check GitHub reports for the SHA succeeded),
+# none(MEALQUEST_DEPLOY_ALLOW_NO_CI=1) (GitHub reports no CI for the SHA and
+# the owner opted in to deploying without forge-verified CI), or
+# not-checked(--ref).
 set -euo pipefail
 
 CHECKOUT=/home/overseer/mealquest
 RECORD=/home/overseer/mealquest-auto-deploy.log
 LOCK=/home/overseer/mealquest-auto-deploy.lock
-STATUS_API=https://code.cubecraftlabs.com/api/v1/repos/Maniacs_Mansion/MealQuest/commits
+FORGE_API=https://api.github.com/repos/CubeCraft-Labs/MealQuest/commits
 PUBLIC=https://mealquest.cubecraftlabs.com
 D=/var/lib/docker/volumes/mealquest-data/_data
 COMPOSE=(docker compose -f deploy/compose.yaml)
 
 fail() { echo "$*" >&2; exit 1; }
 
+# ci_state <SHA>: the CI GitHub reports for exactly <SHA>, read without a
+# credential (the repository is public): every check run and every commit
+# status. Prints "success <n> checks", "pending <checks>", "failure <checks>"
+# or "none"; fails when the forge cannot be read or its answer does not
+# cover every check of <SHA>. Only a completed check run concluding success,
+# or a commit status of success, counts as passed.
+ci_state() {
+  local runs statuses
+  runs=$(curl -fsS --max-time 30 -H 'Accept: application/vnd.github+json' \
+    "$FORGE_API/$1/check-runs?per_page=100") || return 1
+  statuses=$(curl -fsS --max-time 30 -H 'Accept: application/vnd.github+json' \
+    "$FORGE_API/$1/status?per_page=100") || return 1
+  printf '%s\n%s\n' "$runs" "$statuses" | python3 -I -c '
+import json, sys
+sha = sys.argv[1]
+text = sys.stdin.read()
+dec = json.JSONDecoder()
+runs, end = dec.raw_decode(text)
+status, _ = dec.raw_decode(text[end:].lstrip())
+listed, total = len(runs["check_runs"]), runs["total_count"]
+slisted, stotal = len(status["statuses"]), status["total_count"]
+if listed != total or slisted != stotal:
+    sys.exit(f"GitHub listed {listed} of {total} check runs and {slisted} of {stotal} commit statuses for {sha}: cannot verify every check")
+if status["sha"] != sha or any(r["head_sha"] != sha for r in runs["check_runs"]):
+    sys.exit(f"GitHub answered for a commit other than {sha}")
+checks = [(r["name"], r["conclusion"] if r["status"] == "completed" else "pending") for r in runs["check_runs"]]
+checks += [(s["context"], s["state"]) for s in status["statuses"]]
+if not checks:
+    print("none")
+    sys.exit()
+failed = [f"{n}={s}" for n, s in checks if s not in ("success", "pending")]
+pending = [n for n, s in checks if s == "pending"]
+if failed:
+    print("failure", " ".join(failed))
+elif pending:
+    print("pending", " ".join(pending))
+else:
+    print("success", len(checks), "checks")
+' "$1"
+}
+
+# ci_gate <SHA>: the CI gate for deploying origin/main at <SHA>. Sets ci on
+# a pass, exits 0 while CI is pending, fails otherwise. No CI at all is a
+# failure unless the owner set MEALQUEST_DEPLOY_ALLOW_NO_CI=1 on the host:
+# deploy without forge-verified CI, logged and recorded as such.
+ci_gate() {
+  local out
+  out=$(ci_state "$1") || fail "could not read the CI of $1 from $FORGE_API: not deploying"
+  case "$out" in
+    success\ *) ci=success; echo "auto-deploy: CI for $1 on GitHub: $out" ;;
+    pending\ *) exit 0 ;;
+    none)
+      [ "${MEALQUEST_DEPLOY_ALLOW_NO_CI-}" = 1 ] \
+        || fail "GitHub reports no CI for origin/main $1 (no check runs, no commit statuses): not deploying without forge-verified CI. Add CI on GitHub, or set MEALQUEST_DEPLOY_ALLOW_NO_CI=1 on the host to deploy without forge-verified CI (deploy/RUNBOOK.md \"Automated deploys\")"
+      ci="none(MEALQUEST_DEPLOY_ALLOW_NO_CI=1)"
+      echo "auto-deploy: GitHub reports no CI for $1; MEALQUEST_DEPLOY_ALLOW_NO_CI=1 is set: deploying WITHOUT forge-verified CI (recorded as ci=$ci in $RECORD)" ;;
+    *) fail "CI for origin/main $1 is $out, not success: not deploying" ;;
+  esac
+}
+
+case "${MEALQUEST_DEPLOY_ALLOW_NO_CI-}" in
+  ""|1) ;;
+  *) fail "MEALQUEST_DEPLOY_ALLOW_NO_CI is \"$MEALQUEST_DEPLOY_ALLOW_NO_CI\": set it to 1 (deploy without forge-verified CI) or leave it unset" ;;
+esac
+
 if [ "$(id -u)" -eq 0 ]; then
-  exec sudo -u overseer -H -- "$0" "$@"
+  exec sudo -u overseer -H -- env MEALQUEST_DEPLOY_ALLOW_NO_CI="${MEALQUEST_DEPLOY_ALLOW_NO_CI-}" "$0" "$@"
 fi
 [ "$(id -un)" = overseer ] || fail "run as overseer (or root), not $(id -un)"
 
@@ -48,6 +118,7 @@ flock -n 9 || fail "another mealquest-auto-deploy run holds $LOCK"
 cd "$CHECKOUT"
 git fetch --quiet --tags origin || fail "git fetch origin failed"
 
+ci="not-checked(--ref)"
 if [ -n "$ref" ]; then
   target=$(git rev-parse --verify --quiet "$ref^{commit}") || fail "$ref is not a commit in $CHECKOUT"
 else
@@ -62,14 +133,7 @@ else
   if tail -n 1 "$RECORD" | grep -q " FAILED target=$target status="; then
     fail "auto-deploy of $target already failed (see $RECORD and the journal): fix it, then deploy with --ref"
   fi
-  state=$(curl -fsS --max-time 30 "$STATUS_API/$target/status" \
-    | python3 -c 'import json, sys; d = json.load(sys.stdin); print(d["state"] if d["total_count"] else "absent")') \
-    || fail "could not read the CI status of $target from $STATUS_API"
-  case "$state" in
-    success) ;;
-    pending) exit 0 ;;
-    *) fail "CI for origin/main $target is $state, not success: not deploying" ;;
-  esac
+  ci_gate "$target"
 fi
 
 echo "auto-deploy: deploying $target${ref:+ (--ref $ref)}"
@@ -79,7 +143,7 @@ on_exit() {
   local st=$?
   [ -z "$W" ] || rm -rf "$W" || st=1
   if [ "$st" -ne 0 ]; then
-    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) FAILED target=$target status=$st" >> "$RECORD"
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) FAILED target=$target status=$st ci=$ci" >> "$RECORD"
     if [ -n "$restarted" ]; then
       echo "auto-deploy FAILED (status $st) after the restart: production may be down or unverified; read journalctl -u mealquest, then fix or roll back (deploy/RUNBOOK.md)" >&2
     else
@@ -247,5 +311,5 @@ for base in "http://$bind:8090" "$PUBLIC"; do
 done
 
 deployed=$(git rev-parse HEAD)
-echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) previous=$rollback deployed=$deployed restore_point=$point" >> "$RECORD"
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) previous=$rollback deployed=$deployed restore_point=$point ci=$ci" >> "$RECORD"
 echo "deployed and verified: $v ($deployed), previous $rollback, restore point $point"

@@ -24,7 +24,9 @@ function meta({ origin, minutes_total }: Tonight): string {
 }
 
 // TonightCard is the dinner planned for today: its washed photo, name and
-// meta line, and the dark Recipe pill to its recipe.
+// meta line, and the dark Recipe pill to its recipe, unless the dinner was
+// archived (removed from Regulars) after the plan was made — it has no
+// detail to open — when there is no pill.
 function TonightCard({ tonight }: { tonight: Tonight }) {
   return (
     <section aria-label="Tonight" className={styles.card}>
@@ -34,9 +36,11 @@ function TonightCard({ tonight }: { tonight: Tonight }) {
           <h2 className={styles.name}>{tonight.name}</h2>
           <span className={styles.meta}>{meta(tonight)}</span>
         </div>
-        <Link to={`/dinner/${encodeURIComponent(tonight.id)}`} className={[buttonStyles.button, buttonStyles.dark, styles.recipe].join(' ')}>
-          Recipe
-        </Link>
+        {tonight.status !== 'archived' && (
+          <Link to={`/dinner/${encodeURIComponent(tonight.id)}`} className={[buttonStyles.button, buttonStyles.dark, styles.recipe].join(' ')}>
+            Recipe
+          </Link>
+        )}
       </div>
     </section>
   )

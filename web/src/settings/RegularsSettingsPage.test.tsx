@@ -1,13 +1,18 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { Route, Routes, useLocation } from 'react-router'
+import { Link, Route, Routes, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { GROUNDING_POLL_MS } from '../dinners/api.ts'
+import { ARCHIVED, archivedKey, REMOVING, resetArchived } from '../dinners/archived.ts'
 import { DinnerDetailPage } from '../dinners/DinnerDetailPage.tsx'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
+import { SupplyRunSync } from '../shopping/api.ts'
+import { SAVED_KEY } from '../shopping/offline.ts'
+import { SupplyRunPage } from '../shopping/SupplyRunPage.tsx'
 import tokens from '../styles/tokens.css?raw'
 import { declaredStyle } from '../test/cssRules.ts'
+import { HOUSEHOLD_SETTINGS } from '../test/ApiProviders.tsx'
 import { InDataRouter } from '../test/dataRouter.tsx'
 import { dinnerBody, type DinnerBody } from '../test/dinners.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
@@ -69,6 +74,7 @@ function reads(fetchMock: Mock<typeof fetch>) {
 afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
   Reflect.deleteProperty(window, 'matchMedia')
 })
 
@@ -495,15 +501,260 @@ describe('RegularsSettingsPage', () => {
     expect(sent(server.fetchMock)).toEqual([{ request: 'DELETE /api/v1/dinners/d1', body: undefined }])
   })
 
-  it('puts a refused removal back and says why', async () => {
-    stubServer([TACOS], { 'DELETE /api/v1/dinners/d1': () => errorResponse(500, 'internal') })
+  describe('a removed Regular on a Supply run already read', () => {
+    const WEEK = '2026-10-05'
+    const SUPPLY_RUN = `/api/v1/shopping/${WEEK}`
+    const RUN_SCREEN = `/plan/shopping?week=${WEEK}`
+
+    // run is the week's Supply run as the server sends it: Beef tacos, the
+    // Regular, and Pot roast, each a Regular when it was read.
+    const run = {
+      weekStart: WEEK,
+      label: 'Week 41 · Oct 5 – 11',
+      title: null,
+      status: 'current',
+      sent_to_chat_at: null,
+      chat_send_unconfirmed_at: null,
+      needed_count: 2,
+      total_count: 2,
+      groups: [
+        { dinner: { id: 'd1', name: 'Beef tacos', status: 'regular' }, date: '2026-10-05', day: 'Monday', items: [{ id: 'i1', name: 'Ground beef', qty: '1 lb', needed: true }] },
+        { dinner: { id: 'd4', name: 'Pot roast', status: 'regular' }, date: '2026-10-06', day: 'Tuesday', items: [{ id: 'i2', name: 'Chuck roast', qty: '3 lb', needed: true }] },
+      ],
+    }
+
+    // renderApp renders, as App does, the Regulars and the Supply run screen
+    // over one query client with SupplyRunSync keeping the Supply run on this
+    // device, starting at path; each screen links to the other.
+    async function renderApp(path: string) {
+      const api = createApiClient(fakeLocation(path), createNetworkStatus(window), createVerifiedSession(localStorage))
+      await api.loadMe()
+      return render(
+        <ApiProvider client={api}>
+          <QueryClientProvider client={createQueryClient()}>
+            <SupplyRunSync />
+            <InDataRouter path={path}>
+              <Routes>
+                <Route path="/settings/regulars" element={<RegularsSettingsPage />} />
+                <Route path="/plan/shopping" element={<SupplyRunPage />} />
+              </Routes>
+              <Link to="/settings/regulars">To Regulars</Link>
+              <Link to={RUN_SCREEN}>To Supply run</Link>
+            </InDataRouter>
+          </QueryClientProvider>
+        </ApiProvider>,
+      )
+    }
+
+    // card is the Supply run's card of a dinner.
+    function card(name: string) {
+      return screen.getByRole('region', { name })
+    }
+
+    // savedStatus is the dinner's status on the week's Supply run saved on
+    // this device.
+    function savedStatus(id: string) {
+      const saved = JSON.parse(localStorage.getItem(SAVED_KEY)!) as { runs: Record<string, typeof run> }
+      return saved.runs[WEEK]!.groups.find((group) => group.dinner.id === id)!.dinner.status
+    }
+
+    it('shows it archived, with no recipe link, on the Supply run cached and saved on this device', async () => {
+      mockViewport(390)
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date('2026-10-07T16:00:00Z'))
+      // The Supply run is read once; any later read never answers, as when
+      // the server cannot be reached, so only what is cached or saved shows.
+      let runReads = 0
+      const server = stubServer([TACOS, ROAST], {
+        'GET /api/v1/settings/household': () => jsonResponse(200, HOUSEHOLD_SETTINGS),
+        [`GET ${SUPPLY_RUN}`]: () => (++runReads === 1 ? jsonResponse(200, run) : new Promise<Response>(() => undefined)),
+        'DELETE /api/v1/dinners/d1': () => {
+          server.regulars = [ROAST]
+          return jsonResponse(200, { ...TACOS, status: 'archived' })
+        },
+      })
+      const app = await renderApp(RUN_SCREEN)
+
+      const tacos = await waitFor(() => within(card('Beef tacos')).getByRole('link', { name: 'Beef tacos' }))
+      expect(tacos).toHaveAttribute('href', '/dinner/d1')
+      await waitFor(() => expect(savedStatus('d1')).toBe('regular'))
+
+      fireEvent.click(screen.getByRole('link', { name: 'To Regulars' }))
+      await screen.findByRole('heading', { level: 2, name: /^On rotation/ })
+      editRow('Beef tacos')
+      fireEvent.click(screen.getByRole('button', { name: 'Remove from Regulars' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+      await waitFor(() => expect(rows()).toHaveLength(1))
+
+      // Recorded archived on this device, and the Supply run saved here
+      // saved again with it archived.
+      expect(localStorage.getItem(archivedKey('d1'))).toBe(ARCHIVED)
+      expect(savedStatus('d1')).toBe('archived')
+      expect(savedStatus('d4')).toBe('regular')
+
+      // Back on the Supply run, from the cache, still fresh and not read
+      // again: the card is plain while its items still toggle.
+      fireEvent.click(screen.getByRole('link', { name: 'To Supply run' }))
+      const archived = await waitFor(() => card('Beef tacos'))
+      expect(runReads).toBe(1)
+      expect(within(archived).getByRole('heading', { name: 'Beef tacos' })).toBeInTheDocument()
+      expect(within(archived).queryByRole('link')).not.toBeInTheDocument()
+      expect(within(archived).getByRole('checkbox', { name: /Ground beef/ })).toBeEnabled()
+      expect(within(card('Pot roast')).getByRole('link', { name: 'Pot roast' })).toHaveAttribute('href', '/dinner/d4')
+
+      // A new page, with nothing cached, opens the saved Supply run while its
+      // read is not answered: the record saved on this device leaves no
+      // recipe link there either.
+      app.unmount()
+      resetArchived()
+      await renderApp(RUN_SCREEN)
+      const reopened = await waitFor(() => card('Beef tacos'))
+      expect(within(reopened).queryByRole('link')).not.toBeInTheDocument()
+      expect(within(card('Pot roast')).getByRole('link', { name: 'Pot roast' })).toHaveAttribute('href', '/dinner/d4')
+      await waitFor(() => expect(runReads).toBe(2))
+    })
+
+    // F1 (review round 8): the server archived it, so the Supply run cached
+    // and saved shows it archived even though the device could not mark it.
+    it('shows it archived, with no recipe link, on the Supply run cached and saved, and says why, when the device could not mark it archived', async () => {
+      mockViewport(390)
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date('2026-10-07T16:00:00Z'))
+      let runReads = 0
+      const server = stubServer([TACOS, ROAST], {
+        'GET /api/v1/settings/household': () => jsonResponse(200, HOUSEHOLD_SETTINGS),
+        [`GET ${SUPPLY_RUN}`]: () => (++runReads === 1 ? jsonResponse(200, run) : new Promise<Response>(() => undefined)),
+        'DELETE /api/v1/dinners/d1': () => {
+          server.regulars = [ROAST]
+          return jsonResponse(200, { ...TACOS, status: 'archived' })
+        },
+      })
+      // The device saves the removal before it is sent, then refuses to save
+      // that the server archived it.
+      const setItem = Storage.prototype.setItem
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
+        if (key === archivedKey('d1') && value === ARCHIVED) throw new Error('The quota has been exceeded.')
+        setItem.call(this, key, value)
+      })
+      const app = await renderApp(RUN_SCREEN)
+      await waitFor(() => expect(within(card('Beef tacos')).getByRole('link', { name: 'Beef tacos' })).toBeInTheDocument())
+      await waitFor(() => expect(savedStatus('d1')).toBe('regular'))
+
+      fireEvent.click(screen.getByRole('link', { name: 'To Regulars' }))
+      await screen.findByRole('heading', { level: 2, name: /^On rotation/ })
+      editRow('Beef tacos')
+      fireEvent.click(screen.getByRole('button', { name: 'Remove from Regulars' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'Could not remove Beef tacos: this device could not save that the server removed it, so it stays hidden here and is asked about again: The quota has been exceeded.',
+      )
+      await waitFor(() => expect(rows()).toHaveLength(1))
+      expect(sent(server.fetchMock)).toContainEqual({ request: 'DELETE /api/v1/dinners/d1', body: undefined })
+
+      // Still marked removing, while the Supply run saved here is saved again
+      // with it archived.
+      expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
+      expect(savedStatus('d1')).toBe('archived')
+      expect(savedStatus('d4')).toBe('regular')
+
+      // Back on the Supply run, from the cache, not read again: no recipe
+      // link to the archived dinner.
+      fireEvent.click(screen.getByRole('link', { name: 'To Supply run' }))
+      const cached = await waitFor(() => card('Beef tacos'))
+      expect(runReads).toBe(1)
+      expect(within(cached).queryByRole('link')).not.toBeInTheDocument()
+      expect(within(cached).getByRole('checkbox', { name: /Ground beef/ })).toBeEnabled()
+
+      // A new page, with nothing cached, opens that saved Supply run while
+      // its read is not answered: no recipe link to the archived dinner.
+      app.unmount()
+      resetArchived()
+      await renderApp(RUN_SCREEN)
+      const reopened = await waitFor(() => card('Beef tacos'))
+      expect(within(reopened).queryByRole('link')).not.toBeInTheDocument()
+      expect(within(card('Pot roast')).getByRole('link', { name: 'Pot roast' })).toHaveAttribute('href', '/dinner/d4')
+      await waitFor(() => expect(runReads).toBe(2))
+    })
+  })
+
+  it('sends no removal this device cannot save, keeps the Regular and says why', async () => {
+    const server = stubServer([TACOS, ROAST], {
+      'DELETE /api/v1/dinners/d1': () => {
+        server.regulars = [ROAST]
+        return jsonResponse(200, { ...TACOS, status: 'archived' })
+      },
+    })
+    const setItem = Storage.prototype.setItem
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
+      if (key === archivedKey('d1')) throw new Error('The quota has been exceeded.')
+      setItem.call(this, key, value)
+    })
+    await renderPage()
+
+    editRow('Beef tacos')
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from Regulars' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not remove Beef tacos: this device could not save the removal, so it was not sent: The quota has been exceeded.',
+    )
+    expect(rows()).toHaveLength(2)
+    expect(screen.getByText('Beef tacos')).toBeInTheDocument()
+    expect(sent(server.fetchMock)).toEqual([])
+    expect(localStorage.getItem(archivedKey('d1'))).toBeNull()
+  })
+
+  it('keeps a removal no answer settled hidden and says the server may have made it', async () => {
+    // Asked about at once, the server does not answer either.
+    stubServer([TACOS, ROAST], {
+      'DELETE /api/v1/dinners/d1': () => Promise.reject(new TypeError('Failed to fetch')),
+      'GET /api/v1/dinners/d1': () => new Promise<Response>(() => undefined),
+    })
+    await renderPage()
+
+    editRow('Beef tacos')
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from Regulars' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not remove Beef tacos: Failed to fetch. The server may have removed it, so this device hides it until the server can say whether it did.',
+    )
+    expect(rows()).toHaveLength(1)
+    expect(screen.queryByText('Beef tacos')).not.toBeInTheDocument()
+    expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
+  })
+
+  it('keeps a refused removal hidden on this device and says why', async () => {
+    stubServer([TACOS, ROAST], { 'DELETE /api/v1/dinners/d1': () => errorResponse(500, 'internal') })
+    await renderPage()
+
+    editRow('Beef tacos')
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from Regulars' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not remove Beef tacos: internal message. It could not be removed here; it stays hidden on this device until the server settles it.',
+    )
+    expect(rows()).toHaveLength(1)
+    expect(screen.queryByText('Beef tacos')).not.toBeInTheDocument()
+    expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
+  })
+
+  // F3: another device archived the Regular before this device's removal
+  // was answered, refused.
+  it('keeps a Regular removed when another device archived it before its own removal was refused', async () => {
+    const server = stubServer([TACOS, ROAST], {
+      'DELETE /api/v1/dinners/d1': () => {
+        server.regulars = [ROAST]
+        return errorResponse(500, 'internal')
+      },
+    })
     await renderPage()
 
     editRow('Beef tacos')
     fireEvent.click(screen.getByRole('button', { name: 'Remove from Regulars' }))
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not remove Beef tacos: internal message')
-    expect(rows()).toHaveLength(1)
+    expect(localStorage.getItem(archivedKey('d1'))).toBe(REMOVING)
+    await waitFor(() => expect(rows()).toHaveLength(1))
+    expect(screen.queryByText('Beef tacos')).not.toBeInTheDocument()
   })
 
   describe('Fix recipe', () => {

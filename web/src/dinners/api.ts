@@ -1,6 +1,8 @@
 import { useIsMutating, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { useCallback, useEffect } from 'react'
 import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
+import { archiveDinner, checkRemovals, knownArchived, useArchived, type SendRemoval } from './archived.ts'
 import type { DinnerDetail } from './detail.ts'
 
 export const DINNERS_PATH = '/api/v1/dinners'
@@ -15,9 +17,15 @@ export const METHODS = ['stovetop', 'oven', 'crockpot', 'grill', 'other'] as con
 export const DIFFICULTIES = ['easy', 'medium', 'hard'] as const
 export const GROUNDING_STATUSES = ['pending', 'grounded', 'failed', 'manual'] as const
 
+// PLANNED_DINNER_STATUSES is every status a dinner on a plan day or a Supply
+// run can have now: archived once it was removed from Regulars after the
+// plan or Supply run was made, when it has no detail to open.
+export const PLANNED_DINNER_STATUSES = ['suggested', 'quest_log', 'tried', 'regular', 'archived'] as const
+
 export type Method = (typeof METHODS)[number]
 export type Difficulty = (typeof DIFFICULTIES)[number]
 export type GroundingStatus = (typeof GROUNDING_STATUSES)[number]
+export type PlannedDinnerStatus = (typeof PLANNED_DINNER_STATUSES)[number]
 
 // Regular is the part of a dinner the Regulars screens read. photo_id is
 // the stored photo's id, from photo_url. grounding_error is why its
@@ -67,11 +75,14 @@ export type RecipeCandidate = {
 
 // CachedRegular is a Regular as the cache holds it. removing is true while
 // an optimistic removal waits for the server: the entry keeps its place, so
-// a refused removal returns exactly there whatever else changed meanwhile.
+// a removal never sent — the device could not save it — returns exactly
+// there whatever else changed meanwhile.
 type CachedRegular = Regular & { removing?: true }
 
-function shown(list: CachedRegular[]): Regular[] {
-  return list.filter((regular) => !regular.removing)
+// shown is the Regulars to show: none being removed, and none the server
+// archived (archived), whatever the read said.
+function shown(list: CachedRegular[], archived: ReadonlySet<string>): Regular[] {
+  return list.filter((regular) => !regular.removing && !archived.has(regular.id))
 }
 
 function restored(regular: CachedRegular): CachedRegular {
@@ -175,6 +186,8 @@ export function dinnerDetailKey(id: string) {
 export function useRegulars() {
   const { apiFetch } = useApi()
   const changing = useIsMutating({ mutationKey: REGULARS_MUTATION_KEY }) > 0
+  const archived = useArchived()
+  const select = useCallback((list: CachedRegular[]) => shown(list, knownArchived(archived)), [archived])
   return useQuery({
     queryKey: REGULARS_LIST_KEY,
     queryFn: async () => {
@@ -183,7 +196,7 @@ export function useRegulars() {
       if (!isRecord(body) || !Array.isArray(body.dinners)) throw new Error(`${where}: response has no dinners list`)
       return body.dinners.map((dinner): CachedRegular => parseDinner(where, dinner))
     },
-    select: shown,
+    select,
     refetchInterval: (query) => {
       const list = query.state.data
       if (list === undefined || changing) return false
@@ -257,17 +270,57 @@ export function useAddRegular() {
   })
 }
 
-// useRemoveRegular archives a Regular (DELETE /api/v1/dinners/{id}). It
-// leaves the list at once and is put back in its place if the server
-// refuses.
-export function useRemoveRegular() {
+// useSendRemoval sends a dinner's removal (DELETE /api/v1/dinners/{id}),
+// which the server archives. A non-GET never reaches the service worker's
+// cache, so only the server answers it.
+function useSendRemoval(): SendRemoval {
   const { apiFetch } = useApi()
+  return useCallback((id: string) => apiFetch<unknown>(dinnerPath(id), { method: 'DELETE' }), [apiFetch])
+}
+
+// useArchiveDinner removes a dinner — from Regulars or the Quest log — which
+// the server archives, recording it on this device first so no read
+// answered before — in flight, cached or saved — shows it with a recipe to
+// open (archiveDinner).
+export function useArchiveDinner() {
+  const send = useSendRemoval()
+  return useCallback((id: string) => archiveDinner(id, send), [send])
+}
+
+// useRemovalCheck sends again each removal the server has not archived
+// (checkRemovals) when the app starts and each time the server can be
+// reached again.
+export function useRemovalCheck() {
+  const { network } = useApi()
+  const send = useSendRemoval()
+  useEffect(() => {
+    let offline = network.offline()
+    if (!offline) void checkRemovals(send)
+    return network.subscribe(() => {
+      const now = network.offline()
+      if (offline && !now) void checkRemovals(send)
+      offline = now
+    })
+  }, [network, send])
+}
+
+// RemovalCheck runs useRemovalCheck for the whole app.
+export function RemovalCheck(): null {
+  useRemovalCheck()
+  return null
+}
+
+// useRemoveRegular removes a Regular, which the server archives
+// (useArchiveDinner). It leaves the list at once and is put back in its
+// place only if the removal was never sent; one sent and refused or not
+// answered stays hidden, marked removing on this device, until the server
+// archives it (RefusedRemovalError, UnconfirmedRemovalError).
+export function useRemoveRegular() {
   const queryClient = useQueryClient()
+  const archive = useArchiveDinner()
   return useMutation({
     mutationKey: REGULARS_MUTATION_KEY,
-    mutationFn: async (regular: Regular) => {
-      await apiFetch<unknown>(dinnerPath(regular.id), { method: 'DELETE' })
-    },
+    mutationFn: (regular: Regular) => archive(regular.id),
     onMutate: async (regular) => {
       await changeOptimistically(queryClient, (list) =>
         list.map((r): CachedRegular => (r.id === regular.id ? { ...r, removing: true } : r)),

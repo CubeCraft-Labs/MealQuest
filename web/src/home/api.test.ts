@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { HOME } from '../test/ApiProviders.tsx'
-import { parseHome, parseUpdates } from './api.ts'
+import { parseHome, parseUpdates, showArchived } from './api.ts'
 
 const origin = 'https://mealquest.example'
 const where = 'GET /api/v1/updates'
@@ -48,5 +48,15 @@ describe('parseHome', () => {
     expect(() => parseHome('GET /api/v1/home', { ...HOME, timezone: undefined })).toThrow(
       'GET /api/v1/home: timezone undefined is not an IANA zone',
     )
+  })
+})
+
+describe('showArchived', () => {
+  it("shows tonight's dinner archived when the server archived it, whatever the read said", () => {
+    const home = parseHome('GET /api/v1/home', HOME)
+
+    expect(showArchived(home, new Set(['other']))).toBe(home)
+    expect(showArchived(home, new Set(['d1'])).tonight).toMatchObject({ id: 'd1', name: 'Pizza night', status: 'archived' })
+    expect(home.tonight?.status).toBe('regular')
   })
 })

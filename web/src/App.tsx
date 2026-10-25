@@ -3,6 +3,7 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { Route, Routes } from 'react-router'
 import { ApiProvider, createQueryClient, type ApiClient } from './api/index.ts'
 import { AuthBootstrap } from './AuthBootstrap.tsx'
+import { RemovalCheck } from './dinners/api.ts'
 import { DinnerDetailPage } from './dinners/DinnerDetailPage.tsx'
 import { DiscoverPage } from './discover/DiscoverPage.tsx'
 import { HomePage } from './home/HomePage.tsx'
@@ -102,6 +103,7 @@ export default function App({ api, serviceWorker }: AppProps) {
       <QueryClientProvider client={queryClient}>
         <AuthBootstrap>
           <SupplyRunSync />
+          <RemovalCheck />
           <AppRoutes />
         </AuthBootstrap>
         <OfflinePill />

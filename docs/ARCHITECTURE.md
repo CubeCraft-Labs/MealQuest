@@ -203,7 +203,9 @@ automatic** (D-021).
   (`stovetop` / `oven` / `crockpot` / `grill` / `other`), `minutes_total`
   (1–1440) and `difficulty` (`easy` / `medium` / `hard`); invalid values
   are 400 `invalid_dinner` and change nothing. `DELETE /api/v1/dinners/{id}`
-  sets status `archived` and keeps the row; `POST
+  sets status `archived` and keeps the row; sent again it succeeds, so the
+  PWA sends a removal until it is answered, and a dinner this device has
+  begun to remove it never again shows with a recipe to open; `POST
   /api/v1/dinners/{id}/favorite` toggles `is_favorite`. Every write records
   the session's subject as `updated_by`; an unknown id is 404.
   `GET /api/v1/dinners/{id}` returns the dinner with its recipe, read in

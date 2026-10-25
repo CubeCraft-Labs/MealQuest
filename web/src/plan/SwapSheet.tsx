@@ -23,9 +23,17 @@ export const emptyLists: Record<Source, string> = {
   regulars: 'You have no Regulars yet.',
 }
 
-// planDinner is a listed dinner as it is planned on a day.
-export function planDinner(dinner: QuestLogDinner): PlanDinner {
-  return { id: dinner.id, name: dinner.name, photo_id: dinner.photo_id, minutes: dinner.minutes_total, method: dinner.method }
+// planDinner is a dinner listed in the Quest log or the Regulars as it is
+// planned on a day.
+export function planDinner(dinner: QuestLogDinner, fromQuestLog: boolean): PlanDinner {
+  return {
+    id: dinner.id,
+    name: dinner.name,
+    status: fromQuestLog ? 'quest_log' : 'regular',
+    photo_id: dinner.photo_id,
+    minutes: dinner.minutes_total,
+    method: dinner.method,
+  }
 }
 
 export type SwapSheetProps = {
@@ -93,7 +101,7 @@ export function SwapSheet({ day, planned, onSwap, onClose }: SwapSheetProps) {
                   already
                     ? undefined
                     : () =>
-                        onSwap({ date: day.date, dinner: planDinner(dinner), fromQuestLog: source === 'quest_log' })
+                        onSwap({ date: day.date, dinner: planDinner(dinner, source === 'quest_log'), fromQuestLog: source === 'quest_log' })
                 }
                 trailing={already && <Tag>Already this week</Tag>}
               />

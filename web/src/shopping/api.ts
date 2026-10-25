@@ -7,11 +7,12 @@ import {
   type MutationObserverOptions,
   type QueryClient,
 } from '@tanstack/react-query'
-import { useEffect, useReducer, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useReducer, useState, useSyncExternalStore } from 'react'
 import { ApiError, useApi, type ApiClient } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { meQueryKey } from '../AuthBootstrap.tsx'
-import { oneOf } from '../dinners/api.ts'
+import { archivedNow, knownArchived, onArchived, useArchived } from '../dinners/archived.ts'
+import { oneOf, PLANNED_DINNER_STATUSES, type PlannedDinnerStatus } from '../dinners/api.ts'
 import { settleUnmadePushes } from '../plan/api.ts'
 import type { NetworkStatus } from '../pwa/networkStatus.ts'
 import { HOUSEHOLD_SETTINGS_KEY, type HouseholdSettings } from '../settings/api.ts'
@@ -26,10 +27,12 @@ import {
   SAVED_KEY,
   saveRun,
   savedRun,
+  savedWeeks,
   saveSchedule,
   SCHEDULE_CAUSE,
   synced,
   toggleCause,
+  WEEKS_CAUSE,
   willSync,
 } from './offline.ts'
 
@@ -67,20 +70,13 @@ export type SupplyRunStatus = (typeof SUPPLY_RUN_STATUSES)[number]
 // and needed is false once it is marked "have it".
 export type SupplyRunItem = { id: string; name: string; qty: string | null; needed: boolean }
 
-export const SUPPLY_RUN_DINNER_STATUSES = ['suggested', 'quest_log', 'tried', 'regular', 'archived'] as const
-
-// SupplyRunDinnerStatus is a group's dinner's status now: archived once it
-// was removed from Regulars after the Supply run was made, when it has no
-// detail to open.
-export type SupplyRunDinnerStatus = (typeof SUPPLY_RUN_DINNER_STATUSES)[number]
-
 // SupplyRunGroup is the items of one plan day's dinner: date is the plan
 // day, household-local YYYY-MM-DD. The dinner's status is null while it is
 // not known: the Supply run was saved on this device by a build from before
 // dinners carried their status (see savedDinnerStatus), and has not been read
 // again since.
 export type SupplyRunGroup = {
-  dinner: { id: string; name: string; status: SupplyRunDinnerStatus | null }
+  dinner: { id: string; name: string; status: PlannedDinnerStatus | null }
   date: string
   items: SupplyRunItem[]
 }
@@ -129,11 +125,11 @@ function parseItem(where: string, body: unknown): SupplyRunItem {
 }
 
 // DinnerStatus reads a group's dinner's status.
-type DinnerStatus = (where: string, value: unknown) => SupplyRunDinnerStatus | null
+type DinnerStatus = (where: string, value: unknown) => PlannedDinnerStatus | null
 
 // serverDinnerStatus is a dinner's status as the server sends it: always one
-// of SUPPLY_RUN_DINNER_STATUSES.
-const serverDinnerStatus: DinnerStatus = (where, value) => oneOf(where, 'dinner status', SUPPLY_RUN_DINNER_STATUSES, value)
+// of PLANNED_DINNER_STATUSES.
+const serverDinnerStatus: DinnerStatus = (where, value) => oneOf(where, 'dinner status', PLANNED_DINNER_STATUSES, value)
 
 // savedDinnerStatus is a dinner's status in a Supply run saved on this
 // device. A Supply run saved by a build from before dinners carried their
@@ -210,16 +206,30 @@ function savedSupplyRun(weekStart: string): SupplyRun | undefined {
   return saved === undefined ? undefined : parseRun(`Saved ${SAVED_KEY}`, weekStart, saved, savedDinnerStatus)
 }
 
+// showArchived is run with each dinner the server archived (archived) shown
+// archived — removed from Regulars, so it has no detail to open — whatever
+// the read, or the Supply run saved on this device, said; a Supply run with
+// none is run itself.
+export function showArchived(run: SupplyRun | null, archived: ReadonlySet<string>): SupplyRun | null {
+  if (run === null || !run.groups.some((group) => archived.has(group.dinner.id) && group.dinner.status !== 'archived')) return run
+  return {
+    ...run,
+    groups: run.groups.map((group) => (archived.has(group.dinner.id) ? { ...group, dinner: { ...group.dinner, status: 'archived' } } : group)),
+  }
+}
+
 // useSupplyRun is the Supply run of the week starting on Monday weekStart
 // (GET /api/v1/shopping/{weekStart}), or null when the week has none (404).
 // It starts from the Supply run saved on this device, if there is one, so
 // the list opens offline; the saved one is always read again. It is read
 // from this device once, not on every render: while the query has no data
 // its initial data is asked for again on each render, and a failed read
-// reports a problem, which renders this again.
+// reports a problem, which renders this again. Each dinner removed on this
+// device shows archived (archived.ts), on the saved one as on every read.
 export function useSupplyRun(weekStart: string) {
   const { apiRead } = useApi()
   const [saved] = useState(() => keep(runCause(weekStart), () => savedSupplyRun(weekStart)))
+  const archived = useArchived()
   return useQuery({
     queryKey: supplyRunKey(weekStart),
     initialData: saved,
@@ -235,6 +245,7 @@ export function useSupplyRun(weekStart: string) {
       }
       return parseSupplyRun(`GET ${path}`, weekStart, body)
     },
+    select: useCallback((run: SupplyRun | null) => showArchived(run, knownArchived(archived)), [archived]),
   })
 }
 
@@ -458,7 +469,9 @@ function toggleOptions(
 // pending as soon as it is made, and its answer is in the query cache
 // before it stops being pending. Making a toggle renders again at once, so
 // the checkbox clicked never shows its old state; useSupplyRun and
-// useMutationState render again on every later change.
+// useMutationState render again on every later change. Like useSupplyRun's,
+// the Supply run shows each dinner removed on this device archived
+// (showArchived).
 //
 // A failed toggle stays failed, and shown, until a later toggle of its item
 // supersedes it, such as its Retry: a toggle of another item succeeding
@@ -476,7 +489,8 @@ export function useToggles(weekStart: string): Toggles {
   useMutationState({ filters: { mutationKey } })
   const offline = useSyncExternalStore(api.network.subscribe, api.network.offline)
   const [, renderAgain] = useReducer((n: number) => n + 1, 0)
-  const run = queryClient.getQueryData<SupplyRun | null>(key)
+  const archived = useArchived()
+  const run = showArchived(queryClient.getQueryData<SupplyRun | null>(key) ?? null, knownArchived(archived))
   if (!run) throw new Error(`The week of ${weekStart} has no Supply run read to toggle items of.`)
   const toggles = queryClient
     .getMutationCache()
@@ -519,6 +533,10 @@ export function useToggles(weekStart: string): Toggles {
 // A replayed toggle's answer is written over the Supply run saved, so the
 // week's Supply run is cached from it first; it is still read again
 // (updatedAt 0) when the Supply run screen opens.
+//
+// Each Supply run is saved with the dinners removed on this device shown
+// archived (showArchived), and once the server archives one, every Supply
+// run saved and cached is saved again with it archived (onArchived).
 export function useSupplyRunSync() {
   const api = useApi()
   const queryClient = useQueryClient()
@@ -528,9 +546,26 @@ export function useSupplyRunSync() {
       const [scope, week] = event.query.queryKey
       const data: unknown = event.query.state.data
       if (scope === 'shopping' && typeof week === 'string' && event.query.queryKey.length === 2) {
-        keep(runCause(week), () => saveRun(week, data as SupplyRun | null))
+        keep(runCause(week), () => saveRun(week, showArchived(data as SupplyRun | null, knownArchived(archivedNow()))))
       } else if (scope === HOUSEHOLD_SETTINGS_KEY[0] && week === HOUSEHOLD_SETTINGS_KEY[1]) {
         keep(SCHEDULE_CAUSE, () => saveSchedule(data as HouseholdSettings))
+      }
+    })
+    // A dinner the server archived, here or in another tab, shows archived
+    // on each Supply run saved on this device and each one cached, so what
+    // is saved says so too.
+    const stopArchived = onArchived((id) => {
+      const ids = new Set([id])
+      for (const week of keep(WEEKS_CAUSE, savedWeeks) ?? []) {
+        keep(runCause(week), () => {
+          const run = savedSupplyRun(week)
+          if (run !== undefined) saveRun(week, showArchived(run, ids))
+        })
+      }
+      for (const query of queryClient.getQueryCache().findAll({ queryKey: ['shopping'] })) {
+        const [, week] = query.queryKey
+        if (typeof week !== 'string' || query.queryKey.length !== 2 || query.state.data === undefined) continue
+        queryClient.setQueryData<SupplyRun | null>(query.queryKey, (run) => showArchived(run ?? null, ids))
       }
     })
     const pending = new Set(
@@ -549,7 +584,10 @@ export function useSupplyRunSync() {
       // A refusal is the mutation's state, which the Supply run screen shows.
       new MutationObserver(queryClient, toggleOptions(weekStart, api, queryClient)).mutate({ key, id, needed }).catch(() => {})
     }
-    return stop
+    return () => {
+      stop()
+      stopArchived()
+    }
   }, [api, queryClient])
 }
 

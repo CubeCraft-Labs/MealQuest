@@ -22,6 +22,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/chat"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal/gcaltest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
@@ -1007,6 +1008,48 @@ func TestSwapDay(t *testing.T) {
 	}
 	if !slices.Equal(dayNames(got), want) {
 		t.Errorf("Get days = %v, want %v", dayNames(got), want)
+	}
+}
+
+// TestGetShowsDinnerStatus reads each day's dinner status as it is now: a
+// dinner archived after the plan was made stays on it, archived, and its
+// day can still be swapped.
+func TestGetShowsDinnerStatus(t *testing.T) {
+	e := newEnv(t)
+	e.start(t)
+	e.reply("", fullWeek...)
+	for _, d := range e.mustDraft(t, false).Days {
+		want := dinners.StatusRegular
+		if d.IsNew {
+			want = dinners.StatusQuestLog
+		}
+		if d.Dinner.Status != want {
+			t.Errorf("drafted %s status = %q, want %q", d.Dinner.Name, d.Dinner.Status, want)
+		}
+	}
+	if _, err := e.st.Writer.ExecContext(t.Context(), `UPDATE dinners SET status = 'archived' WHERE id = ?`, e.ids["Pot Roast"]); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := e.svc.Get(t.Context(), week)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.Index(dayNames(got), "Pot Roast")
+	if i < 0 {
+		t.Fatalf("days = %v, want Pot Roast still planned", dayNames(got))
+	}
+	if s := got.Days[i].Dinner.Status; s != dinners.StatusArchived {
+		t.Errorf("Pot Roast status = %q, want archived", s)
+	}
+
+	e.ids["Fish Tacos"] = e.dinner(t, "Fish Tacos", "regular", "stovetop", 25)
+	p, err := e.svc.Swap(t.Context(), week, got.Days[i].Date, e.ids["Fish Tacos"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := p.Days[i].Dinner; d.Name != "Fish Tacos" || d.Status != dinners.StatusRegular {
+		t.Errorf("swapped day dinner = %+v, want Fish Tacos regular", d)
 	}
 }
 

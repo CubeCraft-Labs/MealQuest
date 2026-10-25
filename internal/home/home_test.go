@@ -225,13 +225,21 @@ func TestTonightDinner(t *testing.T) {
 	e.planWeek(t)
 
 	h := e.at(t, "2026-10-13 18:00")
-	if h.Tonight == nil || h.Tonight.ID == "" || h.Tonight.Origin != "regular" || h.Tonight.Photo != nil ||
+	if h.Tonight == nil || h.Tonight.ID == "" || h.Tonight.Status != "regular" || h.Tonight.Origin != "regular" || h.Tonight.Photo != nil ||
 		h.Tonight.MinutesTotal == nil || *h.Tonight.MinutesTotal != 30 {
 		t.Errorf("tonight = %+v, want Tuesday's 30-minute Regular with no photo", h.Tonight)
 	}
 	h = e.at(t, "2026-10-14 18:00")
 	if h.Tonight == nil || h.Tonight.Origin != "side_quest" || h.Tonight.MinutesTotal != nil {
 		t.Errorf("tonight = %+v, want Wednesday's Side quest of unknown minutes", h.Tonight)
+	}
+
+	// A dinner archived after the plan was made is still tonight's, archived.
+	if _, err := e.st.Writer.ExecContext(t.Context(), `UPDATE dinners SET status = 'archived' WHERE id = ?`, h.Tonight.ID); err != nil {
+		t.Fatal(err)
+	}
+	if h = e.at(t, "2026-10-14 18:00"); h.Tonight == nil || h.Tonight.Status != "archived" {
+		t.Errorf("tonight = %+v, want Wednesday's dinner archived", h.Tonight)
 	}
 }
 

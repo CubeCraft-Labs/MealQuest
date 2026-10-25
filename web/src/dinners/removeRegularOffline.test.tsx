@@ -1114,3 +1114,75 @@ describe('a recipe opened from a page read before another device archived its di
     expect(page.queryClient.getQueryData<Array<{ id: string }>>(QUEST_LOG_KEY)!.map((dinner) => dinner.id)).toEqual(['q2'])
   })
 })
+
+// F1 (Maestro 95e95230, feature review round 5): the server reads Beef tacos'
+// detail, which it still has, and its answer is kept back while another tab
+// of the app removes Beef tacos. The answer arriving after the mark opens
+// nothing: the device's mark, read again once the check is answered, says
+// the dinner is gone, whether or not the other tab's storage event has
+// arrived yet.
+describe('a recipe check answered after another tab removed its dinner', () => {
+  // holdCheck keeps the server's answer to Beef tacos' recipe check back
+  // until the returned release is called; the answer is the one the server
+  // read when the check reached it.
+  function holdCheck(): () => void {
+    let release: (() => void) | undefined
+    server['GET /api/v1/dinners/d1'] = () => {
+      const answer = jsonResponse(200, tacosRecipe)
+      return new Promise<Response>((resolve) => {
+        release = () => resolve(answer)
+      })
+    }
+    return () => release!()
+  }
+  const answerTacos = server['GET /api/v1/dinners/d1']!
+  afterEach(() => {
+    server['GET /api/v1/dinners/d1'] = answerTacos
+  })
+
+  async function planWithRecipe() {
+    mockViewport(768)
+    const page = await renderApp(PLAN_SCREEN)
+    await waitFor(() => expect(recipeLinks('d1')).toHaveLength(1))
+    await waitFor(() => expect(page.queryClient.isFetching()).toBe(0))
+    return page
+  }
+
+  it.each([
+    ['before', true],
+    ['after', false],
+  ])(
+    'opens nothing, caches nothing and says it was removed, with the other tab’s storage event arriving %s the answer',
+    async (_, eventFirst) => {
+      const page = await planWithRecipe()
+      const release = holdCheck()
+      fireEvent.click(recipeLinks('d1')[0]!)
+      await waitFor(() => expect(checks).toEqual(['GET /api/v1/dinners/d1']))
+
+      // Another tab removes Beef tacos while the check is out.
+      localStorage.setItem(archivedKey('d1'), REMOVING)
+      const event = new StorageEvent('storage', { key: archivedKey('d1'), newValue: REMOVING })
+      if (eventFirst) window.dispatchEvent(event)
+      release()
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('Beef tacos was removed, so its recipe is gone.')
+      if (!eventFirst) window.dispatchEvent(event)
+      expect(screen.getByRole('heading', { level: 1, name: 'Oct 5 – 11' })).toBeInTheDocument()
+      expect(screen.queryByText('Brown the beef.')).not.toBeInTheDocument()
+      expect(screen.queryByText('Dinner not found')).not.toBeInTheDocument()
+      expect(page.queryClient.getQueryData(dinnerDetailKey('d1'))).toBeUndefined()
+      await waitFor(() => expect(recipeLinks('d1')).toEqual([]))
+    },
+  )
+
+  it('still opens the recipe once its held answer arrives when no tab removed it', async () => {
+    const page = await planWithRecipe()
+    const release = holdCheck()
+    fireEvent.click(recipeLinks('d1')[0]!)
+    await waitFor(() => expect(checks).toEqual(['GET /api/v1/dinners/d1']))
+    release()
+
+    expect(await screen.findByText('Brown the beef.')).toBeInTheDocument()
+    expect(page.queryClient.getQueryData(dinnerDetailKey('d1'))).toMatchObject({ id: 'd1' })
+  })
+})

@@ -316,6 +316,14 @@ export function knownArchived(record: Archived): ReadonlySet<string> {
   return record.ids
 }
 
+// markedNow says whether dinner id has either mark, read from this device at
+// the moment of asking rather than from what this page last knew: another
+// tab's mark counts before its storage event arrives here. A mark MealQuest
+// did not save is an error.
+export function markedNow(id: string): boolean {
+  return markOf(id) !== null
+}
+
 // archivedNow is the record as this page knows it now, for what saves a
 // read outside a render (useSupplyRunSync).
 export function archivedNow(): Archived {

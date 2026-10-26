@@ -1,6 +1,7 @@
 # Runs on every push and pull request (no branch filter) so feature branches,
-# their pull requests, and dev/main are all checked. Runs directly on the
-# self-hosted act_runner; no container: key.
+# their pull requests, and dev/main are all checked. The production host's
+# pull-based deploy refuses a new main commit until GitHub reports this check
+# as successful (deploy/RUNBOOK.md "Automated deploys").
 #
 # The Makefile is the single build definition: CI runs `make test` and
 # `make build` so it fails whenever either target would, and the binary
@@ -11,6 +12,9 @@
 name: CI
 
 on: [push, pull_request]
+
+permissions:
+  contents: read
 
 jobs:
   ci:

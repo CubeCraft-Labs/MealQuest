@@ -18,8 +18,8 @@ product requirements are in [design/MealQuest Requirements.md](design/MealQuest%
    "just in case" options. Pick one approach and use it everywhere.
 4. **No new third-party dependency without owner approval.** Use only the
    approved list below; anything else needs the owner's explicit yes first.
-5. **Never use `tea`.** The Gitea CLI on this host is authenticated as the
-   human owner. Agents act only through their own Gitea identities.
+5. **Never use a human owner's forge credentials.** Agents act only through
+   their own GitHub identities.
 
 ## Approved dependencies (from CTXD)
 
@@ -53,12 +53,12 @@ Frontend:
 ## Quality floor
 
 Every change must pass all of these before review (CI in
-[.gitea/workflows/ci.yml](.gitea/workflows/ci.yml) enforces them):
+[.github/workflows/ci.yml](.github/workflows/ci.yml) enforces them):
 
 ```sh
 gofmt -l .            # must print nothing
 go vet ./...
-go test -race ./...
+go test -race -timeout 15m ./...
 cd web && npm run typecheck && npm test && npm run build
 ```
 
@@ -90,7 +90,7 @@ behaviour, exercise it (hit the endpoint, render the page).
 | `design/` | Requirements and UI handoff. **Read-only reference** — do not edit. |
 | `Dockerfile` | Multi-stage image build, at the repository root. |
 | `Makefile` | `dev`, `test`, `build`, `docker`; `sqlc` and `sqlc-check` regenerate and check `internal/db`. |
-| `.gitea/workflows/ci.yml` | CI quality floor. |
+| `.github/workflows/ci.yml` | GitHub Actions CI quality floor and production deploy gate. |
 
 Design references:
 

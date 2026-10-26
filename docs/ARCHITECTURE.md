@@ -1466,7 +1466,8 @@ real screen — with rollback to the previous release. The automated deploy
 its timer checks every quarter hour (plus up to 5 minutes' random delay),
 and deploys `refs/remotes/origin/main` only when it differs from the last
 SHA in the deploy record `/home/overseer/mealquest-auto-deploy.log`, its
-Gitea CI status is `success`, its last attempt did not fail, and
+GitHub Actions CI check is `success`, every other check GitHub reports is
+also `success`, its last attempt did not fail, and
 `mealquest.service` is active. It stops at the first failure and never
 retries a failed SHA; `--ref <ref>` is the manual override. Installing,
 seeding the record and enabling the timer are host steps in the runbook's

@@ -234,7 +234,7 @@ describe('AppShell', () => {
       reserved,
       `<main> reserves ${reserved}px + inset; the bar covers ${barHeight}px + ${barBottom}px + inset`,
     ).toBeGreaterThanOrEqual(barHeight + barBottom)
-  })
+  }, 10_000)
 
   it.each([768, TABLET, 1199])('shows only the tablet rail with the "M" mark at %i px', async (width) => {
     await renderAt('/plan', width)

@@ -306,13 +306,16 @@ report no CI, which fails that run; the next run reads it again.
 [`auto-deploy_test.sh`](auto-deploy_test.sh), run by `make test`, checks
 this gate offline against stubbed GitHub answers.
 
-The repository has no GitHub Actions workflows yet, so today every `main`
-reports no CI and the timer refuses to deploy. Until CI exists on GitHub the
-owner chooses between deploying with `--ref` (below) and the host opt-in
-`MEALQUEST_DEPLOY_ALLOW_NO_CI=1`, which means **deploy without
-forge-verified CI**: when GitHub reports no CI at all for the SHA, the
-timer deploys it anyway. It never overrides a check that is pending or
-failed. Set it only on the host, in a drop-in, never in the repository:
+GitHub Actions runs [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)
+on every push and pull request. Its `ci` job runs the repository's canonical
+test, generated-query and build entry points. A push to `main` therefore
+creates the check that releases the pull-based deploy gate; the workflow
+does not receive production credentials or connect to the production host.
+
+`MEALQUEST_DEPLOY_ALLOW_NO_CI=1` remains an emergency owner opt-in to deploy
+**without forge-verified CI** when GitHub reports no checks at all. It never
+overrides a check that is pending or failed. Set it only on the host, in a
+drop-in, never in the repository:
 
 ```sh
 sudo systemctl edit mealquest-auto-deploy.service

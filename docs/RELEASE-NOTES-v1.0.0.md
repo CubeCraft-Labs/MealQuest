@@ -20,6 +20,30 @@ dinners, shipped as a single Go service with the React PWA embedded
   so it **does not include the UI Bugs fixes**. These notes do not record
   whether `273cf8f` has been deployed since.
 
+## After the v1.0.0 cut — in this tree
+
+This tree also holds commits made after `main` `273cf8f`. They change how
+CI runs and how the automated deploy decides whether to deploy. They are
+not part of the v1.0.0 cut above:
+
+- **CI on GitHub Actions** (`73e351f`, pull request #14): the CI workflow
+  is now [.github/workflows/ci.yml](../.github/workflows/ci.yml). It runs
+  on every push and pull request and calls `make test`,
+  `make sqlc-check` and `make build`.
+- **The deploy gate reads GitHub** (`7cea30e`, pull request #12, Maestro
+  10a33c37): `deploy/auto-deploy.sh` reads the check runs and commit
+  statuses that GitHub reports for the exact `origin/main` commit, from the
+  public API.
+  - It deploys only when every check succeeded.
+  - While any check is pending, it waits and deploys nothing.
+  - It refuses when a check failed or when the CI cannot be read.
+  - It refuses a commit with no CI at all, unless the owner sets
+    `MEALQUEST_DEPLOY_ALLOW_NO_CI=1` on the host. Any other value of that
+    variable, including an empty one, stops the script at start.
+  - Each deploy record line ends with `ci=success`,
+    `ci=none(MEALQUEST_DEPLOY_ALLOW_NO_CI=1)` or `ci=not-checked(--ref)`.
+    A manual `--ref` deploy bypasses the gate.
+
 ## What shipped
 
 Features are grouped by area. Each one names the commit that brought it
@@ -152,11 +176,9 @@ None of it is in v1.0.0 as described here.
   in the UI Bugs tests ran in jsdom, which does no layout. Pixel-level
   confirmation on a real browser or phone is not recorded (`9a7aa12`
   commit message).
-- **The CI and the deploy gate still point at Gitea.** The CI workflow is
-  `.gitea/workflows/ci.yml`. The automated deploy reads commit status from
-  the Gitea API (`deploy/auto-deploy.sh`, `STATUS_API`). The repository's
-  remote is now GitHub (`CubeCraft-Labs/MealQuest`), and these notes do
-  not verify that the deploy gate works for commits made there.
+- **The GitHub deploy gate is not recorded as run in production.** These
+  notes do not record a deploy of a `main` commit gated by GitHub CI
+  (see "After the v1.0.0 cut — in this tree").
 
 ### What has actually been verified
 
@@ -252,8 +274,8 @@ These notes are drawn from:
   [deploy/RUNBOOK.md](../deploy/RUNBOOK.md),
   [deploy/compose.yaml](../deploy/compose.yaml),
   [deploy/.env.example](../deploy/.env.example)
-- `internal/config/config.go`, `deploy/auto-deploy.sh` and
-  `.gitea/workflows/ci.yml`
+- `internal/config/config.go`, and on this tree `deploy/auto-deploy.sh`
+  and `.github/workflows/ci.yml`
 - the section headings of the CTXD `RUNBOOKS.MD`
 - Maestro task 6fc68c88, for the owner confirmations and the deferred
   items

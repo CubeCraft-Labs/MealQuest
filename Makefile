@@ -2,7 +2,8 @@
 #
 #   make dev     Go server on :8080 plus Vite dev server on :5173 (proxies
 #                /api, /auth, /media to :8080). Needs the MEALQUEST_* env set.
-#   make test    gofmt check, go vet, go test -race, npm typecheck and test.
+#   make test    gofmt check, go vet, go test -race, npm typecheck and test,
+#                and the auto-deploy CI gate test (deploy/auto-deploy_test.sh).
 #   make build   Build the PWA, embed it, build the static binary bin/mealquest.
 #   make docker  Build the container image from ./Dockerfile.
 #   make sqlc    Regenerate internal/db from sqlc.yaml with the pinned sqlc.
@@ -23,7 +24,7 @@ SQLC_VERSION := v1.31.1
 SQLC ?= sqlc
 SQLC_OUT := internal/db
 
-.PHONY: dev test go-test web-test build web embed check-embed-clean docker sqlc sqlc-check sqlc-install
+.PHONY: dev test go-test web-test deploy-test build web embed check-embed-clean docker sqlc sqlc-check sqlc-install
 
 # Run both servers; Ctrl-C (or either exiting) stops both. The binary is built
 # first and run directly because `go run` would orphan its child on kill.
@@ -35,16 +36,19 @@ dev:
 	(cd web && exec npm run dev) & \
 	wait -n
 
-test: go-test web-test
+test: go-test web-test deploy-test
 
 go-test:
 	@unformatted="$$(gofmt -l .)"; \
 	if [ -n "$$unformatted" ]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
 	go vet ./...
-	go test -race ./...
+	go test -race -timeout 15m ./...
 
 web-test:
 	cd web && npm ci && npm run typecheck && npm test
+
+deploy-test:
+	deploy/auto-deploy_test.sh
 
 build: embed
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/mealquest ./cmd/server

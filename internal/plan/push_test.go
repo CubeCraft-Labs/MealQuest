@@ -419,6 +419,112 @@ func TestPushPartialFailureKeepsAChangedPlanChanged(t *testing.T) {
 	}
 }
 
+// pushClearedManualNight pushes the week, names saturday as a manual
+// night, pushes that, then clears it. The next push only deletes
+// saturday's event: the other days still have their event ids. It
+// returns the plan after the clear, which is changed and still remembers
+// the earlier sync.
+func (e *env) pushClearedManualNight(t *testing.T) plan.Plan {
+	t.Helper()
+	e.connectCalendar(t)
+	e.storePlan(t, week, fullWeek...)
+	if _, _, err := e.svc.Push(t.Context(), week); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.SetManual(t.Context(), week, saturday, "mummy dogs"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.svc.Push(t.Context(), week); err != nil {
+		t.Fatal(err)
+	}
+	p, err := e.svc.ClearDay(t.Context(), week, saturday)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Status != plan.StatusChanged || p.CalendarSyncedAt == nil {
+		t.Fatalf("after clear = %s synced %v, want changed, still remembering the earlier sync", p.Status, p.CalendarSyncedAt)
+	}
+	ids := e.eventIDs(t, week)
+	empty := 0
+	for _, id := range ids {
+		if id == "" {
+			empty++
+		}
+	}
+	if empty != 1 || ids[saturday] != "" {
+		t.Fatalf("event ids = %v, want only saturday empty so the next push only deletes it", ids)
+	}
+	return p
+}
+
+// mummyDogsEvent is the calendar event written for the manual night, which
+// the clear has not removed yet.
+func (e *env) mummyDogsEvent(t *testing.T) string {
+	t.Helper()
+	for id, ev := range e.google.Events(dinnersCal.ID) {
+		if ev.Summary == "mummy dogs" {
+			return id
+		}
+	}
+	t.Fatal("calendar has no mummy dogs event to delete")
+	return ""
+}
+
+// TestPushDeleteOnlyMissingEventSucceeds: a push that only deletes a
+// cleared manual night treats a 404 for that event as already gone. The
+// push succeeds and the plan is synced. (CAL-01)
+func TestPushDeleteOnlyMissingEventSucceeds(t *testing.T) {
+	e := newEnv(t)
+	e.pushClearedManualNight(t)
+	id := e.mummyDogsEvent(t)
+	e.google.DropEvent(dinnersCal.ID, id)
+
+	p, _, err := e.svc.Push(t.Context(), week)
+	if err != nil {
+		t.Fatalf("Push = %v, want success: the event is already gone", err)
+	}
+	if p.Status != plan.StatusSynced || p.CalendarSyncedAt == nil {
+		t.Fatalf("plan = %s synced %v, want synced", p.Status, p.CalendarSyncedAt)
+	}
+	if _, still := e.google.Events(dinnersCal.ID)[id]; still {
+		t.Fatal("the missing event was created by the delete")
+	}
+	if got := e.google.Events(dinnersCal.ID)[plan.EventID(week, mustDate(weekDates[0]))].Summary; got != "Dinner: Beef Chili" {
+		t.Fatalf("monday = %q, want Dinner: Beef Chili still on the calendar", got)
+	}
+	if n := len(e.google.Events(dinnersCal.ID)); n != 6 {
+		t.Fatalf("calendar has %d events, want the six dinners", n)
+	}
+}
+
+// TestPushDeleteOnlyUnavailableCalendarLeavesPlanUnsynced: a push that
+// only deletes a cleared manual night must not treat a deleted calendar's
+// 404 as the event already being gone. The push fails and the plan is
+// left as it was, not synced. (CAL-01)
+func TestPushDeleteOnlyUnavailableCalendarLeavesPlanUnsynced(t *testing.T) {
+	e := newEnv(t)
+	before := e.pushClearedManualNight(t)
+	ids := e.eventIDs(t, week)
+	e.google.SetCalendars(0)
+
+	_, _, err := e.svc.Push(t.Context(), week)
+	if !errors.Is(err, gcal.ErrCalendarUnavailable) {
+		t.Fatalf("Push = %v, want ErrCalendarUnavailable", err)
+	}
+	assertNoSecret(t, "error", err.Error())
+	got, err := e.svc.Get(t.Context(), week)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != before.Status || got.UpdatedAt != before.UpdatedAt || got.CalendarSyncedAt == nil || *got.CalendarSyncedAt != *before.CalendarSyncedAt {
+		t.Fatalf("plan = %s synced %v updated %s, want unchanged %s synced %v updated %s",
+			got.Status, got.CalendarSyncedAt, got.UpdatedAt, before.Status, before.CalendarSyncedAt, before.UpdatedAt)
+	}
+	if after := e.eventIDs(t, week); !maps.Equal(after, ids) {
+		t.Fatalf("event ids = %v, want unchanged %v", after, ids)
+	}
+}
+
 func TestPushToStaleCalendar(t *testing.T) {
 	for name, edit := range map[string]func(*gcaltest.Google){
 		"deleted": func(g *gcaltest.Google) { g.SetCalendars(0) },

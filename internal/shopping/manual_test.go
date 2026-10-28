@@ -3,6 +3,8 @@ package shopping_test
 import (
 	"strings"
 	"testing"
+
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/shopping"
 )
 
 // TestGenerateIgnoresManualNight: a plan day named with a free-text label
@@ -50,5 +52,57 @@ func TestGenerateIgnoresManualNight(t *testing.T) {
 	}
 	if strings.Contains(payload, "mummy dogs") || strings.Contains(payload, "Pad Thai") {
 		t.Errorf("title job payload = %s, want neither the label nor the replaced dinner", payload)
+	}
+}
+
+// TestGenerateAllManualOrClearedWeekEnqueuesNoTitleJob: a week whose nights
+// are all manual labels or cleared has no dinner names. archive_title
+// rejects that empty list, so generating the Supply run must not enqueue a
+// title job. The list is still stored, untitled, with nothing to buy.
+// (SHOP-01)
+func TestGenerateAllManualOrClearedWeekEnqueuesNoTitleJob(t *testing.T) {
+	e := newEnv(t)
+	e.dinner(t, "Beef Chili", ing{"ground beef", "1", "lb"})
+	names := make([]string, len(weekDates))
+	for i := range names {
+		names[i] = "Beef Chili"
+	}
+	e.plan(t, names...)
+	manual := map[string]string{
+		weekDates[0]: "leftovers",
+		weekDates[1]: "mummy dogs",
+		weekDates[2]: "soup night",
+		weekDates[3]: "pizza from the freezer",
+		weekDates[4]: "breakfast for dinner",
+	}
+	for date, label := range manual {
+		res, err := e.st.Writer.ExecContext(t.Context(), `UPDATE plan_days SET dinner_id = NULL, manual_label = ?, is_new = 0, calendar_event_id = NULL WHERE date = ?`, label, date)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			t.Fatalf("manual %s updated %d rows, want 1", date, n)
+		}
+	}
+	for _, date := range weekDates[5:] {
+		res, err := e.st.Writer.ExecContext(t.Context(), `UPDATE plan_days SET dinner_id = NULL, manual_label = NULL, is_new = 0, calendar_event_id = NULL WHERE date = ?`, date)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			t.Fatalf("clear %s updated %d rows, want 1", date, n)
+		}
+	}
+
+	g := e.generate(t)
+	if len(g.List.Groups) != 0 || len(g.Skipped) != 0 || g.List.Title != nil {
+		t.Fatalf("list groups %d skipped %d title %v, want an empty untitled Supply run", len(g.List.Groups), len(g.Skipped), g.List.Title)
+	}
+	var n int
+	if err := e.st.Reader.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM jobs WHERE kind = ?`, shopping.KindTitleSupplyRun).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 || g.TitleJobID != nil {
+		t.Fatalf("title jobs = %d id %v, want none: an empty dinner list is not a title job", n, g.TitleJobID)
 	}
 }

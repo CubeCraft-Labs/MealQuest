@@ -343,6 +343,14 @@ func (g *Google) CancelEvent(calendar, id string) {
 	g.events[calendar][id] = e
 }
 
+// DropEvent forgets id on calendar without a delete request, so the next
+// delete of that id is not found. The calendar stays listed.
+func (g *Google) DropEvent(calendar, id string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.events[calendar], id)
+}
+
 // FailEventWrite makes the nth request to the events endpoints from now
 // (1 for the next) answer status with a body that quotes the access token.
 func (g *Google) FailEventWrite(n, status int) {

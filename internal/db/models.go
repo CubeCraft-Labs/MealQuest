@@ -70,6 +70,7 @@ type Dinner struct {
 	RecipeUrl         sql.NullString
 	GroundingError    sql.NullString
 	GroundingRevision int64
+	MealSource        string
 }
 
 type HouseholdSetting struct {

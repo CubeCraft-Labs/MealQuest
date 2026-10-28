@@ -256,7 +256,7 @@ func (s *Service) DecideReview(ctx context.Context, dinnerID, decision, updatedB
 
 func reviewDinner(d db.Dinner) ReviewDinner {
 	out := ReviewDinner{ID: d.ID, Name: d.Name}
-	if d.PhotoID.Valid {
+	if dinners.Cooked(d.MealSource) && d.PhotoID.Valid {
 		u := dinners.PhotoURL(d.PhotoID.String)
 		out.Photo = &u
 	}

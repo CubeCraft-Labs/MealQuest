@@ -120,7 +120,7 @@ func TestDinners(t *testing.T) {
 		Cuisine: create.Cuisine, IsFavorite: create.IsFavorite, RecipeID: create.RecipeID,
 		PhotoID: create.PhotoID, GroundingStatus: create.GroundingStatus,
 		UpdatedBy: create.UpdatedBy, CreatedAt: created, UpdatedAt: created,
-		RecipeUrl: create.RecipeUrl,
+		RecipeUrl: create.RecipeUrl, MealSource: "cook",
 	}
 	got, err := q.CreateDinner(ctx, create)
 	if err != nil {
@@ -193,6 +193,7 @@ func TestDinners(t *testing.T) {
 		RecipeUrl:       str("https://example.com/tacos"),
 		PhotoID:         str(photo.ID),
 		GroundingStatus: "failed",
+		MealSource:      "cook",
 		UpdatedBy:       str("sam@example.com"),
 		UpdatedAt:       updated,
 	}
@@ -206,7 +207,8 @@ func TestDinners(t *testing.T) {
 		MinutesTotal: update.MinutesTotal, Difficulty: update.Difficulty,
 		Cuisine: update.Cuisine, IsFavorite: 0, RecipeID: update.RecipeID,
 		PhotoID: update.PhotoID, GroundingStatus: update.GroundingStatus,
-		UpdatedBy: update.UpdatedBy, CreatedAt: created, UpdatedAt: updated,
+		MealSource: "cook",
+		UpdatedBy:  update.UpdatedBy, CreatedAt: created, UpdatedAt: updated,
 		RecipeUrl: create.RecipeUrl, // UpdateDinner leaves the recipe link
 	}
 	if got != want {

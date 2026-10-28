@@ -32,10 +32,17 @@ export function planDinner(dinner: QuestLogDinner, fromQuestLog: boolean): PlanD
     id: dinner.id,
     name: dinner.name,
     status: fromQuestLog ? 'quest_log' : 'regular',
-    photo_id: dinner.photo_id,
+    photo_id: dinner.meal_source === 'cook' ? dinner.photo_id : undefined,
     minutes: dinner.minutes_total,
     method: dinner.method,
+    meal_source: dinner.meal_source,
   }
+}
+
+// cookedDinners are the dinners a plan can take: delivery and dining out
+// are not planned.
+export function cookedDinners(dinners: QuestLogDinner[]): QuestLogDinner[] {
+  return dinners.filter((dinner) => dinner.meal_source === 'cook')
 }
 
 export type SwapSheetProps = {
@@ -64,7 +71,8 @@ export function SwapSheet({ day, planned, onSwap, onClose }: SwapSheetProps) {
 
   const sourceLabel = (s: Source) => {
     const dinners = lists[s].data
-    return dinners === undefined ? sourceNames[s] : `${sourceNames[s]} · ${dinners.length}`
+    const cooked = dinners === undefined ? undefined : cookedDinners(dinners)
+    return cooked === undefined ? sourceNames[s] : `${sourceNames[s]} · ${cooked.length}`
   }
 
   let body
@@ -82,12 +90,16 @@ export function SwapSheet({ day, planned, onSwap, onClose }: SwapSheetProps) {
         ))}
       </div>
     )
-  } else if (list.data.length === 0) {
-    body = <p className={styles.empty}>{emptyLists[source]}</p>
+  } else if (cookedDinners(list.data).length === 0) {
+    body = (
+      <p className={styles.empty}>
+        {list.data.length === 0 ? emptyLists[source] : 'Delivery and dining out are not planned.'}
+      </p>
+    )
   } else {
     body = (
       <ul aria-label={sourceNames[source]} className={styles.rows}>
-        {list.data.map((dinner: QuestLogDinner) => {
+        {cookedDinners(list.data).map((dinner: QuestLogDinner) => {
           const already = planned.has(dinner.id)
           return (
             <li key={dinner.id}>
@@ -96,7 +108,13 @@ export function SwapSheet({ day, planned, onSwap, onClose }: SwapSheetProps) {
                 leading={
                   // The row's name already says what the photo shows.
                   <span aria-hidden="true">
-                    <Photo id={dinner.photo_id} name={dinner.name} radius="var(--radius-md)" sizes="48px" className={styles.photo} />
+                    <Photo
+                      id={dinner.meal_source === 'cook' ? dinner.photo_id : undefined}
+                      name={dinner.name}
+                      radius="var(--radius-md)"
+                      sizes="48px"
+                      className={styles.photo}
+                    />
                   </span>
                 }
                 title={dinner.name}

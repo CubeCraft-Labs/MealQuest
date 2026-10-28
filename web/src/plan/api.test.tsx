@@ -56,7 +56,7 @@ function planBody(changes: Record<number, { id: string; name: string; is_new?: b
           id: change?.id ?? `d${i}`,
           name: change?.name ?? `Dinner ${i}`,
           status: change?.is_new ? 'quest_log' : 'regular',
-          photo: null, minutes: null, method: null as string | null, origin: 'regular' },
+          photo: null, minutes: null, method: null as string | null, origin: 'regular', meal_source: 'cook' },
         is_new: change?.is_new ?? false,
         start_by: change?.start_by ?? null,
       }
@@ -105,8 +105,8 @@ async function renderSwaps() {
   return { ...hook, queryClient, plan: () => queryClient.getQueryData<Plan>(planKey(WEEK))! }
 }
 
-const ORZO = { date: '2026-10-09', dinner: { id: 'q1', name: 'Lemon orzo', status: 'quest_log' as const, photo_id: undefined, minutes: null, method: null }, fromQuestLog: true }
-const FISH = { date: '2026-10-05', dinner: { id: 'r1', name: 'Fish tacos', status: 'regular' as const, photo_id: undefined, minutes: null, method: null }, fromQuestLog: false }
+const ORZO = { date: '2026-10-09', dinner: { id: 'q1', name: 'Lemon orzo', status: 'quest_log' as const, photo_id: undefined, minutes: null, method: null, meal_source: 'cook' as const }, fromQuestLog: true }
+const FISH = { date: '2026-10-05', dinner: { id: 'r1', name: 'Fish tacos', status: 'regular' as const, photo_id: undefined, minutes: null, method: null, meal_source: 'cook' as const }, fromQuestLog: false }
 
 afterEach(() => {
   vi.unstubAllGlobals()

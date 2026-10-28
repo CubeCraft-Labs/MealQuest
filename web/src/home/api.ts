@@ -3,7 +3,7 @@ import { useCallback, useEffect } from 'react'
 import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { knownArchived, useArchived } from '../dinners/archived.ts'
-import { oneOf, photoId, PLANNED_DINNER_STATUSES, type PlannedDinnerStatus } from '../dinners/api.ts'
+import { MEAL_SOURCES, oneOf, photoId, PLANNED_DINNER_STATUSES, type MealSource, type PlannedDinnerStatus } from '../dinners/api.ts'
 import { untilLocalMidnight, weekLabel } from '../plan/week.ts'
 import { appPath, opensRecipeOf, parseNoticeDinner, recipePathId, type NoticeDinner } from '../push/notification.ts'
 
@@ -28,6 +28,7 @@ export type Tonight = {
   photo_id: string | undefined
   origin: Origin
   minutes_total: number | null
+  meal_source: MealSource
 }
 
 // ShoppingListStatus is the Supply run Home points at: next week's once it
@@ -88,6 +89,7 @@ function parseTonight(where: string, body: unknown): Tonight | null {
     photo_id: photoId(where, body.photo),
     origin: oneOf(where, 'origin', ORIGINS, body.origin),
     minutes_total: minutes as number | null,
+    meal_source: oneOf(where, 'meal_source', MEAL_SOURCES, body.meal_source),
   }
 }
 

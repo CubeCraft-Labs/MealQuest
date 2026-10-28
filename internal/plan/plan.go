@@ -119,6 +119,36 @@ func (e *DinnerNotPlannableError) Error() string {
 	return fmt.Sprintf("the dinner is %s; only Regulars and Quest log dinners can be planned", e.Status)
 }
 
+// NotCookedError is a swap to a Delivery or Dining Out dinner. Those
+// dinners are not planned.
+type NotCookedError struct {
+	MealSource string
+}
+
+// uncookedLabel is the calendar line for a dinner that is not cooked at
+// home. An unknown source is an error: nothing is substituted for it.
+func uncookedLabel(source string) (string, error) {
+	switch source {
+	case dinners.MealSourceDelivery:
+		return "Delivery", nil
+	case dinners.MealSourceDiningOut:
+		return "Dining out", nil
+	default:
+		return "", fmt.Errorf("plan: meal source %q is not delivery or dining out", source)
+	}
+}
+
+func (e *NotCookedError) Error() string {
+	switch e.MealSource {
+	case dinners.MealSourceDelivery:
+		return "the dinner is delivery; only a dinner cooked at home can be planned"
+	case dinners.MealSourceDiningOut:
+		return "the dinner is dining out; only a dinner cooked at home can be planned"
+	default:
+		return fmt.Sprintf("the dinner is %s; only a dinner cooked at home can be planned", e.MealSource)
+	}
+}
+
 // ParseWeekStart parses s, a household-local Monday as YYYY-MM-DD.
 func ParseWeekStart(s string) (store.LocalDate, error) {
 	d, err := store.ParseLocalDate(s)
@@ -238,12 +268,16 @@ type Dinner struct {
 	Minutes *int64  `json:"minutes"`
 	Method  *string `json:"method"`
 	Origin  string  `json:"origin"`
+	// MealSource is cook, delivery or dining_out. A dinner that is not
+	// cooked at home has no photo and no recipe to open.
+	MealSource string `json:"meal_source"`
 }
 
 // viewable reports whether the dinner has a recipe to open: every status
-// but archived.
+// but archived, and only a dinner cooked at home. Delivery and dining out
+// are not archived; they have no recipe of their own.
 func (d Dinner) viewable() bool {
-	return d.Status != dinners.StatusArchived
+	return d.Status != dinners.StatusArchived && dinners.Cooked(d.MealSource)
 }
 
 // Get returns the plan of the week starting weekStart, or ErrNotFound.
@@ -260,12 +294,15 @@ func (s *Service) Get(ctx context.Context, weekStart store.LocalDate) (p Plan, e
 }
 
 // EmitDayOfReminder emits day_of_reminder for date, keyed by the date,
-// "Tonight: {dinner} · Recipe →" for the dinner planned on it, and reports
-// whether it did: a date whose week has no plan emits nothing. A dinner
-// archived since it was planned has no recipe, so its reminder offers none
-// (chat.DayOfReminder). The day_of_reminder schedule calls it at the
-// household's reminder_time (ReminderSchedules); emitting a date again
-// stores no second notification.
+// and reports whether it did. A date whose week has no plan emits nothing.
+// A cooked dinner is "Tonight: {dinner} · Recipe →" while it has a recipe,
+// and offers none once archived (chat.DayOfReminder). A delivery or
+// dining-out dinner names the dinner and offers no recipe
+// (chat.UncookedReminder). A manual night is "Tonight: {label}" with no
+// dinner (chat.ManualNightReminder). A cleared night emits nothing
+// (ErrNoNight). The day_of_reminder schedule calls it at the household's
+// reminder_time (ReminderSchedules); emitting a date again stores no
+// second notification.
 func (s *Service) EmitDayOfReminder(ctx context.Context, date store.LocalDate) (bool, error) {
 	p, err := s.Get(ctx, household.WeekStart(date))
 	if errors.Is(err, ErrNotFound) {
@@ -280,6 +317,12 @@ func (s *Service) EmitDayOfReminder(ctx context.Context, date store.LocalDate) (
 	}
 	var ev notify.Event
 	switch {
+	case d.Dinner != nil && d.Dinner.Status != dinners.StatusArchived && !dinners.Cooked(d.Dinner.MealSource):
+		var err error
+		ev, err = chat.UncookedReminder(date, d.Dinner.Name, d.Dinner.MealSource)
+		if err != nil {
+			return false, fmt.Errorf("plan: %w", err)
+		}
 	case d.Dinner != nil:
 		ev = chat.DayOfReminder(date, d.Dinner.ID, d.Dinner.Name, d.Dinner.viewable())
 	case d.ManualLabel != nil:
@@ -385,7 +428,7 @@ func planDay(ctx context.Context, q *db.Queries, zone *time.Location, date store
 // dinnerTime in zone, or nil for any other dinner and for a crock-pot
 // dinner whose minutes are unknown.
 func startBy(zone *time.Location, date store.LocalDate, dinnerTime string, d db.Dinner) (*time.Time, error) {
-	if !d.Method.Valid || d.Method.String != "crockpot" || !d.MinutesTotal.Valid || d.MinutesTotal.Int64 <= 0 {
+	if !dinners.Cooked(d.MealSource) || !d.Method.Valid || d.Method.String != "crockpot" || !d.MinutesTotal.Valid || d.MinutesTotal.Int64 <= 0 {
 		return nil, nil
 	}
 	at, err := household.LocalTime(zone, date, dinnerTime)
@@ -509,6 +552,9 @@ func (s *Service) Swap(ctx context.Context, weekStart store.LocalDate, date, din
 		if !slices.Contains(plannable, d.Status) {
 			return &DinnerNotPlannableError{Status: d.Status}
 		}
+		if !dinners.Cooked(d.MealSource) {
+			return &NotCookedError{MealSource: d.MealSource}
+		}
 		days, err := q.ListPlanDays(ctx, cur.ID)
 		if err != nil {
 			return fmt.Errorf("plan: read days of %s: %w", cur.ID, err)
@@ -587,16 +633,17 @@ func isNew(status string) int64 {
 
 func fromDinner(d db.Dinner) Dinner {
 	out := Dinner{
-		ID:     d.ID,
-		Name:   d.Name,
-		Status: d.Status,
-		Method: nullString(d.Method),
-		Origin: d.Origin,
+		ID:         d.ID,
+		Name:       d.Name,
+		Status:     d.Status,
+		Method:     nullString(d.Method),
+		Origin:     d.Origin,
+		MealSource: d.MealSource,
 	}
 	if d.MinutesTotal.Valid {
 		out.Minutes = &d.MinutesTotal.Int64
 	}
-	if d.PhotoID.Valid {
+	if dinners.Cooked(d.MealSource) && d.PhotoID.Valid {
 		u := dinners.PhotoURL(d.PhotoID.String)
 		out.Photo = &u
 	}

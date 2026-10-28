@@ -1,10 +1,12 @@
 import { ChevronLeft, Heart, Pencil, Plus } from 'lucide-react'
+import { ApiError } from '../api/index.ts'
 import { useId, useState, type FormEvent, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import { useOpenRecipe } from '../dinners/useOpenRecipe.tsx'
 import {
   DIFFICULTIES,
   METHODS,
+  MEAL_SOURCE_LABEL,
   opensRecipe,
   useAddRegular,
   useEditRegular,
@@ -16,6 +18,7 @@ import {
   type Difficulty,
   type GroundingStatus,
   type ManualRecipe,
+  type MealSource,
   type Method,
   type NewRegular,
   type RecipeFix,
@@ -189,7 +192,10 @@ function RegularsManager() {
                     regular={regular}
                     onOpen={() => recipe.open(regular)}
                     onEdit={() =>
-                      setOpen({ sheet: regular.grounding_status === 'failed' ? 'fix' : 'edit', id: regular.id })
+                      setOpen({
+                        sheet: regular.meal_source === 'cook' && regular.grounding_status === 'failed' ? 'fix' : 'edit',
+                        id: regular.id,
+                      })
                     }
                     onFavorite={() => onFavorite(regular)}
                   />
@@ -340,21 +346,34 @@ type RegularRowProps = {
 // opens the edit sheet, or the fix-recipe sheet when its recipe was not found. The pencil and the
 // heart sit apart, so their 44 px hit boxes never overlap.
 function RegularRow({ regular, onOpen, onEdit, onFavorite }: RegularRowProps) {
-  const line = details(regular)
-  const fix = regular.grounding_status === 'failed'
+  const cooked = regular.meal_source === 'cook'
+  const line = cooked ? details(regular) : null
+  const fix = cooked && regular.grounding_status === 'failed'
   return (
     <li className={styles.item} aria-busy={regular.pending}>
       <ListRow
         className={regular.pending && styles.pending}
-        leading={<Photo id={regular.photo_id} name={regular.name} radius="14px" sizes="48px" className={styles.photo} />}
+        leading={
+          <Photo
+            id={cooked ? regular.photo_id : undefined}
+            name={regular.name}
+            radius="14px"
+            sizes="48px"
+            className={styles.photo}
+          />
+        }
         title={regular.name}
         meta={
           <span className={styles.meta}>
             {line && <span>{line}</span>}
-            <GroundingBadge status={regular.grounding_status} />
+            {cooked ? (
+              <GroundingBadge status={regular.grounding_status} />
+            ) : (
+              <Tag tone="teal">{MEAL_SOURCE_LABEL[regular.meal_source]}</Tag>
+            )}
           </span>
         }
-        onClick={!regular.pending && opensRecipe('regular', regular.cached) ? onOpen : undefined}
+        onClick={!regular.pending && opensRecipe('regular', regular.cached, regular.meal_source) ? onOpen : undefined}
         trailing={
           <span className={styles.rowActions}>
             <IconButton
@@ -409,7 +428,12 @@ function minutesProblem(text: string): string | null {
   return null
 }
 
-type Draft = { name: string; method: Method | ''; minutes: string; difficulty: Difficulty | '' }
+type Draft = { name: string; method: Method | ''; minutes: string; difficulty: Difficulty | ''; meal_source: MealSource }
+
+const mealSourceOptions = (['cook', 'delivery', 'dining_out'] as const).map((value) => ({
+  value,
+  label: MEAL_SOURCE_LABEL[value],
+}))
 
 function draftOf(regular: Regular): Draft {
   return {
@@ -417,6 +441,7 @@ function draftOf(regular: Regular): Draft {
     method: regular.method ?? '',
     minutes: regular.minutes_total === null ? '' : String(regular.minutes_total),
     difficulty: regular.difficulty ?? '',
+    meal_source: regular.meal_source,
   }
 }
 
@@ -429,6 +454,7 @@ function patchOf(regular: Regular, draft: Draft): RegularPatch {
   if (draft.method !== saved.method && draft.method !== '') patch.method = draft.method
   if (draft.minutes !== saved.minutes && draft.minutes !== '') patch.minutes_total = Number(draft.minutes)
   if (draft.difficulty !== saved.difficulty && draft.difficulty !== '') patch.difficulty = draft.difficulty
+  if (draft.meal_source !== saved.meal_source) patch.meal_source = draft.meal_source
   return patch
 }
 
@@ -480,6 +506,12 @@ function EditRegularSheet({ regular, onClose, onRemove }: EditRegularSheetProps)
     <SheetFrame title={`Edit ${regular.name}`} onClose={onClose}>
       <form className={styles.form} onSubmit={onSave}>
         <fieldset className={styles.lock} disabled={edit.isPending}>
+          <Segmented
+            label="How this dinner happens"
+            options={mealSourceOptions}
+            value={draft.meal_source}
+            onValueChange={(meal_source) => change({ meal_source })}
+          />
           <TextInput
             label="Name"
             value={draft.name}
@@ -532,7 +564,9 @@ function EditRegularSheet({ regular, onClose, onRemove }: EditRegularSheetProps)
           </Select>
           {edit.isError && (
             <p role="alert" className={styles.problem}>
-              Not saved: {edit.error.message}
+              {edit.error instanceof ApiError && edit.error.code === 'planned'
+                ? `Remove ${regular.name} from the plan first.`
+                : `Not saved: ${edit.error.message}`}
             </p>
           )}
           <div className={styles.actions}>

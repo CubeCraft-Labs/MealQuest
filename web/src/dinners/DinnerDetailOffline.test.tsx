@@ -26,6 +26,7 @@ function grounded(id: string, name: string) {
     difficulty: 'easy',
     cuisine: 'korean',
     is_favorite: false,
+    meal_source: 'cook',
     photo_urls: { '400': `/media/photos/${id}-400.jpg`, '1200': `/media/photos/${id}-1200.jpg` },
     ingredients: [
       { name: 'Ground beef', qty: '1', unit: 'lb', note: null, raw_text: '1 lb ground beef' },

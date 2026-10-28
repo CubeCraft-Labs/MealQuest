@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -200,6 +201,10 @@ type Group struct {
 	// DinnerStatus is the dinner's status now (dinners.Status*); a dinner
 	// removed from Regulars since the list was made is archived.
 	DinnerStatus string `json:"dinner_status"`
+	// DinnerMealSource is cook, delivery or dining_out. A group is made
+	// only for a dinner cooked at home; a list kept from before the
+	// designation still names the source.
+	DinnerMealSource string `json:"dinner_meal_source"`
 	// Date is the plan day, household-local YYYY-MM-DD.
 	Date     string `json:"date"`
 	Position int    `json:"position"`
@@ -423,26 +428,102 @@ func (s *Service) storeTitle(ctx context.Context, p TitleJob) (string, error) {
 	if err != nil || title != "" {
 		return title, err
 	}
-	out, err := s.title(ctx, titleScope(p), skills.ArchiveTitleRequest{Dinners: p.Dinners})
+	// A job queued before a dinner was designated Delivery or Dining Out
+	// still carries that dinner's name. Title the Supply run as it is now.
+	fresh, err := s.freshTitle(ctx, q, p)
+	if err != nil {
+		return "", err
+	}
+	out, err := s.title(ctx, titleScope(fresh), skills.ArchiveTitleRequest{Dinners: fresh.Dinners})
 	if err != nil {
 		return "", fmt.Errorf("shopping: title: %w", err)
 	}
 	write, cancel := jobs.FinalWriteContext(ctx)
 	defer cancel()
-	n, err := q.SetShoppingListTitle(write, db.SetShoppingListTitleParams{
-		Title: sql.NullString{String: out.Title, Valid: true}, UpdatedAt: store.Now().String(), ID: p.ListID,
+	// The freshness check and the title write are one transaction, so a
+	// plan edit cannot land between them and store a title for a dinner
+	// the week no longer has.
+	var stored string
+	err = s.st.WithTx(write, func(tx *sql.Tx) error {
+		tq := db.New(tx)
+		again, err := s.freshTitle(write, tq, p)
+		if err != nil {
+			return err
+		}
+		if again.Revision != fresh.Revision || !slices.Equal(again.Dinners, fresh.Dinners) {
+			return errors.New("shopping: store title: the Supply run changed before its title was stored")
+		}
+		n, err := tq.SetShoppingListTitle(write, db.SetShoppingListTitleParams{
+			Title: sql.NullString{String: out.Title, Valid: true}, UpdatedAt: store.Now().String(), ID: p.ListID,
+		})
+		if err != nil {
+			return fmt.Errorf("shopping: store title: %w", err)
+		}
+		if n == 1 {
+			stored = out.Title
+			return nil
+		}
+		title, err := s.currentTitle(write, tq, p)
+		if err == nil && title == "" {
+			err = errors.New("shopping: store title: the Supply run is still untitled")
+		}
+		stored = title
+		return err
 	})
+	return stored, err
+}
+
+// freshTitle is the title job to run for p. A job queued before a dinner
+// was designated Delivery or Dining Out, or before the plan revision
+// moved, titles the cooked dinners the week has now. A rename leaves the
+// revision alone, so that job still titles the names it was queued with.
+// A list frozen or replaced is an error, as currentTitle reports.
+func (s *Service) freshTitle(ctx context.Context, q *db.Queries, p TitleJob) (TitleJob, error) {
+	list, err := q.GetShoppingList(ctx, p.WeekStart)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return TitleJob{}, fmt.Errorf("shopping: title: read list: %w", err)
+	}
+	if err != nil || list.ID != p.ListID || frozen(list) {
+		return TitleJob{}, errors.New("shopping: store title: the Supply run was frozen or replaced before its title was stored")
+	}
+	fresh, err := freezeTitleJob(ctx, q, list)
 	if err != nil {
-		return "", fmt.Errorf("shopping: store title: %w", err)
+		return TitleJob{}, err
 	}
-	if n == 1 {
-		return out.Title, nil
+	stale, err := titleNamesStale(ctx, q, p, fresh.Revision)
+	if err != nil {
+		return TitleJob{}, err
 	}
-	title, err = s.currentTitle(write, q, p)
-	if err == nil && title == "" {
-		err = errors.New("shopping: store title: the Supply run is still untitled")
+	if stale {
+		return fresh, nil
 	}
-	return title, err
+	return p, nil
+}
+
+// titleNamesStale reports whether p must not title the dinner names it
+// stored. The plan revision moving means the week was edited after the job
+// was queued. A stored name that is now Delivery or Dining Out would title
+// a dinner the Supply run no longer shops.
+func titleNamesStale(ctx context.Context, q *db.Queries, p TitleJob, revision int64) (bool, error) {
+	if revision != p.Revision {
+		return true, nil
+	}
+	rows, err := q.ListUnarchivedDinners(ctx)
+	if err != nil {
+		return false, fmt.Errorf("shopping: title: read dinners: %w", err)
+	}
+	uncooked := make(map[string]struct{})
+	for _, row := range rows {
+		if !dinners.Cooked(row.Dinner.MealSource) {
+			uncooked[row.Dinner.Name] = struct{}{}
+		}
+	}
+	for _, name := range p.Dinners {
+		if _, ok := uncooked[name]; ok {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // currentTitle returns the title of p's Supply run, or "" while it is
@@ -516,7 +597,8 @@ func readList(ctx context.Context, q *db.Queries, list db.ShoppingList) (List, e
 	for _, r := range rows {
 		g := r.ShoppingGroup
 		groups = append(groups, Group{
-			ID: g.ID, DinnerID: g.DinnerID, DinnerName: r.DinnerName, DinnerStatus: r.DinnerStatus, Date: g.Date, Position: int(g.Position),
+			ID: g.ID, DinnerID: g.DinnerID, DinnerName: r.DinnerName, DinnerStatus: r.DinnerStatus,
+			DinnerMealSource: r.DinnerMealSource, Date: g.Date, Position: int(g.Position),
 			Items: byGroup[g.ID],
 		})
 	}
@@ -613,6 +695,11 @@ func wanted(ctx context.Context, q *db.Queries, planID string) ([]wantGroup, []S
 	)
 	for _, day := range days {
 		d := day.Dinner
+		// Delivery and dining out are not cooked: no group, no ingredients,
+		// and not a day skipped for a missing recipe.
+		if !dinners.Cooked(d.MealSource) {
+			continue
+		}
 		names = append(names, d.Name)
 		skip := SkippedDay{Date: day.Date, DinnerID: d.ID, DinnerName: d.Name}
 		if !d.RecipeID.Valid {
@@ -702,7 +789,7 @@ func reconcile(ctx context.Context, q *db.Queries, listID string, want []wantGro
 
 	groups := make([]Group, 0, len(want))
 	for gi, w := range want {
-		g := Group{DinnerID: w.dinnerID, DinnerName: w.dinnerName, DinnerStatus: w.dinnerStatus, Date: w.date, Position: gi}
+		g := Group{DinnerID: w.dinnerID, DinnerName: w.dinnerName, DinnerStatus: w.dinnerStatus, DinnerMealSource: dinners.MealSourceCook, Date: w.date, Position: gi}
 		if old, ok := groupsByKey[groupKey{w.date, w.dinnerID}]; ok {
 			g.ID = old.ID
 			kept[old.ID] = true

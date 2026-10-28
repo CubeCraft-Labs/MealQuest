@@ -3,7 +3,7 @@ import { useMutation, useMutationState, useQuery, useQueryClient, type Mutation,
 import { ApiError, useApi, type ApiRead } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { knownArchived, useArchived } from '../dinners/archived.ts'
-import { METHODS, oneOf, photoId, PLANNED_DINNER_STATUSES, type Method, type PlannedDinnerStatus } from '../dinners/api.ts'
+import { MEAL_SOURCES, METHODS, oneOf, photoId, PLANNED_DINNER_STATUSES, type MealSource, type Method, type PlannedDinnerStatus } from '../dinners/api.ts'
 import { QUEST_LOG_KEY } from '../discover/api.ts'
 import { noteGoogleFailure } from '../settings/calendarApi.ts'
 import { supplyRunKey } from '../shopping/api.ts'
@@ -38,6 +38,7 @@ export type PlanDinner = {
   photo_id: string | undefined
   minutes: number | null
   method: Method | null
+  meal_source: MealSource
 }
 
 // PlanDay is one day of a plan: its household-local date, the dinner
@@ -115,6 +116,7 @@ function parseDay(where: string, body: unknown): PlanDay {
     photo_id: photoId(where, body.dinner.photo),
     minutes: body.dinner.minutes as number | null,
     method: body.dinner.method === null ? null : oneOf(where, 'method', METHODS, body.dinner.method),
+    meal_source: oneOf(where, 'meal_source', MEAL_SOURCES, body.dinner.meal_source),
   }
   return { date: body.date, dinner, manual_label: null, is_new: body.is_new, start_by: body.start_by as string | null }
 }

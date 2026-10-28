@@ -11,7 +11,7 @@ import { Photo } from '../ui/Photo.tsx'
 import { Segmented } from '../ui/Segmented.tsx'
 import { Skeleton } from '../ui/Skeleton.tsx'
 import { useDraggable, type Float } from './drag.tsx'
-import { emptyLists, planDinner, sourceNames, type Source } from './SwapSheet.tsx'
+import { cookedDinners, emptyLists, planDinner, sourceNames, type Source } from './SwapSheet.tsx'
 import styles from './PlanPanel.module.css'
 
 // DRAG_HINT says how a dinner is swapped in from the panel or the strip.
@@ -128,7 +128,8 @@ export function PlanPanel() {
 
   const label = (s: Source) => {
     const dinners = lists[s].data
-    return dinners === undefined ? sourceNames[s] : `${sourceNames[s]} · ${dinners.length}`
+    const cooked = dinners === undefined ? undefined : cookedDinners(dinners)
+    return cooked === undefined ? sourceNames[s] : `${sourceNames[s]} · ${cooked.length}`
   }
 
   return (
@@ -145,9 +146,14 @@ export function PlanPanel() {
       <p className={styles.hint}>{DRAG_HINT}</p>
       <KeysHint id={keysHintId} />
       <ListBody source={source} list={lists[source]}>
-        {(dinners) => (
+        {(dinners) =>
+          cookedDinners(dinners).length === 0 ? (
+            <p className={styles.empty}>
+              {dinners.length === 0 ? emptyLists[source] : 'Delivery and dining out are not planned.'}
+            </p>
+          ) : (
           <ul aria-label={sourceNames[source]} className={styles.rows}>
-            {dinners.map((dinner) => (
+            {cookedDinners(dinners).map((dinner) => (
               <Draggable
                 key={dinner.id}
                 dinner={dinner}
@@ -157,7 +163,13 @@ export function PlanPanel() {
               >
                 {/* The row's name already says what the photo shows. */}
                 <span aria-hidden="true">
-                  <Photo id={dinner.photo_id} name={dinner.name} radius="var(--radius-pill)" sizes="48px" className={styles.rowPhoto} />
+                  <Photo
+                    id={dinner.meal_source === 'cook' ? dinner.photo_id : undefined}
+                    name={dinner.name}
+                    radius="var(--radius-pill)"
+                    sizes="48px"
+                    className={styles.rowPhoto}
+                  />
                 </span>
                 <span className={styles.rowText}>
                   <span className={styles.rowName}>{dinner.name}</span>
@@ -167,7 +179,8 @@ export function PlanPanel() {
               </Draggable>
             ))}
           </ul>
-        )}
+          )
+        }
       </ListBody>
       <Link to="/discover" className={styles.more}>
         <Icon icon={Compass} size="inline" />
@@ -183,7 +196,8 @@ export function PlanPanel() {
 export function QuestLogStrip() {
   const questLog = useQuestLog()
   const keysHintId = useId()
-  const title = questLog.data === undefined ? sourceNames.quest_log : `${sourceNames.quest_log} · ${questLog.data.length}`
+  const cooked = questLog.data === undefined ? undefined : cookedDinners(questLog.data)
+  const title = cooked === undefined ? sourceNames.quest_log : `${sourceNames.quest_log} · ${cooked.length}`
   return (
     <section aria-label={sourceNames.quest_log} className={styles.strip}>
       <div className={styles.stripHeader}>
@@ -192,18 +206,30 @@ export function QuestLogStrip() {
       </div>
       <KeysHint id={keysHintId} />
       <ListBody source="quest_log" list={questLog}>
-        {(dinners) => (
-          <ul aria-label={`${sourceNames.quest_log} dinners`} className={styles.chips}>
-            {dinners.map((dinner) => (
-              <Draggable key={dinner.id} dinner={dinner} fromQuestLog className={styles.chip} keysHintId={keysHintId}>
-                <span aria-hidden="true">
-                  <Photo id={dinner.photo_id} name={dinner.name} radius="var(--radius-pill)" sizes="28px" className={styles.chipPhoto} />
-                </span>
-                {dinner.name}
-              </Draggable>
-            ))}
-          </ul>
-        )}
+        {(dinners) =>
+          cookedDinners(dinners).length === 0 ? (
+            <p className={styles.empty}>
+              {dinners.length === 0 ? emptyLists.quest_log : 'Delivery and dining out are not planned.'}
+            </p>
+          ) : (
+            <ul aria-label={`${sourceNames.quest_log} dinners`} className={styles.chips}>
+              {cookedDinners(dinners).map((dinner) => (
+                <Draggable key={dinner.id} dinner={dinner} fromQuestLog className={styles.chip} keysHintId={keysHintId}>
+                  <span aria-hidden="true">
+                    <Photo
+                      id={dinner.photo_id}
+                      name={dinner.name}
+                      radius="var(--radius-pill)"
+                      sizes="28px"
+                      className={styles.chipPhoto}
+                    />
+                  </span>
+                  {dinner.name}
+                </Draggable>
+              ))}
+            </ul>
+          )
+        }
       </ListBody>
     </section>
   )

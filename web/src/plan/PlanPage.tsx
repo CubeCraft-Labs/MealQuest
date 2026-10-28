@@ -198,7 +198,13 @@ function DayColumn({
     <>
       {/* The card's name already says what the photo shows. */}
       <span aria-hidden="true">
-        <Photo id={dinner.photo_id} name={dinner.name} radius="18px" sizes="160px" className={styles.cardPhoto} />
+        <Photo
+          id={dinner.meal_source === 'cook' ? dinner.photo_id : undefined}
+          name={dinner.name}
+          radius="18px"
+          sizes="160px"
+          className={styles.cardPhoto}
+        />
       </span>
       <span className={styles.cardName}>{dinner.name}</span>
     </>
@@ -210,7 +216,7 @@ function DayColumn({
         <span className={styles.dayNumber}>{dayOfMonth(day.date)}</span>
       </p>
       <div className={classes}>
-        {opensRecipe(dinner.status, cached) ? (
+        {opensRecipe(dinner.status, cached, dinner.meal_source) ? (
           <button type="button" className={styles.cardRecipe} onClick={onRecipe}>
             {recipe}
           </button>

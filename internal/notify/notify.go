@@ -136,6 +136,20 @@ const RecipeCallToAction = " · Recipe →"
 // recipe to open.
 const ArchivedBody = "This dinner was removed, so its recipe is gone."
 
+// UncookedBody is the body of a reminder for a dinner that is not cooked
+// at home. It offers no recipe. An unknown source is an error: nothing is
+// substituted for it.
+func UncookedBody(source string) (string, error) {
+	switch source {
+	case "delivery":
+		return "This dinner is delivery, so it has no recipe.", nil
+	case "dining_out":
+		return "This dinner is dining out, so it has no recipe.", nil
+	default:
+		return "", fmt.Errorf("notify: meal source %q is not delivery or dining out", source)
+	}
+}
+
 // OpensRecipe reports whether the app path raw opens a dinner's recipe.
 func OpensRecipe(raw string) bool {
 	u, err := url.Parse(raw)

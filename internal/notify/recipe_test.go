@@ -3,10 +3,12 @@ package notify
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 )
 
@@ -54,6 +56,22 @@ func startReminder() Event {
 // message it got.
 func deliverPush(t *testing.T, svc *Service, c *clock) Message {
 	t.Helper()
+	got := deliverAll(t, svc, c)
+	if len(got) != 1 {
+		t.Fatalf("push sender got %d messages, want 1: %+v", len(got), got)
+	}
+	return got[0]
+}
+
+// deliverPushCount delivers every due row and returns how many the push
+// sender was given.
+func deliverPushCount(t *testing.T, svc *Service, c *clock) int {
+	t.Helper()
+	return len(deliverAll(t, svc, c))
+}
+
+func deliverAll(t *testing.T, svc *Service, c *clock) []Message {
+	t.Helper()
 	push := &fakeSender{}
 	if err := svc.Register(ChannelPush, push); err != nil {
 		t.Fatal(err)
@@ -62,17 +80,43 @@ func deliverPush(t *testing.T, svc *Service, c *clock) Message {
 	if _, err := svc.deliverDue(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	got := push.messages()
-	if len(got) != 1 {
-		t.Fatalf("push sender got %d messages, want 1: %+v", len(got), got)
+	return push.messages()
+}
+
+// planDinner plans dinnerID on date, creating that week's plan when needed.
+func planDinner(t *testing.T, st *store.Store, dinnerID, date string) {
+	t.Helper()
+	day, err := store.ParseLocalDate(date)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return got[0]
+	week := household.WeekStart(day)
+	q := db.New(st.Writer)
+	ctx := context.Background()
+	row, err := q.GetWeekPlan(ctx, week.String())
+	if errors.Is(err, sql.ErrNoRows) {
+		row.ID = store.NewID()
+		if err := q.CreateWeekPlan(ctx, db.CreateWeekPlanParams{
+			ID: row.ID, WeekStart: week.String(), CreatedAt: "c", UpdatedAt: "u",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.PutPlanDay(ctx, db.PutPlanDayParams{
+		ID: store.NewID(), PlanID: row.ID, Date: date,
+		DinnerID: sql.NullString{String: dinnerID, Valid: true}, CreatedAt: "c", UpdatedAt: "u",
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestDeliveryOffersTheRecipeOfAViewableDinner(t *testing.T) {
 	svc, st, c := newTestService(t)
 	setPref(t, st, DayOfReminder, true, false)
 	addDinner(t, st, "dinner-1", "Tacos", "regular")
+	planDinner(t, st, "dinner-1", "2026-10-14")
 	if err := svc.Emit(context.Background(), dayOf()); err != nil {
 		t.Fatal(err)
 	}
@@ -107,6 +151,7 @@ func TestDeliveryWithdrawsTheRecipeOfADinnerArchivedAfterQueueing(t *testing.T) 
 			svc, st, c := newTestService(t)
 			setPref(t, st, DayOfReminder, true, false)
 			addDinner(t, st, "dinner-1", "Tacos", "regular")
+			planDinner(t, st, "dinner-1", "2026-10-14")
 			if err := svc.Emit(context.Background(), tc.ev); err != nil {
 				t.Fatal(err)
 			}
@@ -130,9 +175,11 @@ func TestDeliveryWithdrawsTheRecipeOfADinnerThatIsGone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := deliverPush(t, svc, c).Payload
-	if got.Dinner != nil || got.URL != "/plan?week=2026-10-12" || got.Title != "Tonight: Tacos" || got.Body != ArchivedBody {
-		t.Errorf("delivered payload = %s, want no recipe, the week's plan", show(got))
+	if n := deliverPushCount(t, svc, c); n != 0 {
+		t.Fatalf("push sender got %d messages, want the reminder suppressed", n)
+	}
+	if row := onlyRow(t, st, dayOf().Key, ChannelPush); row.Status != "failed" || !row.LastError.Valid || row.LastError.String != suppressedReminder {
+		t.Errorf("row = status %s error %v, want failed %q", row.Status, row.LastError, suppressedReminder)
 	}
 }
 
@@ -170,11 +217,41 @@ func TestDeliveryOfALegacyReminder(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			svc, st, c := newTestService(t)
 			addDinner(t, st, "dinner-1", "Tacos", tc.status)
+			planDinner(t, st, "dinner-1", "2026-10-14")
 			queueLegacy(t, st)
 
 			got := deliverPush(t, svc, c).Payload
 			if !samePayload(got, tc.want) {
 				t.Errorf("delivered payload = %s, want %s", show(got), show(tc.want))
+			}
+		})
+	}
+}
+
+func TestDeliverySuppressesAReminderWhenTheDinnerLeftThePlan(t *testing.T) {
+	for _, ev := range []Event{dayOf(), startReminder()} {
+		t.Run(ev.Key, func(t *testing.T) {
+			svc, st, c := newTestService(t)
+			setPref(t, st, DayOfReminder, true, false)
+			addDinner(t, st, "dinner-1", "Tacos", "regular")
+			planDinner(t, st, "dinner-1", "2026-10-14")
+			if err := svc.Emit(context.Background(), ev); err != nil {
+				t.Fatal(err)
+			}
+			res, err := st.Writer.Exec(`UPDATE plan_days SET dinner_id = NULL WHERE date = ?`, "2026-10-14")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n, _ := res.RowsAffected(); n != 1 {
+				t.Fatalf("cleared %d plan days, want 1", n)
+			}
+
+			if n := deliverPushCount(t, svc, c); n != 0 {
+				t.Fatalf("push sender got %d messages, want the reminder suppressed", n)
+			}
+			row := onlyRow(t, st, ev.Key, ChannelPush)
+			if row.Status != "failed" || !row.LastError.Valid || row.LastError.String != suppressedReminder {
+				t.Errorf("row = status %s error %v, want failed %q", row.Status, row.LastError, suppressedReminder)
 			}
 		})
 	}

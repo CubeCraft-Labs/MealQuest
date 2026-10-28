@@ -46,6 +46,7 @@ function planBody(status: string, names = NAMES) {
         minutes: i === 2 ? 240 : 30,
         method: i === 2 ? 'crockpot' : 'stovetop',
         origin: i === 2 || i === 5 ? 'side_quest' : 'regular',
+        meal_source: 'cook',
       },
       is_new: i === 2 || i === 5,
       start_by: i === 2 ? '2026-10-07T13:30:00-04:00' : null,
@@ -118,6 +119,7 @@ function dinner(id: string, name: string, difficulty: string | null, minutes: nu
     grounding_status: 'grounded',
     grounding_error: null,
     photo_backfill_eligible: false,
+    meal_source: 'cook',
   }
 }
 
@@ -141,6 +143,7 @@ const PIZZA_RECIPE = {
   difficulty: 'easy',
   cuisine: null,
   is_favorite: false,
+  meal_source: 'cook',
   photo_urls: null,
   ingredients: [
     { name: 'Pizza dough', qty: '1', unit: 'lb', note: null, raw_text: '1 lb pizza dough' },
@@ -2470,7 +2473,7 @@ describe('duration', () => {
 })
 
 describe('cooking', () => {
-  const dinner = { id: 'd1', name: 'Tikka masala', status: 'regular' as const, photo_id: undefined }
+  const dinner = { id: 'd1', name: 'Tikka masala', status: 'regular' as const, photo_id: undefined, minutes: null, method: null, meal_source: 'cook' as const }
   it.each([
     [{ method: 'crockpot' as const, minutes: 360 }, 'Crock pot · 6\u00a0hr'],
     [{ method: 'crockpot' as const, minutes: null }, 'Crock pot'],

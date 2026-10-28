@@ -227,14 +227,18 @@ func (s *Service) deliver(ctx context.Context, row db.NotificationOutbox) {
 
 	attempt := row.Attempts + 1
 	sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)
-	payload, suppress, err := s.prepareDelivery(sendCtx, row.EventKey, payload)
-	if err == nil && suppress {
+	payload, reason, err := s.prepareDelivery(sendCtx, row.EventKey, payload)
+	if err == nil && reason != "" {
 		cancel()
-		logger.InfoContext(ctx, "reminder suppressed; the dinner is no longer planned for this date")
+		if reason == suppressedReminder {
+			logger.InfoContext(ctx, "reminder suppressed; the dinner is no longer planned for this date")
+		} else {
+			logger.InfoContext(ctx, "reminder suppressed", "reason", reason)
+		}
 		s.record(ctx, logger, "record suppressed reminder", func(write context.Context) (int64, error) {
 			return db.New(s.st.Writer).FailNotification(write, db.FailNotificationParams{
 				Attempted:  0,
-				LastError:  sql.NullString{String: suppressedReminder, Valid: true},
+				LastError:  sql.NullString{String: reason, Valid: true},
 				Now:        timestamp(s.now()),
 				ID:         row.ID,
 				LeaseUntil: row.NextAttemptAt,
@@ -330,25 +334,41 @@ func retryDelay(attempt int64) time.Duration {
 // sent because its dinner is no longer planned for the reminder's date.
 const suppressedReminder = "suppressed: the dinner is no longer planned for this date"
 
-// prepareDelivery returns p as it may be sent now. A queued dinner reminder
-// whose dinner is no longer planned for the reminder's date is suppressed:
-// suppress is true and nothing is sent. Any other payload is returned as
-// recipeNow allows. A database error is returned as it is, so the row is
-// retried rather than sent or suppressed on a guess.
-func (s *Service) prepareDelivery(ctx context.Context, eventKey string, p Payload) (Payload, bool, error) {
+// suppressedManualNight is last_error when a queued manual-night reminder
+// is not sent because the plan day no longer has the label the reminder
+// was queued for: the label changed, or the night was cleared.
+const suppressedManualNight = "suppressed: the manual night no longer has the label it was queued for"
+
+// prepareDelivery returns p as it may be sent now, and the reason it must
+// not be sent. A queued dinner reminder whose dinner is no longer planned
+// for the reminder's date is suppressed. A queued manual-night reminder
+// whose label is no longer on that date is suppressed. reason is empty
+// when p may be sent, as recipeNow allows. A database error is returned
+// as it is, so the row is retried rather than sent or suppressed on a guess.
+func (s *Service) prepareDelivery(ctx context.Context, eventKey string, p Payload) (Payload, string, error) {
 	planned, err := s.dinnerStillPlanned(ctx, eventKey, p)
-	if err != nil || !planned {
-		return Payload{}, !planned && err == nil, err
+	if err != nil {
+		return Payload{}, "", err
+	}
+	if !planned {
+		return Payload{}, suppressedReminder, nil
+	}
+	labeled, err := s.manualNightStillLabeled(ctx, eventKey, p)
+	if err != nil {
+		return Payload{}, "", err
+	}
+	if !labeled {
+		return Payload{}, suppressedManualNight, nil
 	}
 	p, err = s.recipeNow(ctx, p)
-	return p, false, err
+	return p, "", err
 }
 
 // dinnerStillPlanned reports whether a dinner reminder's dinner is still
 // planned for the date in eventKey. A payload that is not a dinner reminder,
-// or that names no dinner, is left to be delivered: a manual night has no
-// dinner, and a reminder stored before payloads carried the planned dinner
-// id and that offers no recipe cannot be checked. The date is
+// or that names no dinner, is left to be delivered: a manual night is
+// checked by its label, and a reminder stored before payloads carried the
+// planned dinner id and that offers no recipe cannot be checked. The date is
 // day_of_reminder:YYYY-MM-DD or day_of_reminder:start:YYYY-MM-DD.
 func (s *Service) dinnerStillPlanned(ctx context.Context, eventKey string, p Payload) (bool, error) {
 	date, ok := reminderDate(eventKey)
@@ -367,6 +387,30 @@ func (s *Service) dinnerStillPlanned(ctx context.Context, eventKey string, p Pay
 		return false, fmt.Errorf("notify: read whether %s is planned on %s: %w", id, date, err)
 	}
 	return planned, nil
+}
+
+// manualNightStillLabeled reports whether a manual-night reminder's label
+// is still the label planned on the reminder's date. A payload that names
+// no manual label is left to be delivered: a dinner reminder, and a
+// reminder stored before payloads carried the label, cannot be checked.
+// No plan day, a cleared night, or a different label is not still labeled.
+// A database error is returned as it is, so the row is retried.
+func (s *Service) manualNightStillLabeled(ctx context.Context, eventKey string, p Payload) (bool, error) {
+	if p.ManualLabel == "" {
+		return true, nil
+	}
+	date, ok := reminderDate(eventKey)
+	if !ok {
+		return true, nil
+	}
+	label, err := db.New(s.st.Reader).ManualLabelOnDate(ctx, date)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("notify: read manual label on %s: %w", date, err)
+	}
+	return label.Valid && label.String == p.ManualLabel, nil
 }
 
 // reminderDate is the household-local date of a day-of or start reminder

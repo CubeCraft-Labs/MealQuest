@@ -295,6 +295,10 @@ type Querier interface {
 	// The ids of the dinners planned in the week starting week_start, Monday
 	// first.
 	ListWeekPlanDinnerIDs(ctx context.Context, weekStart string) ([]sql.NullString, error)
+	// The one-off label of the plan day on date, a household-local YYYY-MM-DD.
+	// Returns sql.ErrNoRows when that date has no plan day. A dinner or a
+	// cleared night has a null label.
+	ManualLabelOnDate(ctx context.Context, date string) (sql.NullString, error)
 	// Records that Calendar no longer shows the days with a calendar event id
 	// as planned, since another calendar or none is chosen: every plan with
 	// such a day is edited as MarkWeekPlanEdited does, so a synced plan becomes

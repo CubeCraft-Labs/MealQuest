@@ -19,7 +19,7 @@ func mustDate(t *testing.T, s string) store.LocalDate {
 
 // payloadOf is the payload notify stores for ev.
 func payloadOf(ev notify.Event) notify.Payload {
-	p := notify.Payload{Event: ev.Type, Title: ev.Title, Body: ev.Body, URL: ev.URL, Tag: ev.Key, Dinner: ev.Dinner, PlannedDinnerID: ev.PlannedDinnerID}
+	p := notify.Payload{Event: ev.Type, Title: ev.Title, Body: ev.Body, URL: ev.URL, Tag: ev.Key, Dinner: ev.Dinner, PlannedDinnerID: ev.PlannedDinnerID, ManualLabel: ev.ManualLabel}
 	if !ev.Week.IsZero() {
 		p.Week = ev.Week.String()
 	}

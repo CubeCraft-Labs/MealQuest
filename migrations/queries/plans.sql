@@ -116,6 +116,13 @@ SELECT EXISTS (
 	WHERE plan_days.dinner_id = sqlc.arg(dinner_id) AND plan_days.date = sqlc.arg(date)
 ) AS planned;
 
+-- name: ManualLabelOnDate :one
+-- The one-off label of the plan day on date, a household-local YYYY-MM-DD.
+-- Returns sql.ErrNoRows when that date has no plan day. A dinner or a
+-- cleared night has a null label.
+SELECT manual_label FROM plan_days
+WHERE date = ?;
+
 -- name: ClearPlanDayCalendarEvent :execrows
 -- Clears the calendar event id of date on plan_id. Calendar no longer
 -- shows that day as it was planned, so the next Push to Calendar writes

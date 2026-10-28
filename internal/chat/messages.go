@@ -85,15 +85,18 @@ func ListReady(week store.LocalDate, needed, dinners int) notify.Event {
 
 // ManualNightReminder is the day_of_reminder event of a one-off night
 // named label planned on date. It names the label and opens the week's
-// plan. It offers no recipe and no dinner.
+// plan. It offers no recipe and no dinner. It carries label so a queued
+// reminder can be suppressed once that night's label changes or the night
+// is cleared.
 func ManualNightReminder(date store.LocalDate, label string) notify.Event {
 	week := household.WeekStart(date)
 	return notify.Event{
-		Type:  notify.DayOfReminder,
-		Key:   string(notify.DayOfReminder) + ":" + date.String(),
-		Title: "Tonight: " + label,
-		URL:   notify.PlanPath(week),
-		Week:  week,
+		Type:        notify.DayOfReminder,
+		Key:         string(notify.DayOfReminder) + ":" + date.String(),
+		Title:       "Tonight: " + label,
+		URL:         notify.PlanPath(week),
+		Week:        week,
+		ManualLabel: label,
 	}
 }
 

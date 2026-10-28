@@ -90,6 +90,11 @@ type Event struct {
 	// worker suppresses a queued reminder when this dinner is no longer
 	// planned for the reminder's date.
 	PlannedDinnerID string
+	// ManualLabel is the one-off night a day-of reminder was queued for.
+	// It is empty for a dinner reminder and for every other event. The
+	// worker suppresses a queued reminder when the plan day on the
+	// reminder's date no longer has this label.
+	ManualLabel string
 	// Week is the Monday of the week the event concerns, for the senders'
 	// message builders; zero when the event concerns no week.
 	Week store.LocalDate
@@ -120,6 +125,10 @@ type Payload struct {
 	// and for every other event. The push notice does not include it: the
 	// service worker treats dinner as the recipe it offers.
 	PlannedDinnerID string `json:"planned_dinner_id,omitempty"`
+	// ManualLabel is the one-off night a day-of reminder was queued for.
+	// Absent for a dinner reminder and for every other event. The push
+	// notice does not include it.
+	ManualLabel string `json:"manual_label,omitempty"`
 	// Week is the YYYY-MM-DD Monday of the event's week, or absent.
 	Week string `json:"week,omitempty"`
 }
@@ -323,7 +332,7 @@ func (s *Service) emitTx(ctx context.Context, tx *sql.Tx, ev Event, channels fun
 	if err := validate(ev); err != nil {
 		return err
 	}
-	payload := Payload{Event: ev.Type, Title: ev.Title, Body: ev.Body, URL: ev.URL, Tag: ev.Key, Dinner: ev.Dinner, PlannedDinnerID: ev.PlannedDinnerID}
+	payload := Payload{Event: ev.Type, Title: ev.Title, Body: ev.Body, URL: ev.URL, Tag: ev.Key, Dinner: ev.Dinner, PlannedDinnerID: ev.PlannedDinnerID, ManualLabel: ev.ManualLabel}
 	if !ev.Week.IsZero() {
 		payload.Week = ev.Week.String()
 	}

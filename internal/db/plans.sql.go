@@ -422,6 +422,21 @@ func (q *Queries) ListWeekPlanDinnerIDs(ctx context.Context, weekStart string) (
 	return items, nil
 }
 
+const manualLabelOnDate = `-- name: ManualLabelOnDate :one
+SELECT manual_label FROM plan_days
+WHERE date = ?
+`
+
+// The one-off label of the plan day on date, a household-local YYYY-MM-DD.
+// Returns sql.ErrNoRows when that date has no plan day. A dinner or a
+// cleared night has a null label.
+func (q *Queries) ManualLabelOnDate(ctx context.Context, date string) (sql.NullString, error) {
+	row := q.db.QueryRowContext(ctx, manualLabelOnDate, date)
+	var manual_label sql.NullString
+	err := row.Scan(&manual_label)
+	return manual_label, err
+}
+
 const markCalendarPlansEdited = `-- name: MarkCalendarPlansEdited :exec
 UPDATE week_plans
 SET status = CASE WHEN status = 'synced' THEN 'changed' ELSE status END,

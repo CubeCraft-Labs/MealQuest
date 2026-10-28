@@ -2,6 +2,10 @@ import { useIsMutating, useMutation, useQuery, useQueryClient, type QueryClient 
 import { useCallback, useEffect } from 'react'
 import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
+import type { Home } from '../home/api.ts'
+import { HOME_KEY } from '../home/api.ts'
+import type { Plan } from '../plan/api.ts'
+import type { SupplyRun } from '../shopping/api.ts'
 import { archiveDinner, checkRemovals, knownArchived, useArchived, type SendRemoval } from './archived.ts'
 import type { DinnerDetail } from './detail.ts'
 
@@ -387,8 +391,65 @@ export function useRemoveRegular() {
   })
 }
 
+// showMealSource shows dinner id's meal source on every plan, Home, Supply
+// run and dinner detail already read here. A source other than cook drops
+// that dinner's Supply-run group, which the server has removed, and clears
+// a plan day's start-by, which only a cooked crock-pot dinner has. A read
+// not yet made is left unread. The screens are read again afterwards, and
+// until that answer lands none of them can still offer the old photo or
+// Recipe control.
+function showMealSource(queryClient: QueryClient, id: string, mealSource: MealSource) {
+  queryClient.setQueriesData<Plan | null>({ queryKey: ['plans'] }, (plan) => {
+    if (plan == null) return plan
+    const affected = plan.days.some(
+      (day) => day.dinner.id === id && (day.dinner.meal_source !== mealSource || (mealSource !== 'cook' && day.start_by !== null)),
+    )
+    if (!affected) return plan
+    return {
+      ...plan,
+      days: plan.days.map((day) =>
+        day.dinner.id === id
+          ? { ...day, start_by: mealSource === 'cook' ? day.start_by : null, dinner: { ...day.dinner, meal_source: mealSource } }
+          : day,
+      ),
+    }
+  })
+  queryClient.setQueryData<Home>(HOME_KEY, (home) => {
+    if (home === undefined || home.tonight === null || home.tonight.id !== id || home.tonight.meal_source === mealSource) return home
+    return { ...home, tonight: { ...home.tonight, meal_source: mealSource } }
+  })
+  queryClient.setQueriesData<SupplyRun | null>({ queryKey: ['shopping'] }, (run) => {
+    if (run == null || !run.groups.some((group) => group.dinner.id === id)) return run
+    // An archived run keeps the group it was shopped with. A current one
+    // loses it, matching the server, which removes that group.
+    if (mealSource === 'cook' || run.status === 'archived') {
+      return {
+        ...run,
+        groups: run.groups.map((group) =>
+          group.dinner.id === id ? { ...group, dinner: { ...group.dinner, meal_source: mealSource } } : group,
+        ),
+      }
+    }
+    const groups = run.groups.filter((group) => group.dinner.id !== id)
+    let needed = 0
+    let total = 0
+    for (const group of groups) {
+      for (const item of group.items) {
+        total += 1
+        if (item.needed) needed += 1
+      }
+    }
+    return { ...run, groups, needed_count: needed, total_count: total }
+  })
+  queryClient.setQueryData<DinnerDetail>(dinnerDetailKey(id), (dinner) =>
+    dinner === undefined || dinner.meal_source === mealSource ? dinner : { ...dinner, meal_source: mealSource },
+  )
+}
+
 // useEditRegular saves changes to a Regular (PATCH /api/v1/dinners/{id})
-// and shows the server's answer once it is saved.
+// and shows the server's answer once it is saved. A meal-source edit also
+// shows that source on the plan, Home, Supply run and dinner detail already
+// read here (showMealSource), then reads them again.
 export function useEditRegular() {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
@@ -396,8 +457,18 @@ export function useEditRegular() {
     mutationKey: REGULARS_MUTATION_KEY,
     mutationFn: async ({ id, patch }: { id: string; patch: RegularPatch }) =>
       parseDinner(`PATCH ${DINNERS_PATH}/{id}`, await apiFetch<unknown>(dinnerPath(id), { method: 'PATCH', body: patch })),
-    onSuccess: (dinner) => replace(queryClient, dinner),
-    onSettled: () => settle(queryClient),
+    onSuccess: (dinner, { patch }) => {
+      replace(queryClient, dinner)
+      if (patch.meal_source !== undefined) showMealSource(queryClient, dinner.id, dinner.meal_source)
+    },
+    onSettled: (_dinner, _error, { id, patch }) => {
+      settle(queryClient)
+      if (patch.meal_source === undefined) return
+      void queryClient.invalidateQueries({ queryKey: ['plans'] })
+      void queryClient.invalidateQueries({ queryKey: HOME_KEY })
+      void queryClient.invalidateQueries({ queryKey: ['shopping'] })
+      void queryClient.invalidateQueries({ queryKey: dinnerDetailKey(id) })
+    },
   })
 }
 

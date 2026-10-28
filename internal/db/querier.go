@@ -33,6 +33,10 @@ type Querier interface {
 	// sets last_sync_error, keeping the chosen calendar. Affects no row when
 	// nothing is connected.
 	ClearIntegrationsGoogleToken(ctx context.Context, arg ClearIntegrationsGoogleTokenParams) (int64, error)
+	// Clears the calendar event id of date on plan_id. Calendar no longer
+	// shows that day as it was planned, so the next Push to Calendar writes
+	// it again. A day that has no event id is left as it is (0 rows).
+	ClearPlanDayCalendarEvent(ctx context.Context, arg ClearPlanDayCalendarEventParams) (int64, error)
 	// Clears the send of list id begun, once Google Chat refused it.
 	ClearShoppingListChatSend(ctx context.Context, arg ClearShoppingListChatSendParams) (int64, error)
 	// Drops references to the runs created before the cutoff, so the purge
@@ -83,6 +87,9 @@ type Querier interface {
 	DeleteRecipeSteps(ctx context.Context, recipeID string) error
 	DeleteShoppingGroup(ctx context.Context, id string) error
 	DeleteShoppingItem(ctx context.Context, id string) error
+	// Removes every item of group group_id. The group is removed only once
+	// it is empty.
+	DeleteShoppingItemsByGroup(ctx context.Context, groupID string) error
 	FailJob(ctx context.Context, arg FailJobParams) (int64, error)
 	// Gives up on a notification. attempts counts the delivery attempt that
 	// failed, if one was made. The lease must still be the claim's.
@@ -200,9 +207,15 @@ type Querier interface {
 	// stored for the event key and channel, in any status, is left unchanged and
 	// no row is inserted.
 	InsertNotification(ctx context.Context, arg InsertNotificationParams) (int64, error)
+	// Groups of dinner dinner_id on a Supply run that is still current. A run
+	// frozen into the Supply archive keeps its groups.
+	ListCurrentShoppingGroupsByDinner(ctx context.Context, dinnerID string) ([]string, error)
 	// The pending suggestions whose dinner is still suggested, oldest first,
 	// with their dinners.
 	ListDeck(ctx context.Context) ([]ListDeckRow, error)
+	// Plan days of dinner dinner_id on from_date or later. from_date is a
+	// household-local YYYY-MM-DD. A day before it is past and is left out.
+	ListDinnerPlanDaysFrom(ctx context.Context, arg ListDinnerPlanDaysFromParams) ([]ListDinnerPlanDaysFromRow, error)
 	ListDinnersByStatus(ctx context.Context, status string) ([]Dinner, error)
 	// The dinners a draft of the week starting week_start may plan: every
 	// cooked Regular, and every cooked Quest log dinner no other plan for the

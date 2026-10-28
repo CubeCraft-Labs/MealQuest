@@ -43,6 +43,22 @@ WHERE id = ?;
 DELETE FROM shopping_groups
 WHERE id = ?;
 
+-- name: ListCurrentShoppingGroupsByDinner :many
+-- Groups of dinner dinner_id on a Supply run that is still current. A run
+-- frozen into the Supply archive keeps its groups.
+SELECT shopping_groups.id
+FROM shopping_groups
+JOIN shopping_lists ON shopping_lists.id = shopping_groups.list_id
+WHERE shopping_groups.dinner_id = ?
+	AND shopping_lists.status = 'current'
+	AND shopping_lists.frozen_at IS NULL;
+
+-- name: DeleteShoppingItemsByGroup :exec
+-- Removes every item of group group_id. The group is removed only once
+-- it is empty.
+DELETE FROM shopping_items
+WHERE group_id = ?;
+
 -- name: CreateShoppingItem :exec
 -- A new item is needed until the household marks it "have it".
 INSERT INTO shopping_items (id, group_id, name, qty, needed, position, created_at, updated_at)

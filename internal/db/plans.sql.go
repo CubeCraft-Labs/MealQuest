@@ -22,6 +22,29 @@ func (q *Queries) ClearCalendarEvents(ctx context.Context, updatedAt string) err
 	return err
 }
 
+const clearPlanDayCalendarEvent = `-- name: ClearPlanDayCalendarEvent :execrows
+UPDATE plan_days
+SET calendar_event_id = NULL, updated_at = ?
+WHERE plan_id = ? AND date = ? AND calendar_event_id IS NOT NULL
+`
+
+type ClearPlanDayCalendarEventParams struct {
+	UpdatedAt string
+	PlanID    string
+	Date      string
+}
+
+// Clears the calendar event id of date on plan_id. Calendar no longer
+// shows that day as it was planned, so the next Push to Calendar writes
+// it again. A day that has no event id is left as it is (0 rows).
+func (q *Queries) ClearPlanDayCalendarEvent(ctx context.Context, arg ClearPlanDayCalendarEventParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, clearPlanDayCalendarEvent, arg.UpdatedAt, arg.PlanID, arg.Date)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const createWeekPlan = `-- name: CreateWeekPlan :exec
 INSERT INTO week_plans (id, week_start, status, ai_note, created_at, updated_at)
 VALUES (?, ?, 'draft', ?, ?, ?)
@@ -99,6 +122,50 @@ func (q *Queries) GetWeekPlan(ctx context.Context, weekStart string) (WeekPlan, 
 		&i.Revision,
 	)
 	return i, err
+}
+
+const listDinnerPlanDaysFrom = `-- name: ListDinnerPlanDaysFrom :many
+SELECT plan_days.plan_id, plan_days.date, plan_days.calendar_event_id
+FROM plan_days
+WHERE plan_days.dinner_id = ?1
+	AND plan_days.date >= ?2
+ORDER BY plan_days.date
+`
+
+type ListDinnerPlanDaysFromParams struct {
+	DinnerID sql.NullString
+	FromDate string
+}
+
+type ListDinnerPlanDaysFromRow struct {
+	PlanID          string
+	Date            string
+	CalendarEventID sql.NullString
+}
+
+// Plan days of dinner dinner_id on from_date or later. from_date is a
+// household-local YYYY-MM-DD. A day before it is past and is left out.
+func (q *Queries) ListDinnerPlanDaysFrom(ctx context.Context, arg ListDinnerPlanDaysFromParams) ([]ListDinnerPlanDaysFromRow, error) {
+	rows, err := q.db.QueryContext(ctx, listDinnerPlanDaysFrom, arg.DinnerID, arg.FromDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListDinnerPlanDaysFromRow
+	for rows.Next() {
+		var i ListDinnerPlanDaysFromRow
+		if err := rows.Scan(&i.PlanID, &i.Date, &i.CalendarEventID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listDraftPool = `-- name: ListDraftPool :many

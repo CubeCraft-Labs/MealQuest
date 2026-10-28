@@ -470,7 +470,10 @@ func (s *Service) listQuestLog(ctx context.Context) (rows []db.Dinner, err error
 // job that grounds the new name, and clears its recipe_url when the
 // normalized name changes: a job queued or running for the old name or
 // link carries the old revision, so it can no longer write the dinner, and
-// one running is stopped.
+// one running is stopped. Changing its meal source reconciles current and
+// future plan days and, when it is no longer cooked, the current Supply
+// run (reconcileMealSource).
+
 func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy string) (Dinner, error) {
 	if updatedBy == "" {
 		return Dinner{}, errors.New("dinners: update: no member to record as updated_by")
@@ -541,6 +544,11 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 		if err != nil {
 			return fmt.Errorf("dinners: update %s: %w", id, err)
 		}
+		if p.MealSource != nil && *p.MealSource != cur.MealSource {
+			if err := reconcileMealSource(ctx, q, cur.ID, *p.MealSource); err != nil {
+				return err
+			}
+		}
 		renamed = row.GroundingRevision != cur.GroundingRevision
 		regrounding = renamed && cur.GroundingStatus == GroundingPending
 		return nil
@@ -569,6 +577,70 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 		}
 	}
 	return fromRow(row), nil
+}
+
+// reconcileMealSource applies dinner id's new meal source to planning.
+// Each plan day on or after today loses its Calendar event, and a synced
+// plan of such a day becomes changed, so the next Push to Calendar writes
+// the day for the source it has now. When source is not cooked, a current
+// Supply run loses the dinner's group and its ingredients, so it is not
+// shown, counted, sent or later archived that way. A past plan day, and a
+// Supply run already in the archive, are left as they were. Becoming
+// cooked again does not put ingredients back; the next Supply run does.
+func reconcileMealSource(ctx context.Context, q *db.Queries, id, source string) error {
+	settings, err := q.GetHouseholdSettings(ctx)
+	if err != nil {
+		return fmt.Errorf("dinners: read household settings: %w", err)
+	}
+	loc, err := household.LoadZone(settings.Timezone)
+	if err != nil {
+		return fmt.Errorf("dinners: household settings: %w", err)
+	}
+	today := household.Today(now(), loc).String()
+	days, err := q.ListDinnerPlanDaysFrom(ctx, db.ListDinnerPlanDaysFromParams{
+		DinnerID: sql.NullString{String: id, Valid: true},
+		FromDate: today,
+	})
+	if err != nil {
+		return fmt.Errorf("dinners: read plans of %s: %w", id, err)
+	}
+	stamp := store.Now().String()
+	plans := make(map[string]struct{})
+	for _, day := range days {
+		if day.CalendarEventID.Valid {
+			n, err := q.ClearPlanDayCalendarEvent(ctx, db.ClearPlanDayCalendarEventParams{
+				UpdatedAt: stamp, PlanID: day.PlanID, Date: day.Date,
+			})
+			if err != nil {
+				return fmt.Errorf("dinners: clear calendar event of %s: %w", day.Date, err)
+			}
+			if n != 1 {
+				return fmt.Errorf("dinners: plan %s day %s kept its calendar event", day.PlanID, day.Date)
+			}
+		}
+		plans[day.PlanID] = struct{}{}
+	}
+	for planID := range plans {
+		if err := q.MarkWeekPlanEdited(ctx, db.MarkWeekPlanEditedParams{UpdatedAt: stamp, ID: planID}); err != nil {
+			return fmt.Errorf("dinners: mark plan %s edited: %w", planID, err)
+		}
+	}
+	if Cooked(source) {
+		return nil
+	}
+	groups, err := q.ListCurrentShoppingGroupsByDinner(ctx, id)
+	if err != nil {
+		return fmt.Errorf("dinners: read supply run groups of %s: %w", id, err)
+	}
+	for _, groupID := range groups {
+		if err := q.DeleteShoppingItemsByGroup(ctx, groupID); err != nil {
+			return fmt.Errorf("dinners: remove supply run items of %s: %w", groupID, err)
+		}
+		if err := q.DeleteShoppingGroup(ctx, groupID); err != nil {
+			return fmt.Errorf("dinners: remove supply run group %s: %w", groupID, err)
+		}
+	}
+	return nil
 }
 
 // Archive sets dinner id's status to archived, recording updatedBy. The row

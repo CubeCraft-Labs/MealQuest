@@ -2,6 +2,7 @@ import { useId, useState } from 'react'
 import { useRegulars } from '../dinners/api.ts'
 import { useQuestLog, type QuestLogDinner } from '../discover/api.ts'
 import { details } from '../discover/QuestLogSheet.tsx'
+import { Button } from '../ui/Button.tsx'
 import { ErrorBanner } from '../ui/ErrorBanner.tsx'
 import { ListRow } from '../ui/ListRow.tsx'
 import { Photo } from '../ui/Photo.tsx'
@@ -9,7 +10,8 @@ import { Segmented } from '../ui/Segmented.tsx'
 import { Sheet } from '../ui/Sheet.tsx'
 import { Skeleton } from '../ui/Skeleton.tsx'
 import { Tag } from '../ui/Tag.tsx'
-import type { PlanDay, PlanDinner, Swap } from './api.ts'
+import { TextInput } from '../ui/TextInput.tsx'
+import { planDayName, type PlanDay, type PlanDinner, type Swap } from './api.ts'
 import { weekdayName } from './week.ts'
 import styles from './SwapSheet.module.css'
 
@@ -30,10 +32,17 @@ export function planDinner(dinner: QuestLogDinner, fromQuestLog: boolean): PlanD
     id: dinner.id,
     name: dinner.name,
     status: fromQuestLog ? 'quest_log' : 'regular',
-    photo_id: dinner.photo_id,
+    photo_id: dinner.meal_source === 'cook' ? dinner.photo_id : undefined,
     minutes: dinner.minutes_total,
     method: dinner.method,
+    meal_source: dinner.meal_source,
   }
+}
+
+// cookedDinners are the dinners a plan can take: delivery and dining out
+// are not planned.
+export function cookedDinners(dinners: QuestLogDinner[]): QuestLogDinner[] {
+  return dinners.filter((dinner) => dinner.meal_source === 'cook')
 }
 
 export type SwapSheetProps = {
@@ -54,12 +63,16 @@ export function SwapSheet({ day, planned, onSwap, onClose }: SwapSheetProps) {
   const questLog = useQuestLog()
   const regulars = useRegulars()
   const [source, setSource] = useState<Source>('quest_log')
+  const [label, setLabel] = useState(day.manual_label ?? '')
+  const named = planDayName(day)
+  const occupied = day.dinner !== null || day.manual_label !== null
   const lists = { quest_log: questLog, regulars }
   const list = lists[source]
 
-  const label = (s: Source) => {
+  const sourceLabel = (s: Source) => {
     const dinners = lists[s].data
-    return dinners === undefined ? sourceNames[s] : `${sourceNames[s]} · ${dinners.length}`
+    const cooked = dinners === undefined ? undefined : cookedDinners(dinners)
+    return cooked === undefined ? sourceNames[s] : `${sourceNames[s]} · ${cooked.length}`
   }
 
   let body
@@ -77,12 +90,16 @@ export function SwapSheet({ day, planned, onSwap, onClose }: SwapSheetProps) {
         ))}
       </div>
     )
-  } else if (list.data.length === 0) {
-    body = <p className={styles.empty}>{emptyLists[source]}</p>
+  } else if (cookedDinners(list.data).length === 0) {
+    body = (
+      <p className={styles.empty}>
+        {list.data.length === 0 ? emptyLists[source] : 'Delivery and dining out are not planned.'}
+      </p>
+    )
   } else {
     body = (
       <ul aria-label={sourceNames[source]} className={styles.rows}>
-        {list.data.map((dinner: QuestLogDinner) => {
+        {cookedDinners(list.data).map((dinner: QuestLogDinner) => {
           const already = planned.has(dinner.id)
           return (
             <li key={dinner.id}>
@@ -91,7 +108,13 @@ export function SwapSheet({ day, planned, onSwap, onClose }: SwapSheetProps) {
                 leading={
                   // The row's name already says what the photo shows.
                   <span aria-hidden="true">
-                    <Photo id={dinner.photo_id} name={dinner.name} radius="var(--radius-md)" sizes="48px" className={styles.photo} />
+                    <Photo
+                      id={dinner.meal_source === 'cook' ? dinner.photo_id : undefined}
+                      name={dinner.name}
+                      radius="var(--radius-md)"
+                      sizes="48px"
+                      className={styles.photo}
+                    />
                   </span>
                 }
                 title={dinner.name}
@@ -119,13 +142,30 @@ export function SwapSheet({ day, planned, onSwap, onClose }: SwapSheetProps) {
           <h2 id={titleId} className={styles.title}>
             Swap {weekdayName(day.date)}
           </h2>
-          <p className={styles.replaces}>Replaces {day.dinner.name}</p>
+          <p className={styles.replaces}>{occupied ? `Replaces ${named}` : 'Nothing planned this night'}</p>
+        </div>
+        <div className={styles.manual}>
+          <TextInput
+            label="One night only"
+            value={label}
+            maxLength={120}
+            placeholder="mummy dogs"
+            onChange={(event) => setLabel(event.target.value)}
+          />
+          <Button variant="outline" disabled={label.trim() === ''} onClick={() => onSwap({ date: day.date, manual_label: label.trim() })}>
+            Use this name
+          </Button>
+          {occupied && (
+            <Button variant="outline" onClick={() => onSwap({ date: day.date, clear: true })}>
+              Clear this night
+            </Button>
+          )}
         </div>
         <Segmented
           label="Swap in from"
           options={[
-            { value: 'quest_log', label: label('quest_log') },
-            { value: 'regulars', label: label('regulars') },
+            { value: 'quest_log', label: sourceLabel('quest_log') },
+            { value: 'regulars', label: sourceLabel('regulars') },
           ]}
           value={source}
           onValueChange={setSource}

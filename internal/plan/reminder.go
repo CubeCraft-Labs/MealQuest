@@ -39,6 +39,11 @@ func (s *Service) ReminderSchedules() []scheduler.Schedule {
 			},
 			Run: func(ctx context.Context, p scheduler.Period) error {
 				sent, err := s.EmitDayOfReminder(ctx, p.Date)
+				if errors.Is(err, ErrNoNight) {
+					s.logger.InfoContext(ctx, "day-of reminder not sent: the night has no dinner",
+						"period", p.Key, "date", p.Date.String())
+					return nil
+				}
 				if err != nil {
 					return err
 				}

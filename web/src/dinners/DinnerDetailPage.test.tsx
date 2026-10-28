@@ -26,6 +26,7 @@ function detail(overrides: Record<string, unknown> = {}) {
     difficulty: 'easy',
     cuisine: 'korean',
     is_favorite: false,
+    meal_source: 'cook',
     photo_urls: { '400': '/media/photos/p1-400.jpg', '1200': '/media/photos/p1-1200.jpg' },
     ingredients: [
       { name: 'Ground beef', qty: '1', unit: 'lb', note: null, raw_text: '1 lb ground beef' },
@@ -46,6 +47,7 @@ function detail(overrides: Record<string, unknown> = {}) {
 const MANUAL = {
   status: 'regular',
   origin: 'regular',
+  meal_source: 'cook',
   photo_urls: null,
   ingredients: [
     { name: null, qty: null, unit: null, note: null, raw_text: '2 lb chuck roast' },
@@ -61,6 +63,7 @@ const MANUAL = {
 const FAILED = {
   status: 'regular',
   origin: 'regular',
+  meal_source: 'cook',
   photo_urls: null,
   minutes_total: null,
   difficulty: null,
@@ -449,6 +452,29 @@ describe('DinnerDetailPage', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load this dinner.")
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+  })
+
+  it('shows Delivery with no photo, recipe or recipe link', async () => {
+    serve(
+      detail({
+        name: 'Pizza delivery',
+        status: 'regular',
+        origin: 'regular',
+        meal_source: 'delivery',
+        photo_urls: { '400': '/media/photos/p1-400.jpg', '1200': '/media/photos/p1-1200.jpg' },
+        source: { site_name: 'Curry House', url: 'https://recipes.example/pizza' },
+      }),
+    )
+    renderAt(['/dinner/d1'])
+
+    expect(await screen.findByRole('heading', { name: 'Pizza delivery' })).toBeInTheDocument()
+    const article = screen.getByRole('article')
+    expect(within(article).getByText('Delivery')).toBeInTheDocument()
+    expect(within(article).getByText(/no recipe/)).toBeInTheDocument()
+    expect(within(article).queryByRole('link')).not.toBeInTheDocument()
+    expect(within(article).queryByRole('img')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Ingredients' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add to this week' })).not.toBeInTheDocument()
   })
 
   describe('the back button', () => {

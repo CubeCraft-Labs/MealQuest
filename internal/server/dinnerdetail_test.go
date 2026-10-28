@@ -115,6 +115,7 @@ func TestGetDinnerGroundedSideQuest(t *testing.T) {
 		Source:          &dinners.Source{SiteName: str("Curry House"), URL: str(curryPage)},
 		GroundingStatus: "grounded",
 		WhyPicked:       str(reason),
+		MealSource:      dinners.MealSourceCook,
 	}
 	if !reflect.DeepEqual(got, want) {
 		gj, _ := json.Marshal(got)
@@ -157,6 +158,7 @@ func TestGetDinnerManualRegular(t *testing.T) {
 		Ingredients:     []dinners.Ingredient{{RawText: "1 lb beef"}, {RawText: "1 can beans"}},
 		Steps:           []string{"Brown.", "Simmer."},
 		GroundingStatus: "manual",
+		MealSource:      dinners.MealSourceCook,
 	}
 	if !reflect.DeepEqual(got, want) {
 		gj, _ := json.Marshal(got)

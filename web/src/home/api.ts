@@ -3,7 +3,7 @@ import { useCallback, useEffect } from 'react'
 import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { knownArchived, useArchived } from '../dinners/archived.ts'
-import { oneOf, photoId, PLANNED_DINNER_STATUSES, type PlannedDinnerStatus } from '../dinners/api.ts'
+import { MEAL_SOURCES, oneOf, photoId, PLANNED_DINNER_STATUSES, type MealSource, type PlannedDinnerStatus } from '../dinners/api.ts'
 import { untilLocalMidnight, weekLabel } from '../plan/week.ts'
 import { appPath, opensRecipeOf, parseNoticeDinner, recipePathId, type NoticeDinner } from '../push/notification.ts'
 
@@ -28,6 +28,7 @@ export type Tonight = {
   photo_id: string | undefined
   origin: Origin
   minutes_total: number | null
+  meal_source: MealSource
 }
 
 // ShoppingListStatus is the Supply run Home points at: next week's once it
@@ -47,6 +48,9 @@ export type Home = {
   dateLabel: string
   timezone: string
   tonight: Tonight | null
+  // manualTonight is today's free-text night. Null unless today is a one-off
+  // label, and never set together with tonight.
+  manualTonight: string | null
   sideQuestCount: number
   shoppingList: ShoppingListStatus
   unread: boolean
@@ -58,8 +62,14 @@ export type Home = {
 // (archived), whatever the read said; otherwise it is home itself.
 export function showArchived(home: Home, archived: ReadonlySet<string>): Home {
   const tonight = home.tonight
-  if (tonight === null || !archived.has(tonight.id) || tonight.status === 'archived') return home
+  if (tonight === null || home.manualTonight !== null || !archived.has(tonight.id) || tonight.status === 'archived') return home
   return { ...home, tonight: { ...tonight, status: 'archived' } }
+}
+
+function parseManualTonight(where: string, body: unknown): string | null {
+  if (body === undefined || body === null) return null
+  if (typeof body !== 'string' || body.trim() === '') throw new Error(`${where}: manualTonight is not a name`)
+  return body
 }
 
 function parseTonight(where: string, body: unknown): Tonight | null {
@@ -79,6 +89,7 @@ function parseTonight(where: string, body: unknown): Tonight | null {
     photo_id: photoId(where, body.photo),
     origin: oneOf(where, 'origin', ORIGINS, body.origin),
     minutes_total: minutes as number | null,
+    meal_source: oneOf(where, 'meal_source', MEAL_SOURCES, body.meal_source),
   }
 }
 
@@ -111,10 +122,16 @@ export function parseHome(where: string, body: unknown, cached: boolean): Home {
   }
   const updates = body.recentUpdates
   if (!isRecord(updates) || typeof updates.unread !== 'boolean') throw new Error(`${where}: recentUpdates has no unread flag`)
+  const tonight = parseTonight(where, body.tonight)
+  const manualTonight = parseManualTonight(where, body.manualTonight)
+  if (tonight !== null && manualTonight !== null) {
+    throw new Error(`${where}: tonight is both a dinner and a manual night`)
+  }
   return {
     dateLabel: body.dateLabel,
     timezone: body.timezone,
-    tonight: parseTonight(where, body.tonight),
+    tonight,
+    manualTonight,
     sideQuestCount: body.sideQuestCount as number,
     shoppingList: parseShoppingList(where, body.shoppingList),
     unread: updates.unread,

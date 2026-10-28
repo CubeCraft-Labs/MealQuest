@@ -33,6 +33,7 @@ type dinnerPatch struct {
 	Method       *string `json:"method"`
 	MinutesTotal *int    `json:"minutes_total"`
 	Difficulty   *string `json:"difficulty"`
+	MealSource   *string `json:"meal_source"`
 }
 
 type dinnerList struct {
@@ -242,6 +243,7 @@ func actorOrFail(w http.ResponseWriter, r *http.Request, logger *slog.Logger) (a
 func writeDinnerError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, action string, err error) {
 	var invalid *dinners.ValidationError
 	var dup *dinners.DuplicateError
+	var planned *dinners.PlannedError
 	var ungroundable *recipes.ErrUngroundable
 	switch {
 	case errors.As(err, &ungroundable):
@@ -281,6 +283,8 @@ func writeDinnerError(w http.ResponseWriter, r *http.Request, logger *slog.Logge
 		writeError(w, r, logger, http.StatusBadRequest, "invalid_dinner", invalid.Error())
 	case errors.As(err, &dup):
 		writeError(w, r, logger, http.StatusConflict, "duplicate_dinner", dup.Error())
+	case errors.As(err, &planned):
+		writeError(w, r, logger, http.StatusConflict, "planned", planned.Error())
 	case errors.Is(err, dinners.ErrNotFound):
 		writeError(w, r, logger, http.StatusNotFound, "not_found", "dinner not found")
 	default:

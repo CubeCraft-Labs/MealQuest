@@ -268,12 +268,14 @@ type Generated struct {
 // A list still untitled once it is stored, as a new list always is, gets a
 // KindTitleSupplyRun job, enqueued in the same transaction, that titles it
 // with archive_title from the names of the plan's dinners in day order.
-// Generate returns without waiting for the job: the list is returned
-// untitled, with the job's id. A title is written once: a remake keeps it
-// and enqueues no job. Titling never fails the generation: a title that
-// cannot be written leaves the list untitled, the failure is logged and
-// the job failed with ReasonTitleFailed, and the next generation of the
-// week, Generate or GeneratePushed, tries again.
+// A week with no dinner names enqueues none: archive_title rejects an
+// empty list, and the Supply run stays untitled. Generate returns without
+// waiting for the job: the list is returned untitled, with the job's id
+// when one was enqueued. A title is written once: a remake keeps it and
+// enqueues no job. Titling never fails the generation: a title that cannot
+// be written leaves the list untitled, the failure is logged and the job
+// failed with ReasonTitleFailed, and the next generation of the week,
+// Generate or GeneratePushed, tries again.
 //
 // A week with no plan is ErrPlanNotFound; a list frozen into the Supply
 // archive is ErrFrozen. A fetched recipe's ingredient without a name is an
@@ -354,6 +356,12 @@ func (s *Service) generate(ctx context.Context, weekStart store.LocalDate, check
 			notified = true
 		}
 		if list.Title.Valid {
+			return nil
+		}
+		if len(dinnerNames) == 0 {
+			// archive_title rejects an empty dinner list. Enqueueing a
+			// title job would only record a failure and retry it on the
+			// next generation. The Supply run stays untitled.
 			return nil
 		}
 		id, err := s.titleJob.EnqueueTx(ctx, tx, TitleJob{

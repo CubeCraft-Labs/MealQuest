@@ -440,27 +440,37 @@ func (s *Service) storeTitle(ctx context.Context, p TitleJob) (string, error) {
 	}
 	write, cancel := jobs.FinalWriteContext(ctx)
 	defer cancel()
-	again, err := s.freshTitle(write, q, p)
-	if err != nil {
-		return "", err
-	}
-	if again.Revision != fresh.Revision || !slices.Equal(again.Dinners, fresh.Dinners) {
-		return "", errors.New("shopping: store title: the Supply run changed before its title was stored")
-	}
-	n, err := q.SetShoppingListTitle(write, db.SetShoppingListTitleParams{
-		Title: sql.NullString{String: out.Title, Valid: true}, UpdatedAt: store.Now().String(), ID: p.ListID,
+	// The freshness check and the title write are one transaction, so a
+	// plan edit cannot land between them and store a title for a dinner
+	// the week no longer has.
+	var stored string
+	err = s.st.WithTx(write, func(tx *sql.Tx) error {
+		tq := db.New(tx)
+		again, err := s.freshTitle(write, tq, p)
+		if err != nil {
+			return err
+		}
+		if again.Revision != fresh.Revision || !slices.Equal(again.Dinners, fresh.Dinners) {
+			return errors.New("shopping: store title: the Supply run changed before its title was stored")
+		}
+		n, err := tq.SetShoppingListTitle(write, db.SetShoppingListTitleParams{
+			Title: sql.NullString{String: out.Title, Valid: true}, UpdatedAt: store.Now().String(), ID: p.ListID,
+		})
+		if err != nil {
+			return fmt.Errorf("shopping: store title: %w", err)
+		}
+		if n == 1 {
+			stored = out.Title
+			return nil
+		}
+		title, err := s.currentTitle(write, tq, p)
+		if err == nil && title == "" {
+			err = errors.New("shopping: store title: the Supply run is still untitled")
+		}
+		stored = title
+		return err
 	})
-	if err != nil {
-		return "", fmt.Errorf("shopping: store title: %w", err)
-	}
-	if n == 1 {
-		return out.Title, nil
-	}
-	title, err = s.currentTitle(write, q, p)
-	if err == nil && title == "" {
-		err = errors.New("shopping: store title: the Supply run is still untitled")
-	}
-	return title, err
+	return stored, err
 }
 
 // freshTitle is the title job to run for p. A job queued before a dinner

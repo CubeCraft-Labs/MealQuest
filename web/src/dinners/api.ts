@@ -392,66 +392,89 @@ export function useRemoveRegular() {
   })
 }
 
-// clearedNight is day with dinner id removed: an unplanned night, which is
-// what the server stores when that dinner becomes Delivery or Dining Out.
-function clearedNight(day: PlanDay, id: string, mealSource: MealSource): PlanDay {
-  if (day.dinner === null || day.dinner.id !== id) return day
-  if (mealSource === 'cook') return { ...day, dinner: { ...day.dinner, meal_source: mealSource } }
-  return { ...day, dinner: null, is_new: false, start_by: null }
+// supplyRunWithout is run without dinner id's group. An archived run keeps
+// the group it was shopped with. A run that does not have the dinner is
+// left as it is.
+function supplyRunWithout(run: SupplyRun, id: string): SupplyRun {
+  if (run.status === 'archived' || !run.groups.some((group) => group.dinner.id === id)) return run
+  const groups = run.groups.filter((group) => group.dinner.id !== id)
+  let needed = 0
+  let total = 0
+  for (const group of groups) {
+    for (const item of group.items) {
+      total += 1
+      if (item.needed) needed += 1
+    }
+  }
+  return { ...run, groups, needed_count: needed, total_count: total }
 }
 
-// showMealSource shows dinner id's meal source on every plan, Home, Supply
-// run and dinner detail already read here, and on a current Supply run saved
-// on this device. A source other than cook takes the dinner off those plan
-// days and off Home, and drops that dinner's Supply-run group, which the
-// server has removed. A manual or cleared night has no dinner, so it is left
-// as it is. An archived Supply run keeps the group it was shopped with. A
-// read not yet made is left unread. The screens are read again afterwards.
+// withMealSource is day with dinner id's meal source set. The night stays
+// planned: a designation never clears a cached plan.
+function withMealSource(day: PlanDay, id: string, mealSource: MealSource): PlanDay {
+  if (day.dinner === null || day.dinner.id !== id || day.dinner.meal_source === mealSource) return day
+  return { ...day, dinner: { ...day.dinner, meal_source: mealSource } }
+}
+
+// weeksWhosePlanOmits is the cached weeks whose plan does not list dinnerId.
+// A week not yet read is left out: there is no plan here to judge.
+function weeksWhosePlanOmits(queryClient: QueryClient, dinnerId: string): Set<string> {
+  const weeks = new Set<string>()
+  for (const [key, plan] of queryClient.getQueriesData<Plan | null>({ queryKey: ['plans'] })) {
+    if (queryClient.getQueryState(key)?.status !== 'success') continue
+    const week = key[1]
+    if (typeof week !== 'string') continue
+    if (plan != null && plan.days.some((day) => day.dinner?.id === dinnerId)) continue
+    weeks.add(week)
+  }
+  return weeks
+}
+
+// showMealSource shows dinner id's meal source where that is already known.
+// Setting it back to cook updates a cached plan day, Home and a Supply run
+// in place. Delivery or Dining Out leaves every plan cache as it was: a
+// designated dinner is not cleared off a plan, including a past week. A
+// Supply run saved on this device is reconciled only for a week whose cached
+// plan no longer has the dinner. The dinner's own detail is updated either
+// way. The screens are read again afterwards.
 function showMealSource(queryClient: QueryClient, id: string, mealSource: MealSource) {
-  queryClient.setQueriesData<Plan | null>({ queryKey: ['plans'] }, (plan) => {
-    if (plan == null || !plan.days.some((day) => day.dinner !== null && day.dinner.id === id)) return plan
-    return { ...plan, days: plan.days.map((day) => clearedNight(day, id, mealSource)) }
-  })
-  queryClient.setQueryData<Home>(HOME_KEY, (home) => {
-    if (home === undefined || home.tonight === null || home.tonight.id !== id) return home
-    if (mealSource === 'cook') {
-      return home.tonight.meal_source === mealSource ? home : { ...home, tonight: { ...home.tonight, meal_source: mealSource } }
-    }
-    return { ...home, tonight: null }
-  })
-  reconcileSavedMealSource(id, mealSource)
-  queryClient.setQueriesData<SupplyRun | null>({ queryKey: ['shopping'] }, (run) => {
-    if (run == null || !run.groups.some((group) => group.dinner.id === id)) return run
-    // An archived run keeps the group it was shopped with. A current one
-    // loses it, matching the server, which removes that group.
-    if (mealSource === 'cook' || run.status === 'archived') {
+  if (mealSource === 'cook') {
+    queryClient.setQueriesData<Plan | null>({ queryKey: ['plans'] }, (plan) => {
+      if (plan == null || !plan.days.some((day) => day.dinner !== null && day.dinner.id === id)) return plan
+      return { ...plan, days: plan.days.map((day) => withMealSource(day, id, mealSource)) }
+    })
+    queryClient.setQueryData<Home>(HOME_KEY, (home) => {
+      if (home === undefined || home.tonight === null || home.tonight.id !== id || home.tonight.meal_source === mealSource) return home
+      return { ...home, tonight: { ...home.tonight, meal_source: mealSource } }
+    })
+    reconcileSavedMealSource(id, mealSource)
+    queryClient.setQueriesData<SupplyRun | null>({ queryKey: ['shopping'] }, (run) => {
+      if (run == null || !run.groups.some((group) => group.dinner.id === id)) return run
       return {
         ...run,
         groups: run.groups.map((group) =>
           group.dinner.id === id ? { ...group, dinner: { ...group.dinner, meal_source: mealSource } } : group,
         ),
       }
+    })
+  } else {
+    const weeks = weeksWhosePlanOmits(queryClient, id)
+    if (weeks.size > 0) {
+      reconcileSavedMealSource(id, mealSource, weeks)
+      queryClient.setQueriesData<SupplyRun | null>({ queryKey: ['shopping'] }, (run) =>
+        run == null || !weeks.has(run.weekStart) ? run : supplyRunWithout(run, id),
+      )
     }
-    const groups = run.groups.filter((group) => group.dinner.id !== id)
-    let needed = 0
-    let total = 0
-    for (const group of groups) {
-      for (const item of group.items) {
-        total += 1
-        if (item.needed) needed += 1
-      }
-    }
-    return { ...run, groups, needed_count: needed, total_count: total }
-  })
+  }
   queryClient.setQueryData<DinnerDetail>(dinnerDetailKey(id), (dinner) =>
     dinner === undefined || dinner.meal_source === mealSource ? dinner : { ...dinner, meal_source: mealSource },
   )
 }
 
 // useEditRegular saves changes to a Regular (PATCH /api/v1/dinners/{id})
-// and shows the server's answer once it is saved. A meal-source edit also
-// shows that source on the plan, Home, Supply run and dinner detail already
-// read here (showMealSource), then reads them again.
+// and shows the server's answer once it is saved. A meal-source edit shows
+// that source where showMealSource does, then reads the plan, Home, Supply
+// run and dinner again. A refused designation changes none of those caches.
 export function useEditRegular() {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()

@@ -98,7 +98,7 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 | `recipe_ingredients` | recipe_id, position, raw_text, name, qty, unit, note. |
 | `recipe_steps` | recipe_id, position, text. |
 | `photos` | source_url, local_path, width, height, sha256, fetched_at. |
-| `dinners` | The meal record and its lifecycle: name, normalized_name, status (`suggested` / `quest_log` / `tried` / `regular` / `archived`), origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, recipe_url (a pasted recipe link awaiting grounding), photo_id, grounding_status (`pending` / `grounded` / `failed` / `manual`), grounding_error (why grounding failed), grounding_revision (raised whenever a dinner is renamed, so only the latest `ground_dinner` job may write it and no candidate offered before the rename grounds it), meal_source (`cook` / `delivery` / `dining_out`; delivery and dining out are not cooked at home, so they stay out of the draft pool, add no Supply-run items and open no Rotation check — distinct from `archived`, D-021), updated_by. |
+| `dinners` | The meal record and its lifecycle: name, normalized_name, status (`suggested` / `quest_log` / `tried` / `regular` / `archived`), origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, recipe_url (a pasted recipe link awaiting grounding), photo_id, grounding_status (`pending` / `grounded` / `failed` / `manual`), grounding_error (why grounding failed), grounding_revision (raised whenever a dinner is renamed, so only the latest `ground_dinner` job may write it and no candidate offered before the rename grounds it), meal_source (`cook` / `delivery` / `dining_out`; delivery and dining out are not cooked at home, so they stay out of the draft pool, add no Supply-run items and open no Rotation check — distinct from `archived`, D-021). A dinner on a current or future plan day cannot be marked delivery or dining out until it is removed from the plan; nothing is written when that edit is refused. updated_by. |
 | `suggestion_batches` | trigger, status, ai_run_id. |
 | `suggestions` | dinner_id, batch_id, name (the name the dish was suggested under, kept whatever its dinner is later renamed, so a Pass stays an immutable record every later batch dedupes against), reason, cited_regular_ids (JSON), status, decided_at. |
 | `week_plans` | week_start (unique), status (`draft` / `synced` / `changed`), ai_note, ai_run_id, calendar_synced_at, revision (raised by every swap and stored draft). |
@@ -205,8 +205,18 @@ automatic** (D-021).
   (`stovetop` / `oven` / `crockpot` / `grill` / `other`), `minutes_total`
   (1–1440), `difficulty` (`easy` / `medium` / `hard`) and `meal_source`
   (`cook` / `delivery` / `dining_out`); invalid values
-  are 400 `invalid_dinner` and change nothing. Setting `meal_source`
-  back to `cook` makes the dinner a cooked meal again. `DELETE /api/v1/dinners/{id}`
+  are 400 `invalid_dinner` and change nothing. Setting `meal_source` to
+  `delivery` or `dining_out` while the dinner is on any current or future
+  plan day, in the household timezone, is 409 `planned` and changes
+  nothing: the dinner is on the plan and must be removed from the plan
+  first. The refusal writes no dinner, plan, Supply run or Calendar
+  change, and it does not call Calendar. A dinner that is not on such a
+  day can be designated. It is then left out of the draft pool, so it is
+  never planned and has no Calendar event, and it contributes no recipe,
+  photo, ingredients or Supply-run items and opens no Rotation check. A
+  past plan week, and a Supply run already stored, are left as they were.
+  Setting `meal_source` back to `cook` is allowed at any time and makes
+  the dinner a cooked meal again. `DELETE /api/v1/dinners/{id}`
   sets status `archived` and keeps the row; sent again it succeeds, so the
   PWA sends a removal until it is answered, and a dinner this device has
   begun to remove it never again shows with a recipe to open; `POST
@@ -486,8 +496,13 @@ automatic** (D-021).
   `dinner` null, or cleared (both null). The
   dinner's `status` is its status now — `archived` once it was removed after
   the plan was made, when it has no detail to open. `meal_source` is
-  `cook`, `delivery` or `dining_out`; a delivery or dining-out dinner has
-  `photo` null, no recipe link and no crock-pot `start_by`. `is_new` means
+  `cook`, `delivery` or `dining_out`. A current or future plan does not
+  gain a delivery or dining-out dinner by editing one that is already
+  planned: that edit is 409 `planned` until the dinner is removed from the
+  plan. A dinner already designated is not in the draft pool, so it is
+  never planned. A past plan can still name a dinner later marked delivery
+  or dining out; that day has `photo` null, no recipe link and no
+  crock-pot `start_by`. `is_new` means
   the dinner was planned from the Quest log, and is false for a manual or
   cleared night; `start_by` is the household's
   dinner time on that date minus `minutes_total`, computed on read, for a
@@ -956,15 +971,19 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
   - `day_of_reminder:{date}` (URL `/dinner/{id}`) through
     `plan.Service.EmitDayOfReminder(date)`, "Tonight: {dinner} · Recipe →",
     naming the dinner planned on the date; it emits nothing for a week
-    with no plan. A delivery or dining-out dinner is "Tonight: {dinner}"
-    with no recipe, opening the week's plan. A manual night is "Tonight: {label}" with no dinner and
+    with no plan. A delivery or dining-out dinner is not planned on a
+    current or future day, so a newly emitted reminder is not one of those
+    dinners. A dinner that is already delivery or dining out and still
+    sits on a past plan is "Tonight: {dinner}" with no recipe, opening the
+    week's plan. A manual night is "Tonight: {label}" with no dinner and
     no recipe, opening the week's plan (`/plan?week={weekStart}`). A
     cleared night emits nothing. The `day_of_reminder` schedule calls it at
     `reminder_time`.
   - `day_of_reminder:start:{date}` (URL `/dinner/{id}`) through
     `plan.Service.EmitStartReminder(date)`, "Start the crock pot by
     {time}" with the dinner's name, only for a crock-pot dinner whose
-    `start_by` is earlier than `reminder_time`. The `day_of_reminder`
+    `start_by` is earlier than `reminder_time`. A dinner that is not cooked
+    has no `start_by`, so it emits nothing. The `day_of_reminder`
     schedule calls it 15 minutes before `start_by`.
   - A reminder offers its dinner's recipe only while the dinner has one.
     It then names the dinner (`notify.Event.Dinner`, the payload's
@@ -982,7 +1001,12 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
     archival is (title without " · Recipe →", "This dinner was removed, so
     its recipe is gone." when it has no other body, the week's plan, no
     dinner), and a reminder stored before reminders named their dinner is
-    sent naming it while it still has a recipe. The Web Push message
+    sent naming it while it still has a recipe. Before a queued dinner
+    reminder is sent, the worker also checks that its dinner is still
+    planned for the reminder's date (`day_of_reminder:{date}` or
+    `day_of_reminder:start:{date}`). If it is not — the night was cleared
+    or swapped, by any means — the reminder is suppressed and not sent.
+    The Web Push message
     carries `dinner` with `title`, `body`, `url` and `tag`, so a tap
     checks that recipe with the server before it opens it.
     A Chat message's call to action follows the path its event opens
@@ -1162,9 +1186,15 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
   the household `timeZone` (so its UTC instant follows a DST change within
   the week), and a description of the dinner's name, `Start by {time}` for
   a crock-pot dinner of known minutes, and
-  `{MEALQUEST_PUBLIC_URL}/dinner/{id}`. A delivery or dining-out dinner
-  keeps that summary; its description is the name and `Delivery` or
-  `Dining out`, with no start-by and no recipe link. A manual night is an event at the
+  `{MEALQUEST_PUBLIC_URL}/dinner/{id}`. A dinner marked Delivery or Dining
+  Out is not on a current or future plan — the designation is refused
+  while it is planned — so Push to Calendar writes no event for it and it
+  has no recipe link. Removing it from the plan first clears that night;
+  the next push deletes a cleared night's event. A past plan can still
+  name a dinner later marked delivery or dining out; pushing that day
+  writes the name and `Delivery` or `Dining out`, with no start-by and no
+  recipe link, and does not delete the event the designation refused to
+  touch. A manual night is an event at the
   same time whose summary and description are the label alone, with no
   dinner link, so it is not pushed as a dinner. A cleared night's event is
   deleted (a missing event is already gone).

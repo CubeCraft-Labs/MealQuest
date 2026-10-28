@@ -92,6 +92,27 @@ func (q *Queries) CreateWeekPlan(ctx context.Context, arg CreateWeekPlanParams) 
 	return err
 }
 
+const dinnerPlannedOnDate = `-- name: DinnerPlannedOnDate :one
+SELECT EXISTS (
+	SELECT 1 FROM plan_days
+	WHERE plan_days.dinner_id = ?1 AND plan_days.date = ?2
+) AS planned
+`
+
+type DinnerPlannedOnDateParams struct {
+	DinnerID sql.NullString
+	Date     string
+}
+
+// Reports whether dinner_id is the dinner planned on date, a
+// household-local YYYY-MM-DD. A cleared night, or another dinner, is false.
+func (q *Queries) DinnerPlannedOnDate(ctx context.Context, arg DinnerPlannedOnDateParams) (bool, error) {
+	row := q.db.QueryRowContext(ctx, dinnerPlannedOnDate, arg.DinnerID, arg.Date)
+	var planned bool
+	err := row.Scan(&planned)
+	return planned, err
+}
+
 const getActiveDraftJob = `-- name: GetActiveDraftJob :one
 SELECT id, CAST(json_extract(payload, '$.confirm') = 1 AS INTEGER) AS confirmed
 FROM jobs

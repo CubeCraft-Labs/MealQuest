@@ -119,12 +119,13 @@ async function renderLoaded() {
     if (key === 'GET /api/v1/dinners?status=quest_log') return jsonResponse(200, { dinners: [] })
     if (key.startsWith('GET /api/v1/plans/')) return errorResponse(404, 'not_found')
     if (key === 'PATCH /api/v1/dinners/d1') {
-      const current = regulars[0]
-      if (current === undefined) throw new Error('no Regular to edit')
-      const body = JSON.parse(String(init?.body)) as { meal_source: DinnerBody['meal_source'] }
-      const edited: DinnerBody = { ...current, meal_source: body.meal_source }
-      regulars[0] = edited
-      return jsonResponse(200, edited)
+      return jsonResponse(409, {
+        error: {
+          code: 'planned',
+          message: 'Beef tacos is on the plan and must be removed from the plan first',
+          retryable: false,
+        },
+      })
     }
     throw new Error(`unexpected fetch: ${key}`)
   })
@@ -175,43 +176,57 @@ async function renderLoaded() {
   return { fetchMock, holdReads: () => { hold = true } }
 }
 
-describe('a Delivery edit already loaded on Home, the plan, the Supply run and the dinner', () => {
-  it('takes the dinner off Home and the Draft board before those reads return', async () => {
+describe('a Delivery edit of a dinner that is on the plan', () => {
+  it('shows the refusal and leaves Home, the plan and the Supply run as they were', async () => {
     const { holdReads } = await renderLoaded()
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit Beef tacos' }))
     const sheet = within(screen.getByRole('dialog', { name: 'Edit Beef tacos' }))
     fireEvent.click(sheet.getByRole('radio', { name: 'Delivery' }))
     fireEvent.click(sheet.getByRole('button', { name: 'Save changes' }))
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(await sheet.findByRole('alert')).toHaveTextContent('Remove Beef tacos from the plan first.')
     holdReads()
 
     fireEvent.click(screen.getByRole('link', { name: 'Home' }))
-    expect(await screen.findByRole('heading', { name: 'No quest planned tonight' })).toBeInTheDocument()
-    expect(screen.queryByRole('region', { name: 'Tonight' })).not.toBeInTheDocument()
-    expect(screen.queryByText('Beef tacos')).not.toBeInTheDocument()
+    const tonight = await screen.findByRole('region', { name: 'Tonight' })
+    expect(within(tonight).getByRole('button', { name: 'Recipe' })).toBeInTheDocument()
+    expect(within(tonight).getByText('Beef tacos')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('link', { name: 'Plan' }))
     const week = await screen.findByRole('list', { name: 'Dinners this week' })
     const monday = within(week).getByRole('listitem', { name: 'Monday' })
-    expect(within(monday).getByText('Nothing planned')).toBeInTheDocument()
-    expect(within(monday).queryByText('Beef tacos')).not.toBeInTheDocument()
+    expect(within(monday).getByRole('button', { name: 'Beef tacos' })).toBeInTheDocument()
+    expect(within(monday).queryByText('Nothing planned')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('link', { name: 'Supply run' }))
-    await screen.findByRole('heading', { name: 'Shopping list' })
-    expect(screen.queryByRole('button', { name: 'Beef tacos' })).not.toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('link', { name: 'Dinner' }))
-    expect(await screen.findByText(/is not cooked at home/)).toBeInTheDocument()
-    expect(screen.queryByRole('region', { name: 'Ingredients' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'Ingredients' })).not.toBeInTheDocument()
+    expect(await screen.findByRole('region', { name: 'Beef tacos' })).toBeInTheDocument()
+    expect(screen.getByText('Ground beef')).toBeInTheDocument()
   })
 })
 
 const ARCHIVE_WEEK = '2026-09-28'
 
-describe('a Delivery edit when the current Supply run is only saved on this device', () => {
-  it('drops that dinner from the saved current run and keeps an archived run', async () => {
+const PAST_DAYS = ['2026-09-28', '2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04']
+
+function planFor(week: string, dates: string[], monday: { id: string; name: string }) {
+  return {
+    ...PLAN,
+    id: `plan-${week}`,
+    week_start: week,
+    days: dates.map((date, i) => ({
+      date,
+      dinner:
+        i === 0
+          ? { id: monday.id, name: monday.name, status: 'regular', photo: null, minutes: 30, method: 'stovetop', meal_source: 'cook' }
+          : { id: `x${week}-${i}`, name: `Other ${i}`, status: 'regular', photo: null, minutes: 30, method: 'stovetop', meal_source: 'cook' },
+      is_new: false,
+      start_by: null,
+    })),
+  }
+}
+
+describe('a Delivery edit when the current plan no longer has the dinner', () => {
+  it('leaves both plan caches intact and drops the dinner only from the saved run of that plan', async () => {
     const current = {
       ...RUN,
       needed_count: 2,
@@ -254,13 +269,24 @@ describe('a Delivery edit when the current Supply run is only saved on this devi
       },
     }) as NetworkWindow & EventTarget
     const regulars: DinnerBody[] = [TACOS]
+    const currentPlan = planFor(WEEK, DAYS, { id: 'd4', name: 'Pot roast' })
+    const pastPlan = planFor(ARCHIVE_WEEK, PAST_DAYS, { id: 'd1', name: 'Beef tacos' })
+    let holdPlans = false
     const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
       if (!onLine) throw new TypeError('offline')
       const path = String(input)
       const method = init?.method ?? 'GET'
       const key = `${method} ${path}`
+      if (holdPlans && key.startsWith('GET /api/v1/plans/')) return new Promise<Response>(() => {})
       if (key === 'GET /api/v1/me') return jsonResponse(200, ME)
       if (key === 'GET /api/v1/settings/household') return jsonResponse(200, HOUSEHOLD_SETTINGS)
+      if (key === 'GET /api/v1/home') return jsonResponse(200, { ...HOME, tonight: null })
+      if (key === 'GET /api/v1/rotation-reviews') return jsonResponse(200, { reviews: [] })
+      if (key === 'GET /api/v1/updates') return jsonResponse(200, { updates: [] })
+      if (key === `GET /api/v1/plans/${WEEK}`) return jsonResponse(200, currentPlan)
+      if (key === `GET /api/v1/plans/${ARCHIVE_WEEK}`) return jsonResponse(200, pastPlan)
+      if (key.startsWith('GET /api/v1/plans/')) return errorResponse(404, 'not_found')
+      if (key.startsWith('GET /api/v1/shopping/')) return new Promise<Response>(() => {})
       if (key === 'GET /api/v1/dinners?status=regular') return jsonResponse(200, { dinners: regulars })
       if (key === 'GET /api/v1/dinners?status=quest_log') return jsonResponse(200, { dinners: [] })
       if (key === 'PATCH /api/v1/dinners/d1') {
@@ -282,10 +308,14 @@ describe('a Delivery edit when the current Supply run is only saved on this devi
         <QueryClientProvider client={createQueryClient()}>
           <InDataRouter path="/settings/regulars">
             <nav>
+              <Link to={`/plan?week=${WEEK}`}>This week</Link>
+              <Link to={`/plan?week=${ARCHIVE_WEEK}`}>Last week</Link>
+              <Link to="/settings/regulars">Regulars</Link>
               <Link to={`/plan/shopping?week=${WEEK}`}>Supply run</Link>
             </nav>
             <Routes>
               <Route path="/settings/regulars" element={<RegularsSettingsPage />} />
+              <Route path="/plan" element={<PlanPage />} />
               <Route path="/plan/shopping" element={<SupplyRunPage />} />
             </Routes>
           </InDataRouter>
@@ -294,11 +324,21 @@ describe('a Delivery edit when the current Supply run is only saved on this devi
     )
 
     await screen.findByRole('heading', { level: 2, name: /^On rotation/ })
+    fireEvent.click(screen.getByRole('link', { name: 'This week' }))
+    const thisWeek = await screen.findByRole('list', { name: 'Dinners this week' })
+    expect(within(within(thisWeek).getByRole('listitem', { name: 'Monday' })).getByRole('button', { name: 'Pot roast' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('link', { name: 'Last week' }))
+    const lastWeek = await screen.findByRole('list', { name: 'Dinners this week' })
+    expect(within(within(lastWeek).getByRole('listitem', { name: 'Monday' })).getByRole('button', { name: 'Beef tacos' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('link', { name: 'Regulars' }))
+    await screen.findByRole('heading', { level: 2, name: /^On rotation/ })
+
     fireEvent.click(screen.getByRole('button', { name: 'Edit Beef tacos' }))
     const sheet = within(screen.getByRole('dialog', { name: 'Edit Beef tacos' }))
     fireEvent.click(sheet.getByRole('radio', { name: 'Delivery' }))
     fireEvent.click(sheet.getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    holdPlans = true
 
     const saved = JSON.parse(localStorage.getItem(SAVED_KEY) ?? '') as {
       runs: Record<string, { groups: { dinner: { name: string }; items: { name: string }[] }[]; needed_count: number; total_count: number; status: string }>
@@ -309,6 +349,15 @@ describe('a Delivery edit when the current Supply run is only saved on this devi
     expect(saved.runs[ARCHIVE_WEEK]?.status).toBe('archived')
     expect(saved.runs[ARCHIVE_WEEK]?.groups.map((group) => group.dinner.name)).toEqual(['Beef tacos'])
     expect(saved.runs[ARCHIVE_WEEK]?.groups[0]?.items.map((item) => item.name)).toEqual(['Ground beef'])
+
+    fireEvent.click(screen.getByRole('link', { name: 'Last week' }))
+    const past = await screen.findByRole('list', { name: 'Dinners this week' })
+    expect(within(within(past).getByRole('listitem', { name: 'Monday' })).getByRole('button', { name: 'Beef tacos' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('link', { name: 'This week' }))
+    const currentWeek = await screen.findByRole('list', { name: 'Dinners this week' })
+    const monday = within(currentWeek).getByRole('listitem', { name: 'Monday' })
+    expect(within(monday).getByRole('button', { name: 'Pot roast' })).toBeInTheDocument()
+    expect(within(monday).queryByText('Nothing planned')).not.toBeInTheDocument()
 
     onLine = false
     act(() => {

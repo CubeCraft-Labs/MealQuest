@@ -1,4 +1,5 @@
 import { ChevronLeft, Heart, Pencil, Plus } from 'lucide-react'
+import { ApiError } from '../api/index.ts'
 import { useId, useState, type FormEvent, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import { useOpenRecipe } from '../dinners/useOpenRecipe.tsx'
@@ -563,7 +564,9 @@ function EditRegularSheet({ regular, onClose, onRemove }: EditRegularSheetProps)
           </Select>
           {edit.isError && (
             <p role="alert" className={styles.problem}>
-              Not saved: {edit.error.message}
+              {edit.error instanceof ApiError && edit.error.code === 'planned'
+                ? `Remove ${regular.name} from the plan first.`
+                : `Not saved: ${edit.error.message}`}
             </p>
           )}
           <div className={styles.actions}>

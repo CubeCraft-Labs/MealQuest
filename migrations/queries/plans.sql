@@ -108,6 +108,14 @@ WHERE plan_days.dinner_id = sqlc.arg(dinner_id)
 	AND plan_days.date >= sqlc.arg(from_date)
 ORDER BY plan_days.date;
 
+-- name: DinnerPlannedOnDate :one
+-- Reports whether dinner_id is the dinner planned on date, a
+-- household-local YYYY-MM-DD. A cleared night, or another dinner, is false.
+SELECT EXISTS (
+	SELECT 1 FROM plan_days
+	WHERE plan_days.dinner_id = sqlc.arg(dinner_id) AND plan_days.date = sqlc.arg(date)
+) AS planned;
+
 -- name: ClearPlanDayCalendarEvent :execrows
 -- Clears the calendar event id of date on plan_id. Calendar no longer
 -- shows that day as it was planned, so the next Push to Calendar writes

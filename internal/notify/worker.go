@@ -227,7 +227,21 @@ func (s *Service) deliver(ctx context.Context, row db.NotificationOutbox) {
 
 	attempt := row.Attempts + 1
 	sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)
-	payload, err = s.recipeNow(sendCtx, payload)
+	payload, suppress, err := s.prepareDelivery(sendCtx, row.EventKey, payload)
+	if err == nil && suppress {
+		cancel()
+		logger.InfoContext(ctx, "reminder suppressed; the dinner is no longer planned for this date")
+		s.record(ctx, logger, "record suppressed reminder", func(write context.Context) (int64, error) {
+			return db.New(s.st.Writer).FailNotification(write, db.FailNotificationParams{
+				Attempted:  0,
+				LastError:  sql.NullString{String: suppressedReminder, Valid: true},
+				Now:        timestamp(s.now()),
+				ID:         row.ID,
+				LeaseUntil: row.NextAttemptAt,
+			})
+		})
+		return
+	}
 	if err == nil {
 		err = sender.Send(sendCtx, Message{
 			ID: row.ID, EventKey: row.EventKey, Channel: Channel(row.Channel), Payload: payload, Attempt: attempt,
@@ -310,6 +324,83 @@ func retryDelay(attempt int64) time.Duration {
 		d *= 2
 	}
 	return min(d, retryMax)
+}
+
+// suppressedReminder is last_error when a queued dinner reminder is not
+// sent because its dinner is no longer planned for the reminder's date.
+const suppressedReminder = "suppressed: the dinner is no longer planned for this date"
+
+// prepareDelivery returns p as it may be sent now. A queued dinner reminder
+// whose dinner is no longer planned for the reminder's date is suppressed:
+// suppress is true and nothing is sent. Any other payload is returned as
+// recipeNow allows. A database error is returned as it is, so the row is
+// retried rather than sent or suppressed on a guess.
+func (s *Service) prepareDelivery(ctx context.Context, eventKey string, p Payload) (Payload, bool, error) {
+	planned, err := s.dinnerStillPlanned(ctx, eventKey, p)
+	if err != nil || !planned {
+		return Payload{}, !planned && err == nil, err
+	}
+	p, err = s.recipeNow(ctx, p)
+	return p, false, err
+}
+
+// dinnerStillPlanned reports whether a dinner reminder's dinner is still
+// planned for the date in eventKey. A payload that is not a dinner reminder,
+// or that names no dinner, is left to be delivered: there is no dinner to
+// check. The date is day_of_reminder:YYYY-MM-DD or
+// day_of_reminder:start:YYYY-MM-DD.
+func (s *Service) dinnerStillPlanned(ctx context.Context, eventKey string, p Payload) (bool, error) {
+	date, ok := reminderDate(eventKey)
+	if !ok {
+		return true, nil
+	}
+	id := reminderDinnerID(p)
+	if id == "" {
+		return true, nil
+	}
+	planned, err := db.New(s.st.Reader).DinnerPlannedOnDate(ctx, db.DinnerPlannedOnDateParams{
+		DinnerID: sql.NullString{String: id, Valid: true},
+		Date:     date,
+	})
+	if err != nil {
+		return false, fmt.Errorf("notify: read whether %s is planned on %s: %w", id, date, err)
+	}
+	return planned, nil
+}
+
+// reminderDate is the household-local date of a day-of or start reminder
+// key, and whether eventKey is one.
+func reminderDate(eventKey string) (string, bool) {
+	const prefix = string(DayOfReminder) + ":"
+	rest, ok := strings.CutPrefix(eventKey, prefix)
+	if !ok {
+		return "", false
+	}
+	rest = strings.TrimPrefix(rest, "start:")
+	if _, err := store.ParseLocalDate(rest); err != nil {
+		return "", false
+	}
+	return rest, true
+}
+
+// reminderDinnerID is the dinner a reminder names, from its dinner or from
+// a recipe path. A reminder that names none returns "".
+func reminderDinnerID(p Payload) string {
+	if p.Dinner != nil && p.Dinner.ID != "" {
+		return p.Dinner.ID
+	}
+	if !OpensRecipe(p.URL) {
+		return ""
+	}
+	u, err := url.Parse(p.URL)
+	if err != nil {
+		return ""
+	}
+	id := strings.TrimPrefix(u.Path, "/dinner/")
+	if id == "" || strings.Contains(id, "/") {
+		return ""
+	}
+	return id
 }
 
 // recipeNow returns p as it may be delivered now. A payload offering a

@@ -94,6 +94,9 @@ type Querier interface {
 	// Removes every item of group group_id. The group is removed only once
 	// it is empty.
 	DeleteShoppingItemsByGroup(ctx context.Context, groupID string) error
+	// Reports whether dinner_id is the dinner planned on date, a
+	// household-local YYYY-MM-DD. A cleared night, or another dinner, is false.
+	DinnerPlannedOnDate(ctx context.Context, arg DinnerPlannedOnDateParams) (bool, error)
 	FailJob(ctx context.Context, arg FailJobParams) (int64, error)
 	// Gives up on a notification. attempts counts the delivery attempt that
 	// failed, if one was made. The lease must still be the claim's.

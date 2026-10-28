@@ -90,15 +90,17 @@ export function savedWeeks(): string[] {
 
 // reconcileSavedMealSource applies dinnerId's meal source to Supply runs
 // saved on this device. A source other than cook drops that dinner's group
-// from a current run, which the server has removed. An archived run keeps
-// the group it was shopped with. A run that does not have the dinner is
-// left as it is.
-export function reconcileSavedMealSource(dinnerId: string, mealSource: string) {
+// from a current run. An archived run keeps the group it was shopped with.
+// A run that does not have the dinner is left as it is. When weeks is set,
+// only those weeks are touched: a designation reconciles a saved run only
+// for a plan that no longer has the dinner.
+export function reconcileSavedMealSource(dinnerId: string, mealSource: string, weeks?: ReadonlySet<string>) {
   keep(WEEKS_CAUSE, () => {
     const saved = read()
     let changed = false
     const runs: Record<string, unknown> = { ...saved.runs }
     for (const week of Object.keys(runs)) {
+      if (weeks !== undefined && !weeks.has(week)) continue
       const next = reconcileSavedRun(runs[week], dinnerId, mealSource)
       if (next !== runs[week]) {
         runs[week] = next

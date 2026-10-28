@@ -102,15 +102,16 @@ func (q *Queries) GetWeekPlan(ctx context.Context, weekStart string) (WeekPlan, 
 }
 
 const listDraftPool = `-- name: ListDraftPool :many
-SELECT id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url, grounding_error, grounding_revision FROM dinners
-WHERE status = 'regular'
+SELECT id, name, normalized_name, status, origin, method, minutes_total, difficulty, cuisine, is_favorite, recipe_id, photo_id, grounding_status, updated_by, created_at, updated_at, recipe_url, grounding_error, grounding_revision, meal_source FROM dinners
+WHERE meal_source = 'cook'
+	AND (status = 'regular'
 	OR (status = 'quest_log' AND NOT EXISTS (
 		SELECT 1 FROM plan_days
 		JOIN week_plans ON week_plans.id = plan_days.plan_id
 		WHERE plan_days.dinner_id = dinners.id
 			AND week_plans.week_start >= ?1
 			AND week_plans.week_start <> ?2
-	))
+	)))
 ORDER BY normalized_name, id
 `
 
@@ -120,8 +121,9 @@ type ListDraftPoolParams struct {
 }
 
 // The dinners a draft of the week starting week_start may plan: every
-// Regular, and every Quest log dinner no other plan for the week starting
-// from_week_start or later has on any day.
+// cooked Regular, and every cooked Quest log dinner no other plan for the
+// week starting from_week_start or later has on any day. Delivery and
+// dining out are not cooked, so a draft never selects them.
 func (q *Queries) ListDraftPool(ctx context.Context, arg ListDraftPoolParams) ([]Dinner, error) {
 	rows, err := q.db.QueryContext(ctx, listDraftPool, arg.FromWeekStart, arg.WeekStart)
 	if err != nil {
@@ -151,6 +153,7 @@ func (q *Queries) ListDraftPool(ctx context.Context, arg ListDraftPoolParams) ([
 			&i.RecipeUrl,
 			&i.GroundingError,
 			&i.GroundingRevision,
+			&i.MealSource,
 		); err != nil {
 			return nil, err
 		}
@@ -166,7 +169,7 @@ func (q *Queries) ListDraftPool(ctx context.Context, arg ListDraftPoolParams) ([
 }
 
 const listPlanDays = `-- name: ListPlanDays :many
-SELECT plan_days.date, plan_days.is_new, plan_days.calendar_event_id, dinners.id, dinners.name, dinners.normalized_name, dinners.status, dinners.origin, dinners.method, dinners.minutes_total, dinners.difficulty, dinners.cuisine, dinners.is_favorite, dinners.recipe_id, dinners.photo_id, dinners.grounding_status, dinners.updated_by, dinners.created_at, dinners.updated_at, dinners.recipe_url, dinners.grounding_error, dinners.grounding_revision
+SELECT plan_days.date, plan_days.is_new, plan_days.calendar_event_id, dinners.id, dinners.name, dinners.normalized_name, dinners.status, dinners.origin, dinners.method, dinners.minutes_total, dinners.difficulty, dinners.cuisine, dinners.is_favorite, dinners.recipe_id, dinners.photo_id, dinners.grounding_status, dinners.updated_by, dinners.created_at, dinners.updated_at, dinners.recipe_url, dinners.grounding_error, dinners.grounding_revision, dinners.meal_source
 FROM plan_days
 JOIN dinners ON dinners.id = plan_days.dinner_id
 WHERE plan_days.plan_id = ?
@@ -214,6 +217,7 @@ func (q *Queries) ListPlanDays(ctx context.Context, planID string) ([]ListPlanDa
 			&i.Dinner.RecipeUrl,
 			&i.Dinner.GroundingError,
 			&i.Dinner.GroundingRevision,
+			&i.Dinner.MealSource,
 		); err != nil {
 			return nil, err
 		}

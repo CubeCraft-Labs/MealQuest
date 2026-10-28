@@ -245,7 +245,7 @@ func (q *Queries) GetLatestSuggestionBatch(ctx context.Context) (SuggestionBatch
 }
 
 const getSuggestion = `-- name: GetSuggestion :one
-SELECT suggestions.id, suggestions.dinner_id, suggestions.batch_id, suggestions.name, suggestions.reason, suggestions.cited_regular_ids, suggestions.status, suggestions.decided_at, suggestions.created_at, suggestions.updated_at, dinners.id, dinners.name, dinners.normalized_name, dinners.status, dinners.origin, dinners.method, dinners.minutes_total, dinners.difficulty, dinners.cuisine, dinners.is_favorite, dinners.recipe_id, dinners.photo_id, dinners.grounding_status, dinners.updated_by, dinners.created_at, dinners.updated_at, dinners.recipe_url, dinners.grounding_error, dinners.grounding_revision
+SELECT suggestions.id, suggestions.dinner_id, suggestions.batch_id, suggestions.name, suggestions.reason, suggestions.cited_regular_ids, suggestions.status, suggestions.decided_at, suggestions.created_at, suggestions.updated_at, dinners.id, dinners.name, dinners.normalized_name, dinners.status, dinners.origin, dinners.method, dinners.minutes_total, dinners.difficulty, dinners.cuisine, dinners.is_favorite, dinners.recipe_id, dinners.photo_id, dinners.grounding_status, dinners.updated_by, dinners.created_at, dinners.updated_at, dinners.recipe_url, dinners.grounding_error, dinners.grounding_revision, dinners.meal_source
 FROM suggestions
 JOIN dinners ON dinners.id = suggestions.dinner_id
 WHERE suggestions.id = ?
@@ -290,6 +290,7 @@ func (q *Queries) GetSuggestion(ctx context.Context, id string) (GetSuggestionRo
 		&i.Dinner.RecipeUrl,
 		&i.Dinner.GroundingError,
 		&i.Dinner.GroundingRevision,
+		&i.Dinner.MealSource,
 	)
 	return i, err
 }
@@ -336,7 +337,7 @@ func (q *Queries) GetSuggestionBatchJobID(ctx context.Context, arg GetSuggestion
 }
 
 const listDeck = `-- name: ListDeck :many
-SELECT suggestions.id, suggestions.dinner_id, suggestions.batch_id, suggestions.name, suggestions.reason, suggestions.cited_regular_ids, suggestions.status, suggestions.decided_at, suggestions.created_at, suggestions.updated_at, dinners.id, dinners.name, dinners.normalized_name, dinners.status, dinners.origin, dinners.method, dinners.minutes_total, dinners.difficulty, dinners.cuisine, dinners.is_favorite, dinners.recipe_id, dinners.photo_id, dinners.grounding_status, dinners.updated_by, dinners.created_at, dinners.updated_at, dinners.recipe_url, dinners.grounding_error, dinners.grounding_revision
+SELECT suggestions.id, suggestions.dinner_id, suggestions.batch_id, suggestions.name, suggestions.reason, suggestions.cited_regular_ids, suggestions.status, suggestions.decided_at, suggestions.created_at, suggestions.updated_at, dinners.id, dinners.name, dinners.normalized_name, dinners.status, dinners.origin, dinners.method, dinners.minutes_total, dinners.difficulty, dinners.cuisine, dinners.is_favorite, dinners.recipe_id, dinners.photo_id, dinners.grounding_status, dinners.updated_by, dinners.created_at, dinners.updated_at, dinners.recipe_url, dinners.grounding_error, dinners.grounding_revision, dinners.meal_source
 FROM suggestions
 JOIN dinners ON dinners.id = suggestions.dinner_id
 WHERE suggestions.status = 'pending' AND dinners.status = 'suggested'
@@ -389,6 +390,7 @@ func (q *Queries) ListDeck(ctx context.Context) ([]ListDeckRow, error) {
 			&i.Dinner.RecipeUrl,
 			&i.Dinner.GroundingError,
 			&i.Dinner.GroundingRevision,
+			&i.Dinner.MealSource,
 		); err != nil {
 			return nil, err
 		}

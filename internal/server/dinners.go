@@ -33,6 +33,7 @@ type dinnerPatch struct {
 	Method       *string `json:"method"`
 	MinutesTotal *int    `json:"minutes_total"`
 	Difficulty   *string `json:"difficulty"`
+	MealSource   *string `json:"meal_source"`
 }
 
 type dinnerList struct {

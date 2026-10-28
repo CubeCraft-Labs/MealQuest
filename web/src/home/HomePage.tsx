@@ -35,13 +35,19 @@ function meta({ origin, minutes_total }: Tonight): string {
 function TonightCard({ tonight, cached, onRecipe }: { tonight: Tonight; cached: boolean; onRecipe: () => void }) {
   return (
     <section aria-label="Tonight" className={styles.card}>
-      <Photo id={tonight.photo_id} name={tonight.name} inset="10px" sizes="400px" className={styles.photo} />
+      <Photo
+        id={tonight.meal_source === 'cook' ? tonight.photo_id : undefined}
+        name={tonight.name}
+        inset="10px"
+        sizes="400px"
+        className={styles.photo}
+      />
       <div className={styles.cardFoot}>
         <div className={styles.cardText}>
           <h2 className={styles.name}>{tonight.name}</h2>
           <span className={styles.meta}>{meta(tonight)}</span>
         </div>
-        {opensRecipe(tonight.status, cached) && (
+        {opensRecipe(tonight.status, cached, tonight.meal_source) && (
           <button type="button" className={[buttonStyles.button, buttonStyles.dark, styles.recipe].join(' ')} onClick={onRecipe}>
             Recipe
           </button>

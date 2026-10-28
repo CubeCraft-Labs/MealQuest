@@ -235,7 +235,8 @@ func (q *Queries) GetShoppingList(ctx context.Context, weekStart string) (Shoppi
 }
 
 const listShoppingGroupDinners = `-- name: ListShoppingGroupDinners :many
-SELECT shopping_groups.id, shopping_groups.list_id, shopping_groups.dinner_id, shopping_groups.date, shopping_groups.position, shopping_groups.created_at, shopping_groups.updated_at, dinners.name AS dinner_name, dinners.status AS dinner_status
+SELECT shopping_groups.id, shopping_groups.list_id, shopping_groups.dinner_id, shopping_groups.date, shopping_groups.position, shopping_groups.created_at, shopping_groups.updated_at, dinners.name AS dinner_name, dinners.status AS dinner_status,
+	dinners.meal_source AS dinner_meal_source
 FROM shopping_groups
 JOIN dinners ON dinners.id = shopping_groups.dinner_id
 WHERE shopping_groups.list_id = ?
@@ -243,9 +244,10 @@ ORDER BY shopping_groups.position, shopping_groups.id
 `
 
 type ListShoppingGroupDinnersRow struct {
-	ShoppingGroup ShoppingGroup
-	DinnerName    string
-	DinnerStatus  string
+	ShoppingGroup    ShoppingGroup
+	DinnerName       string
+	DinnerStatus     string
+	DinnerMealSource string
 }
 
 // The groups of list list_id with their dinner's name and status, in list
@@ -269,6 +271,7 @@ func (q *Queries) ListShoppingGroupDinners(ctx context.Context, listID string) (
 			&i.ShoppingGroup.UpdatedAt,
 			&i.DinnerName,
 			&i.DinnerStatus,
+			&i.DinnerMealSource,
 		); err != nil {
 			return nil, err
 		}

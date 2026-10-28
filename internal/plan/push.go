@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
@@ -204,14 +205,22 @@ func (s *Service) event(zone *time.Location, zoneName, dinnerTime string, weekSt
 		return gcal.Event{}, err
 	}
 	lines := []string{d.Name}
-	startBy, err := startBy(zone, date, dinnerTime, d)
-	if err != nil {
-		return gcal.Event{}, err
+	if !dinners.Cooked(d.MealSource) {
+		label, err := uncookedLabel(d.MealSource)
+		if err != nil {
+			return gcal.Event{}, err
+		}
+		lines = append(lines, label)
+	} else {
+		startBy, err := startBy(zone, date, dinnerTime, d)
+		if err != nil {
+			return gcal.Event{}, err
+		}
+		if startBy != nil {
+			lines = append(lines, "Start by "+startBy.In(zone).Format("3:04 pm"))
+		}
+		lines = append(lines, s.publicURL.JoinPath("dinner", d.ID).String())
 	}
-	if startBy != nil {
-		lines = append(lines, "Start by "+startBy.In(zone).Format("3:04 pm"))
-	}
-	lines = append(lines, s.publicURL.JoinPath("dinner", d.ID).String())
 	return gcal.Event{
 		ID:          EventID(weekStart, date),
 		Summary:     "Dinner: " + d.Name,

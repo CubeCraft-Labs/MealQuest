@@ -60,7 +60,7 @@ const plan = {
   calendar_synced_at: '2026-10-04T15:00:00Z',
   days: DAYS.map((date, i) => ({
     date,
-    dinner: { id: IDS[i], name: NAMES[i], status: 'regular', photo: null, minutes: 30, method: 'stovetop', origin: 'regular' },
+    dinner: { id: IDS[i], name: NAMES[i], status: 'regular', photo: null, minutes: 30, method: 'stovetop', origin: 'regular', meal_source: 'cook' },
     is_new: false,
     start_by: null,
   })),
@@ -81,8 +81,8 @@ const run = {
   needed_count: 2,
   total_count: 2,
   groups: [
-    { dinner: { id: 'd4', name: 'Pot roast', status: 'regular' }, date: '2026-10-05', day: 'Monday', items: [{ id: 'i2', name: 'Chuck roast', qty: '3 lb', needed: true }] },
-    { dinner: { id: 'd1', name: 'Beef tacos', status: 'regular' }, date: '2026-10-07', day: 'Wednesday', items: [{ id: 'i1', name: 'Ground beef', qty: '1 lb', needed: true }] },
+    { dinner: { id: 'd4', name: 'Pot roast', status: 'regular', meal_source: 'cook' }, date: '2026-10-05', day: 'Monday', items: [{ id: 'i2', name: 'Chuck roast', qty: '3 lb', needed: true }] },
+    { dinner: { id: 'd1', name: 'Beef tacos', status: 'regular', meal_source: 'cook' }, date: '2026-10-07', day: 'Wednesday', items: [{ id: 'i1', name: 'Ground beef', qty: '1 lb', needed: true }] },
   ],
 }
 const homeWith = (status: string) => ({ ...home, tonight: { ...home.tonight, status } })

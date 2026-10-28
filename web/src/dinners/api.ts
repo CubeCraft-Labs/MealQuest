@@ -16,6 +16,14 @@ export const GROUNDING_POLL_MS = 3000
 export const METHODS = ['stovetop', 'oven', 'crockpot', 'grill', 'other'] as const
 export const DIFFICULTIES = ['easy', 'medium', 'hard'] as const
 export const GROUNDING_STATUSES = ['pending', 'grounded', 'failed', 'manual'] as const
+export const MEAL_SOURCES = ['cook', 'delivery', 'dining_out'] as const
+
+// MEAL_SOURCE_LABEL is how the household reads a dinner's meal source.
+export const MEAL_SOURCE_LABEL = {
+  cook: 'Cook at home',
+  delivery: 'Delivery',
+  dining_out: 'Dining out',
+} as const satisfies Record<MealSource, string>
 
 // PLANNED_DINNER_STATUSES is every status a dinner on a plan day or a Supply
 // run can have now: archived once it was removed from Regulars after the
@@ -25,17 +33,19 @@ export const PLANNED_DINNER_STATUSES = ['suggested', 'quest_log', 'tried', 'regu
 export type Method = (typeof METHODS)[number]
 export type Difficulty = (typeof DIFFICULTIES)[number]
 export type GroundingStatus = (typeof GROUNDING_STATUSES)[number]
+export type MealSource = (typeof MEAL_SOURCES)[number]
 export type PlannedDinnerStatus = (typeof PLANNED_DINNER_STATUSES)[number]
 
 // opensRecipe says whether a dinner on a plan day, Home, a Supply run, the
 // Regulars or the Quest log offers its recipe: only when the server itself just said it is not
-// archived. A status from a read the service worker answered from its cache,
+// archived and it is cooked at home. A status from a read the service worker answered from its cache,
 // or one saved on this device (cached), may be stale — another device may
 // have archived the dinner since — so it offers no recipe, whose detail
-// could be gone; nor does a status not known (null). A read from the server
-// offers it again.
-export function opensRecipe(status: PlannedDinnerStatus | null, cached: boolean): boolean {
-  return !cached && status !== null && status !== 'archived'
+// could be gone; nor does a status not known (null), nor a meal source not
+// known. Delivery and dining out have no recipe. A read from the server
+// offers a cooked dinner again.
+export function opensRecipe(status: PlannedDinnerStatus | null, cached: boolean, mealSource: MealSource | null): boolean {
+  return !cached && status !== null && status !== 'archived' && mealSource === 'cook'
 }
 
 // Regular is the part of a dinner the Regulars screens read. photo_id is
@@ -56,6 +66,7 @@ export type Regular = {
   grounding_status: GroundingStatus
   grounding_error: string | null
   photo_backfill_eligible: boolean
+  meal_source: MealSource
   pending?: true
 }
 
@@ -65,7 +76,13 @@ export type Regular = {
 export type NewRegular = { name: string; recipe_url?: string }
 
 // RegularPatch is a PATCH /api/v1/dinners/{id} body; every field is optional.
-export type RegularPatch = Partial<{ name: string; method: Method; minutes_total: number; difficulty: Difficulty }>
+export type RegularPatch = Partial<{
+  name: string
+  method: Method
+  minutes_total: number
+  difficulty: Difficulty
+  meal_source: MealSource
+}>
 
 // ManualRecipe is a recipe the household types in; the server needs its
 // minutes and method.
@@ -169,6 +186,7 @@ export function parseDinner(where: string, body: unknown): Regular {
       return v
     }),
     photo_backfill_eligible: body.photo_backfill_eligible,
+    meal_source: oneOf(where, 'meal_source', MEAL_SOURCES, body.meal_source),
   }
 }
 
@@ -285,6 +303,7 @@ export function useAddRegular() {
         grounding_status: 'pending',
         grounding_error: null,
         photo_backfill_eligible: false,
+        meal_source: 'cook',
         pending: true,
         cached: false,
       }

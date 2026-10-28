@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 )
@@ -100,9 +101,12 @@ func freezeTitleJob(ctx context.Context, q *db.Queries, list db.ShoppingList) (T
 	if err != nil {
 		return TitleJob{}, fmt.Errorf("shopping: freeze: read plan days: %w", err)
 	}
-	names := make([]string, len(days))
-	for i, d := range days {
-		names[i] = d.Dinner.Name
+	var names []string
+	for _, d := range days {
+		if !dinners.Cooked(d.Dinner.MealSource) {
+			continue
+		}
+		names = append(names, d.Dinner.Name)
 	}
 	return TitleJob{ListID: list.ID, WeekStart: list.WeekStart, Revision: plan.Revision, Dinners: names}, nil
 }

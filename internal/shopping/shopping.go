@@ -200,6 +200,10 @@ type Group struct {
 	// DinnerStatus is the dinner's status now (dinners.Status*); a dinner
 	// removed from Regulars since the list was made is archived.
 	DinnerStatus string `json:"dinner_status"`
+	// DinnerMealSource is cook, delivery or dining_out. A group is made
+	// only for a dinner cooked at home; a list kept from before the
+	// designation still names the source.
+	DinnerMealSource string `json:"dinner_meal_source"`
 	// Date is the plan day, household-local YYYY-MM-DD.
 	Date     string `json:"date"`
 	Position int    `json:"position"`
@@ -516,7 +520,8 @@ func readList(ctx context.Context, q *db.Queries, list db.ShoppingList) (List, e
 	for _, r := range rows {
 		g := r.ShoppingGroup
 		groups = append(groups, Group{
-			ID: g.ID, DinnerID: g.DinnerID, DinnerName: r.DinnerName, DinnerStatus: r.DinnerStatus, Date: g.Date, Position: int(g.Position),
+			ID: g.ID, DinnerID: g.DinnerID, DinnerName: r.DinnerName, DinnerStatus: r.DinnerStatus,
+			DinnerMealSource: r.DinnerMealSource, Date: g.Date, Position: int(g.Position),
 			Items: byGroup[g.ID],
 		})
 	}
@@ -613,6 +618,11 @@ func wanted(ctx context.Context, q *db.Queries, planID string) ([]wantGroup, []S
 	)
 	for _, day := range days {
 		d := day.Dinner
+		// Delivery and dining out are not cooked: no group, no ingredients,
+		// and not a day skipped for a missing recipe.
+		if !dinners.Cooked(d.MealSource) {
+			continue
+		}
 		names = append(names, d.Name)
 		skip := SkippedDay{Date: day.Date, DinnerID: d.ID, DinnerName: d.Name}
 		if !d.RecipeID.Valid {
@@ -702,7 +712,7 @@ func reconcile(ctx context.Context, q *db.Queries, listID string, want []wantGro
 
 	groups := make([]Group, 0, len(want))
 	for gi, w := range want {
-		g := Group{DinnerID: w.dinnerID, DinnerName: w.dinnerName, DinnerStatus: w.dinnerStatus, Date: w.date, Position: gi}
+		g := Group{DinnerID: w.dinnerID, DinnerName: w.dinnerName, DinnerStatus: w.dinnerStatus, DinnerMealSource: dinners.MealSourceCook, Date: w.date, Position: gi}
 		if old, ok := groupsByKey[groupKey{w.date, w.dinnerID}]; ok {
 			g.ID = old.ID
 			kept[old.ID] = true

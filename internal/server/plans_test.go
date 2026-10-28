@@ -173,7 +173,7 @@ func TestGetPlan(t *testing.T) {
 		t.Errorf("Monday = %v", monday)
 	}
 	d := monday["dinner"].(map[string]any)
-	for _, key := range []string{"id", "name", "status", "photo", "minutes", "method", "origin"} {
+	for _, key := range []string{"id", "name", "status", "photo", "minutes", "method", "origin", "meal_source"} {
 		if _, ok := d[key]; !ok {
 			t.Errorf("dinner has no %s: %v", key, d)
 		}

@@ -22,9 +22,9 @@ type Item = { id: string; name: string; qty: string | null; needed: boolean }
 
 // The week of Oct 5's Supply run, as mock 1l starts it: Monday's tacos and
 // Wednesday's tikka masala, each with one item the household has.
-const GROUPS: { dinner: { id: string; name: string; status: string }; date: string; day: string; items: Item[] }[] = [
+const GROUPS: { dinner: { id: string; name: string; status: string; meal_source: string }; date: string; day: string; items: Item[] }[] = [
   {
-    dinner: { id: 'd0', name: 'Beef tacos', status: 'regular' },
+    dinner: { id: 'd0', name: 'Beef tacos', status: 'regular', meal_source: 'cook' },
     date: '2026-10-05',
     day: 'Monday',
     items: [
@@ -34,7 +34,7 @@ const GROUPS: { dinner: { id: string; name: string; status: string }; date: stri
     ],
   },
   {
-    dinner: { id: 'd2', name: 'Crock pot tikka masala', status: 'regular' },
+    dinner: { id: 'd2', name: 'Crock pot tikka masala', status: 'regular', meal_source: 'cook' },
     date: '2026-10-07',
     day: 'Wednesday',
     items: [
@@ -192,6 +192,7 @@ describe('SupplyRunPage', () => {
           difficulty: 'easy',
           cuisine: null,
           is_favorite: false,
+          meal_source: 'cook',
           photo_urls: null,
           ingredients: [
             { name: 'Chicken thighs', qty: '2', unit: 'lb', note: null, raw_text: '2 lb chicken thighs' },

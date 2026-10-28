@@ -34,9 +34,10 @@ function planDinner(dinner: DinnerDetail): PlanDinner {
     id: dinner.id,
     name: dinner.name,
     status: dinner.status,
-    photo_id: dinner.photo_id,
+    photo_id: dinner.meal_source === 'cook' ? dinner.photo_id : undefined,
     minutes: dinner.minutes_total,
     method: dinner.method,
+    meal_source: dinner.meal_source,
   }
 }
 

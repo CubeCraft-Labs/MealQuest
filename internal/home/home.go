@@ -75,6 +75,9 @@ type Dinner struct {
 	// Origin is regular or side_quest.
 	Origin       string `json:"origin"`
 	MinutesTotal *int64 `json:"minutes_total"`
+	// MealSource is cook, delivery or dining_out. A dinner that is not
+	// cooked at home has no photo and no recipe to open.
+	MealSource string `json:"meal_source"`
 }
 
 // ShoppingStatus is whether a week's Supply run is ready.
@@ -153,7 +156,7 @@ func (s *Service) tonight(ctx context.Context, thisWeek, today store.LocalDate) 
 		if d.Date == today.String() {
 			return &Dinner{
 				ID: d.Dinner.ID, Name: d.Dinner.Name, Status: d.Dinner.Status, Photo: d.Dinner.Photo,
-				Origin: d.Dinner.Origin, MinutesTotal: d.Dinner.Minutes,
+				Origin: d.Dinner.Origin, MinutesTotal: d.Dinner.Minutes, MealSource: d.Dinner.MealSource,
 			}, nil
 		}
 	}

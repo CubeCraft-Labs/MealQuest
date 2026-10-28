@@ -205,8 +205,9 @@ type Querier interface {
 	ListDeck(ctx context.Context) ([]ListDeckRow, error)
 	ListDinnersByStatus(ctx context.Context, status string) ([]Dinner, error)
 	// The dinners a draft of the week starting week_start may plan: every
-	// Regular, and every Quest log dinner no other plan for the week starting
-	// from_week_start or later has on any day.
+	// cooked Regular, and every cooked Quest log dinner no other plan for the
+	// week starting from_week_start or later has on any day. Delivery and
+	// dining out are not cooked, so a draft never selects them.
 	ListDraftPool(ctx context.Context, arg ListDraftPoolParams) ([]Dinner, error)
 	ListNotificationPrefs(ctx context.Context) ([]NotificationPref, error)
 	// Every name the household turned down, oldest decision first: the name
@@ -217,11 +218,13 @@ type Querier interface {
 	// The pending Rotation checks whose dinner is still tried, oldest plan
 	// date first, with their dinners.
 	ListPendingRotationReviews(ctx context.Context) ([]ListPendingRotationReviewsRow, error)
-	// The dinners a photo backfill grounds by name: unarchived, failed, with no
-	// photo and no pasted recipe_url (the household's own link is never
-	// replaced by a search), ordered by normalized name. A non-NULL id narrows
-	// the list to that dinner. Grounded, manual and pending dinners are never
-	// listed: they have a recipe, or a ground_dinner job grounding them.
+	// The dinners a photo backfill grounds by name: unarchived, cooked at home,
+	// failed, with no photo and no pasted recipe_url (the household's own link
+	// is never replaced by a search), ordered by normalized name. A non-NULL id
+	// narrows the list to that dinner. Grounded, manual and pending dinners are
+	// never listed: they have a recipe, or a ground_dinner job grounding them.
+	// Delivery and dining out are not cooked, so a search never looks for a
+	// photo of them.
 	ListPhotoBackfillDinners(ctx context.Context, id sql.NullString) ([]Dinner, error)
 	// The days of plan plan_id with their dinners, Monday first. A day with
 	// no dinner is left out.
@@ -257,7 +260,8 @@ type Querier interface {
 	// week first.
 	ListShoppingListsThrough(ctx context.Context, weekStart string) ([]ShoppingList, error)
 	// The ids of the dinners with status quest_log planned on date, on a plan
-	// of any status, that have no Rotation check for date yet.
+	// of any status, that have no Rotation check for date yet. Delivery and
+	// dining out are not cooked, so they are not tried and open no check.
 	ListTriedCandidates(ctx context.Context, date string) ([]string, error)
 	// Every dinner a new or renamed dinner must not repeat, with the
 	// source_url of the recipe it is grounded in (NULL while it has none).

@@ -10,12 +10,14 @@ import {
   dropRegular,
   GROUNDING_POLL_MS,
   GROUNDING_STATUSES,
+  MEAL_SOURCES,
   METHODS,
   oneOf,
   photoId,
   REGULARS_KEY,
   type Difficulty,
   type GroundingStatus,
+  type MealSource,
   type Method,
 } from './api.ts'
 import { ArchivedDinnerError, knownArchived, useArchived } from './archived.ts'
@@ -64,6 +66,7 @@ export type DinnerDetail = {
   source: RecipeSource | null
   grounding_status: GroundingStatus
   why_picked: string | null
+  meal_source: MealSource
   cached: boolean
 }
 
@@ -148,6 +151,7 @@ export function parseDinnerDetail(where: string, body: unknown, cached: boolean)
     source: parseSource(where, body.source),
     grounding_status: oneOf(where, 'grounding_status', GROUNDING_STATUSES, body.grounding_status),
     why_picked: nullableText(where, 'why_picked', body.why_picked),
+    meal_source: oneOf(where, 'meal_source', MEAL_SOURCES, body.meal_source),
     cached,
   }
 }

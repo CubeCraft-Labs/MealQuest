@@ -107,6 +107,25 @@ func DayOfReminder(date store.LocalDate, dinnerID, name string, viewable bool) n
 	return ev
 }
 
+// UncookedReminder is the day-of reminder for a Delivery or Dining Out
+// dinner planned on date: it names the dinner and offers no recipe. An
+// unknown meal source is an error.
+func UncookedReminder(date store.LocalDate, name, mealSource string) (notify.Event, error) {
+	body, err := notify.UncookedBody(mealSource)
+	if err != nil {
+		return notify.Event{}, err
+	}
+	week := household.WeekStart(date)
+	return notify.Event{
+		Type:  notify.DayOfReminder,
+		Key:   string(notify.DayOfReminder) + ":" + date.String(),
+		Title: "Tonight: " + name,
+		Body:  body,
+		URL:   notify.PlanPath(week),
+		Week:  week,
+	}, nil
+}
+
 // StartReminder is the day_of_reminder event, keyed
 // day_of_reminder:start:{date}, reminding the household to start the
 // crock-pot dinner dinnerID, named name and planned on date, by startBy,

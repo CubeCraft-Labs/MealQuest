@@ -214,6 +214,7 @@ func writePlanError(w http.ResponseWriter, r *http.Request, logger *slog.Logger,
 	var day *plan.InvalidDayError
 	var week *plan.InvalidWeekError
 	var notPlannable *plan.DinnerNotPlannableError
+	var notCooked *plan.NotCookedError
 	switch {
 	case errors.As(err, &day):
 		writeError(w, r, logger, http.StatusBadRequest, "invalid_date", day.Error())
@@ -221,6 +222,8 @@ func writePlanError(w http.ResponseWriter, r *http.Request, logger *slog.Logger,
 		writeError(w, r, logger, http.StatusBadRequest, "invalid_week", week.Error())
 	case errors.As(err, &notPlannable):
 		writeError(w, r, logger, http.StatusConflict, "dinner_not_plannable", notPlannable.Error())
+	case errors.As(err, &notCooked):
+		writeError(w, r, logger, http.StatusConflict, "not_cooked", notCooked.Error())
 	case errors.Is(err, plan.ErrDinnerAlreadyPlanned):
 		writeError(w, r, logger, http.StatusConflict, "dinner_already_planned", err.Error())
 	case errors.Is(err, plan.ErrConfirmRequired):

@@ -51,6 +51,22 @@ var (
 	Difficulties = []string{"easy", "medium", "hard"}
 )
 
+// Meal sources (the dinners.meal_source column). Cook is a dinner made at
+// home. Delivery and dining out are not cooked, so they are not planned.
+const (
+	MealSourceCook      = "cook"
+	MealSourceDelivery  = "delivery"
+	MealSourceDiningOut = "dining_out"
+)
+
+// MealSources are the values the dinners.meal_source column allows.
+var MealSources = []string{MealSourceCook, MealSourceDelivery, MealSourceDiningOut}
+
+// Cooked reports whether source is a dinner cooked at home.
+func Cooked(source string) bool {
+	return source == MealSourceCook
+}
+
 // listable are the statuses List answers for.
 var listable = []string{StatusRegular, StatusQuestLog}
 
@@ -76,9 +92,12 @@ type Dinner struct {
 	// GroundingError is why grounding failed, one of the Reason codes;
 	// null unless GroundingStatus is failed.
 	GroundingError *string `json:"grounding_error"`
-	UpdatedBy      *string `json:"updated_by"`
-	CreatedAt      string  `json:"created_at"`
-	UpdatedAt      string  `json:"updated_at"`
+	// MealSource is cook, delivery or dining_out. Delivery and dining out
+	// are not cooked at home.
+	MealSource string  `json:"meal_source"`
+	UpdatedBy  *string `json:"updated_by"`
+	CreatedAt  string  `json:"created_at"`
+	UpdatedAt  string  `json:"updated_at"`
 
 	// PhotoBackfillEligible is whether a photo backfill grounds the dinner
 	// (PhotoBackfillEligible): false for one with a pasted recipe link,
@@ -101,6 +120,8 @@ type Patch struct {
 	Method       *string
 	MinutesTotal *int
 	Difficulty   *string
+	// MealSource is cook, delivery or dining_out.
+	MealSource *string
 }
 
 // Problem is one invalid field, named by its JSON key.
@@ -485,6 +506,7 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 			PhotoID:           cur.PhotoID,
 			GroundingStatus:   cur.GroundingStatus,
 			GroundingRevision: cur.GroundingRevision,
+			MealSource:        cur.MealSource,
 			UpdatedBy:         sql.NullString{String: updatedBy, Valid: true},
 			UpdatedAt:         store.Now().String(),
 		}
@@ -511,6 +533,9 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 		}
 		if p.Difficulty != nil {
 			params.Difficulty = sql.NullString{String: *p.Difficulty, Valid: true}
+		}
+		if p.MealSource != nil {
+			params.MealSource = *p.MealSource
 		}
 		row, err = q.UpdateDinner(ctx, params)
 		if err != nil {
@@ -593,7 +618,7 @@ func (s *Service) ToggleFavorite(ctx context.Context, id, updatedBy string) (Din
 func (p Patch) validate() (string, error) {
 	var problems []Problem
 	var name string
-	if p.Name == nil && p.Method == nil && p.MinutesTotal == nil && p.Difficulty == nil {
+	if p.Name == nil && p.Method == nil && p.MinutesTotal == nil && p.Difficulty == nil && p.MealSource == nil {
 		return "", invalid("patch", "no fields to change")
 	}
 	if p.Name != nil {
@@ -612,6 +637,9 @@ func (p Patch) validate() (string, error) {
 	}
 	if p.Difficulty != nil && !slices.Contains(Difficulties, *p.Difficulty) {
 		problems = append(problems, Problem{"difficulty", "must be one of " + strings.Join(Difficulties, ", ")})
+	}
+	if p.MealSource != nil && !slices.Contains(MealSources, *p.MealSource) {
+		problems = append(problems, Problem{"meal_source", "must be one of " + strings.Join(MealSources, ", ")})
 	}
 	if problems != nil {
 		return "", &ValidationError{Problems: problems}
@@ -714,6 +742,7 @@ func fromRow(r db.Dinner) Dinner {
 		RecipeID:        nullString(r.RecipeID),
 		GroundingStatus: r.GroundingStatus,
 		GroundingError:  nullString(r.GroundingError),
+		MealSource:      r.MealSource,
 		UpdatedBy:       nullString(r.UpdatedBy),
 		CreatedAt:       r.CreatedAt,
 		UpdatedAt:       r.UpdatedAt,
@@ -723,7 +752,8 @@ func fromRow(r db.Dinner) Dinner {
 	if r.MinutesTotal.Valid {
 		d.MinutesTotal = &r.MinutesTotal.Int64
 	}
-	if r.PhotoID.Valid {
+	// A dinner that is not cooked at home contributes no photo.
+	if Cooked(r.MealSource) && r.PhotoID.Valid {
 		u := PhotoURL(r.PhotoID.String)
 		d.PhotoURL = &u
 	}

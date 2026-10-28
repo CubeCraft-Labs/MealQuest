@@ -344,6 +344,21 @@ func (s *Service) recipeNow(ctx context.Context, p Payload) (Payload, error) {
 		return Payload{}, fmt.Errorf("notify: read dinner %s of recipe url %q: %w", id, p.URL, err)
 	}
 	if err == nil && d.Status != dinners.StatusArchived {
+		if !dinners.Cooked(d.MealSource) {
+			week, err := store.ParseLocalDate(p.Week)
+			if err != nil {
+				return Payload{}, fmt.Errorf("%w: recipe url %q of a dinner that is not cooked has no week: %v", ErrUndeliverable, p.URL, err)
+			}
+			body, err := UncookedBody(d.MealSource)
+			if err != nil {
+				return Payload{}, fmt.Errorf("%w: %v", ErrUndeliverable, err)
+			}
+			p.Dinner = nil
+			p.URL = PlanPath(week)
+			p.Title = strings.TrimSuffix(p.Title, RecipeCallToAction)
+			p.Body = body
+			return p, nil
+		}
 		if p.Dinner == nil {
 			p.Dinner = &Dinner{ID: d.ID, Name: d.Name}
 		}

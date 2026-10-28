@@ -89,17 +89,19 @@ WHERE id = ?;
 
 -- name: ListDraftPool :many
 -- The dinners a draft of the week starting week_start may plan: every
--- Regular, and every Quest log dinner no other plan for the week starting
--- from_week_start or later has on any day.
+-- cooked Regular, and every cooked Quest log dinner no other plan for the
+-- week starting from_week_start or later has on any day. Delivery and
+-- dining out are not cooked, so a draft never selects them.
 SELECT * FROM dinners
-WHERE status = 'regular'
+WHERE meal_source = 'cook'
+	AND (status = 'regular'
 	OR (status = 'quest_log' AND NOT EXISTS (
 		SELECT 1 FROM plan_days
 		JOIN week_plans ON week_plans.id = plan_days.plan_id
 		WHERE plan_days.dinner_id = dinners.id
 			AND week_plans.week_start >= sqlc.arg(from_week_start)
 			AND week_plans.week_start <> sqlc.arg(week_start)
-	))
+	)))
 ORDER BY normalized_name, id;
 
 -- name: ListWeekPlanDinnerIDs :many

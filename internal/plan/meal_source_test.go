@@ -206,11 +206,14 @@ func TestDeliveryDinnerOpensNoRotationCheck(t *testing.T) {
 		t.Fatalf("reminders = %+v, want one", rows)
 	}
 	p := rows[0].Payload
-	if strings.Contains(p.URL, "/dinner/") || strings.Contains(p.Title, "Recipe") || strings.Contains(p.Body, "removed") {
+	if strings.Contains(p.URL, "/dinner/") || strings.Contains(p.Title, "Recipe") || strings.Contains(p.Body, "removed") || p.Dinner != nil {
 		t.Errorf("reminder = %+v, want no recipe and not the removed-dinner text", p)
 	}
 	if p.Body != "This dinner is dining out, so it has no recipe." {
 		t.Errorf("body = %q", p.Body)
+	}
+	if p.PlannedDinnerID != e.ids["Pad Thai"] {
+		t.Errorf("planned dinner = %q, want Pad Thai's id", p.PlannedDinnerID)
 	}
 	e.setMealSource(t, "Beef Chili", "delivery")
 	if ok, err := e.svc.EmitStartReminder(t.Context(), mustDate("2026-10-12")); ok || err != nil {

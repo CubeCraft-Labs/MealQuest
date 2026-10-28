@@ -169,7 +169,7 @@ func TestManualNightReminderOffersNoRecipe(t *testing.T) {
 	}
 	r := rows[0]
 	if r.Payload.Title != "Tonight: mummy dogs" || r.Payload.Body != "" || r.Payload.URL != "/plan?week=2026-10-12" ||
-		r.Payload.Dinner != nil || strings.Contains(r.Payload.Title, "Recipe") {
+		r.Payload.Dinner != nil || r.Payload.PlannedDinnerID != "" || strings.Contains(r.Payload.Title, "Recipe") {
 		t.Fatalf("reminder = %+v, want the label with no recipe and no dinner", r.Payload)
 	}
 	if _, err := e.svc.ClearDay(t.Context(), week, saturday); err != nil {

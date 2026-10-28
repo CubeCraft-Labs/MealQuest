@@ -346,9 +346,10 @@ func (s *Service) prepareDelivery(ctx context.Context, eventKey string, p Payloa
 
 // dinnerStillPlanned reports whether a dinner reminder's dinner is still
 // planned for the date in eventKey. A payload that is not a dinner reminder,
-// or that names no dinner, is left to be delivered: there is no dinner to
-// check. The date is day_of_reminder:YYYY-MM-DD or
-// day_of_reminder:start:YYYY-MM-DD.
+// or that names no dinner, is left to be delivered: a manual night has no
+// dinner, and a reminder stored before payloads carried the planned dinner
+// id and that offers no recipe cannot be checked. The date is
+// day_of_reminder:YYYY-MM-DD or day_of_reminder:start:YYYY-MM-DD.
 func (s *Service) dinnerStillPlanned(ctx context.Context, eventKey string, p Payload) (bool, error) {
 	date, ok := reminderDate(eventKey)
 	if !ok {
@@ -383,9 +384,15 @@ func reminderDate(eventKey string) (string, bool) {
 	return rest, true
 }
 
-// reminderDinnerID is the dinner a reminder names, from its dinner or from
-// a recipe path. A reminder that names none returns "".
+// reminderDinnerID is the dinner a reminder is about. A day-of or start
+// reminder carries it in PlannedDinnerID whether or not it offers a recipe.
+// A reminder stored before payloads carried that id is known by the dinner
+// whose recipe it offers, from Dinner or from the recipe path. A reminder
+// that names none — a manual night — returns "".
 func reminderDinnerID(p Payload) string {
+	if p.PlannedDinnerID != "" {
+		return p.PlannedDinnerID
+	}
 	if p.Dinner != nil && p.Dinner.ID != "" {
 		return p.Dinner.ID
 	}

@@ -190,7 +190,12 @@
   padding: 8px;
 }
 
+/* The 28 px photo makes a 38 px chip; the chip is a button, so it keeps the
+   44 px tap minimum. */
 .chip.draggable {
+  box-sizing: border-box;
+  min-width: 44px;
+  min-height: 44px;
   padding: 3px 12px 3px 3px;
 }
 

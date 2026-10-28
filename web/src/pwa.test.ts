@@ -1,7 +1,8 @@
 // @vitest-environment node
 // Builds the app with the production config and serves the result, so the
 // assertions cover what ships in dist: the web manifest, the service worker,
-// every icon, and the service worker registration that only builds include.
+// every icon and favicon, and the service worker registration that only builds
+// include.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { build, createServer, preview, type PreviewServer, type ViteDevServer } from 'vite'
 import tokens from './styles/tokens.css?raw'
@@ -12,8 +13,12 @@ const icons = [
   { path: '/icons/icon-192.png', size: 192 },
   { path: '/icons/icon-512.png', size: 512 },
   { path: '/icons/icon-maskable-512.png', size: 512 },
+  { path: '/icons/favicon-16.png', size: 16 },
+  { path: '/icons/favicon-32.png', size: 32 },
   { path: '/apple-touch-icon.png', size: 180 },
 ]
+
+const faviconSizes = [16, 32, 48]
 
 function token(name: string): string {
   const value = tokens.match(new RegExp(`^\\s*${name}:\\s*([^;\\s]+);`, 'm'))?.[1]
@@ -36,6 +41,18 @@ function pngSize(bytes: Uint8Array): { width: number; height: number } {
   expect(Array.from(bytes.subarray(0, 8))).toEqual(signature)
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   return { width: view.getUint32(16), height: view.getUint32(20) }
+}
+
+// The images in an ICO file: a 6-byte header (reserved, type 1, count), then
+// a 16-byte directory entry per image giving its byte length and offset.
+function icoImages(bytes: Uint8Array): Uint8Array[] {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  expect([view.getUint16(0, true), view.getUint16(2, true)]).toEqual([0, 1])
+  return Array.from({ length: view.getUint16(4, true) }, (_, i) => {
+    const entry = 6 + 16 * i
+    const offset = view.getUint32(entry + 12, true)
+    return bytes.subarray(offset, offset + view.getUint32(entry + 8, true))
+  })
 }
 
 describe('production build', () => {
@@ -94,13 +111,25 @@ describe('production build', () => {
     expect(pngSize(bytes)).toEqual({ width: size, height: size })
   })
 
+  it('ships /favicon.ico holding the logo as PNGs at every favicon size', async () => {
+    const bytes = new Uint8Array(await (await get('/favicon.ico')).arrayBuffer())
+    expect(icoImages(bytes).map((png) => pngSize(png))).toEqual(
+      faviconSizes.map((size) => ({ width: size, height: size })),
+    )
+  })
+
   it('emits sw.js with the precache list injected', async () => {
     const sw = await (await get('/sw.js')).text()
     expect(sw).not.toContain('self.__WB_MANIFEST')
     expect(sw).toContain('"url":"index.html"')
-    for (const { path } of icons.slice(0, 3)) {
-      expect(sw).toContain(`"url":"${path.slice(1)}"`)
+  })
+
+  it('precaches every icon and favicon so the offline shell keeps them', async () => {
+    const urls = precacheEntries(await (await get('/sw.js')).text()).map((entry) => entry.url)
+    for (const path of [...icons.map((icon) => icon.path), '/favicon.ico']) {
+      expect(urls).toContain(path.slice(1))
     }
+    expect(new Set(urls).size, 'precache URLs are unique').toBe(urls.length)
   })
 
   it('precaches the shell, JS, CSS and every self-hosted font', async () => {
@@ -127,6 +156,17 @@ describe('production build', () => {
     expect(html.match(/<link rel="manifest" href="\/manifest\.webmanifest">/g)).toHaveLength(1)
     expect(html).toContain(`<meta name="theme-color" content="${token('--color-accent')}" />`)
     expect(html).toContain('<link rel="apple-touch-icon" href="/apple-touch-icon.png" />')
+  })
+
+  it('links the favicons from index.html', async () => {
+    const html = await (await get('/')).text()
+    expect(html).toContain('<link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48" />')
+    expect(html).toContain(
+      '<link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />',
+    )
+    expect(html).toContain(
+      '<link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png" />',
+    )
   })
 
   it('registers /sw.js at scope / from index.html', async () => {

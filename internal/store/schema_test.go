@@ -408,6 +408,8 @@ func TestSchemaUniqueConstraintsRejectDuplicates(t *testing.T) {
 		{"notification_outbox", []string{"event_key", "channel"}},
 		{"schedule_runs", []string{"schedule", "period_key"}},
 		{"notification_prefs", []string{"event"}},
+		{"recipe_ingredients", []string{"recipe_id", "position"}},
+		{"recipe_steps", []string{"recipe_id", "position"}},
 	}
 	s := seededStore(t)
 	for _, c := range cases {
@@ -445,6 +447,8 @@ func TestSchemaCompositeUniqueAllowsPartialOverlap(t *testing.T) {
 		{"same plan_date, different dinner", "rotation_reviews", "plan_date", "dinners", map[string]any{"dinner_id": rowID("dinners", 1)}},
 		{"same event_key, different channel", "notification_outbox", "event_key", "", map[string]any{"channel": "chat"}},
 		{"same period_key, different schedule", "schedule_runs", "period_key", "", map[string]any{"schedule": "week_rollover"}},
+		{"same position, different recipe", "recipe_ingredients", "position", "recipes", map[string]any{"recipe_id": rowID("recipes", 1)}},
+		{"same position, different recipe", "recipe_steps", "position", "recipes", map[string]any{"recipe_id": rowID("recipes", 1)}},
 	}
 	s := seededStore(t)
 	for _, c := range cases {

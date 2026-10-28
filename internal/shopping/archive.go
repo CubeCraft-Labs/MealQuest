@@ -22,7 +22,9 @@ const (
 
 // Freeze moves the Supply run of the week starting weekStart into the
 // Supply archive: its status becomes archived and frozen_at is set, after
-// which it is read-only (Generate and SetNeeded are ErrFrozen). Freezing a
+// which it is read-only (Generate and SetNeeded are ErrFrozen). The list
+// keeps the names its dinners have as it is frozen, so its post in the
+// Supply archive shows them whatever a dinner is renamed later. Freezing a
 // frozen list does nothing and is no error.
 //
 // The week must have ended in the household's time zone: a week not yet
@@ -79,14 +81,25 @@ func (s *Service) freeze(ctx context.Context, weekStart store.LocalDate, now tim
 				"week", list.WeekStart, "list", list.ID, "error", err)
 		}
 	}
-	// A list frozen meanwhile is left as it is: the freeze is done.
+	// A list frozen meanwhile is left as it is, its names as they were
+	// frozen: the freeze is done.
 	stamp := store.Now().String()
-	if _, err := q.FreezeShoppingList(ctx, db.FreezeShoppingListParams{
-		FrozenAt: sql.NullString{String: stamp, Valid: true}, UpdatedAt: stamp, ID: list.ID,
-	}); err != nil {
-		return fmt.Errorf("shopping: freeze %s: %w", weekStart, err)
-	}
-	return nil
+	return s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		q := db.New(tx)
+		n, err := q.FreezeShoppingList(ctx, db.FreezeShoppingListParams{
+			FrozenAt: sql.NullString{String: stamp, Valid: true}, UpdatedAt: stamp, ID: list.ID,
+		})
+		if err != nil {
+			return fmt.Errorf("shopping: freeze %s: %w", weekStart, err)
+		}
+		if n == 0 {
+			return nil
+		}
+		if err := q.FreezeShoppingGroupNames(ctx, list.ID); err != nil {
+			return fmt.Errorf("shopping: freeze %s: keep dinner names: %w", weekStart, err)
+		}
+		return nil
+	})
 }
 
 // freezeTitleJob is the title job of list as Generate would enqueue it:
@@ -145,13 +158,19 @@ type Post struct {
 	Label string
 	// Title is nil while the list is untitled, when Label stands in.
 	Title *string
-	// Dinners are the names of the list's dinners, in day order.
+	// Dinners are the names of the list's dinners, in day order: as they
+	// were when the list was frozen, or as they are now while it is not.
 	Dinners []string
 	// Items is how many items the list has, and OnHand how many of them
 	// the household marked "have it".
 	Items, OnHand int
 	// Current is true for the household's current week.
 	Current bool
+	// Frozen is true once the list is frozen into the Supply archive and
+	// can no longer change. A list not yet frozen — the current week's, or
+	// a past week's that week_rollover has not frozen — can still be
+	// changed from the Supply run.
+	Frozen bool
 }
 
 // Archive returns the Supply archive: the Supply run of every week up to
@@ -208,7 +227,7 @@ func (s *Service) Archive(ctx context.Context, by string) (out []Period, err err
 		if err != nil {
 			return nil, err
 		}
-		p, err := postOf(monday, l, monday == thisWeek)
+		p, err := postOf(monday, l, monday == thisWeek, frozen(row))
 		if err != nil {
 			return nil, err
 		}
@@ -223,7 +242,7 @@ func (s *Service) Archive(ctx context.Context, by string) (out []Period, err err
 
 // postOf is l, the Supply run of the week starting monday, as a post in
 // the Supply archive.
-func postOf(monday store.LocalDate, l List, current bool) (Post, error) {
+func postOf(monday store.LocalDate, l List, current, isFrozen bool) (Post, error) {
 	label, err := household.WeekLabel(monday)
 	if err != nil {
 		return Post{}, fmt.Errorf("shopping: Supply run %s: %w", l.ID, err)
@@ -241,5 +260,6 @@ func postOf(monday store.LocalDate, l List, current bool) (Post, error) {
 		Items:     c.Total,
 		OnHand:    c.Total - c.Needed,
 		Current:   current,
+		Frozen:    isFrozen,
 	}, nil
 }

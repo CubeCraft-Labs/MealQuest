@@ -260,18 +260,26 @@ export function useSupplyRun(weekStart: string) {
 // /api/v1/shopping/{weekStart}/generate); the Supply run it answers with is
 // the one shown. Once made, from whichever screen, a push of the week whose
 // Supply run was not made is settled (settleUnmadePushes).
+//
+// A read of the week's Supply run still in flight as the answer arrives may
+// have been sent before the Supply run was made: it is cancelled before the
+// answer is written, so it cannot land over it, and the week is then read
+// again from the server.
 export function useGenerateSupplyRun(weekStart: string) {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
+  const key = supplyRunKey(weekStart)
   return useMutation({
     onMutate: () => settleUnmadePushes(queryClient, weekStart),
     mutationFn: async (): Promise<SupplyRun> => {
       const path = `${supplyRunPath(weekStart)}/generate`
       return parseSupplyRun(`POST ${path}`, weekStart, await apiFetch<unknown>(path, { method: 'POST' }), false)
     },
-    onSuccess: (run, _, settle) => {
-      queryClient.setQueryData<SupplyRun | null>(supplyRunKey(weekStart), run)
+    onSuccess: async (run, _, settle) => {
+      await queryClient.cancelQueries({ queryKey: key })
+      queryClient.setQueryData<SupplyRun | null>(key, run)
       settle()
+      void queryClient.invalidateQueries({ queryKey: key })
     },
   })
 }
@@ -630,7 +638,9 @@ export type ArchivePeriod = (typeof ARCHIVE_PERIODS)[number]
 // ArchivePost is one week's Supply run in the Supply archive: label is the
 // week label, "Week 41 · Oct 5 – 11", which stands in for title while it is
 // null; onHandCount counts the items marked "have it", and dinners names the
-// dinners in day order. current is true for the household's current week.
+// dinners in day order. current is true for the household's current week,
+// and frozen once the list is frozen into the Supply archive: until then it
+// can still be changed from the Supply run.
 export type ArchivePost = {
   weekStart: string
   label: string
@@ -640,6 +650,7 @@ export type ArchivePost = {
   onHandCount: number
   dinners: string[]
   current: boolean
+  frozen: boolean
 }
 
 // ArchiveGroup is one period of the Supply archive — a week, a month
@@ -654,7 +665,8 @@ function parsePost(where: string, body: unknown): ArchivePost {
     (body.title !== null && typeof body.title !== 'string') ||
     !Array.isArray(body.dinners) ||
     !body.dinners.every((name) => typeof name === 'string') ||
-    typeof body.current !== 'boolean'
+    typeof body.current !== 'boolean' ||
+    typeof body.frozen !== 'boolean'
   ) {
     throw new Error(`${where}: response has a post that is not a Supply archive post`)
   }
@@ -667,6 +679,7 @@ function parsePost(where: string, body: unknown): ArchivePost {
     onHandCount: count(where, 'onHandCount', body.onHandCount),
     dinners: body.dinners as string[],
     current: body.current,
+    frozen: body.frozen,
   }
 }
 

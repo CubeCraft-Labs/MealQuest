@@ -72,11 +72,11 @@ func getDinners(logger *slog.Logger, svc *dinners.Service) http.HandlerFunc {
 
 // getDinner answers GET /dinners/{id} with the dinner, its recipe and the
 // reason it was suggested. An archived dinner is 404, like an unknown one,
-// not a 200 with its status: it has no detail to show. source never has the
-// recipe page's link, and source.site_name is null unless the page itself
-// named its site — a name that could be a host, the link's or a redirect's,
-// is withheld (dinners.Source) — so the detail screen shows "Recipe from
-// {site}" only when site_name is not null.
+// not a 200 with its status: it has no detail to show. source is as
+// dinners.SourceOf gives it: the recipe page's link only when it is free of
+// secrets, and site_name the name the page gave its site, else the shown
+// link's host, else null — so the detail screen shows "Recipe from {site}"
+// only when site_name is not null.
 func getDinner(logger *slog.Logger, svc *dinners.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		d, err := svc.Get(r.Context(), chi.URLParam(r, "id"))
@@ -148,7 +148,8 @@ func patchDinner(logger *slog.Logger, svc *dinners.Service) http.HandlerFunc {
 }
 
 // getDinnerCandidates answers GET /dinners/{id}/recipe-candidates with up
-// to dinners.MaxCandidates recipe pages for the dinner's name.
+// to dinners.MaxCandidates recipe pages for the dinner's name, each
+// site_name as dinners.SourceOf gives it.
 func getDinnerCandidates(logger *slog.Logger, svc *dinners.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		list, err := svc.Candidates(r.Context(), chi.URLParam(r, "id"))

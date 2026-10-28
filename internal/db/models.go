@@ -255,13 +255,14 @@ type Session struct {
 }
 
 type ShoppingGroup struct {
-	ID        string
-	ListID    string
-	DinnerID  string
-	Date      string
-	Position  int64
-	CreatedAt string
-	UpdatedAt string
+	ID               string
+	ListID           string
+	DinnerID         string
+	Date             string
+	Position         int64
+	CreatedAt        string
+	UpdatedAt        string
+	FrozenDinnerName sql.NullString
 }
 
 type ShoppingItem struct {

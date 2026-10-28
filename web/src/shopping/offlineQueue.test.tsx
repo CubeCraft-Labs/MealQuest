@@ -1,5 +1,5 @@
-import { QueryClientProvider } from '@tanstack/react-query'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { defaultScheduler, notifyManager, QueryClientProvider } from '@tanstack/react-query'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock, type MockInstance } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
@@ -213,8 +213,46 @@ function reload(page: { unmount: () => void }) {
   vi.setSystemTime(now)
 }
 
-async function advance(ms: number) {
-  await act(() => vi.advanceTimersByTimeAsync(ms))
+// advance jumps the clock past a deadline or a wait, firing the timers due
+// by then; what they set off runs as later turns (until, settle) let it.
+function advance(ms: number) {
+  act(() => vi.advanceTimersByTime(ms))
+}
+
+// The host's setImmediate, which these tests do not fake: it runs its
+// callback on the next turn of the event loop, once every promise already
+// resolved has run, whatever the clock says.
+const nextTurn = (globalThis as unknown as { setImmediate: (callback: () => void) => void }).setImmediate
+
+// turn lets the page take one turn of the event loop, inside act: the
+// promises it has resolved run, and React renders and runs the effects they
+// cause. No time passes, real or fake.
+async function turn() {
+  await act(() => new Promise<void>((resolve) => nextTurn(resolve)))
+}
+
+// TURNS bounds how many turns until waits and settle takes: far more than
+// any change here needs to reach the page.
+const TURNS = 50
+
+// until lets the page take turns until check passes, and returns what check
+// returns; it fails with check's error if check still fails after TURNS.
+async function until<T>(check: () => T): Promise<T> {
+  for (let turns = 0; ; turns++) {
+    try {
+      return check()
+    } catch (error) {
+      if (turns === TURNS) throw error
+    }
+    await turn()
+  }
+}
+
+// settle lets the page take TURNS turns, the clock standing still: whatever
+// it would do without a deadline or a wait passing, such as send a PATCH too
+// soon, it has done.
+async function settle() {
+  for (let turns = 0; turns < TURNS; turns++) await turn()
 }
 
 // The page's setTimeout, watched: retrySecondTry waits for a timer to be set.
@@ -224,8 +262,8 @@ let timers: MockInstance<typeof setTimeout>
 // doubled by its failed first try — once that wait's timer is set, so the jump
 // never lands before the timer it is meant to fire.
 async function retrySecondTry() {
-  await waitFor(() => expect(timers).toHaveBeenCalledWith(expect.any(Function), 2 * RETRY_FIRST))
-  await advance(2 * RETRY_FIRST)
+  await until(() => expect(timers).toHaveBeenCalledWith(expect.any(Function), 2 * RETRY_FIRST))
+  advance(2 * RETRY_FIRST)
 }
 
 function checkbox(name: string) {
@@ -242,16 +280,21 @@ beforeEach(() => {
   onLine = true
   reachable = true
   mockViewport(390)
-  // setTimeout moves with real time, and a test can jump past a deadline or
-  // a wait (advance).
-  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'], shouldAdvanceTime: true })
+  // The clock and setTimeout move only when a test jumps past a deadline or
+  // a wait (advance), never with real time: under load, real time would fire
+  // a deadline or a wait the test never reached. React Query sends its
+  // batched notices a turn later, as it does in the app on a setTimeout of 0,
+  // so the page renders its changes without the clock moving.
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
   vi.setSystemTime(new Date('2026-10-07T16:00:00Z'))
+  notifyManager.setScheduler(nextTurn)
   timers = vi.spyOn(globalThis, 'setTimeout')
 })
 
 afterEach(() => {
   vi.restoreAllMocks()
   vi.useRealTimers()
+  notifyManager.setScheduler(defaultScheduler)
   vi.unstubAllGlobals()
   Reflect.deleteProperty(window, 'matchMedia')
 })
@@ -260,7 +303,7 @@ describe('offline toggle queue', () => {
   it('applies toggles made offline at once, saves them in order and sends them in that order once online', async () => {
     const { fetchMock } = stubServer()
     await openPage()
-    expect(await screen.findByText('2 / 3')).toBeInTheDocument()
+    expect(await until(() => screen.getByText('2 / 3'))).toBeInTheDocument()
 
     goOffline()
     fireEvent.click(checkbox('Taco seasoning'))
@@ -278,7 +321,7 @@ describe('offline toggle queue', () => {
     expect(patches(fetchMock)).toEqual([])
 
     goOnline()
-    await waitFor(() => expect(queue()).toEqual([]))
+    await until(() => expect(queue()).toEqual([]))
     expect(patches(fetchMock)).toEqual([
       `${ITEM('i3')} {"needed":true}`,
       `${ITEM('i1')} {"needed":false}`,
@@ -294,14 +337,14 @@ describe('offline toggle queue', () => {
   it('queues a toggle whose PATCH fails with a network error and sends it again once back online', async () => {
     const { fetchMock } = stubServer()
     await openPage()
-    fireEvent.click(await screen.findByRole('checkbox', { name: 'Taco seasoning' }))
-    await waitFor(() => expect(queue()).toEqual([]))
+    fireEvent.click(await until(() => screen.getByRole('checkbox', { name: 'Taco seasoning' })))
+    await until(() => expect(queue()).toEqual([]))
     expect(screen.getByText('3 / 3')).toBeInTheDocument()
 
     // The browser still says online, but the server cannot be reached.
     reachable = false
     fireEvent.click(checkbox('Corn tortillas'))
-    expect(await within(row('Corn tortillas')).findByText('will sync')).toBeInTheDocument()
+    expect(await until(() => within(row('Corn tortillas')).getByText('will sync'))).toBeInTheDocument()
     expect(patches(fetchMock)).toEqual([`${ITEM('i3')} {"needed":true}`, `${ITEM('i2')} {"needed":false}`])
     expect(checkbox('Corn tortillas')).not.toBeChecked()
     expect(screen.getByText('2 / 3')).toBeInTheDocument()
@@ -309,7 +352,7 @@ describe('offline toggle queue', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
 
     goOnline()
-    await waitFor(() => expect(queue()).toEqual([]))
+    await until(() => expect(queue()).toEqual([]))
     expect(patches(fetchMock)).toEqual([`${ITEM('i3')} {"needed":true}`, `${ITEM('i2')} {"needed":false}`, `${ITEM('i2')} {"needed":false}`])
     expect(screen.getByText('2 / 3')).toBeInTheDocument()
     expect(screen.queryByText('will sync')).not.toBeInTheDocument()
@@ -318,7 +361,7 @@ describe('offline toggle queue', () => {
   it('opens the saved list after a reload offline and replays the saved toggles in order once online', async () => {
     const { fetchMock } = stubServer()
     const first = await openPage()
-    expect(await screen.findByText('2 / 3')).toBeInTheDocument()
+    expect(await until(() => screen.getByText('2 / 3'))).toBeInTheDocument()
     goOffline()
     fireEvent.click(checkbox('Taco seasoning'))
     fireEvent.click(checkbox('Ground beef'))
@@ -327,7 +370,7 @@ describe('offline toggle queue', () => {
     // Reload while offline: the settings, /me and the list cannot be read.
     reload(first)
     await openPage()
-    expect(await screen.findByText('2 / 3')).toBeInTheDocument()
+    expect(await until(() => screen.getByText('2 / 3'))).toBeInTheDocument()
     expect(checkbox('Taco seasoning')).toBeChecked()
     expect(checkbox('Ground beef')).not.toBeChecked()
     expect(within(row('Taco seasoning')).getByText('will sync')).toBeInTheDocument()
@@ -335,9 +378,9 @@ describe('offline toggle queue', () => {
     expect(patches(fetchMock)).toEqual([])
 
     goOnline()
-    await waitFor(() => expect(queue()).toEqual([]))
+    await until(() => expect(queue()).toEqual([]))
     expect(patches(fetchMock)).toEqual([`${ITEM('i3')} {"needed":true}`, `${ITEM('i1')} {"needed":false}`])
-    await waitFor(() => expect(screen.queryByText('will sync')).not.toBeInTheDocument())
+    await until(() => expect(screen.queryByText('will sync')).not.toBeInTheDocument())
     expect(screen.getByText('2 / 3')).toBeInTheDocument()
     expect(checkbox('Taco seasoning')).toBeChecked()
     expect(checkbox('Ground beef')).not.toBeChecked()
@@ -346,7 +389,7 @@ describe('offline toggle queue', () => {
   it('discards a queued toggle the server refuses because the list was archived, puts the count back and says so', async () => {
     const server = stubServer(() => errorResponse(409, 'archived'))
     await openPage()
-    expect(await screen.findByText('2 / 3')).toBeInTheDocument()
+    expect(await until(() => screen.getByText('2 / 3'))).toBeInTheDocument()
 
     goOffline()
     fireEvent.click(checkbox('Taco seasoning'))
@@ -354,25 +397,25 @@ describe('offline toggle queue', () => {
 
     server.archive()
     goOnline()
-    const alert = await screen.findByRole('alert')
+    const alert = await until(() => screen.getByRole('alert'))
     expect(alert).toHaveTextContent("Couldn't mark Taco seasoning to buy. archived message")
-    expect(await screen.findByText('Archived')).toBeInTheDocument()
+    expect(await until(() => screen.getByText('Archived'))).toBeInTheDocument()
     expect(screen.getByText('2 / 3')).toBeInTheDocument()
     expect(within(row('Taco seasoning')).getByText('have it')).toBeInTheDocument()
     expect(screen.queryByText('will sync')).not.toBeInTheDocument()
     expect(queue()).toEqual([])
     // Sent once, never again.
     goOnline()
-    await waitFor(() => expect(patches(server.fetchMock)).toEqual([`${ITEM('i3')} {"needed":true}`]))
+    await until(() => expect(patches(server.fetchMock)).toEqual([`${ITEM('i3')} {"needed":true}`]))
   })
 
   it('does not queue a toggle the server refuses: it is put back and says why', async () => {
     const server = stubServer(() => errorResponse(400, 'invalid'))
     await openPage()
-    expect(await screen.findByText('2 / 3')).toBeInTheDocument()
+    expect(await until(() => screen.getByText('2 / 3'))).toBeInTheDocument()
 
     fireEvent.click(checkbox('Ground beef'))
-    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't mark Ground beef “have it”. invalid message")
+    expect(await until(() => screen.getByRole('alert'))).toHaveTextContent("Couldn't mark Ground beef “have it”. invalid message")
     expect(checkbox('Ground beef')).toBeChecked()
     expect(screen.getByText('2 / 3')).toBeInTheDocument()
     expect(screen.queryByText('will sync')).not.toBeInTheDocument()
@@ -380,7 +423,7 @@ describe('offline toggle queue', () => {
 
     goOffline()
     goOnline()
-    await waitFor(() => expect(patches(server.fetchMock)).toEqual([`${ITEM('i1')} {"needed":false}`]))
+    await until(() => expect(patches(server.fetchMock)).toEqual([`${ITEM('i1')} {"needed":false}`]))
   })
 })
 
@@ -408,7 +451,7 @@ describe('Supply run saved by an earlier build', () => {
     onLine = false
     const first = await openPage()
 
-    const tacos = await screen.findByRole('region', { name: 'Beef tacos' })
+    const tacos = await until(() => screen.getByRole('region', { name: 'Beef tacos' }))
     expect(screen.getByText('2 / 3')).toBeInTheDocument()
     expect(within(tacos).getByRole('heading', { level: 2, name: 'Beef tacos' })).toBeInTheDocument()
     expect(within(tacos).queryByRole('button', { name: 'Beef tacos' })).not.toBeInTheDocument()
@@ -418,27 +461,27 @@ describe('Supply run saved by an earlier build', () => {
     fireEvent.click(checkbox('Taco seasoning'))
     expect(checkbox('Taco seasoning')).toBeChecked()
     expect(screen.getByText('3 / 3')).toBeInTheDocument()
-    expect(await within(row('Taco seasoning')).findByText('will sync')).toBeInTheDocument()
+    expect(await until(() => within(row('Taco seasoning')).getByText('will sync'))).toBeInTheDocument()
     expect(queue()).toEqual(['i3 true'])
     expect(screen.queryByText(/can't be kept on this device/)).not.toBeInTheDocument()
 
     // Online, the toggle is sent and its answer saved; the status is still
     // not known, so the name stays plain text.
     goOnline()
-    await waitFor(() => expect(queue()).toEqual([]))
+    await until(() => expect(queue()).toEqual([]))
     expect(patches(fetchMock)).toEqual([`${ITEM('i3')} {"needed":true}`])
-    await waitFor(() => expect(screen.queryByText('will sync')).not.toBeInTheDocument())
+    await until(() => expect(screen.queryByText('will sync')).not.toBeInTheDocument())
     expect(savedDinnerStatuses()).toEqual([null])
 
     // Opened again online, the Supply run read gives the dinner's status: its
     // name opens its recipe, and the saved run has the status too.
     reload(first)
     await openPage()
-    expect(await screen.findByRole('button', { name: 'Beef tacos' })).toBeInTheDocument()
+    expect(await until(() => screen.getByRole('button', { name: 'Beef tacos' }))).toBeInTheDocument()
     expect(checkbox('Taco seasoning')).toBeChecked()
     expect(screen.getByText('3 / 3')).toBeInTheDocument()
     expect(screen.queryByText(/can't be kept on this device/)).not.toBeInTheDocument()
-    await waitFor(() => expect(savedDinnerStatuses()).toEqual(['regular']))
+    await until(() => expect(savedDinnerStatuses()).toEqual(['regular']))
   })
 
   it('opens it online as the Supply run read, with the dinner name its recipe link and no saved-data warning', async () => {
@@ -446,11 +489,11 @@ describe('Supply run saved by an earlier build', () => {
     saveLegacyRun(run)
     await openPage()
 
-    expect(await screen.findByRole('button', { name: 'Beef tacos' })).toBeInTheDocument()
+    expect(await until(() => screen.getByRole('button', { name: 'Beef tacos' }))).toBeInTheDocument()
     expect(screen.getByText('2 / 3')).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(screen.queryByText(/can't be kept on this device/)).not.toBeInTheDocument()
-    await waitFor(() => expect(savedDinnerStatuses()).toEqual(['regular']))
+    await until(() => expect(savedDinnerStatuses()).toEqual(['regular']))
   })
 })
 
@@ -467,16 +510,16 @@ describe('offline toggle queue, replay', () => {
     localStorage.setItem(SAVED_KEY, JSON.stringify({ schedule: null, runs, queue: queued }))
 
     await openPage()
-    await waitFor(() => expect(answers.waiting()).toBe(1))
-    fireEvent.click(await screen.findByRole('checkbox', { name: 'Corn tortillas' }))
+    await until(() => expect(answers.waiting()).toBe(1))
+    fireEvent.click(await until(() => screen.getByRole('checkbox', { name: 'Corn tortillas' })))
     for (let sent = 1; sent <= 4; sent++) {
-      await waitFor(() => expect(patches(server.fetchMock)).toHaveLength(sent))
+      await until(() => expect(patches(server.fetchMock)).toHaveLength(sent))
       // The next one is not sent before this one is answered.
-      await new Promise((resolve) => setTimeout(resolve, 20))
+      await settle()
       expect(patches(server.fetchMock)).toHaveLength(sent)
       act(() => answers.release())
     }
-    await waitFor(() => expect(queue()).toEqual([]))
+    await until(() => expect(queue()).toEqual([]))
     expect(patches(server.fetchMock)).toEqual([
       `${ITEM('i3')} {"needed":true}`,
       `${ITEM('n1')} {"needed":false}`,
@@ -484,27 +527,27 @@ describe('offline toggle queue, replay', () => {
       `${ITEM('i2')} {"needed":false}`,
     ])
     expect(server.mostInFlight()).toBe(1)
-    await waitFor(() => expect(screen.getByText('1 / 3')).toBeInTheDocument())
+    await until(() => expect(screen.getByText('1 / 3')).toBeInTheDocument())
   })
 
   it('replays at least once: a toggle the server applied before a reload is sent again and leaves the item and count the same', async () => {
     const answers = held()
     const server = stubServer(undefined, answers.hold)
     const first = await openPage()
-    expect(await screen.findByText('2 / 3')).toBeInTheDocument()
+    expect(await until(() => screen.getByText('2 / 3'))).toBeInTheDocument()
     fireEvent.click(checkbox('Taco seasoning'))
     // The server applied it; the page reloads before its answer arrives.
-    await waitFor(() => expect(answers.waiting()).toBe(1))
+    await until(() => expect(answers.waiting()).toBe(1))
     expect(queue()).toEqual(['i3 true'])
     reload(first)
     act(() => answers.release())
 
     await openPage()
-    await waitFor(() => expect(answers.waiting()).toBe(1))
+    await until(() => expect(answers.waiting()).toBe(1))
     act(() => answers.release())
-    await waitFor(() => expect(queue()).toEqual([]))
+    await until(() => expect(queue()).toEqual([]))
     expect(patches(server.fetchMock)).toEqual([`${ITEM('i3')} {"needed":true}`, `${ITEM('i3')} {"needed":true}`])
-    await waitFor(() => expect(screen.getByText('3 / 3')).toBeInTheDocument())
+    await until(() => expect(screen.getByText('3 / 3')).toBeInTheDocument())
     expect(checkbox('Taco seasoning')).toBeChecked()
     expect(server.run('2026-10-05')).toMatchObject({ needed_count: 3, total_count: 3 })
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
@@ -514,18 +557,18 @@ describe('offline toggle queue, replay', () => {
     const answers = held()
     stubServer(undefined, answers.hold)
     await openPage()
-    expect(await screen.findByText('2 / 3')).toBeInTheDocument()
+    expect(await until(() => screen.getByText('2 / 3'))).toBeInTheDocument()
     goOffline()
     fireEvent.click(checkbox('Ground beef'))
     expect(within(row('Ground beef')).getByText('will sync')).toBeInTheDocument()
 
     goOnline()
-    await waitFor(() => expect(answers.waiting()).toBe(1))
+    await until(() => expect(answers.waiting()).toBe(1))
     expect(within(row('Ground beef')).getByText('will sync')).toBeInTheDocument()
     expect(queue()).toEqual(['i1 false'])
 
     act(() => answers.release())
-    await waitFor(() => expect(screen.queryByText('will sync')).not.toBeInTheDocument())
+    await until(() => expect(screen.queryByText('will sync')).not.toBeInTheDocument())
     expect(queue()).toEqual([])
     expect(screen.getByText('1 / 3')).toBeInTheDocument()
   })
@@ -535,29 +578,29 @@ describe('offline toggle queue, replay', () => {
     // The first PATCH never answers; every later one answers at once.
     const server = stubServer(undefined, () => (++tries === 1 ? new Promise<void>(() => {}) : Promise.resolve()))
     await openPage()
-    expect(await screen.findByText('2 / 3')).toBeInTheDocument()
+    expect(await until(() => screen.getByText('2 / 3'))).toBeInTheDocument()
 
     fireEvent.click(checkbox('Taco seasoning'))
-    await waitFor(() => expect(patches(server.fetchMock)).toHaveLength(1))
+    await until(() => expect(patches(server.fetchMock)).toHaveLength(1))
     fireEvent.click(checkbox('Ground beef'))
     expect(queue()).toEqual(['i3 true', 'i1 false'])
 
     // Past the deadline the hung PATCH is aborted; both still wait, in order.
-    await advance(TOGGLE_DEADLINE)
-    expect(await within(row('Taco seasoning')).findByText('will sync')).toBeInTheDocument()
+    advance(TOGGLE_DEADLINE)
+    expect(await until(() => within(row('Taco seasoning')).getByText('will sync'))).toBeInTheDocument()
     expect(within(row('Ground beef')).getByText('will sync')).toBeInTheDocument()
     expect(patches(server.fetchMock)).toHaveLength(1)
     expect(queue()).toEqual(['i3 true', 'i1 false'])
 
     await retrySecondTry()
-    await waitFor(() => expect(queue()).toEqual([]))
+    await until(() => expect(queue()).toEqual([]))
     expect(patches(server.fetchMock)).toEqual([
       `${ITEM('i3')} {"needed":true}`,
       `${ITEM('i3')} {"needed":true}`,
       `${ITEM('i1')} {"needed":false}`,
     ])
     expect(server.mostInFlight()).toBe(1)
-    await waitFor(() => expect(screen.queryByText('will sync')).not.toBeInTheDocument())
+    await until(() => expect(screen.queryByText('will sync')).not.toBeInTheDocument())
     expect(screen.getByText('2 / 3')).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
@@ -568,26 +611,26 @@ describe('offline toggle queue, replay', () => {
     // answers. Every later /me answers at once.
     const server = stubServer(undefined, undefined, () => (++tries === 2 ? new Promise<void>(() => {}) : Promise.resolve()))
     await openPage()
-    expect(await screen.findByText('2 / 3')).toBeInTheDocument()
+    expect(await until(() => screen.getByText('2 / 3'))).toBeInTheDocument()
 
     fireEvent.click(checkbox('Taco seasoning'))
-    await waitFor(() => expect(tries).toBe(2))
+    await until(() => expect(tries).toBe(2))
     fireEvent.click(checkbox('Ground beef'))
     expect(queue()).toEqual(['i3 true', 'i1 false'])
 
     // Past the deadline the hung /me is abandoned; both still wait, in order.
-    await advance(TOGGLE_DEADLINE)
-    expect(await within(row('Taco seasoning')).findByText('will sync')).toBeInTheDocument()
+    advance(TOGGLE_DEADLINE)
+    expect(await until(() => within(row('Taco seasoning')).getByText('will sync'))).toBeInTheDocument()
     expect(within(row('Ground beef')).getByText('will sync')).toBeInTheDocument()
     expect(patches(server.fetchMock)).toEqual([])
 
     // The next try sends a fresh /me, which the server answers.
     await retrySecondTry()
-    await waitFor(() => expect(queue()).toEqual([]))
+    await until(() => expect(queue()).toEqual([]))
     expect(mes(server.fetchMock)).toBe(3)
     expect(patches(server.fetchMock)).toEqual([`${ITEM('i3')} {"needed":true}`, `${ITEM('i1')} {"needed":false}`])
     expect(server.mostInFlight()).toBe(1)
-    await waitFor(() => expect(screen.queryByText('will sync')).not.toBeInTheDocument())
+    await until(() => expect(screen.queryByText('will sync')).not.toBeInTheDocument())
     expect(screen.getByText('2 / 3')).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
@@ -608,29 +651,29 @@ describe('offline toggle queue, replay', () => {
       () => (refusedAt !== null && ++tries === 1 ? new Promise<void>(() => {}) : Promise.resolve()),
     )
     await openPage()
-    expect(await screen.findByText('2 / 3')).toBeInTheDocument()
+    expect(await until(() => screen.getByText('2 / 3'))).toBeInTheDocument()
 
     fireEvent.click(checkbox('Taco seasoning'))
-    await waitFor(() => expect(tries).toBe(1))
+    await until(() => expect(tries).toBe(1))
     fireEvent.click(checkbox('Ground beef'))
     expect(patches(server.fetchMock)).toHaveLength(1)
 
     // Past the deadline the hung refresh is abandoned; both still wait, in order.
-    await advance(TOGGLE_DEADLINE)
-    expect(await within(row('Taco seasoning')).findByText('will sync')).toBeInTheDocument()
+    advance(TOGGLE_DEADLINE)
+    expect(await until(() => within(row('Taco seasoning')).getByText('will sync'))).toBeInTheDocument()
     expect(within(row('Ground beef')).getByText('will sync')).toBeInTheDocument()
     expect(queue()).toEqual(['i3 true', 'i1 false'])
 
     // The next try is refused again and sends a fresh refresh, which answers.
     await retrySecondTry()
-    await waitFor(() => expect(queue()).toEqual([]))
+    await until(() => expect(queue()).toEqual([]))
     expect(patches(server.fetchMock)).toEqual([
       `${ITEM('i3')} {"needed":true}`,
       `${ITEM('i3')} {"needed":true}`,
       `${ITEM('i3')} {"needed":true}`,
       `${ITEM('i1')} {"needed":false}`,
     ])
-    await waitFor(() => expect(screen.queryByText('will sync')).not.toBeInTheDocument())
+    await until(() => expect(screen.queryByText('will sync')).not.toBeInTheDocument())
     expect(screen.getByText('2 / 3')).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
@@ -638,21 +681,21 @@ describe('offline toggle queue, replay', () => {
   it('tries a toggle again once the server is back, with no online event from the browser', async () => {
     const { fetchMock } = stubServer()
     await openPage()
-    expect(await screen.findByText('2 / 3')).toBeInTheDocument()
+    expect(await until(() => screen.getByText('2 / 3'))).toBeInTheDocument()
 
     // The browser says online throughout; the server cannot be reached, then can.
     reachable = false
     fireEvent.click(checkbox('Corn tortillas'))
-    expect(await within(row('Corn tortillas')).findByText('will sync')).toBeInTheDocument()
+    expect(await until(() => within(row('Corn tortillas')).getByText('will sync'))).toBeInTheDocument()
     reachable = true
     expect(patches(fetchMock)).toEqual([])
 
     // Nothing says the server is back: only the wait's timer tries it again.
     await retrySecondTry()
-    await waitFor(() => expect(queue()).toEqual([]))
+    await until(() => expect(queue()).toEqual([]))
     // The first try failed at GET /api/v1/me, before its PATCH.
     expect(patches(fetchMock)).toEqual([`${ITEM('i2')} {"needed":false}`])
-    await waitFor(() => expect(screen.queryByText('will sync')).not.toBeInTheDocument())
+    await until(() => expect(screen.queryByText('will sync')).not.toBeInTheDocument())
     expect(screen.getByText('1 / 3')).toBeInTheDocument()
   })
 
@@ -660,20 +703,20 @@ describe('offline toggle queue, replay', () => {
     const answers = held()
     stubServer(undefined, answers.hold)
     const page = await openPage()
-    expect(await screen.findByText('2 / 3')).toBeInTheDocument()
+    expect(await until(() => screen.getByText('2 / 3'))).toBeInTheDocument()
     goOffline()
     fireEvent.click(checkbox('Ground beef'))
     expect(within(row('Ground beef')).getByText('will sync')).toBeInTheDocument()
 
     page.leave()
     goOnline()
-    await waitFor(() => expect(answers.waiting()).toBe(1))
+    await until(() => expect(answers.waiting()).toBe(1))
     page.reopen()
-    expect(await within(row('Ground beef')).findByText('will sync')).toBeInTheDocument()
+    expect(await until(() => within(row('Ground beef')).getByText('will sync'))).toBeInTheDocument()
     expect(queue()).toEqual(['i1 false'])
 
     act(() => answers.release())
-    await waitFor(() => expect(screen.queryByText('will sync')).not.toBeInTheDocument())
+    await until(() => expect(screen.queryByText('will sync')).not.toBeInTheDocument())
     expect(queue()).toEqual([])
     expect(screen.getByText('1 / 3')).toBeInTheDocument()
   })
@@ -685,10 +728,10 @@ describe('offline toggle queue, replay', () => {
     const getItem = vi.spyOn(Storage.prototype, 'getItem')
     await openPage()
 
-    expect(await screen.findByText(/Couldn't load the household settings/)).toBeInTheDocument()
+    expect(await until(() => screen.getByText(/Couldn't load the household settings/))).toBeInTheDocument()
     expect(screen.getByText(/can't be kept on this device while offline/)).toBeInTheDocument()
     const reads = getItem.mock.calls.filter(([key]) => key === SAVED_KEY).length
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    await settle()
     expect(getItem.mock.calls.filter(([key]) => key === SAVED_KEY)).toHaveLength(reads)
   })
 })
@@ -715,11 +758,11 @@ describe('Supply run saved on this device, refused', () => {
     saveRefusedRun(run)
     onLine = false
     const page = await openPage()
-    expect(await screen.findByText(/can't be kept on this device while offline.*dinner status "retired"/)).toBeInTheDocument()
+    expect(await until(() => screen.getByText(/can't be kept on this device while offline.*dinner status "retired"/))).toBeInTheDocument()
 
     // Next week's Supply run is read, and saved beside the refused one.
     act(() => void page.queryClient.setQueryData(supplyRunKey('2026-10-12'), run('2026-10-12')))
-    await waitFor(() => expect(savedWeeks()).toEqual(['2026-10-05', '2026-10-12']))
+    await until(() => expect(savedWeeks()).toEqual(['2026-10-05', '2026-10-12']))
     await act(() => Promise.resolve())
     expect(screen.getByText(/can't be kept on this device while offline.*dinner status "retired"/)).toBeInTheDocument()
   })
@@ -730,7 +773,7 @@ describe('Supply run saved on this device, refused', () => {
     onLine = false
     const first = await openPage()
 
-    expect(await screen.findByText(/can't be kept on this device while offline.*dinner status "retired"/)).toBeInTheDocument()
+    expect(await until(() => screen.getByText(/can't be kept on this device while offline.*dinner status "retired"/))).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Beef tacos' })).not.toBeInTheDocument()
 
     // Opened again online, the Supply run read is saved over it: the page is
@@ -738,8 +781,8 @@ describe('Supply run saved on this device, refused', () => {
     reload(first)
     onLine = true
     await openPage()
-    expect(await screen.findByRole('button', { name: 'Beef tacos' })).toBeInTheDocument()
-    await waitFor(() => expect(screen.queryByText(/can't be kept on this device/)).not.toBeInTheDocument())
+    expect(await until(() => screen.getByRole('button', { name: 'Beef tacos' }))).toBeInTheDocument()
+    await until(() => expect(screen.queryByText(/can't be kept on this device/)).not.toBeInTheDocument())
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })
@@ -749,7 +792,7 @@ describe('toggle not kept on this device', () => {
     const { hold, release, waiting } = held()
     const { run } = stubServer(undefined, hold)
     const page = await openPage()
-    await screen.findByRole('region', { name: 'Beef tacos' })
+    await until(() => screen.getByRole('region', { name: 'Beef tacos' }))
 
     // The saved queue cannot be written as the toggle is made: it is
     // pending only on this page.
@@ -763,9 +806,9 @@ describe('toggle not kept on this device', () => {
       setItem.call(this, key, value)
     })
     fireEvent.click(checkbox('Taco seasoning'))
-    expect(await screen.findByText(/can't be kept on this device while offline.*quota has been exceeded/)).toBeInTheDocument()
+    expect(await until(() => screen.getByText(/can't be kept on this device while offline.*quota has been exceeded/))).toBeInTheDocument()
     expect(queue()).toEqual([])
-    await waitFor(() => expect(waiting()).toBe(1))
+    await until(() => expect(waiting()).toBe(1))
 
     // Next week's Supply run is read and saved: the toggle is still not.
     act(() => void page.queryClient.setQueryData(supplyRunKey('2026-10-12'), run('2026-10-12')))
@@ -774,7 +817,7 @@ describe('toggle not kept on this device', () => {
 
     // Answered, the toggle has nothing left to lose.
     release()
-    await waitFor(() => expect(screen.queryByText(/can't be kept on this device/)).not.toBeInTheDocument())
+    await until(() => expect(screen.queryByText(/can't be kept on this device/)).not.toBeInTheDocument())
     expect(checkbox('Taco seasoning')).toBeChecked()
     expect(queue()).toEqual([])
   })

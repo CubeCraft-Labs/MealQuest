@@ -65,7 +65,9 @@ type Grounded struct {
 	// Difficulty is easy, medium or hard.
 	Difficulty string `json:"difficulty"`
 	SourceURL  string `json:"source_url"`
-	SiteName   string `json:"site_name"`
+	// SiteName is the name the page gives its site, "" when it names none
+	// (see Recipe.SiteName).
+	SiteName string `json:"site_name"`
 }
 
 // SearchSource returns the household's current search provider;
@@ -200,8 +202,10 @@ func (g *Grounder) searchRanked(ctx context.Context, dishName, query string) (ra
 // Offer is a ranked candidate offered for the household to ground a dish
 // in, with GroundURL on its URL.
 type Offer struct {
-	URL      string
-	Title    string
+	URL   string
+	Title string
+	// SiteName is the name the page gives its site, "" when it names none
+	// (see Recipe.SiteName).
 	SiteName string
 	// PhotoID is the cached photo of a candidate already stored, "" for
 	// one that is not: a candidate's photo is cached only when it grounds.

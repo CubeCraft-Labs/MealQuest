@@ -60,8 +60,9 @@ DELETE FROM shopping_items
 WHERE id = ?;
 
 -- name: ListShoppingGroupDinners :many
--- The groups of list list_id with their dinner's name and status, in list
--- order. A group may keep a dinner archived since the list was made.
+-- The groups of list list_id with their dinner's name and status now, in
+-- list order. A group may keep a dinner archived since the list was made.
+-- A group of a frozen list shows its frozen_dinner_name instead.
 SELECT sqlc.embed(shopping_groups), dinners.name AS dinner_name, dinners.status AS dinner_status
 FROM shopping_groups
 JOIN dinners ON dinners.id = shopping_groups.dinner_id
@@ -117,6 +118,13 @@ WHERE id = ?;
 UPDATE shopping_lists
 SET status = 'archived', frozen_at = ?, updated_at = ?
 WHERE id = ? AND frozen_at IS NULL;
+
+-- name: FreezeShoppingGroupNames :exec
+-- Keeps the name each dinner of list list_id has now as its group's
+-- frozen_dinner_name, as the list is frozen into the Supply archive.
+UPDATE shopping_groups
+SET frozen_dinner_name = (SELECT dinners.name FROM dinners WHERE dinners.id = shopping_groups.dinner_id)
+WHERE list_id = ?;
 
 -- name: ListShoppingListsThrough :many
 -- The Supply runs of the weeks starting on or before week_start, newest

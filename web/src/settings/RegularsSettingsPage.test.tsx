@@ -789,7 +789,7 @@ describe('RegularsSettingsPage', () => {
           minutes: 45,
         },
         { candidate_id: 'https://cook.test/pizza', title: 'Sheet-pan pizza', site_name: 'Cook Test', photo_url: null, minutes: null },
-        { candidate_id: 'https://food.test/p', title: 'Pizza margherita', site_name: 'Food Test', photo_url: null, minutes: 30 },
+        { candidate_id: 'https://food.test/p', title: 'Pizza margherita', site_name: null, photo_url: null, minutes: 30 },
       ],
     }
 
@@ -817,7 +817,7 @@ describe('RegularsSettingsPage', () => {
       expect(options.map((option) => option.getAttribute('aria-label'))).toEqual([
         'Use Weeknight pizza from Example Kitchen',
         'Use Sheet-pan pizza from Cook Test',
-        'Use Pizza margherita from Food Test',
+        'Use Pizza margherita',
       ])
       expect(within(options[0]!).getByRole('img', { name: 'Weeknight pizza' })).toHaveAttribute('src', '/media/photos/p7-400.jpg')
       expect(within(options[0]!).getByText('Example Kitchen')).toBeInTheDocument()

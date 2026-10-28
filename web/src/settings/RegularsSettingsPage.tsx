@@ -85,7 +85,10 @@ export function RegularsSettingsPage() {
 // Which sheet is open, for which Regular.
 type Open = { sheet: 'edit' | 'fix'; id: string } | null
 
-function RegularsManager() {
+// RegularsManager lists, adds, edits and fixes the recipes of the
+// household's Regulars: this page's body, and the Settings "Regular
+// dinners" sub-tab at tablet and desktop widths.
+export function RegularsManager() {
   const recipe = useOpenRecipe()
   const regulars = useRegulars()
   const add = useAddRegular()
@@ -684,13 +687,13 @@ function PickCandidate({ id, onPick }: { id: string; onPick: (candidateId: strin
           <button
             type="button"
             className={styles.candidate}
-            aria-label={`Use ${candidate.title} from ${candidate.site_name}`}
+            aria-label={candidate.site_name === null ? `Use ${candidate.title}` : `Use ${candidate.title} from ${candidate.site_name}`}
             onClick={() => onPick(candidate.candidate_id)}
           >
             <Photo id={candidate.photo_id} name={candidate.title} radius="14px" sizes="56px" className={styles.candidatePhoto} />
             <span className={styles.candidateBody}>
               <span className={styles.candidateTitle}>{candidate.title}</span>
-              <span className={styles.candidateSite}>{candidate.site_name}</span>
+              {candidate.site_name !== null && <span className={styles.candidateSite}>{candidate.site_name}</span>}
             </span>
           </button>
         </li>

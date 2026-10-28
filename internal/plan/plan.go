@@ -149,16 +149,19 @@ type Service struct {
 	// publicURL is MEALQUEST_PUBLIC_URL, under which a pushed event links
 	// to its dinner.
 	publicURL *url.URL
+	// now is the clock today is read from: the scheduler's.
+	now func() time.Time
 }
 
 // NewService returns a service over st that drafts with draft, pushes to
 // cal with links under publicURL, tells the household through notifier,
 // which must be over st, calls wake (the scheduler's Wake) after every
-// committed change to a plan's days, and registers the KindDraftWeek job on
-// runner, which must not have started yet. The kind is service-only:
+// committed change to a plan's days, reads today from now (the scheduler's
+// Now) and registers the KindDraftWeek job on runner, which must not have
+// started yet. The kind is service-only:
 // StartDraft and StartScheduledDraft, which keep one draft in flight per
 // week, are the only way to enqueue it.
-func NewService(st *store.Store, draft Drafter, runner *jobs.Runner, cal Calendar, notifier *notify.Service, wake func(), publicURL *url.URL, logger *slog.Logger) (*Service, error) {
+func NewService(st *store.Store, draft Drafter, runner *jobs.Runner, cal Calendar, notifier *notify.Service, wake func(), publicURL *url.URL, now func() time.Time, logger *slog.Logger) (*Service, error) {
 	switch {
 	case st == nil:
 		return nil, errors.New("plan: nil store")
@@ -174,10 +177,12 @@ func NewService(st *store.Store, draft Drafter, runner *jobs.Runner, cal Calenda
 		return nil, errors.New("plan: nil wake")
 	case publicURL == nil:
 		return nil, errors.New("plan: nil public URL")
+	case now == nil:
+		return nil, errors.New("plan: nil clock")
 	case logger == nil:
 		return nil, errors.New("plan: nil logger")
 	}
-	s := &Service{st: st, draft: draft, cal: cal, notifier: notifier, wake: wake, logger: logger, publicURL: publicURL}
+	s := &Service{st: st, draft: draft, cal: cal, notifier: notifier, wake: wake, logger: logger, publicURL: publicURL, now: now}
 	kind, err := jobs.Register(runner, KindDraftWeek, s.runDraft, Reasons...)
 	if err != nil {
 		return nil, err
@@ -512,7 +517,7 @@ func (s *Service) Tonight(ctx context.Context) (week, today store.LocalDate, err
 	if err != nil {
 		return store.LocalDate{}, store.LocalDate{}, fmt.Errorf("plan: household settings: %w", err)
 	}
-	today = household.Today(time.Now(), zone)
+	today = household.Today(s.now(), zone)
 	week = household.WeekStart(today)
 	_, err = q.GetWeekPlan(ctx, week.String())
 	if errors.Is(err, sql.ErrNoRows) {

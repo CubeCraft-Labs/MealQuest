@@ -325,7 +325,7 @@ describe('Kitchen reading mode', () => {
       // The step done is muted, its number a check.
       expect(steps()[0]!.textContent).toBe('Rinse the rice and start it cooking.')
       expect(steps()[0]!.querySelector('svg')).not.toBeNull()
-      expect(declaredStyle(steps()[0]!).color).toBe('var(--color-neutral-600)')
+      expect(declaredStyle(steps()[0]!).color).toBe('var(--color-neutral-700)')
       expect(declaredStyle(steps()[0]!).fontSize).toBe('calc(18px * var(--reading-scale))')
 
       fireEvent.click(next)
@@ -381,6 +381,21 @@ describe('Kitchen reading mode', () => {
   })
 
   describe('text size', () => {
+    it('rings the focused size inside the clipped pill, in on-accent ink on the grape', async () => {
+      serve()
+      await renderPage()
+      const medium = screen.getByRole('radio', { name: 'Medium text' })
+      // A key press makes the next focus a keyboard one, which
+      // :focus-visible matches.
+      fireEvent.keyDown(document.body, { key: 'Tab' })
+      medium.focus()
+      expect(medium.matches(':focus-visible')).toBe(true)
+      // The pill hides overflow, so a ring outside the size would be cut off.
+      expect(declaredStyle(medium).getPropertyValue('outline-offset')).toBe('-4px')
+      expect(declaredStyle(medium).getPropertyValue('outline-color')).toBe('var(--on-accent)')
+      expect(declaredStyle(medium).background).toBe('var(--color-accent)')
+    })
+
     it('is remembered on this device', async () => {
       serve()
       const view = await renderPage()

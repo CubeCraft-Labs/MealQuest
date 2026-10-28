@@ -75,7 +75,7 @@ func (e plansEnv) groundWeek(t *testing.T) {
 func (e plansEnv) archive(t *testing.T) {
 	t.Helper()
 	if _, err := e.st.Writer.ExecContext(t.Context(),
-		`UPDATE shopping_lists SET status = 'archived', frozen_at = '2026-10-19T04:05:00Z'`); err != nil {
+		`UPDATE shopping_lists SET status = 'archived', frozen_at = '2026-10-19T04:05:00Z'; UPDATE shopping_groups SET frozen_dinner_name = (SELECT name FROM dinners WHERE dinners.id = dinner_id) WHERE list_id IN (SELECT id FROM shopping_lists WHERE frozen_at IS NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -187,7 +187,7 @@ func TestSupplyRunShape(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("generate = %d %v", status, raw)
 	}
-	wantTop := []string{"chat_send_unconfirmed_at", "groups", "label", "needed_count", "sent_to_chat_at", "skipped", "status", "title", "total_count", "weekStart"}
+	wantTop := []string{"chat_send_unconfirmed_at", "groups", "label", "needed_count", "sent_to_chat_at", "skipped", "status", "title", "title_job_id", "total_count", "weekStart"}
 	if got := keys(raw); !reflect.DeepEqual(got, wantTop) {
 		t.Errorf("generate fields = %v, want %v", got, wantTop)
 	}
@@ -200,7 +200,7 @@ func TestSupplyRunShape(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("GET = %d %v", status, raw)
 	}
-	if k := keys(raw); !reflect.DeepEqual(k, slices.DeleteFunc(slices.Clone(wantTop), func(s string) bool { return s == "skipped" })) {
+	if k := keys(raw); !reflect.DeepEqual(k, slices.DeleteFunc(slices.Clone(wantTop), func(s string) bool { return s == "skipped" || s == "title_job_id" })) {
 		t.Errorf("GET fields = %v", k)
 	}
 	group := raw["groups"].([]any)[0].(map[string]any)
@@ -393,8 +393,12 @@ func TestPushPlanMakesSupplyRun(t *testing.T) {
 	if rec.Code != http.StatusOK || body["status"] != "synced" {
 		t.Fatalf("push = %d %s", rec.Code, rec.Body)
 	}
-	if want := map[string]any{"status": "generated", "error": nil}; !reflect.DeepEqual(body["supply_run"], want) {
-		t.Errorf("supply_run = %v, want %v", body["supply_run"], want)
+	run, _ := body["supply_run"].(map[string]any)
+	if k := keys(run); run["status"] != "generated" || run["error"] != nil || !reflect.DeepEqual(k, []string{"error", "status", "title_job_id"}) {
+		t.Errorf("supply_run = %v, want generated with no error", run)
+	}
+	if job := titleJob(t, e, run["title_job_id"]); job["status"] != "queued" {
+		t.Errorf("title job = %v, want queued: no runner in this test", job)
 	}
 	var l supplyRunJSON
 	if status, got := callShopping(t, e, http.MethodGet, shoppingPath+"2026-10-12", "", &l); status != http.StatusOK {
@@ -484,9 +488,11 @@ func TestPushPlanDoesNotWaitForTitle(t *testing.T) {
 	if rec.Code != http.StatusOK || body["status"] != "synced" {
 		t.Fatalf("push = %d %s", rec.Code, rec.Body)
 	}
-	if want := map[string]any{"status": "generated", "error": nil}; !reflect.DeepEqual(body["supply_run"], want) {
-		t.Errorf("supply_run = %v, want %v", body["supply_run"], want)
+	run, _ := body["supply_run"].(map[string]any)
+	if run["status"] != "generated" || run["error"] != nil {
+		t.Errorf("supply_run = %v, want generated with no error", run)
 	}
+	titleJobID, _ := run["title_job_id"].(string)
 	held.waitEntered(t)
 	var l supplyRunJSON
 	callShopping(t, e, http.MethodGet, shoppingPath+"2026-10-12", "", &l)
@@ -495,6 +501,7 @@ func TestPushPlanDoesNotWaitForTitle(t *testing.T) {
 	}
 
 	close(held.release)
+	wantTitleJobSucceeded(t, e, titleJobID)
 	if got := e.waitTitled(t); got != "Chili and Friends" {
 		t.Errorf("title = %q, want the title job's", got)
 	}
@@ -510,7 +517,8 @@ func TestSupplyRunGenerateDoesNotWaitForTitle(t *testing.T) {
 	e.startRunner(t)
 
 	var l supplyRunJSON
-	if status, body := callShopping(t, e, http.MethodPost, shoppingPath+"2026-10-12/generate", "", &l); status != http.StatusOK {
+	status, body := callShopping(t, e, http.MethodPost, shoppingPath+"2026-10-12/generate", "", &l)
+	if status != http.StatusOK {
 		t.Fatalf("generate = %d %v", status, body)
 	}
 	if l.Title != nil {
@@ -519,11 +527,65 @@ func TestSupplyRunGenerateDoesNotWaitForTitle(t *testing.T) {
 	if !reflect.DeepEqual(l.render(), weekLines) {
 		t.Errorf("generated = %v, want %v", l.render(), weekLines)
 	}
+	titleJobID, _ := body["title_job_id"].(string)
 	held.waitEntered(t)
 
 	close(held.release)
+	wantTitleJobSucceeded(t, e, titleJobID)
 	if got := e.waitTitled(t); got != "Chili and Friends" {
 		t.Errorf("title = %q, want the title job's", got)
+	}
+	if _, body := callShopping(t, e, http.MethodPost, shoppingPath+"2026-10-12/generate", "", nil); body["title_job_id"] != nil {
+		t.Errorf("remake title_job_id = %v, want null: the Supply run has its title", body["title_job_id"])
+	}
+}
+
+// TestSupplyRunGenerateTitleJobFails: a title job that cannot title the
+// Supply run is reported failed with title_failed by GET /jobs/{id}, and
+// the week's next generation answers with a new title job.
+func TestSupplyRunGenerateTitleJobFails(t *testing.T) {
+	t.Parallel()
+	e := newPlansRouter(t)
+	e.groundWeek(t)
+	e.startRunner(t)
+
+	_, body := callShopping(t, e, http.MethodPost, shoppingPath+"2026-10-12/generate", "", nil)
+	first := titleJob(t, e, body["title_job_id"])
+	job := waitJob(t, e.h, first["id"].(string))
+	if job["status"] != "failed" || job["error"] != shopping.ReasonTitleFailed {
+		t.Errorf("title job = %v, want failed %s", job, shopping.ReasonTitleFailed)
+	}
+
+	_, body = callShopping(t, e, http.MethodPost, shoppingPath+"2026-10-12/generate", "", nil)
+	if second := titleJob(t, e, body["title_job_id"]); second["id"] == first["id"] {
+		t.Errorf("retry title_job_id = %v, want a new job", second["id"])
+	}
+}
+
+// titleJob returns the title_supply_run job id, as GET /jobs/{id} reports
+// it; id must be a job id string.
+func titleJob(t *testing.T, e plansEnv, id any) map[string]any {
+	t.Helper()
+	s, ok := id.(string)
+	if !ok || s == "" {
+		t.Fatalf("title_job_id = %v, want a job id", id)
+	}
+	rec, job := callDinners(t, e.h, http.MethodGet, "/api/v1/jobs/"+s, "")
+	if rec.Code != http.StatusOK || job["kind"] != shopping.KindTitleSupplyRun {
+		t.Fatalf("GET title job = %d %s, want a %s job", rec.Code, rec.Body, shopping.KindTitleSupplyRun)
+	}
+	return job
+}
+
+// wantTitleJobSucceeded waits for title job id to finish and fails t
+// unless GET /jobs/{id} reports it succeeded with the title written.
+func wantTitleJobSucceeded(t *testing.T, e plansEnv, id string) {
+	t.Helper()
+	titleJob(t, e, id)
+	job := waitJob(t, e.h, id)
+	result, _ := job["result"].(map[string]any)
+	if job["status"] != "succeeded" || result["title"] != "Chili and Friends" {
+		t.Errorf("title job = %v, want succeeded with the title", job)
 	}
 }
 
@@ -563,7 +625,7 @@ func TestPushPlanSupplyRunFails(t *testing.T) {
 		"code":      "supply_run_failed",
 		"message":   "the plan is on Calendar, but its Supply run could not be made; make it again from the Supply run",
 		"retryable": true,
-	}}
+	}, "title_job_id": nil}
 	if !reflect.DeepEqual(body["supply_run"], want) {
 		t.Errorf("supply_run = %v, want %v", body["supply_run"], want)
 	}
@@ -616,7 +678,7 @@ func TestPushPlanEditedBeforeSupplyRun(t *testing.T) {
 		"code":      "plan_changed",
 		"message":   "the plan is on Calendar as pushed, but it was edited before its Supply run was made, so no Supply run was made from it; push again",
 		"retryable": true,
-	}}
+	}, "title_job_id": nil}
 	if !reflect.DeepEqual(body["supply_run"], want) {
 		t.Errorf("supply_run = %v, want %v", body["supply_run"], want)
 	}
@@ -649,7 +711,7 @@ func TestPushPlanLeavesArchivedSupplyRun(t *testing.T) {
 		t.Fatalf("push = %d %s", rec.Code, rec.Body)
 	}
 	run, _ := body["supply_run"].(map[string]any)
-	if apiErr, _ := run["error"].(map[string]any); run["status"] != "archived" || apiErr["code"] != "archived" {
+	if apiErr, _ := run["error"].(map[string]any); run["status"] != "archived" || apiErr["code"] != "archived" || run["title_job_id"] != nil {
 		t.Errorf("supply_run = %v, want archived", body["supply_run"])
 	}
 	var l supplyRunJSON
@@ -675,6 +737,7 @@ type archiveJSON struct {
 			OnHandCount int      `json:"onHandCount"`
 			Dinners     []string `json:"dinners"`
 			Current     bool     `json:"current"`
+			Frozen      bool     `json:"frozen"`
 		} `json:"posts"`
 	} `json:"periods"`
 }
@@ -753,7 +816,7 @@ func TestSupplyArchive(t *testing.T) {
 	if k := keys(period); !reflect.DeepEqual(k, []string{"heading", "key", "posts"}) {
 		t.Errorf("period fields = %v", k)
 	}
-	wantPost := []string{"current", "dinnerCount", "dinners", "itemCount", "label", "onHandCount", "title", "weekStart"}
+	wantPost := []string{"current", "dinnerCount", "dinners", "frozen", "itemCount", "label", "onHandCount", "title", "weekStart"}
 	if k := keys(period["posts"].([]any)[0].(map[string]any)); !reflect.DeepEqual(k, wantPost) {
 		t.Errorf("post fields = %v, want %v", k, wantPost)
 	}
@@ -770,13 +833,13 @@ func TestSupplyArchive(t *testing.T) {
 			if post.Label != label || post.Title != nil {
 				t.Errorf("post %s: label %q title %v, want %q and null", post.WeekStart, post.Label, post.Title, label)
 			}
-			posts = append(posts, fmt.Sprintf("%s %d dinners %d items %d on hand %v current=%t",
-				post.WeekStart, post.DinnerCount, post.ItemCount, post.OnHandCount, post.Dinners, post.Current))
+			posts = append(posts, fmt.Sprintf("%s %d dinners %d items %d on hand %v current=%t frozen=%t",
+				post.WeekStart, post.DinnerCount, post.ItemCount, post.OnHandCount, post.Dinners, post.Current, post.Frozen))
 		}
 	}
 	want := []string{
-		thisWeek.String() + " 1 dinners 2 items 0 on hand [Lemon Chicken] current=true",
-		lastWeek.String() + " 1 dinners 3 items 1 on hand [Beef Stew] current=false",
+		thisWeek.String() + " 1 dinners 2 items 0 on hand [Lemon Chicken] current=true frozen=false",
+		lastWeek.String() + " 1 dinners 3 items 1 on hand [Beef Stew] current=false frozen=true",
 	}
 	if got.By != "week" || !reflect.DeepEqual(posts, want) {
 		t.Errorf("archive by %s =\n  %s\nwant\n  %s", got.By, strings.Join(posts, "\n  "), strings.Join(want, "\n  "))
@@ -804,6 +867,137 @@ func TestSupplyArchive(t *testing.T) {
 	}
 	if frozen.Status != "archived" || frozen.NeededCount != 2 || frozen.TotalCount != 3 || !reflect.DeepEqual(frozen.render(), wantLines) {
 		t.Errorf("frozen list = %s %d/%d %v, want archived 2/3 %v", frozen.Status, frozen.NeededCount, frozen.TotalCount, frozen.render(), wantLines)
+	}
+}
+
+// TestSupplyArchiveUnfrozenPastWeek: a past week's Supply run that
+// week_rollover has not frozen is in the Supply archive as not frozen for
+// as long as the Supply run route can still change it, and as frozen once
+// it cannot.
+func TestSupplyArchiveUnfrozenPastWeek(t *testing.T) {
+	t.Parallel()
+	e := newPlansRouter(t)
+	if _, err := e.st.Writer.ExecContext(t.Context(), `DELETE FROM plan_days; DELETE FROM week_plans`); err != nil {
+		t.Fatal(err)
+	}
+	zone, err := household.LoadZone("America/New_York") // the env's household zone
+	if err != nil {
+		t.Fatal(err)
+	}
+	thisWeek := household.WeekStart(household.Today(time.Now(), zone))
+	y, m, d := thisWeek.Date()
+	lastWeek := store.LocalDateOf(time.Date(y, m, d-7, 0, 0, 0, 0, time.UTC))
+	last := e.weekSupplyRun(t, lastWeek, "Beef Stew", shopIng{"stewing beef", "2", "lb"}, shopIng{"carrots", "4", ""})
+
+	// post is last week's post in the Supply archive.
+	post := func() (frozen bool) {
+		t.Helper()
+		var got archiveJSON
+		if status, raw := callShopping(t, e, http.MethodGet, shoppingPath+"archive?by=week", "", &got); status != http.StatusOK {
+			t.Fatalf("GET archive = %d %v", status, raw)
+		}
+		for _, p := range got.Periods {
+			for _, post := range p.Posts {
+				if post.WeekStart == lastWeek.String() {
+					if post.Current {
+						t.Errorf("last week's post is current")
+					}
+					return post.Frozen
+				}
+			}
+		}
+		t.Fatalf("archive %+v has no post for %s", got, lastWeek)
+		return false
+	}
+	// change marks carrots and reports whether the Supply run route took it.
+	change := func(needed bool) bool {
+		t.Helper()
+		status, body := callShopping(t, e, http.MethodPatch, shoppingPath+"items/"+last.itemID(t, "carrots"), fmt.Sprintf(`{"needed":%t}`, needed), nil)
+		switch {
+		case status == http.StatusOK:
+			return true
+		case status == http.StatusConflict && errorCode(body) == "archived":
+			return false
+		}
+		t.Fatalf("PATCH = %d %v, want 200 or 409 archived", status, body)
+		return false
+	}
+
+	if frozen, changed := post(), change(false); frozen || !changed {
+		t.Errorf("unfrozen past week: post frozen=%t, PATCH changed=%t; want a post not frozen for a list that changes", frozen, changed)
+	}
+	if err := e.shop.Freeze(t.Context(), lastWeek); err != nil {
+		t.Fatal(err)
+	}
+	if frozen, changed := post(), change(true); !frozen || changed {
+		t.Errorf("frozen past week: post frozen=%t, PATCH changed=%t; want a frozen post for a list that cannot change", frozen, changed)
+	}
+}
+
+// TestSupplyArchiveKeepsFrozenNames freezes last week's Supply run, then
+// renames its dinner and this week's through the dinners API: the frozen
+// post and list keep the name the dinner had when frozen, while this
+// week's list, not frozen, shows the new name.
+func TestSupplyArchiveKeepsFrozenNames(t *testing.T) {
+	t.Parallel()
+	e := newPlansRouter(t)
+	if _, err := e.st.Writer.ExecContext(t.Context(), `DELETE FROM plan_days; DELETE FROM week_plans`); err != nil {
+		t.Fatal(err)
+	}
+	zone, err := household.LoadZone("America/New_York") // the env's household zone
+	if err != nil {
+		t.Fatal(err)
+	}
+	thisWeek := household.WeekStart(household.Today(time.Now(), zone))
+	y, m, d := thisWeek.Date()
+	lastWeek := store.LocalDateOf(time.Date(y, m, d-7, 0, 0, 0, 0, time.UTC))
+
+	last := e.weekSupplyRun(t, lastWeek, "Beef Stew", shopIng{"stewing beef", "2", "lb"})
+	current := e.weekSupplyRun(t, thisWeek, "Lemon Chicken", shopIng{"lemon", "1", ""})
+	if err := e.shop.Freeze(t.Context(), lastWeek); err != nil {
+		t.Fatal(err)
+	}
+	for id, name := range map[string]string{
+		last.Groups[0].Dinner.ID:    "Sunday Beef Stew",
+		current.Groups[0].Dinner.ID: "Lemon Garlic Chicken",
+	} {
+		if status, body := callShopping(t, e, http.MethodPatch, dinnersPath+"/"+id, `{"name":"`+name+`"}`, nil); status != http.StatusOK {
+			t.Fatalf("PATCH dinner %s = %d %v", id, status, body)
+		}
+	}
+
+	var got archiveJSON
+	if status, raw := callShopping(t, e, http.MethodGet, shoppingPath+"archive?by=week", "", &got); status != http.StatusOK {
+		t.Fatalf("GET archive = %d %v", status, raw)
+	}
+	var posts []string
+	for _, p := range got.Periods {
+		for _, post := range p.Posts {
+			posts = append(posts, fmt.Sprintf("%s %v current=%t", post.WeekStart, post.Dinners, post.Current))
+		}
+	}
+	want := []string{
+		thisWeek.String() + " [Lemon Garlic Chicken] current=true",
+		lastWeek.String() + " [Beef Stew] current=false",
+	}
+	if !reflect.DeepEqual(posts, want) {
+		t.Errorf("archive after rename =\n  %s\nwant\n  %s", strings.Join(posts, "\n  "), strings.Join(want, "\n  "))
+	}
+
+	for _, tc := range []struct {
+		week store.LocalDate
+		want string
+	}{
+		{lastWeek, "Monday " + lastWeek.String() + " Beef Stew: stewing beef [2 lb] needed"},
+		{thisWeek, "Monday " + thisWeek.String() + " Lemon Garlic Chicken: lemon [1] needed"},
+	} {
+		var l supplyRunJSON
+		if status, body := callShopping(t, e, http.MethodGet, shoppingPath+tc.week.String(), "", &l); status != http.StatusOK {
+			t.Fatalf("GET %s = %d %v", tc.week, status, body)
+		}
+		if got := l.render(); !reflect.DeepEqual(got, []string{tc.want}) {
+			t.Errorf("list %s after rename = %v, want [%s]", tc.week, got, tc.want)
+		}
 	}
 }
 

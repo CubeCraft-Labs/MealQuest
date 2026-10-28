@@ -155,6 +155,19 @@ func (q *Queries) DeleteShoppingItem(ctx context.Context, id string) error {
 	return err
 }
 
+const freezeShoppingGroupNames = `-- name: FreezeShoppingGroupNames :exec
+UPDATE shopping_groups
+SET frozen_dinner_name = (SELECT dinners.name FROM dinners WHERE dinners.id = shopping_groups.dinner_id)
+WHERE list_id = ?
+`
+
+// Keeps the name each dinner of list list_id has now as its group's
+// frozen_dinner_name, as the list is frozen into the Supply archive.
+func (q *Queries) FreezeShoppingGroupNames(ctx context.Context, listID string) error {
+	_, err := q.db.ExecContext(ctx, freezeShoppingGroupNames, listID)
+	return err
+}
+
 const freezeShoppingList = `-- name: FreezeShoppingList :execrows
 UPDATE shopping_lists
 SET status = 'archived', frozen_at = ?, updated_at = ?
@@ -235,7 +248,7 @@ func (q *Queries) GetShoppingList(ctx context.Context, weekStart string) (Shoppi
 }
 
 const listShoppingGroupDinners = `-- name: ListShoppingGroupDinners :many
-SELECT shopping_groups.id, shopping_groups.list_id, shopping_groups.dinner_id, shopping_groups.date, shopping_groups.position, shopping_groups.created_at, shopping_groups.updated_at, dinners.name AS dinner_name, dinners.status AS dinner_status
+SELECT shopping_groups.id, shopping_groups.list_id, shopping_groups.dinner_id, shopping_groups.date, shopping_groups.position, shopping_groups.created_at, shopping_groups.updated_at, shopping_groups.frozen_dinner_name, dinners.name AS dinner_name, dinners.status AS dinner_status
 FROM shopping_groups
 JOIN dinners ON dinners.id = shopping_groups.dinner_id
 WHERE shopping_groups.list_id = ?
@@ -248,8 +261,9 @@ type ListShoppingGroupDinnersRow struct {
 	DinnerStatus  string
 }
 
-// The groups of list list_id with their dinner's name and status, in list
-// order. A group may keep a dinner archived since the list was made.
+// The groups of list list_id with their dinner's name and status now, in
+// list order. A group may keep a dinner archived since the list was made.
+// A group of a frozen list shows its frozen_dinner_name instead.
 func (q *Queries) ListShoppingGroupDinners(ctx context.Context, listID string) ([]ListShoppingGroupDinnersRow, error) {
 	rows, err := q.db.QueryContext(ctx, listShoppingGroupDinners, listID)
 	if err != nil {
@@ -267,6 +281,7 @@ func (q *Queries) ListShoppingGroupDinners(ctx context.Context, listID string) (
 			&i.ShoppingGroup.Position,
 			&i.ShoppingGroup.CreatedAt,
 			&i.ShoppingGroup.UpdatedAt,
+			&i.ShoppingGroup.FrozenDinnerName,
 			&i.DinnerName,
 			&i.DinnerStatus,
 		); err != nil {
@@ -284,7 +299,7 @@ func (q *Queries) ListShoppingGroupDinners(ctx context.Context, listID string) (
 }
 
 const listShoppingGroups = `-- name: ListShoppingGroups :many
-SELECT id, list_id, dinner_id, date, position, created_at, updated_at FROM shopping_groups
+SELECT id, list_id, dinner_id, date, position, created_at, updated_at, frozen_dinner_name FROM shopping_groups
 WHERE list_id = ?
 ORDER BY position, id
 `
@@ -307,6 +322,7 @@ func (q *Queries) ListShoppingGroups(ctx context.Context, listID string) ([]Shop
 			&i.Position,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.FrozenDinnerName,
 		); err != nil {
 			return nil, err
 		}

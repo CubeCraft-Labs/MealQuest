@@ -1,6 +1,6 @@
 import { Archive, Check, CloudUpload, MessageSquare } from 'lucide-react'
 import { useState } from 'react'
-import { Link, useSearchParams } from 'react-router'
+import { Link, Navigate, useSearchParams } from 'react-router'
 import { defaultWeek, isMonday, localNow, weekdayKicker, weekLabel } from '../plan/week.ts'
 import { ApiError } from '../api/errors.ts'
 import { opensRecipe } from '../dinners/api.ts'
@@ -17,6 +17,7 @@ import { Skeleton } from '../ui/Skeleton.tsx'
 import { Tag } from '../ui/Tag.tsx'
 import {
   useGenerateSupplyRun,
+  supplyRunScreen,
   useSendToChat,
   useSupplyRun,
   useToggles,
@@ -27,6 +28,9 @@ import {
 } from './api.ts'
 import { keep, SCHEDULE_CAUSE, savedSchedule, useSavedProblem } from './offline.ts'
 import styles from './SupplyRunPage.module.css'
+
+// SUPPLY_RUN is the Supply run screen.
+export const SUPPLY_RUN = '/plan/shopping'
 
 // SUPPLY_ARCHIVE is the Supply archive screen.
 export const SUPPLY_ARCHIVE = '/plan/shopping/archive'
@@ -170,10 +174,10 @@ function ArchiveLink({ layout }: { layout: Breakpoint }) {
 // tablet up, where Archive and Send to Google Chat are actions in the
 // header; a send that fails says why, and one whose outcome is not known
 // offers no retry and leaves the status line saying so. On a current Supply run each item toggles at once (useToggles); a
-// toggle refused puts the item back and says why. An archived one, or any
-// opened from the Supply archive (readOnly), is read-only and tagged
-// Archived, and a toggle it refused is not offered again.
-function SupplyRunList({ weekStart, timezone, layout, readOnly }: WeekProps) {
+// toggle refused puts the item back and says why. An archived one is
+// read-only and tagged Archived, and a toggle it refused is not offered
+// again.
+function SupplyRunList({ weekStart, timezone, layout }: Omit<WeekProps, 'readOnly'>) {
   const toggles = useToggles(weekStart)
   const send = useSendToChat(weekStart)
   const run = toggles.shown
@@ -184,7 +188,7 @@ function SupplyRunList({ weekStart, timezone, layout, readOnly }: WeekProps) {
     <UnconfirmedStatus at={run.chat_send_unconfirmed_at} timezone={timezone} />
   )
   const sendUnconfirmed = send.error instanceof ApiError && send.error.code === 'chat_unconfirmed'
-  const viewOnly = readOnly || run.status === 'archived'
+  const viewOnly = run.status === 'archived'
   const wide = layout !== 'mobile'
   const failed = toggles.failed
   const failedItem = failed && run.groups.flatMap((group) => group.items).find((item) => item.id === failed.toggle.id)
@@ -203,11 +207,9 @@ function SupplyRunList({ weekStart, timezone, layout, readOnly }: WeekProps) {
             </p>
           </div>
           <p className={styles.helper}>
-            {run.status === 'archived'
+            {viewOnly
               ? 'This list is in the Supply archive, as it was when the week ended.'
-              : viewOnly
-                ? "This week's list as it stands, read-only in the Supply archive."
-                : "Uncheck anything you already have — it won't be counted."}
+              : "Uncheck anything you already have — it won't be counted."}
           </p>
         </div>
         {wide && (
@@ -275,7 +277,8 @@ type WeekProps = { weekStart: string; timezone: string; layout: Breakpoint; read
 
 // WeekSupplyRun is the Supply run of the week starting on weekStart, or,
 // when the week has none yet, the offer to make it from the week's plan —
-// not offered read-only.
+// not offered read-only. Read-only, a Supply run not yet frozen opens the
+// editable Supply run screen instead, where it can still change.
 function WeekSupplyRun({ weekStart, timezone, layout, readOnly }: WeekProps) {
   const run = useSupplyRun(weekStart)
   const generate = useGenerateSupplyRun(weekStart)
@@ -302,14 +305,16 @@ function WeekSupplyRun({ weekStart, timezone, layout, readOnly }: WeekProps) {
       </div>
     )
   }
-  return <SupplyRunList weekStart={weekStart} timezone={timezone} layout={layout} readOnly={readOnly} />
+  if (readOnly && run.data.status !== 'archived') return <Navigate to={supplyRunScreen(weekStart)} replace />
+  return <SupplyRunList weekStart={weekStart} timezone={timezone} layout={layout} />
 }
 
 // SupplyRunPage is the Supply run (mock 1l on mobile, 2b on tablet, 2f on
 // desktop) of the week the Plan opens on — next week once this week's
 // plan_draft time has come, otherwise this week — or of the week chosen by
-// ?week=. Opened from the Supply archive it is readOnly: tagged Archived,
-// with no checkbox and nothing to make or send, whatever the week. Offline,
+// ?week=. Opened from the Supply archive it is readOnly: a frozen Supply run
+// is tagged Archived, with no checkbox and nothing to make or send; one not
+// yet frozen opens the editable Supply run screen instead. Offline,
 // where the settings cannot be read, it chooses the week by the schedule
 // saved on this device.
 export function SupplyRunPage({ readOnly = false }: { readOnly?: boolean }) {

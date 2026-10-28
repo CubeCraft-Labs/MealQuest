@@ -123,6 +123,15 @@ describe('HomePage', () => {
     expect(within(bell).queryByTestId('unread-dot')).not.toBeInTheDocument()
   })
 
+  it('shows a one-off night as its name, with no photo and no recipe', async () => {
+    renderHome({ ...HOME, tonight: null, manualTonight: 'mummy dogs' })
+    const tonight = await screen.findByRole('region', { name: 'Tonight' })
+    expect(within(tonight).getByRole('heading', { name: 'mummy dogs' })).toBeInTheDocument()
+    expect(within(tonight).queryByRole('button', { name: 'Recipe' })).not.toBeInTheDocument()
+    expect(within(tonight).queryByRole('img')).not.toBeInTheDocument()
+    expect(within(tonight).queryByRole('link')).not.toBeInTheDocument()
+  })
+
   it('labels a Side quest tonight "Side quest"', async () => {
     renderHome({ ...HOME, tonight: { ...HOME.tonight, origin: 'side_quest', minutes_total: 30 } })
     expect(await screen.findByText('Side quest · 30 min')).toBeInTheDocument()

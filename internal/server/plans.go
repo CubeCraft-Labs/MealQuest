@@ -24,9 +24,12 @@ type planDraft struct {
 	Confirm *bool `json:"confirm"`
 }
 
-// planDaySwap is the PUT /plans/{weekStart}/days/{date} body.
+// planDaySwap is the PUT /plans/{weekStart}/days/{date} body. Exactly one
+// of dinner_id, manual_label and clear is set.
 type planDaySwap struct {
-	DinnerID *string `json:"dinner_id"`
+	DinnerID    *string `json:"dinner_id"`
+	ManualLabel *string `json:"manual_label"`
+	Clear       *bool   `json:"clear"`
 }
 
 // getPlan answers GET /plans/{weekStart} with the week's plan.
@@ -83,11 +86,19 @@ func putPlanDay(logger *slog.Logger, svc *plan.Service) http.HandlerFunc {
 			writeError(w, r, logger, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
-		if body.DinnerID == nil {
-			writeError(w, r, logger, http.StatusBadRequest, "invalid_request", "dinner_id: required")
+		date := chi.URLParam(r, "date")
+		var p plan.Plan
+		switch {
+		case body.DinnerID != nil && body.ManualLabel == nil && body.Clear == nil:
+			p, err = svc.Swap(r.Context(), week, date, *body.DinnerID)
+		case body.ManualLabel != nil && body.DinnerID == nil && body.Clear == nil:
+			p, err = svc.SetManual(r.Context(), week, date, *body.ManualLabel)
+		case body.Clear != nil && *body.Clear && body.DinnerID == nil && body.ManualLabel == nil:
+			p, err = svc.ClearDay(r.Context(), week, date)
+		default:
+			writeError(w, r, logger, http.StatusBadRequest, "invalid_request", "dinner_id, manual_label or clear: set exactly one")
 			return
 		}
-		p, err := svc.Swap(r.Context(), week, chi.URLParam(r, "date"), *body.DinnerID)
 		if err != nil {
 			writePlanError(w, r, logger, "swap plan day", err)
 			return
@@ -214,7 +225,10 @@ func writePlanError(w http.ResponseWriter, r *http.Request, logger *slog.Logger,
 	var day *plan.InvalidDayError
 	var week *plan.InvalidWeekError
 	var notPlannable *plan.DinnerNotPlannableError
+	var label *plan.InvalidManualLabelError
 	switch {
+	case errors.As(err, &label):
+		writeError(w, r, logger, http.StatusBadRequest, "invalid_request", label.Error())
 	case errors.As(err, &day):
 		writeError(w, r, logger, http.StatusBadRequest, "invalid_date", day.Error())
 	case errors.As(err, &week):

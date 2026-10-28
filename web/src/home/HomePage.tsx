@@ -52,8 +52,19 @@ function TonightCard({ tonight, cached, onRecipe }: { tonight: Tonight; cached: 
 }
 
 // TonightSlot is the Tonight card for home, or NoPlan when today has no plan.
+function ManualTonightCard({ label }: { label: string }) {
+  return (
+    <section aria-label="Tonight" className={styles.card}>
+      <div className={styles.manualFoot}>
+        <h2 className={styles.name}>{label}</h2>
+      </div>
+    </section>
+  )
+}
+
 function TonightSlot({ home, onRecipe }: { home: Home; onRecipe: (dinner: Tonight) => void }) {
-  const { tonight, cached } = home
+  const { tonight, manualTonight, cached } = home
+  if (manualTonight !== null) return <ManualTonightCard label={manualTonight} />
   return tonight === null ? <NoPlan /> : <TonightCard tonight={tonight} cached={cached} onRecipe={() => onRecipe(tonight)} />
 }
 

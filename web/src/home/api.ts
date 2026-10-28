@@ -47,6 +47,9 @@ export type Home = {
   dateLabel: string
   timezone: string
   tonight: Tonight | null
+  // manualTonight is today's free-text night. Null unless today is a one-off
+  // label, and never set together with tonight.
+  manualTonight: string | null
   sideQuestCount: number
   shoppingList: ShoppingListStatus
   unread: boolean
@@ -58,8 +61,14 @@ export type Home = {
 // (archived), whatever the read said; otherwise it is home itself.
 export function showArchived(home: Home, archived: ReadonlySet<string>): Home {
   const tonight = home.tonight
-  if (tonight === null || !archived.has(tonight.id) || tonight.status === 'archived') return home
+  if (tonight === null || home.manualTonight !== null || !archived.has(tonight.id) || tonight.status === 'archived') return home
   return { ...home, tonight: { ...tonight, status: 'archived' } }
+}
+
+function parseManualTonight(where: string, body: unknown): string | null {
+  if (body === undefined || body === null) return null
+  if (typeof body !== 'string' || body.trim() === '') throw new Error(`${where}: manualTonight is not a name`)
+  return body
 }
 
 function parseTonight(where: string, body: unknown): Tonight | null {
@@ -111,10 +120,16 @@ export function parseHome(where: string, body: unknown, cached: boolean): Home {
   }
   const updates = body.recentUpdates
   if (!isRecord(updates) || typeof updates.unread !== 'boolean') throw new Error(`${where}: recentUpdates has no unread flag`)
+  const tonight = parseTonight(where, body.tonight)
+  const manualTonight = parseManualTonight(where, body.manualTonight)
+  if (tonight !== null && manualTonight !== null) {
+    throw new Error(`${where}: tonight is both a dinner and a manual night`)
+  }
   return {
     dateLabel: body.dateLabel,
     timezone: body.timezone,
-    tonight: parseTonight(where, body.tonight),
+    tonight,
+    manualTonight,
     sideQuestCount: body.sideQuestCount as number,
     shoppingList: parseShoppingList(where, body.shoppingList),
     unread: updates.unread,

@@ -41,13 +41,23 @@ export type PlanDinner = {
 }
 
 // PlanDay is one day of a plan: its household-local date, the dinner
-// planned, whether that dinner is a Quest-log pick, and, for a crock-pot
-// dinner of known minutes, the instant it must start by.
+// planned or a one-off manual label (never both), whether that dinner is a
+// Quest-log pick, and, for a crock-pot dinner of known minutes, the instant
+// it must start by. A cleared night has neither a dinner nor a label.
 export type PlanDay = {
   date: string
-  dinner: PlanDinner
+  dinner: PlanDinner | null
+  manual_label: string | null
   is_new: boolean
   start_by: string | null
+}
+
+// planDayName is the name a plan day shows: the dinner, the one-off label,
+// or "Nothing planned" when the night is cleared.
+export function planDayName(day: PlanDay): string {
+  if (day.dinner !== null) return day.dinner.name
+  if (day.manual_label !== null) return day.manual_label
+  return 'Nothing planned'
 }
 
 // Plan is GET /api/v1/plans/{weekStart}: the week's seven days, Monday to
@@ -74,15 +84,30 @@ function parseDay(where: string, body: unknown): PlanDay {
   if (
     !isRecord(body) ||
     typeof body.date !== 'string' ||
-    !isRecord(body.dinner) ||
-    typeof body.dinner.id !== 'string' ||
-    typeof body.dinner.name !== 'string' ||
-    (body.dinner.minutes !== null && !Number.isInteger(body.dinner.minutes)) ||
     typeof body.is_new !== 'boolean' ||
-    (body.start_by !== null && typeof body.start_by !== 'string')
+    (body.start_by !== null && typeof body.start_by !== 'string') ||
+    (body.manual_label !== undefined && body.manual_label !== null && typeof body.manual_label !== 'string')
   ) {
     throw new Error(`${where}: response has a day that is not a plan day`)
   }
+  const manual = typeof body.manual_label === 'string' ? body.manual_label : null
+  if (body.dinner === null || body.dinner === undefined) {
+    if (body.dinner === undefined) throw new Error(`${where}: response has a day that is not a plan day`)
+    if (body.is_new || body.start_by !== null) {
+      throw new Error(`${where}: a night with no dinner is not a quest and has no start time`)
+    }
+    if (manual !== null && manual.trim() === '') throw new Error(`${where}: a manual night has an empty name`)
+    return { date: body.date, dinner: null, manual_label: manual, is_new: false, start_by: null }
+  }
+  if (
+    !isRecord(body.dinner) ||
+    typeof body.dinner.id !== 'string' ||
+    typeof body.dinner.name !== 'string' ||
+    (body.dinner.minutes !== null && !Number.isInteger(body.dinner.minutes))
+  ) {
+    throw new Error(`${where}: response has a day that is not a plan day`)
+  }
+  if (manual !== null) throw new Error(`${where}: a plan day has both a dinner and a manual label`)
   const dinner: PlanDinner = {
     id: body.dinner.id,
     name: body.dinner.name,
@@ -91,17 +116,19 @@ function parseDay(where: string, body: unknown): PlanDay {
     minutes: body.dinner.minutes as number | null,
     method: body.dinner.method === null ? null : oneOf(where, 'method', METHODS, body.dinner.method),
   }
-  return { date: body.date, dinner, is_new: body.is_new, start_by: body.start_by }
+  return { date: body.date, dinner, manual_label: null, is_new: body.is_new, start_by: body.start_by as string | null }
 }
 
 // showArchived is plan with each dinner the server archived (archived)
 // shown archived — removed from Regulars, so it has no detail to open —
 // whatever the read said; a plan with none is plan itself.
 export function showArchived(plan: Plan | null, archived: ReadonlySet<string>): Plan | null {
-  if (plan === null || !plan.days.some((day) => archived.has(day.dinner.id) && day.dinner.status !== 'archived')) return plan
+  if (plan === null || !plan.days.some((day) => day.dinner !== null && archived.has(day.dinner.id) && day.dinner.status !== 'archived')) return plan
   return {
     ...plan,
-    days: plan.days.map((day) => (archived.has(day.dinner.id) ? { ...day, dinner: { ...day.dinner, status: 'archived' } } : day)),
+    days: plan.days.map((day) =>
+      day.dinner !== null && archived.has(day.dinner.id) ? { ...day, dinner: { ...day.dinner, status: 'archived' } } : day,
+    ),
   }
 }
 
@@ -240,20 +267,44 @@ export function useStartDraft() {
   })
 }
 
-// Swap is one day's swap: the day, and the dinner chosen for it with whether
-// it was chosen from the Quest log.
-export type Swap = { date: string; dinner: PlanDinner; fromQuestLog: boolean }
+// Swap is one day's edit: a dinner chosen from the Quest log or the
+// Regulars, a one-off manual label, or clearing the night.
+export type Swap =
+  | { date: string; dinner: PlanDinner; fromQuestLog: boolean }
+  | { date: string; manual_label: string }
+  | { date: string; clear: true }
+
+function swapBody(swap: Swap): { dinner_id: string } | { manual_label: string } | { clear: true } {
+  if ('clear' in swap) return { clear: true }
+  if ('manual_label' in swap) return { manual_label: swap.manual_label }
+  return { dinner_id: swap.dinner.id }
+}
+
+function swappedDay(swap: Swap): PlanDay {
+  if ('clear' in swap) return { date: swap.date, dinner: null, manual_label: null, is_new: false, start_by: null }
+  if ('manual_label' in swap) return { date: swap.date, dinner: null, manual_label: swap.manual_label, is_new: false, start_by: null }
+  return { date: swap.date, dinner: swap.dinner, manual_label: null, is_new: swap.fromQuestLog, start_by: null }
+}
+
+// sameDinner says whether two planned dinners are the same in every field.
+function sameDinner(a: PlanDinner | null, b: PlanDinner | null): boolean {
+  if (a === null || b === null) return a === b
+  return (
+    a.id === b.id &&
+    a.name === b.name &&
+    a.status === b.status &&
+    a.photo_id === b.photo_id &&
+    a.minutes === b.minutes &&
+    a.method === b.method
+  )
+}
 
 // sameDay says whether two plan days are the same in every field.
 function sameDay(a: PlanDay, b: PlanDay): boolean {
   return (
     a.date === b.date &&
-    a.dinner.id === b.dinner.id &&
-    a.dinner.name === b.dinner.name &&
-    a.dinner.status === b.dinner.status &&
-    a.dinner.photo_id === b.dinner.photo_id &&
-    a.dinner.minutes === b.dinner.minutes &&
-    a.dinner.method === b.dinner.method &&
+    sameDinner(a.dinner, b.dinner) &&
+    a.manual_label === b.manual_label &&
     a.is_new === b.is_new &&
     a.start_by === b.start_by
   )
@@ -408,18 +459,18 @@ export function useSwapDay(weekStart: string): SwapDay {
       // (keepWeekMutations): a later swap must stay in the cache while an
       // earlier one is pending.
       gcTime: Infinity,
-      mutationFn: async ({ date, dinner }) => {
-        const path = `${planPath(weekStart)}/days/${encodeURIComponent(date)}`
-        const body = await apiFetch<unknown>(path, { method: 'PUT', body: { dinner_id: dinner.id } })
+      mutationFn: async (swap) => {
+        const path = `${planPath(weekStart)}/days/${encodeURIComponent(swap.date)}`
+        const body = await apiFetch<unknown>(path, { method: 'PUT', body: swapBody(swap) })
         return parsePlan(`PUT ${path}`, weekStart, body, false)
       },
-      onMutate: async ({ date, dinner, fromQuestLog }) => {
+      onMutate: async (swap) => {
         await queryClient.cancelQueries({ queryKey: key })
         const plan = queryClient.getQueryData<Plan | null>(key)
-        const previous = plan?.days.find((day) => day.date === date)
-        if (!plan || previous === undefined) throw new Error(`The week of ${weekStart} has no plan day ${date} to swap.`)
-        const swapped: PlanDay = { date, dinner, is_new: fromQuestLog, start_by: null }
-        queryClient.setQueryData<Plan>(key, { ...plan, days: plan.days.map((day) => (day.date === date ? swapped : day)) })
+        const previous = plan?.days.find((day) => day.date === swap.date)
+        if (!plan || previous === undefined) throw new Error(`The week of ${weekStart} has no plan day ${swap.date} to swap.`)
+        const swapped = swappedDay(swap)
+        queryClient.setQueryData<Plan>(key, { ...plan, days: plan.days.map((day) => (day.date === swap.date ? swapped : day)) })
         return { previous, swapped }
       },
       onSuccess: (plan) => {

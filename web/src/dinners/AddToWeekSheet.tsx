@@ -1,6 +1,6 @@
 import { useId, useState } from 'react'
 import { Link } from 'react-router'
-import { usePlan, useWeekSwap, type PlanDinner, type Swap } from '../plan/api.ts'
+import { planDayName, usePlan, useWeekSwap, type PlanDinner, type Swap } from '../plan/api.ts'
 import { cooking } from '../plan/PlanPage.tsx'
 import swapStyles from '../plan/SwapSheet.module.css'
 import { addDays, dayOfMonth, localNow, weekdayName, weekLabel, weekStart as weekOf } from '../plan/week.ts'
@@ -81,7 +81,7 @@ function WeekDays({ dinner, week, which, onAdd }: WeekDaysProps) {
   }
 
   const days = plan.data.days
-  const planned = days.find((day) => day.dinner.id === dinner.id)
+  const planned = days.find((day) => day.dinner?.id === dinner.id)
   const choosable = planned === undefined && !refused
   function add(date: string) {
     const chosen: Swap = { date, dinner: planDinner(dinner), fromQuestLog: dinner.status === 'quest_log' }
@@ -105,13 +105,15 @@ function WeekDays({ dinner, week, which, onAdd }: WeekDaysProps) {
             <ListRow
               className={choosable ? undefined : swapStyles.already}
               leading={
-                // The row's dinner names what the photo shows.
-                <span aria-hidden="true">
-                  <Photo id={day.dinner.photo_id} name={day.dinner.name} radius="var(--radius-md)" sizes="48px" className={swapStyles.photo} />
-                </span>
+                day.dinner !== null ? (
+                  // The row's dinner names what the photo shows.
+                  <span aria-hidden="true">
+                    <Photo id={day.dinner.photo_id} name={day.dinner.name} radius="var(--radius-md)" sizes="48px" className={swapStyles.photo} />
+                  </span>
+                ) : undefined
               }
               title={`${weekdayName(day.date)} ${dayOfMonth(day.date)}`}
-              meta={[day.dinner.name, cooking(day.dinner)].filter(Boolean).join(' · ')}
+              meta={day.dinner !== null ? [day.dinner.name, cooking(day.dinner)].filter(Boolean).join(' · ') : planDayName(day)}
               onClick={choosable ? () => add(day.date) : undefined}
               trailing={day === planned && <Tag>This dinner</Tag>}
             />

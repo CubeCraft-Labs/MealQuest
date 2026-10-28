@@ -10,7 +10,7 @@ import {
   type PointerEvent,
   type ReactNode,
 } from 'react'
-import type { PlanDay, PlanDinner, Swap } from './api.ts'
+import { planDayName, type PlanDay, type PlanDinner, type Swap } from './api.ts'
 import { weekdayName } from './week.ts'
 import styles from './drag.module.css'
 
@@ -57,7 +57,7 @@ function usePlanDrag(): PlanDrag {
 // replaces says which dinner dropping on day replaces: "Friday: replaces
 // Pizza night."
 function replaces(day: PlanDay): string {
-  return `${weekdayName(day.date)}: replaces ${day.dinner.name}.`
+  return `${weekdayName(day.date)}: replaces ${planDayName(day)}.`
 }
 
 // PlanDragProvider holds the drag of a dinner from the plan panel or the
@@ -100,7 +100,7 @@ export function PlanDragProvider({ children }: { children: ReactNode }) {
           setMessage(`A swap is still being saved. Pick ${name} up once it is done.`)
           return false
         }
-        if (board.days.some((day) => day.dinner.id === pickup.dinner.id)) {
+        if (board.days.some((day) => day.dinner?.id === pickup.dinner.id)) {
           setMessage(`${name} is already this week.`)
           return false
         }
@@ -141,7 +141,7 @@ export function PlanDragProvider({ children }: { children: ReactNode }) {
           return false
         }
         board.drop({ date: day.date, dinner: now.pickup.dinner, fromQuestLog: now.pickup.fromQuestLog })
-        setMessage(`Dropped ${now.pickup.dinner.name} on ${weekdayName(day.date)}, replacing ${day.dinner.name}.`)
+        setMessage(`Dropped ${now.pickup.dinner.name} on ${weekdayName(day.date)}, replacing ${planDayName(day)}.`)
         return true
       },
       cancel,
@@ -237,7 +237,7 @@ export function useDraggable(pickup: Pickup) {
   const [float, setFloat] = useState<Float | null>(null)
   const press = useRef<Press | null>(null)
   const drag = plan.drag !== null && plan.drag.pickup.dinner.id === pickup.dinner.id ? plan.drag : null
-  const disabled = plan.drag === null && (plan.board === null || plan.board.pending || plan.board.days.some((day) => day.dinner.id === pickup.dinner.id))
+  const disabled = plan.drag === null && (plan.board === null || plan.board.pending || plan.board.days.some((day) => day.dinner?.id === pickup.dinner.id))
 
   // A draggable that goes mid-drag, as on crossing to mobile, cancels it;
   // once the drag has ended, cancel does nothing.

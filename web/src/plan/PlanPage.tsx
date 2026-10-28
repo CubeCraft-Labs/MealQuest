@@ -23,6 +23,7 @@ import { Tag } from '../ui/Tag.tsx'
 import {
   DRAFT_JOB_KIND,
   parseDraftResult,
+  planDayName,
   planKey,
   usePlan,
   useStartDraft,
@@ -148,7 +149,7 @@ function DayTile({ day, timezone, swapping, onSwap }: { day: PlanDay; timezone: 
       <button type="button" className={styles.tileButton} onClick={onSwap}>
         <span className={styles.dayKicker}>{swapping ? `${kicker} · SWAPPING…` : day.is_new ? `${kicker} · NEW` : kicker}</span>
         <span>
-          <span className={styles.dinner}>{day.dinner.name}</span>
+          <span className={styles.dinner}>{planDayName(day)}</span>
           {day.start_by !== null && (
             <span className={styles.startBy}>Start by {formatClockTime(localNow(timezone, new Date(day.start_by)).time)}</span>
           )}
@@ -186,9 +187,12 @@ function DayColumn({
   onSwap: () => void
   onRecipe: () => void
 }) {
-  const { dinner } = day
-  const time = cooking(dinner)
   const target = useDropTarget(day.date) !== null
+  const { dinner } = day
+  if (dinner === null) {
+    return <PlainNight day={day} swapping={swapping} onSwap={onSwap} target={target} />
+  }
+  const time = cooking(dinner)
   const classes = [styles.card, day.is_new && styles.sideQuestCard, (swapping || target) && styles.swapping].filter(Boolean).join(' ')
   const recipe = (
     <>
@@ -238,6 +242,44 @@ function DayColumn({
           <div className={styles.dropTarget}>
             <p className={styles.dropTitle}>Drop to swap</p>
             <p className={styles.dropReplaces}>Replaces {dinner.name}</p>
+          </div>
+        )}
+      </div>
+    </li>
+  )
+}
+
+// PlainNight is a plan-manager day with no dinner: a one-off label, or
+// "Nothing planned" when the night is cleared. The name is plain text, with
+// no photo, recipe link or Regular / Side quest tag. The swap icon still
+// opens the swap sheet.
+function PlainNight({ day, swapping, onSwap, target }: { day: PlanDay; swapping: boolean; onSwap: () => void; target: boolean }) {
+  const name = planDayName(day)
+  const classes = [styles.card, (swapping || target) && styles.swapping].filter(Boolean).join(' ')
+  return (
+    <li className={styles.column} aria-label={weekdayName(day.date)} {...{ [DROP_DATE]: day.date }}>
+      <p className={styles.dayLabel} aria-hidden="true">
+        <span className={styles.dayName}>{weekdayKicker(day.date)}</span>
+        <span className={styles.dayNumber}>{dayOfMonth(day.date)}</span>
+      </p>
+      <div className={classes}>
+        <div className={styles.cardRecipe}>
+          <span className={styles.cardName}>{name}</span>
+        </div>
+        <div className={styles.cardFooter}>
+          <IconButton
+            label={`Swap ${weekdayName(day.date)}`}
+            className={[styles.swapButton, styles.swapEnd].join(' ')}
+            onClick={onSwap}
+            {...{ [SWAP_BUTTON]: true }}
+          >
+            <Icon icon={RefreshCw} size="inline" />
+          </IconButton>
+        </div>
+        {target && (
+          <div className={styles.dropTarget}>
+            <p className={styles.dropTitle}>Drop to swap</p>
+            <p className={styles.dropReplaces}>Replaces {name}</p>
           </div>
         )}
       </div>
@@ -517,7 +559,7 @@ function WeekBoard({
     const sheet = swappingDay !== undefined && (
       <SwapSheet
         day={swappingDay}
-        planned={new Set(days.map((day) => day.dinner.id))}
+        planned={new Set(days.flatMap((day) => (day.dinner === null ? [] : [day.dinner.id])))}
         onSwap={swapIn}
         onClose={() => setSwappingDate(null)}
       />
@@ -536,7 +578,9 @@ function WeekBoard({
                 timezone={timezone}
                 swapping={day.date === swappingDate}
                 onSwap={() => openSwap(day.date)}
-                onRecipe={() => recipe.open(day.dinner)}
+                onRecipe={() => {
+                  if (day.dinner !== null) recipe.open(day.dinner)
+                }}
               />
             ))}
           </ul>

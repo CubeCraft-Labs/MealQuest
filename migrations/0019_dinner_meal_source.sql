@@ -1,4 +1,4 @@
--- 0018_dinner_meal_source: a dinner is cooked at home (cook), ordered in
+-- 0019_dinner_meal_source: a dinner is cooked at home (cook), ordered in
 -- (delivery) or eaten out (dining_out). Delivery and dining out are not
 -- planned as cooked dinners: the draft pool leaves them out, a Supply run
 -- takes no ingredients from them, and they open no Rotation check.

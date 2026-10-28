@@ -394,7 +394,8 @@ export function useRemoveRegular() {
 // showMealSource shows dinner id's meal source on every plan, Home, Supply
 // run and dinner detail already read here. A source other than cook drops
 // that dinner's Supply-run group, which the server has removed, and clears
-// a plan day's start-by, which only a cooked crock-pot dinner has. A read
+// a plan day's start-by, which only a cooked crock-pot dinner has. A manual
+// or cleared night has no dinner, so it is left as it is. A read
 // not yet made is left unread. The screens are read again afterwards, and
 // until that answer lands none of them can still offer the old photo or
 // Recipe control.
@@ -402,13 +403,16 @@ function showMealSource(queryClient: QueryClient, id: string, mealSource: MealSo
   queryClient.setQueriesData<Plan | null>({ queryKey: ['plans'] }, (plan) => {
     if (plan == null) return plan
     const affected = plan.days.some(
-      (day) => day.dinner.id === id && (day.dinner.meal_source !== mealSource || (mealSource !== 'cook' && day.start_by !== null)),
+      (day) =>
+        day.dinner !== null &&
+        day.dinner.id === id &&
+        (day.dinner.meal_source !== mealSource || (mealSource !== 'cook' && day.start_by !== null)),
     )
     if (!affected) return plan
     return {
       ...plan,
       days: plan.days.map((day) =>
-        day.dinner.id === id
+        day.dinner !== null && day.dinner.id === id
           ? { ...day, start_by: mealSource === 'cook' ? day.start_by : null, dinner: { ...day.dinner, meal_source: mealSource } }
           : day,
       ),

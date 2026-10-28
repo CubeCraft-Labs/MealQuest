@@ -320,7 +320,7 @@ function PlannedDay({ dinner, timezone }: { dinner: DinnerDetail; timezone: stri
       </ErrorBanner>
     )
   }
-  const planned = plans.flatMap((plan) => plan.data?.days ?? []).filter((day) => day.dinner.id === dinner.id)
+  const planned = plans.flatMap((plan) => plan.data?.days ?? []).filter((day) => day.dinner?.id === dinner.id)
   const day = planned.find((day) => day.date >= today) ?? planned.at(-1)
   if (day === undefined) return null
   return (

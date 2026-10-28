@@ -150,6 +150,7 @@ func New(t *testing.T, redirectURL string) *Google {
 	mux.HandleFunc("GET /calendar/v3/users/me/calendarList", g.calendarList)
 	mux.HandleFunc("POST /calendar/v3/calendars/{calendar}/events", g.insertEvent)
 	mux.HandleFunc("PUT /calendar/v3/calendars/{calendar}/events/{event}", g.updateEvent)
+	mux.HandleFunc("DELETE /calendar/v3/calendars/{calendar}/events/{event}", g.deleteEvent)
 	g.Server = httptest.NewServer(mux)
 	t.Cleanup(g.Server.Close)
 	return g
@@ -636,6 +637,24 @@ func (g *Google) updateEvent(w http.ResponseWriter, r *http.Request) {
 	g.events[cal][id] = e
 	g.updates++
 	writeEvent(w, e)
+}
+
+// deleteEvent answers like Google's events.delete: 204, or 404 when the
+// event is not on the calendar.
+func (g *Google) deleteEvent(w http.ResponseWriter, r *http.Request) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	cal, ok := g.eventCalendar(w, r)
+	if !ok {
+		return
+	}
+	id := r.PathValue("event")
+	if _, exists := g.events[cal][id]; !exists {
+		apiError(w, http.StatusNotFound, "notFound", "Not Found")
+		return
+	}
+	delete(g.events[cal], id)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // eventCalendar runs the checks every events request shares: the hold, a

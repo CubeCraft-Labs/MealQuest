@@ -68,7 +68,7 @@ const plan = {
 }
 const planWith = (status: string) => ({
   ...plan,
-  days: plan.days.map((day) => (day.dinner.id === 'd1' ? { ...day, dinner: { ...day.dinner, status } } : day)),
+  days: plan.days.map((day) => (day.dinner?.id === 'd1' ? { ...day, dinner: { ...day.dinner, status } } : day)),
 })
 const home = { ...HOME, tonight: { ...HOME.tonight, id: 'd1', name: 'Beef tacos', status: 'regular' } }
 const run = {

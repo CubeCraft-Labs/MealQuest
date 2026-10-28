@@ -232,18 +232,30 @@ type Plan struct {
 	UpdatedAt        string  `json:"updated_at"`
 }
 
-// Day is one day of a plan.
+// Day is one day of a plan. A day is a dinner, a one-off manual label, or
+// cleared: dinner and manual_label are never both set.
 type Day struct {
 	// Date is household-local, YYYY-MM-DD.
-	Date   string `json:"date"`
-	Dinner Dinner `json:"dinner"`
-	// IsNew is true for a dinner planned from the Quest log.
+	Date string `json:"date"`
+	// Dinner is the dinner planned on the day, null when the day is a
+	// manual label or cleared.
+	Dinner *Dinner `json:"dinner"`
+	// ManualLabel is the free-text name of a one-off night. It is not a
+	// dinner: no recipe, no photo, and no dinners row. Null when the day
+	// has a dinner or is cleared.
+	ManualLabel *string `json:"manual_label"`
+	// IsNew is true for a dinner planned from the Quest log. A manual or
+	// cleared night is never new.
 	IsNew bool `json:"is_new"`
 	// StartBy is when a crock-pot dinner must start to be ready at the
-	// household's dinner time; null for any other dinner and for a
-	// crock-pot dinner whose minutes are unknown.
+	// household's dinner time; null for any other dinner, a manual night
+	// and a cleared night.
 	StartBy *time.Time `json:"start_by"`
 }
+
+// ErrNoNight is a day-of reminder for a plan day that has neither a dinner
+// nor a manual label. Nothing is sent.
+var ErrNoNight = errors.New("the night has no dinner")
 
 // Dinner is a planned dinner as a plan day shows it.
 type Dinner struct {
@@ -282,12 +294,15 @@ func (s *Service) Get(ctx context.Context, weekStart store.LocalDate) (p Plan, e
 }
 
 // EmitDayOfReminder emits day_of_reminder for date, keyed by the date,
-// "Tonight: {dinner} · Recipe →" for the dinner planned on it, and reports
-// whether it did: a date whose week has no plan emits nothing. A dinner
-// archived since it was planned has no recipe, so its reminder offers none
-// (chat.DayOfReminder). The day_of_reminder schedule calls it at the
-// household's reminder_time (ReminderSchedules); emitting a date again
-// stores no second notification.
+// and reports whether it did. A date whose week has no plan emits nothing.
+// A cooked dinner is "Tonight: {dinner} · Recipe →" while it has a recipe,
+// and offers none once archived (chat.DayOfReminder). A delivery or
+// dining-out dinner names the dinner and offers no recipe
+// (chat.UncookedReminder). A manual night is "Tonight: {label}" with no
+// dinner (chat.ManualNightReminder). A cleared night emits nothing
+// (ErrNoNight). The day_of_reminder schedule calls it at the household's
+// reminder_time (ReminderSchedules); emitting a date again stores no
+// second notification.
 func (s *Service) EmitDayOfReminder(ctx context.Context, date store.LocalDate) (bool, error) {
 	p, err := s.Get(ctx, household.WeekStart(date))
 	if errors.Is(err, ErrNotFound) {
@@ -301,14 +316,19 @@ func (s *Service) EmitDayOfReminder(ctx context.Context, date store.LocalDate) (
 		return false, err
 	}
 	var ev notify.Event
-	if d.Dinner.Status != dinners.StatusArchived && !dinners.Cooked(d.Dinner.MealSource) {
+	switch {
+	case d.Dinner != nil && d.Dinner.Status != dinners.StatusArchived && !dinners.Cooked(d.Dinner.MealSource):
 		var err error
 		ev, err = chat.UncookedReminder(date, d.Dinner.Name, d.Dinner.MealSource)
 		if err != nil {
 			return false, fmt.Errorf("plan: %w", err)
 		}
-	} else {
+	case d.Dinner != nil:
 		ev = chat.DayOfReminder(date, d.Dinner.ID, d.Dinner.Name, d.Dinner.viewable())
+	case d.ManualLabel != nil:
+		ev = chat.ManualNightReminder(date, *d.ManualLabel)
+	default:
+		return false, ErrNoNight
 	}
 	if err := s.notifier.Emit(ctx, ev); err != nil {
 		return false, fmt.Errorf("plan: %w", err)
@@ -338,7 +358,7 @@ func readPlan(ctx context.Context, q *db.Queries, weekStart store.LocalDate) (Pl
 	if err != nil {
 		return Plan{}, fmt.Errorf("plan: household settings: %w", err)
 	}
-	rows, err := q.ListPlanDays(ctx, row.ID)
+	rows, err := q.ListPlanSlots(ctx, row.ID)
 	if err != nil {
 		return Plan{}, fmt.Errorf("plan: read days of %s: %w", row.ID, err)
 	}
@@ -363,13 +383,45 @@ func readPlan(ctx context.Context, q *db.Queries, weekStart store.LocalDate) (Pl
 		if r.Date != dates[i].String() {
 			return Plan{}, fmt.Errorf("plan: week %s day %d is %s, want %s", weekStart, i+1, r.Date, dates[i])
 		}
-		startBy, err := startBy(zone, dates[i], settings.DinnerTime, r.Dinner)
+		day, _, err := planDay(ctx, q, zone, dates[i], settings.DinnerTime, r)
 		if err != nil {
-			return Plan{}, fmt.Errorf("plan: start by of %s: %w", r.Date, err)
+			return Plan{}, err
 		}
-		p.Days[i] = Day{Date: r.Date, Dinner: fromDinner(r.Dinner), IsNew: r.IsNew == 1, StartBy: startBy}
+		p.Days[i] = day
 	}
 	return p, nil
+}
+
+// planDay is one plan slot as a Day. raw is the dinner row when the day
+// has one, for a caller that builds a calendar event from it.
+func planDay(ctx context.Context, q *db.Queries, zone *time.Location, date store.LocalDate, dinnerTime string, r db.ListPlanSlotsRow) (Day, *db.Dinner, error) {
+	if r.DinnerID.Valid && r.ManualLabel.Valid {
+		return Day{}, nil, fmt.Errorf("plan: %s has a dinner and a manual label", r.Date)
+	}
+	day := Day{Date: r.Date, IsNew: r.IsNew == 1}
+	if !r.DinnerID.Valid {
+		if r.IsNew != 0 {
+			return Day{}, nil, fmt.Errorf("plan: %s has no dinner and is marked new", r.Date)
+		}
+		day.IsNew = false
+		if r.ManualLabel.Valid {
+			label := r.ManualLabel.String
+			day.ManualLabel = &label
+		}
+		return day, nil, nil
+	}
+	d, err := q.GetDinner(ctx, r.DinnerID.String)
+	if err != nil {
+		return Day{}, nil, fmt.Errorf("plan: read dinner %s of %s: %w", r.DinnerID.String, r.Date, err)
+	}
+	start, err := startBy(zone, date, dinnerTime, d)
+	if err != nil {
+		return Day{}, nil, fmt.Errorf("plan: start by of %s: %w", r.Date, err)
+	}
+	dinner := fromDinner(d)
+	day.Dinner = &dinner
+	day.StartBy = start
+	return day, &d, nil
 }
 
 // startBy returns when crock-pot dinner d must start on date to be ready at

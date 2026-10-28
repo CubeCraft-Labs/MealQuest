@@ -33,6 +33,10 @@ type Querier interface {
 	// sets last_sync_error, keeping the chosen calendar. Affects no row when
 	// nothing is connected.
 	ClearIntegrationsGoogleToken(ctx context.Context, arg ClearIntegrationsGoogleTokenParams) (int64, error)
+	// Clears an existing day of plan_id: no dinner and no manual label, and
+	// its calendar event id, since Calendar no longer shows the day as
+	// planned. A date the plan does not have is left as it is (0 rows).
+	ClearPlanDay(ctx context.Context, arg ClearPlanDayParams) (int64, error)
 	// Clears the calendar event id of date on plan_id. Calendar no longer
 	// shows that day as it was planned, so the next Push to Calendar writes
 	// it again. A day that has no event id is left as it is (0 rows).
@@ -242,6 +246,9 @@ type Querier interface {
 	// The days of plan plan_id with their dinners, Monday first. A day with
 	// no dinner is left out.
 	ListPlanDays(ctx context.Context, planID string) ([]ListPlanDaysRow, error)
+	// Every day of plan_id, Monday first. A day is a dinner (dinner_id set),
+	// a one-off manual label, or cleared (both null).
+	ListPlanSlots(ctx context.Context, planID string) ([]ListPlanSlotsRow, error)
 	// The planned dinners dated from from_date up to but not including
 	// to_date, oldest first. Days with no dinner are left out.
 	ListPlannedDinners(ctx context.Context, arg ListPlannedDinnersParams) ([]ListPlannedDinnersRow, error)
@@ -327,8 +334,9 @@ type Querier interface {
 	NextNotificationDue(ctx context.Context) (sql.NullString, error)
 	// Stores a partial result of a running job.
 	PublishJobResult(ctx context.Context, arg PublishJobResultParams) (int64, error)
-	// Plans dinner_id on date of plan_id. An existing day keeps its calendar
-	// event id while its dinner stays the same; a new dinner clears it, since
+	// Plans dinner_id on date of plan_id, clearing any manual label. An
+	// existing day keeps its calendar event id while its dinner stays the
+	// same and it was not a manual label; a new dinner clears it, since
 	// Calendar no longer shows the day as planned.
 	PutPlanDay(ctx context.Context, arg PutPlanDayParams) error
 	// Records the outcome of a test message sent to the webhook sealed in
@@ -354,6 +362,10 @@ type Querier interface {
 	SetDinnerFavorite(ctx context.Context, arg SetDinnerFavoriteParams) (Dinner, error)
 	// Sets the chosen calendar; affects no row when nothing is connected.
 	SetIntegrationsGoogleCalendar(ctx context.Context, arg SetIntegrationsGoogleCalendarParams) (int64, error)
+	// Names an existing day of plan_id with a one-off label and no dinner,
+	// clearing its calendar event id. A date the plan does not have is left
+	// as it is (0 rows).
+	SetManualPlanDay(ctx context.Context, arg SetManualPlanDayParams) (int64, error)
 	// Records that the event calendar_event_id on Calendar shows date of
 	// plan_id as planned.
 	SetPlanDayCalendarEvent(ctx context.Context, arg SetPlanDayCalendarEventParams) (int64, error)
@@ -366,9 +378,9 @@ type Querier interface {
 	// it is (0 rows).
 	StartSuggestionBatch(ctx context.Context, arg StartSuggestionBatchParams) (int64, error)
 	SucceedJob(ctx context.Context, arg SucceedJobParams) (int64, error)
-	// Plans dinner_id on an existing day of plan_id, clearing its calendar
-	// event id since Calendar no longer shows the day as planned; a date the
-	// plan does not have is left as it is (0 rows).
+	// Plans dinner_id on an existing day of plan_id, clearing its manual
+	// label and its calendar event id since Calendar no longer shows the day
+	// as planned; a date the plan does not have is left as it is (0 rows).
 	SwapPlanDay(ctx context.Context, arg SwapPlanDayParams) (int64, error)
 	// An unknown id returns sql.ErrNoRows.
 	ToggleDinnerFavorite(ctx context.Context, arg ToggleDinnerFavoriteParams) (Dinner, error)

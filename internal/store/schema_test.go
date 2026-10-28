@@ -322,6 +322,9 @@ func TestSchemaEnumChecksRejectInvalidValues(t *testing.T) {
 		{"suggestions", "status", "maybe"},
 		{"week_plans", "status", "final"},
 		{"plan_days", "is_new", 2},
+		// A day that already has a dinner cannot also carry a manual label.
+		{"plan_days", "manual_label", "leftovers"},
+		{"plan_days", "manual_label", ""},
 		{"rotation_reviews", "status", "open"},
 		{"rotation_reviews", "decision", "promote"},
 		{"shopping_lists", "status", "frozen"},

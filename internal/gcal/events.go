@@ -44,12 +44,19 @@ type Event struct {
 	Start, End  time.Time
 	// TimeZone is the IANA zone the event is in, such as America/New_York.
 	TimeZone string
+	// Remove deletes the event instead of writing it. A missing event is
+	// success. Summary, description and times are ignored.
+	Remove bool
 }
 
 func (e Event) validate() error {
-	switch {
-	case len(e.ID) < minEventID, len(e.ID) > maxEventID, !eventIDChars.MatchString(e.ID):
+	if len(e.ID) < minEventID || len(e.ID) > maxEventID || !eventIDChars.MatchString(e.ID) {
 		return fmt.Errorf("gcal: event id %q is not 5 to 1024 base32hex characters", e.ID)
+	}
+	if e.Remove {
+		return nil
+	}
+	switch {
 	case e.Summary == "":
 		return fmt.Errorf("gcal: event %s has no summary", e.ID)
 	case !e.End.After(e.Start):
@@ -132,8 +139,13 @@ func (s *Service) pushEvents(ctx context.Context, events []Event, record func() 
 }
 
 // writeEvent inserts e at base, the chosen calendar's events collection,
-// and updates it when Google already has its id.
+// and updates it when Google already has its id. A removal deletes the
+// event; one Google does not have is already gone.
 func (s *Service) writeEvent(ctx context.Context, access, base string, e Event) error {
+	if e.Remove {
+		_, err := s.eventRequest(ctx, access, http.MethodDelete, base+"/"+url.PathEscape(e.ID), nil)
+		return err
+	}
 	body, err := json.Marshal(eventBody{
 		ID:          e.ID,
 		Status:      "confirmed",
@@ -164,8 +176,11 @@ func (s *Service) writeEvent(ctx context.Context, access, base string, e Event) 
 // a transient failure is answered 409 when retried, and updated.
 func (s *Service) eventRequest(ctx context.Context, access, method, target string, body []byte) (int, error) {
 	what := "event insert"
-	if method == http.MethodPut {
+	switch method {
+	case http.MethodPut:
 		what = "event update"
+	case http.MethodDelete:
+		what = "event delete"
 	}
 	status, reply, err := s.send(ctx, what, maxEventBody, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(body))
@@ -182,6 +197,11 @@ func (s *Service) eventRequest(ctx context.Context, access, method, target strin
 	switch {
 	case status == http.StatusOK:
 		return http.StatusOK, nil
+	case status == http.StatusNoContent && method == http.MethodDelete:
+		return status, nil
+	case method == http.MethodDelete && (status == http.StatusNotFound || status == http.StatusGone):
+		// The event is already gone, which is what a delete asked for.
+		return status, nil
 	case status == http.StatusConflict && method == http.MethodPost:
 		return http.StatusConflict, nil
 	case status == http.StatusUnauthorized:

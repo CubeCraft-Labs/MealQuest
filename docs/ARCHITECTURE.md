@@ -977,7 +977,8 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
     sits on a past plan is "Tonight: {dinner}" with no recipe, opening the
     week's plan, and still carrying that dinner's id. A manual night is
     "Tonight: {label}" with no dinner and no recipe, opening the week's
-    plan (`/plan?week={weekStart}`). A cleared night emits nothing. The
+    plan (`/plan?week={weekStart}`), and carries that label. A cleared
+    night emits nothing. The
     `day_of_reminder` schedule calls it at `reminder_time`.
   - `day_of_reminder:start:{date}` (URL `/dinner/{id}`) through
     `plan.Service.EmitStartReminder(date)`, "Start the crock pot by
@@ -1011,8 +1012,13 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
     it offers — is still planned for the reminder's date
     (`day_of_reminder:{date}` or `day_of_reminder:start:{date}`). If it is
     not — the night was cleared or swapped, by any means — the reminder is
-    suppressed and not sent. A reminder that names no dinner, including a
-    manual night, is not checked and is delivered.
+    suppressed and not sent. A reminder that names no dinner and no manual
+    label, including one stored before payloads carried either, is not
+    checked and is delivered. A manual night carries its label
+    (`notify.Event.ManualLabel`, the payload's `manual_label`). Before that
+    reminder is sent, the worker checks that the plan day on its date still
+    has that label. If the label changed or the night was cleared, the
+    reminder is suppressed and not sent.
     The Web Push message
     carries `dinner` with `title`, `body`, `url` and `tag`, so a tap
     checks that recipe with the server before it opens it.

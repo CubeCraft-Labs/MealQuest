@@ -128,7 +128,8 @@ func queuedObject(t *testing.T, payload string) map[string]any {
 // crock-pot start reminder carry the planned dinner's id even when they
 // offer no recipe, and a queued reminder is not delivered once that dinner
 // has left its date. The same reminders are delivered while the dinner stays
-// on the date. A manual night has no dinner and is still delivered.
+// on the date. A manual night has no dinner; it records its label and is
+// delivered while that label is still the night's.
 func TestQueuedReminderCarriesTheDinnerID(t *testing.T) {
 	const (
 		dinnerID = "01J9CHILI"
@@ -199,6 +200,7 @@ func TestQueuedReminderCarriesTheDinnerID(t *testing.T) {
 
 	t.Run("manual night reminder is delivered", func(t *testing.T) {
 		svc, st := newReminderService(t)
+		planManualNight(t, st, date, "mummy dogs")
 		ev := ManualNightReminder(day, "mummy dogs")
 		if err := svc.Emit(t.Context(), ev); err != nil {
 			t.Fatal(err)
@@ -213,6 +215,9 @@ func TestQueuedReminderCarriesTheDinnerID(t *testing.T) {
 			t.Errorf("delivered payload = %+v, want the label, the week's plan and no dinner", gotMsg[0].Payload)
 		}
 		got := queuedObject(t, payload)
+		if got["manual_label"] != "mummy dogs" {
+			t.Errorf("queued manual_label = %v, want the night's label", got["manual_label"])
+		}
 		if _, ok := got["planned_dinner_id"]; ok || got["dinner"] != nil {
 			t.Errorf("manual night payload = %v, want no dinner id", got)
 		}

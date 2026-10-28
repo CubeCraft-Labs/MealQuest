@@ -299,11 +299,11 @@ func (s *Service) Get(ctx context.Context, weekStart store.LocalDate) (p Plan, e
 // and offers none once archived (chat.DayOfReminder). A delivery or
 // dining-out dinner names the dinner and offers no recipe
 // (chat.UncookedReminder). Either way the reminder carries the planned
-// dinner's id. A manual night is "Tonight: {label}" with no dinner
-// (chat.ManualNightReminder). A cleared night emits nothing
-// (ErrNoNight). The day_of_reminder schedule calls it at the household's
-// reminder_time (ReminderSchedules); emitting a date again stores no
-// second notification.
+// dinner's id. A manual night is "Tonight: {label}" with no dinner,
+// carrying that label (chat.ManualNightReminder). A cleared night emits
+// nothing (ErrNoNight). The day_of_reminder schedule calls it at the
+// household's reminder_time (ReminderSchedules); emitting a date again
+// stores no second notification.
 func (s *Service) EmitDayOfReminder(ctx context.Context, date store.LocalDate) (bool, error) {
 	p, err := s.Get(ctx, household.WeekStart(date))
 	if errors.Is(err, ErrNotFound) {

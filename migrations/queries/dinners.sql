@@ -62,6 +62,7 @@ SET name = ?,
 	photo_id = ?,
 	grounding_status = ?,
 	grounding_revision = ?,
+	meal_source = ?,
 	updated_by = ?,
 	updated_at = ?
 WHERE id = ?
@@ -183,13 +184,16 @@ WHERE grounding_status = 'pending'
 	);
 
 -- name: ListPhotoBackfillDinners :many
--- The dinners a photo backfill grounds by name: unarchived, failed, with no
--- photo and no pasted recipe_url (the household's own link is never
--- replaced by a search), ordered by normalized name. A non-NULL id narrows
--- the list to that dinner. Grounded, manual and pending dinners are never
--- listed: they have a recipe, or a ground_dinner job grounding them.
+-- The dinners a photo backfill grounds by name: unarchived, cooked at home,
+-- failed, with no photo and no pasted recipe_url (the household's own link
+-- is never replaced by a search), ordered by normalized name. A non-NULL id
+-- narrows the list to that dinner. Grounded, manual and pending dinners are
+-- never listed: they have a recipe, or a ground_dinner job grounding them.
+-- Delivery and dining out are not cooked, so a search never looks for a
+-- photo of them.
 SELECT * FROM dinners
 WHERE status <> 'archived'
+	AND meal_source = 'cook'
 	AND grounding_status = 'failed'
 	AND photo_id IS NULL
 	AND recipe_url IS NULL

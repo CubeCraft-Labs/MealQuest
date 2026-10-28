@@ -1,11 +1,13 @@
 -- name: ListTriedCandidates :many
 -- The ids of the dinners with status quest_log planned on date, on a plan
--- of any status, that have no Rotation check for date yet.
+-- of any status, that have no Rotation check for date yet. Delivery and
+-- dining out are not cooked, so they are not tried and open no check.
 SELECT DISTINCT dinners.id
 FROM plan_days
 JOIN dinners ON dinners.id = plan_days.dinner_id
 WHERE plan_days.date = sqlc.arg(date)
 	AND dinners.status = 'quest_log'
+	AND dinners.meal_source = 'cook'
 	AND NOT EXISTS (
 		SELECT 1 FROM rotation_reviews
 		WHERE rotation_reviews.dinner_id = dinners.id

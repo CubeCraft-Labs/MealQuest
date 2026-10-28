@@ -44,12 +44,22 @@ type Event struct {
 	Start, End  time.Time
 	// TimeZone is the IANA zone the event is in, such as America/New_York.
 	TimeZone string
+	// Remove deletes the event instead of writing it. A missing event on a
+	// calendar that is still writable is success. The same HTTP 404 from a
+	// deleted or unavailable calendar is ErrCalendarUnavailable, so a
+	// delete-only push is not recorded against a calendar that is gone.
+	// Summary, description and times are ignored.
+	Remove bool
 }
 
 func (e Event) validate() error {
-	switch {
-	case len(e.ID) < minEventID, len(e.ID) > maxEventID, !eventIDChars.MatchString(e.ID):
+	if len(e.ID) < minEventID || len(e.ID) > maxEventID || !eventIDChars.MatchString(e.ID) {
 		return fmt.Errorf("gcal: event id %q is not 5 to 1024 base32hex characters", e.ID)
+	}
+	if e.Remove {
+		return nil
+	}
+	switch {
 	case e.Summary == "":
 		return fmt.Errorf("gcal: event %s has no summary", e.ID)
 	case !e.End.After(e.Start):
@@ -122,18 +132,28 @@ func (s *Service) pushEvents(ctx context.Context, events []Event, record func() 
 	if err != nil {
 		return err
 	}
-	base := s.calendarAPI + "/calendars/" + url.PathEscape(row.CalendarID.String) + "/events"
 	for _, e := range events {
-		if err := s.writeEvent(ctx, access, base, e); err != nil {
+		if err := s.writeEvent(ctx, access, row.CalendarID.String, e); err != nil {
 			return err
 		}
 	}
 	return record()
 }
 
-// writeEvent inserts e at base, the chosen calendar's events collection,
-// and updates it when Google already has its id.
-func (s *Service) writeEvent(ctx context.Context, access, base string, e Event) error {
+// writeEvent inserts e on calendarID, the chosen calendar, and updates it
+// when Google already has its id. A removal deletes the event. One the
+// calendar does not have is already gone. A 404 is also what Google
+// returns when the calendar itself was deleted, so that 404 succeeds only
+// when calendarID is still writable.
+func (s *Service) writeEvent(ctx context.Context, access, calendarID string, e Event) error {
+	base := s.calendarAPI + "/calendars/" + url.PathEscape(calendarID) + "/events"
+	if e.Remove {
+		status, err := s.eventRequest(ctx, access, http.MethodDelete, base+"/"+url.PathEscape(e.ID), nil)
+		if err != nil || status != http.StatusNotFound {
+			return err
+		}
+		return s.calendarStillWritable(ctx, access, calendarID)
+	}
 	body, err := json.Marshal(eventBody{
 		ID:          e.ID,
 		Status:      "confirmed",
@@ -158,14 +178,19 @@ func (s *Service) writeEvent(ctx context.Context, access, base string, e Event) 
 	return err
 }
 
-// eventRequest sends an event insert (POST) or update (PUT), retrying a
-// transient failure (send), and returns HTTP 200 or, for an insert, 409;
-// every other answer is an error. An insert Google took but answered with
+// eventRequest sends an event insert (POST), update (PUT) or delete,
+// retrying a transient failure (send). It returns HTTP 200, 204 or 410 for
+// a delete, 404 for a delete the caller must distinguish (a missing event
+// or a missing calendar), or 409 for an insert of an id Google already has.
+// Every other answer is an error. An insert Google took but answered with
 // a transient failure is answered 409 when retried, and updated.
 func (s *Service) eventRequest(ctx context.Context, access, method, target string, body []byte) (int, error) {
 	what := "event insert"
-	if method == http.MethodPut {
+	switch method {
+	case http.MethodPut:
 		what = "event update"
+	case http.MethodDelete:
+		what = "event delete"
 	}
 	status, reply, err := s.send(ctx, what, maxEventBody, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(body))
@@ -182,6 +207,17 @@ func (s *Service) eventRequest(ctx context.Context, access, method, target strin
 	switch {
 	case status == http.StatusOK:
 		return http.StatusOK, nil
+	case status == http.StatusNoContent && method == http.MethodDelete:
+		return status, nil
+	case method == http.MethodDelete && status == http.StatusGone:
+		// 410 is an event Google has already deleted. The calendar
+		// answered, so this says nothing is wrong with the calendar.
+		return status, nil
+	case method == http.MethodDelete && status == http.StatusNotFound:
+		// 404 is the event missing, or the calendar deleted or hidden.
+		// Google uses the same status for both. The caller tells them
+		// apart.
+		return status, nil
 	case status == http.StatusConflict && method == http.MethodPost:
 		return http.StatusConflict, nil
 	case status == http.StatusUnauthorized:
@@ -214,4 +250,36 @@ func errorReason(body []byte) string {
 		return ""
 	}
 	return reply.Error.Errors[0].Reason
+}
+
+// calendarStillWritable reports whether calendarID is still a calendar the
+// connected account can add events to. A delete that answered 404 is the
+// event already gone when it is, and ErrCalendarUnavailable when the
+// calendar was deleted or is no longer writable. The caller holds s.account
+// and access is the token the delete just used.
+func (s *Service) calendarStillWritable(ctx context.Context, access, calendarID string) error {
+	pageToken := ""
+	for range maxCalendarPages {
+		page, err := s.calendarPage(ctx, access, pageToken)
+		if err != nil {
+			return err
+		}
+		for _, item := range page.Items {
+			if item.ID == "" {
+				return &CalendarError{msg: "gcal: Google listed a calendar without an id"}
+			}
+			if item.ID != calendarID {
+				continue
+			}
+			if item.AccessRole == "writer" || item.AccessRole == "owner" {
+				return nil
+			}
+			return ErrCalendarUnavailable
+		}
+		if page.NextPageToken == "" {
+			return ErrCalendarUnavailable
+		}
+		pageToken = page.NextPageToken
+	}
+	return &CalendarError{msg: fmt.Sprintf("gcal: Google listed more than %d pages of calendars", maxCalendarPages)}
 }

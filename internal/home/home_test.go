@@ -185,6 +185,28 @@ func (e *env) planWeek(t *testing.T) string {
 	return planID
 }
 
+// TestTonightManualNightHasNoDinner: a one-off label is tonight's name and
+// not a dinner. A cleared night is neither.
+func TestTonightManualNightHasNoDinner(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	e.planWeek(t)
+	if _, err := e.st.Writer.ExecContext(t.Context(), `UPDATE plan_days SET dinner_id = NULL, manual_label = 'mummy dogs', is_new = 0 WHERE date = '2026-10-13'`); err != nil {
+		t.Fatal(err)
+	}
+	h := e.at(t, "2026-10-13 18:00")
+	if h.Tonight != nil || h.ManualTonight == nil || *h.ManualTonight != "mummy dogs" {
+		t.Fatalf("tonight = %+v, manual = %v, want mummy dogs and no dinner", h.Tonight, h.ManualTonight)
+	}
+	if _, err := e.st.Writer.ExecContext(t.Context(), `UPDATE plan_days SET manual_label = NULL WHERE date = '2026-10-13'`); err != nil {
+		t.Fatal(err)
+	}
+	h = e.at(t, "2026-10-13 18:00")
+	if h.Tonight != nil || h.ManualTonight != nil {
+		t.Fatalf("cleared tonight = %+v, manual = %v, want neither", h.Tonight, h.ManualTonight)
+	}
+}
+
 // Tonight's dinner and the date label follow the household's local
 // midnight, not UTC's: late on Tuesday evening in Chicago it is already
 // Wednesday in UTC, and Home still shows Tuesday's dinner.

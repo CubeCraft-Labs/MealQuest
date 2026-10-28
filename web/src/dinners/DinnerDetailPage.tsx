@@ -22,7 +22,7 @@ import { Skeleton } from '../ui/Skeleton.tsx'
 import { Tag } from '../ui/Tag.tsx'
 import { Toggle } from '../ui/Toggle.tsx'
 import { AddToWeekSheet, weekNames, type Added } from './AddToWeekSheet.tsx'
-import { useToggleFavorite, type Difficulty } from './api.ts'
+import { MEAL_SOURCE_LABEL, useToggleFavorite, type Difficulty } from './api.ts'
 import { ArchivedDinnerError } from './archived.ts'
 import { useDinnerDetail, type DinnerDetail, type Ingredient, type RecipeSource } from './detail.ts'
 import styles from './DinnerDetailPage.module.css'
@@ -237,6 +237,31 @@ function ActionBar({ dinner, children }: { dinner: DinnerDetail; children?: Reac
   )
 }
 
+// UncookedDinner is a Delivery or Dining Out dinner: the household can tell
+// it apart, and it offers no photo, recipe, recipe link or way onto the plan.
+function UncookedDinner({ dinner }: { dinner: DinnerDetail }) {
+  return (
+    <>
+      <div className={styles.backRow}>
+        <BackButton />
+      </div>
+      <article className={styles.sheet}>
+        <div className={styles.tags}>
+          <Tag tone="teal">{MEAL_SOURCE_LABEL[dinner.meal_source]}</Tag>
+        </div>
+        <h1 className={styles.title}>{dinner.name}</h1>
+        <p className={styles.missing}>
+          {MEAL_SOURCE_LABEL[dinner.meal_source]} is not cooked at home, so it has no recipe and is not included in the
+          plan.
+        </p>
+      </article>
+      <div className={styles.bar}>
+        <FavoriteHeart dinner={dinner} />
+      </div>
+    </>
+  )
+}
+
 // Detail is a dinner as mock 1k shows it: the photo full-bleed under a sheet
 // with its tags, title, why it was picked and its recipe, over the action bar.
 function Detail({ dinner }: { dinner: DinnerDetail }) {
@@ -295,7 +320,7 @@ function PlannedDay({ dinner, timezone }: { dinner: DinnerDetail; timezone: stri
       </ErrorBanner>
     )
   }
-  const planned = plans.flatMap((plan) => plan.data?.days ?? []).filter((day) => day.dinner.id === dinner.id)
+  const planned = plans.flatMap((plan) => plan.data?.days ?? []).filter((day) => day.dinner?.id === dinner.id)
   const day = planned.find((day) => day.date >= today) ?? planned.at(-1)
   if (day === undefined) return null
   return (
@@ -577,7 +602,15 @@ export function DinnerDetailPage() {
     // Keyed by the dinner, so moving to another dinner starts its visit
     // afresh: nothing checked, on the first step.
     body =
-      layout === 'mobile' ? <Detail dinner={dinner.data} /> : <KitchenReading key={dinner.data.id} dinner={dinner.data} />
+      dinner.data.meal_source === 'cook' ? (
+        layout === 'mobile' ? (
+          <Detail dinner={dinner.data} />
+        ) : (
+          <KitchenReading key={dinner.data.id} dinner={dinner.data} />
+        )
+      ) : (
+        <UncookedDinner dinner={dinner.data} />
+      )
   }
   return <div className={`${styles.page} ${styles[layout]}`}>{body}</div>
 }

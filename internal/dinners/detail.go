@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -42,8 +43,11 @@ type Detail struct {
 	GroundingError *string `json:"grounding_error"`
 	// WhyPicked is the reason of the suggestion that created the dinner
 	// (see GetDinnerSuggestionReasons); null for a dinner no suggestion
-	// created.
+	// created, and for one that is not cooked at home.
 	WhyPicked *string `json:"why_picked"`
+	// MealSource is cook, delivery or dining_out. A dinner that is not
+	// cooked at home has no photo, ingredients, steps or recipe source.
+	MealSource string `json:"meal_source"`
 }
 
 // Ingredient is one recipe line. RawText is the line as the recipe gives
@@ -106,9 +110,17 @@ func (s *Service) Get(ctx context.Context, id string) (d Detail, err error) {
 		Steps:           []string{},
 		GroundingStatus: row.GroundingStatus,
 		GroundingError:  nullString(row.GroundingError),
+		MealSource:      row.MealSource,
+	}
+	if !slices.Contains(MealSources, row.MealSource) {
+		return Detail{}, fmt.Errorf("dinners: %s meal_source %q is not one of %s", id, row.MealSource, strings.Join(MealSources, ", "))
 	}
 	if row.MinutesTotal.Valid {
 		d.MinutesTotal = &row.MinutesTotal.Int64
+	}
+	// Delivery and dining out contribute no photo, recipe or ingredients.
+	if !Cooked(row.MealSource) {
+		return d, nil
 	}
 	if row.PhotoID.Valid {
 		d.PhotoURLs = make(map[string]string, len(recipes.PhotoSizes))

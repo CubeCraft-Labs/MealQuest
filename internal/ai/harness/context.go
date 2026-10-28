@@ -119,6 +119,13 @@ func readContext(ctx context.Context, st *store.Store, now time.Time) (h Househo
 	}
 	h.Regulars = []RegularDinner{}
 	for _, d := range regulars {
+		switch d.MealSource {
+		case "cook":
+		case "delivery", "dining_out":
+			continue
+		default:
+			return h, fmt.Errorf("dinner %s meal_source %q is not cook, delivery or dining_out", d.ID, d.MealSource)
+		}
 		h.Regulars = append(h.Regulars, RegularDinner{
 			Name:     d.Name,
 			Cuisine:  nullString(d.Cuisine),
@@ -134,6 +141,13 @@ func readContext(ctx context.Context, st *store.Store, now time.Time) (h Househo
 	}
 	h.QuestLog = []string{}
 	for _, d := range questLog {
+		switch d.MealSource {
+		case "cook":
+		case "delivery", "dining_out":
+			continue
+		default:
+			return h, fmt.Errorf("dinner %s meal_source %q is not cook, delivery or dining_out", d.ID, d.MealSource)
+		}
 		h.QuestLog = append(h.QuestLog, d.Name)
 	}
 

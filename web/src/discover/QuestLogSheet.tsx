@@ -107,12 +107,18 @@ export function QuestLogSheet({ open, dinners, onClose }: QuestLogSheetProps) {
                     leading={
                       // The row's name already says what the photo shows.
                       <span aria-hidden="true">
-                        <Photo id={dinner.photo_id} name={dinner.name} radius="var(--radius-md)" sizes="48px" className={styles.photo} />
+                        <Photo
+                          id={dinner.meal_source === 'cook' ? dinner.photo_id : undefined}
+                          name={dinner.name}
+                          radius="var(--radius-md)"
+                          sizes="48px"
+                          className={styles.photo}
+                        />
                       </span>
                     }
                     title={dinner.name}
                     meta={details(dinner)}
-                    onClick={opensRecipe('quest_log', dinner.cached) ? () => recipe.open(dinner) : undefined}
+                    onClick={opensRecipe('quest_log', dinner.cached, dinner.meal_source) ? () => recipe.open(dinner) : undefined}
                     trailing={
                       <IconButton
                         ref={(button) => {

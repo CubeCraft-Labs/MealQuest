@@ -341,8 +341,13 @@ func TestEmitRejectsInvalidEvents(t *testing.T) {
 		"dinner with another recipe": func(e *Event) {
 			e.URL, e.Dinner = "/dinner/01J9OTHER", &Dinner{ID: "01J9TACOS", Name: "Tacos"}
 		},
-		"dinner without a name": func(e *Event) { e.URL, e.Dinner = "/dinner/01J9TACOS", &Dinner{ID: "01J9TACOS", Name: " "} },
-		"dinner without an id":  func(e *Event) { e.URL, e.Dinner = "/dinner/", &Dinner{Name: "Tacos"} },
+		"dinner without a name":          func(e *Event) { e.URL, e.Dinner = "/dinner/01J9TACOS", &Dinner{ID: "01J9TACOS", Name: " "} },
+		"dinner without an id":           func(e *Event) { e.URL, e.Dinner = "/dinner/", &Dinner{Name: "Tacos"} },
+		"planned dinner id with a slash": func(e *Event) { e.PlannedDinnerID = "a/b" },
+		"planned dinner of another dinner": func(e *Event) {
+			e.URL, e.Dinner = "/dinner/01J9TACOS", &Dinner{ID: "01J9TACOS", Name: "Tacos"}
+			e.PlannedDinnerID = "01J9OTHER"
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ev := valid

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/gcal"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
@@ -53,11 +54,13 @@ type pushDay struct {
 }
 
 // Push pushes the plan of the week starting weekStart to the household's
-// chosen calendar and returns the plan as synced. Each day is an event
+// chosen calendar and returns the plan as synced. Each dinner is an event
 // "Dinner: {name}" from the household's dinner time on that date, in the
 // household's zone, for an hour; its description is the dinner's name,
 // "Start by {time}" for a crock-pot dinner whose minutes are known, and
-// the dinner's link under the public URL. Its id is EventID.
+// the dinner's link under the public URL. A manual night is an event
+// whose summary and description are the label alone, at the same time,
+// with no dinner link. A cleared night is deleted. Its id is EventID.
 //
 // A push writes the days Calendar does not show as planned: those never
 // pushed, swapped, or redrafted to another dinner since, whose
@@ -164,7 +167,7 @@ func (s *Service) pushDays(ctx context.Context, weekStart store.LocalDate) (plan
 	if err != nil {
 		return "", 0, nil, fmt.Errorf("plan: household settings: %w", err)
 	}
-	rows, err := q.ListPlanDays(ctx, row.ID)
+	rows, err := q.ListPlanSlots(ctx, row.ID)
 	if err != nil {
 		return "", 0, nil, fmt.Errorf("plan: read days of %s: %w", row.ID, err)
 	}
@@ -180,7 +183,22 @@ func (s *Service) pushDays(ctx context.Context, weekStart store.LocalDate) (plan
 		if r.Date != dates[i].String() {
 			return "", 0, nil, fmt.Errorf("plan: week %s day %d is %s, want %s", weekStart, i+1, r.Date, dates[i])
 		}
-		event, err := s.event(zone, settings.Timezone, settings.DinnerTime, weekStart, dates[i], r.Dinner)
+		_, raw, err := planDay(ctx, q, zone, dates[i], settings.DinnerTime, r)
+		if err != nil {
+			return "", 0, nil, err
+		}
+		var event gcal.Event
+		switch {
+		case raw != nil:
+			event, err = s.event(zone, settings.Timezone, settings.DinnerTime, weekStart, dates[i], *raw)
+		case r.ManualLabel.Valid:
+			event, err = s.manualEvent(zone, settings.Timezone, settings.DinnerTime, weekStart, dates[i], r.ManualLabel.String)
+		default:
+			// A cleared night is removed, so Calendar does not keep a
+			// dinner the plan no longer has. The id is the day's own, so
+			// the removal hits the event a previous push wrote.
+			event = gcal.Event{ID: EventID(weekStart, dates[i]), Remove: true}
+		}
 		if err != nil {
 			return "", 0, nil, fmt.Errorf("plan: event of %s: %w", r.Date, err)
 		}
@@ -196,6 +214,25 @@ func (s *Service) pushDays(ctx context.Context, weekStart store.LocalDate) (plan
 	return row.ID, row.Revision, days, nil
 }
 
+// manualEvent is the Calendar event of a one-off night named label on
+// date of the week starting weekStart, at dinnerTime in zone, named
+// zoneName. The summary and description are the label alone: no "Dinner:"
+// prefix and no dinner link, so the night is not pushed as a dinner.
+func (s *Service) manualEvent(zone *time.Location, zoneName, dinnerTime string, weekStart, date store.LocalDate, label string) (gcal.Event, error) {
+	start, err := household.LocalTime(zone, date, dinnerTime)
+	if err != nil {
+		return gcal.Event{}, err
+	}
+	return gcal.Event{
+		ID:          EventID(weekStart, date),
+		Summary:     label,
+		Description: label,
+		Start:       start,
+		End:         start.Add(eventLength),
+		TimeZone:    zoneName,
+	}, nil
+}
+
 // event is the Calendar event of dinner d on date of the week starting
 // weekStart, at dinnerTime in zone, named zoneName.
 func (s *Service) event(zone *time.Location, zoneName, dinnerTime string, weekStart, date store.LocalDate, d db.Dinner) (gcal.Event, error) {
@@ -204,14 +241,22 @@ func (s *Service) event(zone *time.Location, zoneName, dinnerTime string, weekSt
 		return gcal.Event{}, err
 	}
 	lines := []string{d.Name}
-	startBy, err := startBy(zone, date, dinnerTime, d)
-	if err != nil {
-		return gcal.Event{}, err
+	if !dinners.Cooked(d.MealSource) {
+		label, err := uncookedLabel(d.MealSource)
+		if err != nil {
+			return gcal.Event{}, err
+		}
+		lines = append(lines, label)
+	} else {
+		startBy, err := startBy(zone, date, dinnerTime, d)
+		if err != nil {
+			return gcal.Event{}, err
+		}
+		if startBy != nil {
+			lines = append(lines, "Start by "+startBy.In(zone).Format("3:04 pm"))
+		}
+		lines = append(lines, s.publicURL.JoinPath("dinner", d.ID).String())
 	}
-	if startBy != nil {
-		lines = append(lines, "Start by "+startBy.In(zone).Format("3:04 pm"))
-	}
-	lines = append(lines, s.publicURL.JoinPath("dinner", d.ID).String())
 	return gcal.Event{
 		ID:          EventID(weekStart, date),
 		Summary:     "Dinner: " + d.Name,

@@ -137,7 +137,7 @@ describe('App routes', () => {
           chat_send_unconfirmed_at: null,
           needed_count: 1,
           total_count: 1,
-          groups: [{ dinner: { id: 'd1', name: 'Beef tacos', status: 'regular' }, date: week, day: 'Monday', items: [{ id: 'i1', name: 'Ground beef', qty: '1 lb', needed: true }] }],
+          groups: [{ dinner: { id: 'd1', name: 'Beef tacos', status: 'regular', meal_source: 'cook' }, date: week, day: 'Monday', items: [{ id: 'i1', name: 'Ground beef', qty: '1 lb', needed: true }] }],
         }),
     })
     renderAt('/plan/shopping')

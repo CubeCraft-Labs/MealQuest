@@ -37,6 +37,7 @@ func TestGetHome(t *testing.T) {
 			"dateLabel":      now.In(loc).Format("Monday, Jan 2"),
 			"timezone":       loc.String(),
 			"tonight":        nil,
+			"manualTonight":  nil,
 			"sideQuestCount": 0,
 			"shoppingList":   map[string]any{"weekStart": week.String(), "label": label, "ready": false, "sentToChatAt": nil},
 			"recentUpdates":  map[string]any{"unread": false},

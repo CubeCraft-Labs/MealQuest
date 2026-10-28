@@ -29,6 +29,7 @@ function detail(overrides: Record<string, unknown> = {}) {
     difficulty: 'easy',
     cuisine: 'korean',
     is_favorite: false,
+    meal_source: 'cook',
     photo_urls: null,
     ingredients: [{ name: 'Ground beef', qty: '1', unit: 'lb', note: null, raw_text: '1 lb ground beef' }],
     steps: ['Brown the beef with the sauce.'],
@@ -54,6 +55,7 @@ function listed(is_favorite: boolean) {
     grounding_status: 'grounded',
     grounding_error: null,
     photo_backfill_eligible: false,
+    meal_source: 'cook',
   }
 }
 
@@ -72,7 +74,7 @@ function planBody(weekStart: string, names: string[], ids = names.map((_, i) => 
     calendar_synced_at: null as string | null,
     days: names.map((name, i) => ({
       date: new Date(start + i * 86_400_000).toISOString().slice(0, 10),
-      dinner: { id: ids[i], name, status: 'regular', photo: null, minutes: 30, method: 'stovetop' },
+      dinner: { id: ids[i], name, status: 'regular', photo: null, minutes: 30, method: 'stovetop', meal_source: 'cook' },
       is_new: false,
       start_by: null,
     })),

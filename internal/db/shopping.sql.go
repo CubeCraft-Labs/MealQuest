@@ -155,6 +155,18 @@ func (q *Queries) DeleteShoppingItem(ctx context.Context, id string) error {
 	return err
 }
 
+const deleteShoppingItemsByGroup = `-- name: DeleteShoppingItemsByGroup :exec
+DELETE FROM shopping_items
+WHERE group_id = ?
+`
+
+// Removes every item of group group_id. The group is removed only once
+// it is empty.
+func (q *Queries) DeleteShoppingItemsByGroup(ctx context.Context, groupID string) error {
+	_, err := q.db.ExecContext(ctx, deleteShoppingItemsByGroup, groupID)
+	return err
+}
+
 const freezeShoppingList = `-- name: FreezeShoppingList :execrows
 UPDATE shopping_lists
 SET status = 'archived', frozen_at = ?, updated_at = ?
@@ -234,8 +246,43 @@ func (q *Queries) GetShoppingList(ctx context.Context, weekStart string) (Shoppi
 	return i, err
 }
 
+const listCurrentShoppingGroupsByDinner = `-- name: ListCurrentShoppingGroupsByDinner :many
+SELECT shopping_groups.id
+FROM shopping_groups
+JOIN shopping_lists ON shopping_lists.id = shopping_groups.list_id
+WHERE shopping_groups.dinner_id = ?
+	AND shopping_lists.status = 'current'
+	AND shopping_lists.frozen_at IS NULL
+`
+
+// Groups of dinner dinner_id on a Supply run that is still current. A run
+// frozen into the Supply archive keeps its groups.
+func (q *Queries) ListCurrentShoppingGroupsByDinner(ctx context.Context, dinnerID string) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listCurrentShoppingGroupsByDinner, dinnerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listShoppingGroupDinners = `-- name: ListShoppingGroupDinners :many
-SELECT shopping_groups.id, shopping_groups.list_id, shopping_groups.dinner_id, shopping_groups.date, shopping_groups.position, shopping_groups.created_at, shopping_groups.updated_at, dinners.name AS dinner_name, dinners.status AS dinner_status
+SELECT shopping_groups.id, shopping_groups.list_id, shopping_groups.dinner_id, shopping_groups.date, shopping_groups.position, shopping_groups.created_at, shopping_groups.updated_at, dinners.name AS dinner_name, dinners.status AS dinner_status,
+	dinners.meal_source AS dinner_meal_source
 FROM shopping_groups
 JOIN dinners ON dinners.id = shopping_groups.dinner_id
 WHERE shopping_groups.list_id = ?
@@ -243,9 +290,10 @@ ORDER BY shopping_groups.position, shopping_groups.id
 `
 
 type ListShoppingGroupDinnersRow struct {
-	ShoppingGroup ShoppingGroup
-	DinnerName    string
-	DinnerStatus  string
+	ShoppingGroup    ShoppingGroup
+	DinnerName       string
+	DinnerStatus     string
+	DinnerMealSource string
 }
 
 // The groups of list list_id with their dinner's name and status, in list
@@ -269,6 +317,7 @@ func (q *Queries) ListShoppingGroupDinners(ctx context.Context, listID string) (
 			&i.ShoppingGroup.UpdatedAt,
 			&i.DinnerName,
 			&i.DinnerStatus,
+			&i.DinnerMealSource,
 		); err != nil {
 			return nil, err
 		}

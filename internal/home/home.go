@@ -53,9 +53,13 @@ type Home struct {
 	// Timezone is the household's IANA zone, whose next local midnight
 	// is when Home is read again for the new day.
 	Timezone string `json:"timezone"`
-	// Tonight is the dinner planned for today on the current week's plan;
-	// nil when the week has no plan.
+	// Tonight is the dinner planned for today on the current week's plan.
+	// Nil when the week has no plan, today is cleared, or today is a
+	// manual night (ManualTonight).
 	Tonight *Dinner `json:"tonight"`
+	// ManualTonight is today's free-text night. Nil unless today is a
+	// one-off label, and never set together with Tonight.
+	ManualTonight *string `json:"manualTonight"`
 	// SideQuestCount is how many Side quests are pending on the deck.
 	SideQuestCount int `json:"sideQuestCount"`
 	// ShoppingList is the Supply run of the upcoming week when it has one,
@@ -75,6 +79,9 @@ type Dinner struct {
 	// Origin is regular or side_quest.
 	Origin       string `json:"origin"`
 	MinutesTotal *int64 `json:"minutes_total"`
+	// MealSource is cook, delivery or dining_out. A dinner that is not
+	// cooked at home has no photo and no recipe to open.
+	MealSource string `json:"meal_source"`
 }
 
 // ShoppingStatus is whether a week's Supply run is ready.
@@ -113,7 +120,7 @@ func (s *Service) Get(ctx context.Context) (Home, error) {
 	today := household.Today(now, zone)
 	thisWeek := household.WeekStart(today)
 
-	tonight, err := s.tonight(ctx, thisWeek, today)
+	tonight, manual, err := s.tonight(ctx, thisWeek, today)
 	if err != nil {
 		return Home{}, err
 	}
@@ -133,6 +140,7 @@ func (s *Service) Get(ctx context.Context) (Home, error) {
 		DateLabel:      now.Format("Monday, Jan 2"),
 		Timezone:       settings.Timezone,
 		Tonight:        tonight,
+		ManualTonight:  manual,
 		SideQuestCount: sideQuests,
 		ShoppingList:   list,
 		RecentUpdates:  RecentUpdates{Unread: unread},
@@ -140,24 +148,33 @@ func (s *Service) Get(ctx context.Context) (Home, error) {
 }
 
 // tonight returns the dinner planned on today in the plan of the week
-// starting thisWeek, or nil when the week has no plan.
-func (s *Service) tonight(ctx context.Context, thisWeek, today store.LocalDate) (*Dinner, error) {
+// starting thisWeek, or the manual label when today is a one-off night.
+// Both are nil when the week has no plan or today is cleared. They are
+// never both set.
+func (s *Service) tonight(ctx context.Context, thisWeek, today store.LocalDate) (*Dinner, *string, error) {
 	p, err := s.plans.Get(ctx, thisWeek)
 	if errors.Is(err, plan.ErrNotFound) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("home: read plan: %w", err)
+		return nil, nil, fmt.Errorf("home: read plan: %w", err)
 	}
 	for _, d := range p.Days {
-		if d.Date == today.String() {
-			return &Dinner{
-				ID: d.Dinner.ID, Name: d.Dinner.Name, Status: d.Dinner.Status, Photo: d.Dinner.Photo,
-				Origin: d.Dinner.Origin, MinutesTotal: d.Dinner.Minutes,
-			}, nil
+		if d.Date != today.String() {
+			continue
 		}
+		if d.Dinner != nil && d.ManualLabel != nil {
+			return nil, nil, fmt.Errorf("home: %s has a dinner and a manual label", today)
+		}
+		if d.Dinner == nil {
+			return nil, d.ManualLabel, nil
+		}
+		return &Dinner{
+			ID: d.Dinner.ID, Name: d.Dinner.Name, Status: d.Dinner.Status, Photo: d.Dinner.Photo,
+			Origin: d.Dinner.Origin, MinutesTotal: d.Dinner.Minutes, MealSource: d.Dinner.MealSource,
+		}, nil, nil
 	}
-	return nil, fmt.Errorf("home: plan of week %s has no day %s", thisWeek, today)
+	return nil, nil, fmt.Errorf("home: plan of week %s has no day %s", thisWeek, today)
 }
 
 // shoppingStatus returns the status of the upcoming week's Supply run when

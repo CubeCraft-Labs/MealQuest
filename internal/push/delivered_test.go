@@ -40,6 +40,14 @@ func deliverReminder(t *testing.T, between func(st *store.Store)) []byte {
 		VALUES ('01TACOS', 'Tacos', 'tacos', 'regular', 'regular', 0, 'grounded', 'c', 'u')`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := st.Writer.Exec(`INSERT INTO week_plans (id, week_start, status, created_at, updated_at)
+		VALUES ('plan-tacos', '2026-10-12', 'draft', 'c', 'u')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Writer.Exec(`INSERT INTO plan_days (id, plan_id, date, dinner_id, is_new, created_at, updated_at)
+		VALUES ('day-tacos', 'plan-tacos', '2026-10-14', '01TACOS', 0, 'c', 'u')`); err != nil {
+		t.Fatal(err)
+	}
 	n, err := notify.NewService(st, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)

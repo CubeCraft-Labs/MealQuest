@@ -88,6 +88,57 @@ export function savedWeeks(): string[] {
   return Object.keys(read().runs)
 }
 
+// reconcileSavedMealSource applies dinnerId's meal source to Supply runs
+// saved on this device. A source other than cook drops that dinner's group
+// from a current run. An archived run keeps the group it was shopped with.
+// A run that does not have the dinner is left as it is. When weeks is set,
+// only those weeks are touched: a designation reconciles a saved run only
+// for a plan that no longer has the dinner.
+export function reconcileSavedMealSource(dinnerId: string, mealSource: string, weeks?: ReadonlySet<string>) {
+  keep(WEEKS_CAUSE, () => {
+    const saved = read()
+    let changed = false
+    const runs: Record<string, unknown> = { ...saved.runs }
+    for (const week of Object.keys(runs)) {
+      if (weeks !== undefined && !weeks.has(week)) continue
+      const next = reconcileSavedRun(runs[week], dinnerId, mealSource)
+      if (next !== runs[week]) {
+        runs[week] = next
+        changed = true
+      }
+    }
+    if (!changed) return
+    window.localStorage.setItem(SAVED_KEY, JSON.stringify({ ...saved, runs }))
+  })
+}
+
+function reconcileSavedRun(run: unknown, dinnerId: string, mealSource: string): unknown {
+  if (!isRecord(run) || run.status === 'archived' || !Array.isArray(run.groups)) return run
+  const hasDinner = run.groups.some((group) => isRecord(group) && isRecord(group.dinner) && group.dinner.id === dinnerId)
+  if (!hasDinner) return run
+  if (mealSource === 'cook') {
+    return {
+      ...run,
+      groups: run.groups.map((group) => {
+        if (!isRecord(group) || !isRecord(group.dinner) || group.dinner.id !== dinnerId) return group
+        return { ...group, dinner: { ...group.dinner, meal_source: mealSource } }
+      }),
+    }
+  }
+  const groups = run.groups.filter((group) => !(isRecord(group) && isRecord(group.dinner) && group.dinner.id === dinnerId))
+  let needed = 0
+  let total = 0
+  for (const group of groups) {
+    if (!isRecord(group) || !Array.isArray(group.items)) continue
+    for (const item of group.items) {
+      if (!isRecord(item)) continue
+      total += 1
+      if (item.needed === true) needed += 1
+    }
+  }
+  return { ...run, groups, needed_count: needed, total_count: total }
+}
+
 // saveRun keeps the week's Supply run as the server sent it, with the latest
 // weeks'. A week with none (null) or one frozen into the Supply archive is
 // not kept: nothing on it can change. Once it is kept, a failure to read or

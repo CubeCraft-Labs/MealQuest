@@ -82,7 +82,7 @@ func (p *planEnv) wantReminder(key, title, body, name string) {
 		week := household.WeekStart(mustLocalDate(key[len(key)-len("YYYY-MM-DD"):]))
 		want := notify.Payload{
 			Event: notify.DayOfReminder, Title: title, Body: body, URL: "/dinner/" + p.ids[name], Tag: key,
-			Dinner: &notify.Dinner{ID: p.ids[name], Name: name}, Week: week.String(),
+			Dinner: &notify.Dinner{ID: p.ids[name], Name: name}, PlannedDinnerID: p.ids[name], Week: week.String(),
 		}
 		if !reflect.DeepEqual(r.Payload, want) {
 			p.e.t.Errorf("reminder %s = %+v, want %+v", key, r.Payload, want)

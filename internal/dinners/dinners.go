@@ -51,6 +51,22 @@ var (
 	Difficulties = []string{"easy", "medium", "hard"}
 )
 
+// Meal sources (the dinners.meal_source column). Cook is a dinner made at
+// home. Delivery and dining out are not cooked, so they are not planned.
+const (
+	MealSourceCook      = "cook"
+	MealSourceDelivery  = "delivery"
+	MealSourceDiningOut = "dining_out"
+)
+
+// MealSources are the values the dinners.meal_source column allows.
+var MealSources = []string{MealSourceCook, MealSourceDelivery, MealSourceDiningOut}
+
+// Cooked reports whether source is a dinner cooked at home.
+func Cooked(source string) bool {
+	return source == MealSourceCook
+}
+
 // listable are the statuses List answers for.
 var listable = []string{StatusRegular, StatusQuestLog}
 
@@ -76,9 +92,12 @@ type Dinner struct {
 	// GroundingError is why grounding failed, one of the Reason codes;
 	// null unless GroundingStatus is failed.
 	GroundingError *string `json:"grounding_error"`
-	UpdatedBy      *string `json:"updated_by"`
-	CreatedAt      string  `json:"created_at"`
-	UpdatedAt      string  `json:"updated_at"`
+	// MealSource is cook, delivery or dining_out. Delivery and dining out
+	// are not cooked at home.
+	MealSource string  `json:"meal_source"`
+	UpdatedBy  *string `json:"updated_by"`
+	CreatedAt  string  `json:"created_at"`
+	UpdatedAt  string  `json:"updated_at"`
 
 	// PhotoBackfillEligible is whether a photo backfill grounds the dinner
 	// (PhotoBackfillEligible): false for one with a pasted recipe link,
@@ -101,6 +120,8 @@ type Patch struct {
 	Method       *string
 	MinutesTotal *int
 	Difficulty   *string
+	// MealSource is cook, delivery or dining_out.
+	MealSource *string
 }
 
 // Problem is one invalid field, named by its JSON key.
@@ -137,6 +158,17 @@ func (e *DuplicateError) Error() string {
 	return fmt.Sprintf("%q is already a dinner (%s)", e.Existing.Name, e.Existing.Status)
 }
 
+// PlannedError is a change of meal source to Delivery or Dining Out while
+// the dinner is on a current or future plan day. The dinner stays as it
+// was: it has to be removed from the plan first. Nothing is written.
+type PlannedError struct {
+	Name string
+}
+
+func (e *PlannedError) Error() string {
+	return fmt.Sprintf("%s is on the plan and must be removed from the plan first", e.Name)
+}
+
 // Service reads and changes dinners.
 type Service struct {
 	st        *store.Store
@@ -145,8 +177,8 @@ type Service struct {
 	groundJob *jobs.Kind[GroundJob]
 	// backfillJob enqueues KindBackfillPhotos jobs.
 	backfillJob *jobs.Kind[BackfillJob]
-	// wake is called after every committed change to a dinner's method or
-	// minutes, which can move its crock-pot start reminder.
+	// wake is called after every committed change to a dinner's method,
+	// minutes or meal source, which can move its crock-pot start reminder.
 	wake func()
 
 	// groundingsMu guards groundings: the KindGroundDinner jobs running,
@@ -449,7 +481,13 @@ func (s *Service) listQuestLog(ctx context.Context) (rows []db.Dinner, err error
 // job that grounds the new name, and clears its recipe_url when the
 // normalized name changes: a job queued or running for the old name or
 // link carries the old revision, so it can no longer write the dinner, and
-// one running is stopped.
+// one running is stopped. Setting its meal source to Delivery or Dining
+// Out is a *PlannedError, and changes nothing, while the dinner is on a
+// current or future plan day: it has to be removed from the plan first.
+// A dinner that is not on such a day can be designated, and set back to
+// cook at any time. The write does not change a plan, a Supply run or
+// Calendar.
+
 func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy string) (Dinner, error) {
 	if updatedBy == "" {
 		return Dinner{}, errors.New("dinners: update: no member to record as updated_by")
@@ -460,7 +498,7 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 	}
 
 	var row db.Dinner
-	var renamed, regrounding bool
+	var renamed, regrounding, sourceChanged bool
 	err = s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		q := db.New(tx)
 		cur, err := q.GetDinner(ctx, id)
@@ -485,6 +523,7 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 			PhotoID:           cur.PhotoID,
 			GroundingStatus:   cur.GroundingStatus,
 			GroundingRevision: cur.GroundingRevision,
+			MealSource:        cur.MealSource,
 			UpdatedBy:         sql.NullString{String: updatedBy, Valid: true},
 			UpdatedAt:         store.Now().String(),
 		}
@@ -512,9 +551,20 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 		if p.Difficulty != nil {
 			params.Difficulty = sql.NullString{String: *p.Difficulty, Valid: true}
 		}
+		if p.MealSource != nil && *p.MealSource != cur.MealSource && !Cooked(*p.MealSource) {
+			if err := refuseIfPlanned(ctx, q, cur); err != nil {
+				return err
+			}
+		}
+		if p.MealSource != nil {
+			params.MealSource = *p.MealSource
+		}
 		row, err = q.UpdateDinner(ctx, params)
 		if err != nil {
 			return fmt.Errorf("dinners: update %s: %w", id, err)
+		}
+		if p.MealSource != nil && *p.MealSource != cur.MealSource {
+			sourceChanged = true
 		}
 		renamed = row.GroundingRevision != cur.GroundingRevision
 		regrounding = renamed && cur.GroundingStatus == GroundingPending
@@ -523,7 +573,7 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 	if err != nil {
 		return Dinner{}, err
 	}
-	if p.Method != nil || p.MinutesTotal != nil {
+	if p.Method != nil || p.MinutesTotal != nil || sourceChanged {
 		s.wake()
 	}
 	if renamed {
@@ -544,6 +594,34 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 		}
 	}
 	return fromRow(row), nil
+}
+
+// refuseIfPlanned returns a *PlannedError when cur is on a plan day of
+// today or later, in the household's timezone. A past day does not count.
+// The caller is inside the update's transaction and writes nothing when
+// this returns an error, so the dinner, its plans, its Supply run and
+// Calendar stay as they were. There is no Calendar call here.
+func refuseIfPlanned(ctx context.Context, q *db.Queries, cur db.Dinner) error {
+	settings, err := q.GetHouseholdSettings(ctx)
+	if err != nil {
+		return fmt.Errorf("dinners: read household settings: %w", err)
+	}
+	loc, err := household.LoadZone(settings.Timezone)
+	if err != nil {
+		return fmt.Errorf("dinners: household settings: %w", err)
+	}
+	today := household.Today(now(), loc).String()
+	days, err := q.ListDinnerPlanDaysFrom(ctx, db.ListDinnerPlanDaysFromParams{
+		DinnerID: sql.NullString{String: cur.ID, Valid: true},
+		FromDate: today,
+	})
+	if err != nil {
+		return fmt.Errorf("dinners: read plans of %s: %w", cur.ID, err)
+	}
+	if len(days) > 0 {
+		return &PlannedError{Name: cur.Name}
+	}
+	return nil
 }
 
 // Archive sets dinner id's status to archived, recording updatedBy. The row
@@ -593,7 +671,7 @@ func (s *Service) ToggleFavorite(ctx context.Context, id, updatedBy string) (Din
 func (p Patch) validate() (string, error) {
 	var problems []Problem
 	var name string
-	if p.Name == nil && p.Method == nil && p.MinutesTotal == nil && p.Difficulty == nil {
+	if p.Name == nil && p.Method == nil && p.MinutesTotal == nil && p.Difficulty == nil && p.MealSource == nil {
 		return "", invalid("patch", "no fields to change")
 	}
 	if p.Name != nil {
@@ -612,6 +690,9 @@ func (p Patch) validate() (string, error) {
 	}
 	if p.Difficulty != nil && !slices.Contains(Difficulties, *p.Difficulty) {
 		problems = append(problems, Problem{"difficulty", "must be one of " + strings.Join(Difficulties, ", ")})
+	}
+	if p.MealSource != nil && !slices.Contains(MealSources, *p.MealSource) {
+		problems = append(problems, Problem{"meal_source", "must be one of " + strings.Join(MealSources, ", ")})
 	}
 	if problems != nil {
 		return "", &ValidationError{Problems: problems}
@@ -714,6 +795,7 @@ func fromRow(r db.Dinner) Dinner {
 		RecipeID:        nullString(r.RecipeID),
 		GroundingStatus: r.GroundingStatus,
 		GroundingError:  nullString(r.GroundingError),
+		MealSource:      r.MealSource,
 		UpdatedBy:       nullString(r.UpdatedBy),
 		CreatedAt:       r.CreatedAt,
 		UpdatedAt:       r.UpdatedAt,
@@ -723,7 +805,8 @@ func fromRow(r db.Dinner) Dinner {
 	if r.MinutesTotal.Valid {
 		d.MinutesTotal = &r.MinutesTotal.Int64
 	}
-	if r.PhotoID.Valid {
+	// A dinner that is not cooked at home contributes no photo.
+	if Cooked(r.MealSource) && r.PhotoID.Valid {
 		u := PhotoURL(r.PhotoID.String)
 		d.PhotoURL = &u
 	}

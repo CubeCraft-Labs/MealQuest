@@ -67,7 +67,15 @@ export const GOOGLE_NOT_CONNECTED = {
 export const HOME = {
   dateLabel: 'Friday, Oct 2',
   timezone: 'America/New_York',
-  tonight: { id: 'd1', name: 'Pizza night', status: 'regular', photo: '/media/photos/p1-400.jpg', origin: 'regular', minutes_total: 40 },
+  tonight: {
+    id: 'd1',
+    name: 'Pizza night',
+    status: 'regular',
+    photo: '/media/photos/p1-400.jpg',
+    origin: 'regular',
+    minutes_total: 40,
+    meal_source: 'cook',
+  },
   sideQuestCount: 10,
   shoppingList: { weekStart: '2026-10-05', label: 'Week 41 · Oct 5 – 11', ready: true, sentToChatAt: null },
   recentUpdates: { unread: true },

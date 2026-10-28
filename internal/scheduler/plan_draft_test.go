@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -313,7 +314,7 @@ func TestPlanDraftLeavesAnExistingPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fmt.Sprint(after) != fmt.Sprint(before) {
+	if !reflect.DeepEqual(after, before) {
 		t.Errorf("plan of W43 = %+v, want it unchanged from %+v", after, before)
 	}
 	if logs := p.logs.String(); !strings.Contains(logs, "the week already has a plan") || !strings.Contains(logs, "period=2026-W43") {

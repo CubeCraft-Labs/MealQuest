@@ -207,7 +207,7 @@ func TestSupplyRunShape(t *testing.T) {
 	if k := keys(group); !reflect.DeepEqual(k, []string{"date", "day", "dinner", "items"}) {
 		t.Errorf("group fields = %v", k)
 	}
-	if k := keys(group["dinner"].(map[string]any)); !reflect.DeepEqual(k, []string{"id", "name", "status"}) {
+	if k := keys(group["dinner"].(map[string]any)); !reflect.DeepEqual(k, []string{"id", "meal_source", "name", "status"}) {
 		t.Errorf("dinner fields = %v", k)
 	}
 	if k := keys(group["items"].([]any)[0].(map[string]any)); !reflect.DeepEqual(k, []string{"id", "name", "needed", "qty"}) {

@@ -14,6 +14,7 @@ export type DinnerBody = {
   grounding_status: string
   grounding_error: string | null
   photo_backfill_eligible: boolean
+  meal_source: 'cook' | 'delivery' | 'dining_out'
   updated_by: string | null
   created_at: string
   updated_at: string
@@ -37,6 +38,7 @@ export function dinnerBody(id: string, name: string, overrides: Partial<DinnerBo
     grounding_status: 'grounded',
     grounding_error: null,
     photo_backfill_eligible: false,
+    meal_source: 'cook',
     updated_by: null,
     created_at: '2026-10-01T15:00:00.000Z',
     updated_at: '2026-10-01T15:00:00.000Z',

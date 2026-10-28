@@ -432,16 +432,18 @@ func TestEmitDayOfReminder(t *testing.T) {
 	r := rows[0]
 	if r.Key != "day_of_reminder:2026-10-14" || r.Channel != notify.ChannelPush || r.Payload.Title != "Tonight: Pad Thai · Recipe →" ||
 		r.Payload.Body != "" || r.Payload.URL != "/dinner/"+e.ids["Pad Thai"] || r.Payload.Week != "2026-10-12" ||
-		r.Payload.Dinner == nil || *r.Payload.Dinner != (notify.Dinner{ID: e.ids["Pad Thai"], Name: "Pad Thai"}) {
+		r.Payload.Dinner == nil || *r.Payload.Dinner != (notify.Dinner{ID: e.ids["Pad Thai"], Name: "Pad Thai"}) ||
+		r.Payload.PlannedDinnerID != e.ids["Pad Thai"] {
 		t.Errorf("day_of_reminder row = %+v", r)
 	}
 }
 
 // TestEmitDayOfReminderArchivedDinnerOffersNoRecipe: a dinner archived
 // after the plan was made has no recipe, so neither its day-of reminder nor
-// its crock-pot start reminder carries or offers one: no recipe URL, no
-// dinner and no "Recipe →"; each opens the week's plan and says the recipe
-// is gone. Another night's dinner still offers its recipe.
+// its crock-pot start reminder offers one: no recipe URL, no recipe dinner
+// and no "Recipe →"; each opens the week's plan, says the recipe is gone,
+// and still carries the planned dinner's id. Another night's dinner still
+// offers its recipe.
 func TestEmitDayOfReminderArchivedDinnerOffersNoRecipe(t *testing.T) {
 	e := newEnv(t)
 	e.start(t)
@@ -466,14 +468,17 @@ func TestEmitDayOfReminderArchivedDinnerOffersNoRecipe(t *testing.T) {
 		"day_of_reminder:2026-10-12": {
 			Event: notify.DayOfReminder, Title: "Tonight: Beef Chili", Body: "This dinner was removed, so its recipe is gone.",
 			URL: "/plan?week=2026-10-12", Tag: "day_of_reminder:2026-10-12", Week: "2026-10-12",
+			PlannedDinnerID: e.ids["Beef Chili"],
 		},
 		"day_of_reminder:start:2026-10-12": {
 			Event: notify.DayOfReminder, Title: "Start the crock pot by 1:30 pm", Body: "Beef Chili",
 			URL: "/plan?week=2026-10-12", Tag: "day_of_reminder:start:2026-10-12", Week: "2026-10-12",
+			PlannedDinnerID: e.ids["Beef Chili"],
 		},
 		"day_of_reminder:2026-10-14": {
 			Event: notify.DayOfReminder, Title: "Tonight: Pad Thai · Recipe →", URL: "/dinner/" + e.ids["Pad Thai"],
-			Tag: "day_of_reminder:2026-10-14", Dinner: &notify.Dinner{ID: e.ids["Pad Thai"], Name: "Pad Thai"}, Week: "2026-10-12",
+			Tag: "day_of_reminder:2026-10-14", Dinner: &notify.Dinner{ID: e.ids["Pad Thai"], Name: "Pad Thai"},
+			Week: "2026-10-12", PlannedDinnerID: e.ids["Pad Thai"],
 		},
 	} {
 		if p, ok := got[key]; !ok || !reflect.DeepEqual(p, want) {

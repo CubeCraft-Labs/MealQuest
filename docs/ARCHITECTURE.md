@@ -975,10 +975,10 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
     current or future day, so a newly emitted reminder is not one of those
     dinners. A dinner that is already delivery or dining out and still
     sits on a past plan is "Tonight: {dinner}" with no recipe, opening the
-    week's plan. A manual night is "Tonight: {label}" with no dinner and
-    no recipe, opening the week's plan (`/plan?week={weekStart}`). A
-    cleared night emits nothing. The `day_of_reminder` schedule calls it at
-    `reminder_time`.
+    week's plan, and still carrying that dinner's id. A manual night is
+    "Tonight: {label}" with no dinner and no recipe, opening the week's
+    plan (`/plan?week={weekStart}`). A cleared night emits nothing. The
+    `day_of_reminder` schedule calls it at `reminder_time`.
   - `day_of_reminder:start:{date}` (URL `/dinner/{id}`) through
     `plan.Service.EmitStartReminder(date)`, "Start the crock pot by
     {time}" with the dinner's name, only for a crock-pot dinner whose
@@ -989,23 +989,30 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
     It then names the dinner (`notify.Event.Dinner`, the payload's
     `dinner` `{id, name}`), and its URL is that recipe's
     (`notify.RecipePath`); `notify.Emit` refuses a recipe URL naming no
-    dinner, or a dinner with another URL. A dinner archived since it was
-    planned has no recipe, so both reminders of it name no dinner and open
-    the week's plan (`/plan?week={weekStart}`): the day-of reminder is
-    "Tonight: {dinner}" with "This dinner was removed, so its recipe is
-    gone.", and the Google Chat message closes with "Open the plan →".
-    The same holds when a stored reminder is delivered: the outbox worker
-    checks its dinner again before sending (`notify` `recipeNow`), so a
-    reminder queued while its dinner was viewable and archived (or gone)
-    before delivery is sent, on every channel, as one emitted after the
-    archival is (title without " · Recipe →", "This dinner was removed, so
-    its recipe is gone." when it has no other body, the week's plan, no
-    dinner), and a reminder stored before reminders named their dinner is
-    sent naming it while it still has a recipe. Before a queued dinner
-    reminder is sent, the worker also checks that its dinner is still
-    planned for the reminder's date (`day_of_reminder:{date}` or
-    `day_of_reminder:start:{date}`). If it is not — the night was cleared
-    or swapped, by any means — the reminder is suppressed and not sent.
+    dinner, or a dinner with another URL. The day-of reminder and the
+    crock-pot start reminder also carry the planned dinner's id
+    (`notify.Event.PlannedDinnerID`, the payload's `planned_dinner_id`)
+    whether or not they offer a recipe. A dinner archived since it was
+    planned has no recipe, so both reminders of it offer no dinner and open
+    the week's plan (`/plan?week={weekStart}`), while still carrying that
+    dinner's id: the day-of reminder is "Tonight: {dinner}" with "This
+    dinner was removed, so its recipe is gone.", and the Google Chat
+    message closes with "Open the plan →". The same holds when a stored
+    reminder is delivered: the outbox worker checks its dinner again before
+    sending (`notify` `recipeNow`), so a reminder queued while its dinner
+    was viewable and archived (or gone) before delivery is sent, on every
+    channel, as one emitted after the archival is (title without
+    " · Recipe →", "This dinner was removed, so its recipe is gone." when
+    it has no other body, the week's plan, no recipe dinner), and a
+    reminder stored before reminders named their dinner is sent naming it
+    while it still has a recipe. Before a queued dinner reminder is sent,
+    the worker also checks that its dinner — the planned dinner id, or for
+    a reminder stored before payloads carried one, the dinner whose recipe
+    it offers — is still planned for the reminder's date
+    (`day_of_reminder:{date}` or `day_of_reminder:start:{date}`). If it is
+    not — the night was cleared or swapped, by any means — the reminder is
+    suppressed and not sent. A reminder that names no dinner, including a
+    manual night, is not checked and is delivered.
     The Web Push message
     carries `dinner` with `title`, `body`, `url` and `tag`, so a tap
     checks that recipe with the server before it opens it.

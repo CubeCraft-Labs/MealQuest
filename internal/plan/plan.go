@@ -298,8 +298,9 @@ func (s *Service) Get(ctx context.Context, weekStart store.LocalDate) (p Plan, e
 // A cooked dinner is "Tonight: {dinner} · Recipe →" while it has a recipe,
 // and offers none once archived (chat.DayOfReminder). A delivery or
 // dining-out dinner names the dinner and offers no recipe
-// (chat.UncookedReminder). A manual night is "Tonight: {label}" with no
-// dinner (chat.ManualNightReminder). A cleared night emits nothing
+// (chat.UncookedReminder). Either way the reminder carries the planned
+// dinner's id. A manual night is "Tonight: {label}" with no dinner
+// (chat.ManualNightReminder). A cleared night emits nothing
 // (ErrNoNight). The day_of_reminder schedule calls it at the household's
 // reminder_time (ReminderSchedules); emitting a date again stores no
 // second notification.
@@ -319,7 +320,7 @@ func (s *Service) EmitDayOfReminder(ctx context.Context, date store.LocalDate) (
 	switch {
 	case d.Dinner != nil && d.Dinner.Status != dinners.StatusArchived && !dinners.Cooked(d.Dinner.MealSource):
 		var err error
-		ev, err = chat.UncookedReminder(date, d.Dinner.Name, d.Dinner.MealSource)
+		ev, err = chat.UncookedReminder(date, d.Dinner.ID, d.Dinner.Name, d.Dinner.MealSource)
 		if err != nil {
 			return false, fmt.Errorf("plan: %w", err)
 		}

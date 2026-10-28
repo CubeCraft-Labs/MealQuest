@@ -39,7 +39,8 @@ func archive(t *testing.T, st *store.Store, id string) {
 func dayOf() Event {
 	return Event{
 		Type: DayOfReminder, Key: "day_of_reminder:2026-10-14", Title: "Tonight: Tacos" + RecipeCallToAction,
-		URL: RecipePath("dinner-1"), Dinner: &Dinner{ID: "dinner-1", Name: "Tacos"}, Week: mustDate("2026-10-12"),
+		URL: RecipePath("dinner-1"), Dinner: &Dinner{ID: "dinner-1", Name: "Tacos"}, PlannedDinnerID: "dinner-1",
+		Week: mustDate("2026-10-12"),
 	}
 }
 
@@ -48,7 +49,8 @@ func dayOf() Event {
 func startReminder() Event {
 	return Event{
 		Type: DayOfReminder, Key: "day_of_reminder:start:2026-10-14", Title: "Start the crock pot by 9:30 am", Body: "Tacos",
-		URL: RecipePath("dinner-1"), Dinner: &Dinner{ID: "dinner-1", Name: "Tacos"}, Week: mustDate("2026-10-12"),
+		URL: RecipePath("dinner-1"), Dinner: &Dinner{ID: "dinner-1", Name: "Tacos"}, PlannedDinnerID: "dinner-1",
+		Week: mustDate("2026-10-12"),
 	}
 }
 
@@ -124,7 +126,7 @@ func TestDeliveryOffersTheRecipeOfAViewableDinner(t *testing.T) {
 	got := deliverPush(t, svc, c).Payload
 	want := Payload{
 		Event: DayOfReminder, Title: "Tonight: Tacos · Recipe →", URL: "/dinner/dinner-1", Tag: "day_of_reminder:2026-10-14",
-		Dinner: &Dinner{ID: "dinner-1", Name: "Tacos"}, Week: "2026-10-12",
+		Dinner: &Dinner{ID: "dinner-1", Name: "Tacos"}, PlannedDinnerID: "dinner-1", Week: "2026-10-12",
 	}
 	if !samePayload(got, want) {
 		t.Errorf("delivered payload = %s, want %s", show(got), show(want))
@@ -139,11 +141,11 @@ func TestDeliveryWithdrawsTheRecipeOfADinnerArchivedAfterQueueing(t *testing.T) 
 	}{
 		{"day-of reminder", dayOf(), Payload{
 			Event: DayOfReminder, Title: "Tonight: Tacos", Body: ArchivedBody, URL: "/plan?week=2026-10-12",
-			Tag: "day_of_reminder:2026-10-14", Week: "2026-10-12",
+			Tag: "day_of_reminder:2026-10-14", PlannedDinnerID: "dinner-1", Week: "2026-10-12",
 		}},
 		{"start reminder", startReminder(), Payload{
 			Event: DayOfReminder, Title: "Start the crock pot by 9:30 am", Body: "Tacos", URL: "/plan?week=2026-10-12",
-			Tag: "day_of_reminder:start:2026-10-14", Week: "2026-10-12",
+			Tag: "day_of_reminder:start:2026-10-14", PlannedDinnerID: "dinner-1", Week: "2026-10-12",
 		}},
 	}
 	for _, tc := range cases {

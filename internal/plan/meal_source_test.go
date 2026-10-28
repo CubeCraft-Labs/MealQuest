@@ -1,24 +1,35 @@
 package plan_test
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"errors"
 	"io"
 	"log/slog"
 	"maps"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/llm"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/chat"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/home"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/notify/notifytest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/plan"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes/recipestest"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/secretbox"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/shopping"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/suggest"
 )
 
 // currentWeek is the household's current week in America/New_York: its
@@ -60,6 +71,7 @@ func (e *env) dinnersService(t *testing.T) *dinners.Service {
 	if err != nil {
 		t.Fatal(err)
 	}
+	svc.SetPlanReconciler(e.svc)
 	return svc
 }
 
@@ -222,12 +234,13 @@ func TestDeliveryDinnerOpensNoRotationCheck(t *testing.T) {
 }
 
 // TestDesignateDeliveryAfterDraft: designating a dinner Delivery after the
-// week is drafted leaves it on that day, but not as a cooked dinner. The
-// plan's revision moves, so a push that already read it cannot record the
-// old cooked event.
+// week is drafted takes it off today, like a cleared night. The Draft board
+// no longer has its card, and Home no longer names it. The plan's revision
+// moves. A later night of the same dinner, and every other dinner, stays.
 func TestDesignateDeliveryAfterDraft(t *testing.T) {
 	e := newEnv(t)
 	svc := e.dinnersService(t)
+	homeSvc := e.homeScreen(t)
 	start, dates, names, today := e.currentWeek(t)
 	e.start(t)
 	e.model.QueueGenerate(e.weekReplyOn(dates, "", names...))
@@ -262,26 +275,31 @@ func TestDesignateDeliveryAfterDraft(t *testing.T) {
 		t.Errorf("revision = %d, want %d", rev, before+1)
 	}
 	day := dayByDate(t, got, today)
-	if day.Dinner.Name != "Beef Chili" || day.Dinner.MealSource != dinners.MealSourceDelivery {
-		t.Errorf("today = %+v, want Beef Chili delivery", day.Dinner)
+	if day.Dinner != nil || day.ManualLabel != nil || day.StartBy != nil {
+		t.Errorf("today = dinner %+v label %v start %v, want a cleared night", day.Dinner, day.ManualLabel, day.StartBy)
 	}
-	if day.Dinner.Photo != nil || day.StartBy != nil {
-		t.Errorf("today photo %v start %v, want neither", day.Dinner.Photo, day.StartBy)
+	wantNights := slices.Clone(names)
+	for i, date := range dates {
+		if date == today {
+			wantNights[i] = ""
+		}
 	}
-	if !slices.Equal(dayNames(got), names) {
-		t.Errorf("days = %v, want the drafted week %v", dayNames(got), names)
+	if !slices.Equal(nightNames(got), wantNights) {
+		t.Errorf("days = %v, want the drafted week with today cleared %v", nightNames(got), wantNights)
+	}
+	screen, err := homeSvc.Get(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if screen.Tonight != nil || screen.ManualTonight != nil {
+		t.Errorf("Home tonight = %+v manual %v, want nothing named", screen.Tonight, screen.ManualTonight)
 	}
 	date := mustDate(today)
-	if ok, err := e.svc.EmitDayOfReminder(t.Context(), date); !ok || err != nil {
-		t.Fatalf("EmitDayOfReminder = %v, %v", ok, err)
+	if ok, err := e.svc.EmitDayOfReminder(t.Context(), date); ok || !errors.Is(err, plan.ErrNoNight) {
+		t.Fatalf("EmitDayOfReminder = %v, %v, want no reminder for a cleared night", ok, err)
 	}
-	rows := notifytest.Rows(t, e.st, notify.DayOfReminder)
-	if len(rows) != 1 {
-		t.Fatalf("reminders = %+v, want one", rows)
-	}
-	payload := rows[0].Payload
-	if strings.Contains(payload.URL, "/dinner/") || strings.Contains(payload.Title, "Recipe") || strings.Contains(payload.Body, "Start") {
-		t.Errorf("reminder = %+v, want no recipe and no start time", payload)
+	if rows := notifytest.Rows(t, e.st, notify.DayOfReminder); len(rows) != 0 {
+		t.Fatalf("reminders = %+v, want none", rows)
 	}
 	if ok, err := e.svc.EmitStartReminder(t.Context(), date); ok || err != nil {
 		t.Fatalf("EmitStartReminder = %v, %v, want no crock-pot reminder", ok, err)
@@ -300,9 +318,11 @@ func dayByDate(t *testing.T, p plan.Plan, date string) plan.Day {
 }
 
 // TestDesignateDiningOutAfterPush: designating a dinner Dining Out after
-// Push to Calendar marks that week changed and clears the day's stored
-// Calendar event, so the next push rewrites it without a recipe or a
-// start time. A past week that planned the same dinner stays synced.
+// Push to Calendar removes it from today and from a future week, marks
+// those plans changed, and deletes the Calendar events immediately, so
+// Google no longer advertises a recipe or a start-by time. A past week
+// that planned the same dinner stays synced, event and all. Marking it
+// cooked again does not put the night back.
 func TestDesignateDiningOutAfterPush(t *testing.T) {
 	e := newEnv(t)
 	svc := e.dinnersService(t)
@@ -327,10 +347,33 @@ func TestDesignateDiningOutAfterPush(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.setPhoto(t, "Beef Chili")
+	future := store.LocalDateOf(time.Date(y, m, d+7, 0, 0, 0, 0, time.UTC))
+	futureDates := e.storePlan(t, future, names...)
+	if _, _, err := e.svc.Push(t.Context(), future); err != nil {
+		t.Fatal(err)
+	}
 	pastEvents := e.eventIDs(t, past)
 	pastMonday := past.String()
 	if pastEvents[pastMonday] == "" {
 		t.Fatal("past Monday has no calendar event")
+	}
+	var futureChili string
+	for i, name := range names {
+		if name == "Beef Chili" {
+			futureChili = futureDates[i]
+		}
+	}
+	if futureChili == "" || e.eventIDs(t, future)[futureChili] == "" {
+		t.Fatal("future Beef Chili day has no calendar event")
+	}
+	before := e.google.Events(dinnersCal.ID)
+	todayID := plan.EventID(start, mustDate(today))
+	futureID := plan.EventID(future, mustDate(futureChili))
+	if _, ok := before[todayID]; !ok {
+		t.Fatal("today has no calendar event")
+	}
+	if _, ok := before[futureID]; !ok {
+		t.Fatal("future Beef Chili day has no google event")
 	}
 
 	e.designate(t, svc, "Beef Chili", dinners.MealSourceDiningOut)
@@ -343,8 +386,17 @@ func TestDesignateDiningOutAfterPush(t *testing.T) {
 		t.Fatalf("status = %s, want changed", got.Status)
 	}
 	day := dayByDate(t, got, today)
-	if day.Dinner.MealSource != dinners.MealSourceDiningOut || day.Dinner.Photo != nil || day.StartBy != nil {
-		t.Errorf("today = %+v photo %v start %v, want dining out with neither", day.Dinner, day.Dinner.Photo, day.StartBy)
+	if day.Dinner != nil || day.ManualLabel != nil || day.StartBy != nil {
+		t.Errorf("today = dinner %+v label %v start %v, want a cleared night", day.Dinner, day.ManualLabel, day.StartBy)
+	}
+	cleared := slices.Clone(names)
+	for i, name := range cleared {
+		if name == "Beef Chili" {
+			cleared[i] = ""
+		}
+	}
+	if !slices.Equal(nightNames(got), cleared) {
+		t.Errorf("days = %v, want today cleared %v", nightNames(got), cleared)
 	}
 	ids := e.eventIDs(t, start)
 	if ids[today] != "" {
@@ -354,6 +406,19 @@ func TestDesignateDiningOutAfterPush(t *testing.T) {
 		if date != today && id == "" {
 			t.Errorf("%s lost its event id", date)
 		}
+	}
+	futurePlan, err := e.svc.Get(t.Context(), future)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if futurePlan.Status != plan.StatusChanged {
+		t.Errorf("future week status = %s, want changed", futurePlan.Status)
+	}
+	if futureDay := dayByDate(t, futurePlan, futureChili); futureDay.Dinner != nil {
+		t.Errorf("future %s = %+v, want a cleared night", futureChili, futureDay.Dinner)
+	}
+	if id := e.eventIDs(t, future)[futureChili]; id != "" {
+		t.Errorf("future %s kept event id %q", futureChili, id)
 	}
 	pastPlan, err := e.svc.Get(t.Context(), past)
 	if err != nil {
@@ -365,29 +430,20 @@ func TestDesignateDiningOutAfterPush(t *testing.T) {
 	if again := e.eventIDs(t, past); !maps.Equal(again, pastEvents) {
 		t.Errorf("past event ids = %v, want %v", again, pastEvents)
 	}
+	if monday := dayByDate(t, pastPlan, pastMonday); monday.Dinner == nil || monday.Dinner.Name != "Beef Chili" {
+		t.Errorf("past Monday = %+v, want Beef Chili left on the past plan", monday.Dinner)
+	}
 
-	before := e.google.Events(dinnersCal.ID)
-	e.google.ResetEventWrites()
-	pushed, _, err := e.svc.Push(t.Context(), start)
-	if err != nil {
-		t.Fatalf("Push: %v", err)
-	}
-	if inserts, updates := e.google.EventWrites(); inserts != 0 || updates != 1 {
-		t.Errorf("push after designation: %d inserts and %d updates, want 0 and 1", inserts, updates)
-	}
-	if pushed.Status != plan.StatusSynced {
-		t.Errorf("status after push = %s, want synced", pushed.Status)
-	}
-	todayID := plan.EventID(start, mustDate(today))
+	// Google's calendar is already right: no second Push to Calendar.
 	after := e.google.Events(dinnersCal.ID)
-	if ev := after[todayID]; ev.Summary != "Dinner: Beef Chili" || ev.Description != "Beef Chili\nDining out" {
-		t.Errorf("today's event = summary %q description %q, want Dining out and no recipe", ev.Summary, ev.Description)
+	if _, ok := after[todayID]; ok {
+		t.Errorf("today's event is still on Calendar: %+v", after[todayID])
 	}
-	if strings.Contains(after[todayID].Description, "http") || strings.Contains(after[todayID].Description, "Start by") {
-		t.Errorf("today's event description = %q, want no recipe link and no start time", after[todayID].Description)
+	if _, ok := after[futureID]; ok {
+		t.Errorf("future event is still on Calendar: %+v", after[futureID])
 	}
 	delete(before, todayID)
-	delete(after, todayID)
+	delete(before, futureID)
 	if !maps.Equal(before, after) {
 		t.Errorf("events of other days changed:\nbefore %+v\nafter  %+v", before, after)
 	}
@@ -400,22 +456,128 @@ func TestDesignateDiningOutAfterPush(t *testing.T) {
 	if cookedAgain.Status != plan.StatusChanged {
 		t.Fatalf("status after cooking again = %s, want changed", cookedAgain.Status)
 	}
-	if id := e.eventIDs(t, start)[today]; id != "" {
-		t.Errorf("%s kept event id %q after it was cooked again", today, id)
+	if again := dayByDate(t, cookedAgain, today); again.Dinner != nil {
+		t.Errorf("today after cooking again = %+v, want it to stay cleared", again.Dinner)
 	}
-	again := dayByDate(t, cookedAgain, today)
-	if again.Dinner.MealSource != dinners.MealSourceCook || again.Dinner.Photo == nil || again.StartBy == nil {
-		t.Errorf("today after cooking again = %+v photo %v start %v, want cooked with a photo and a start-by", again.Dinner, again.Dinner.Photo, again.StartBy)
+	if _, ok := e.google.Events(dinnersCal.ID)[todayID]; ok {
+		t.Error("cooking again put today's event back on Calendar")
 	}
-	e.google.ResetEventWrites()
+}
+
+// TestDesignateDeliveryRollsBackWhenCalendarDeleteFails: a Calendar delete
+// that fails refuses the designation. The dinner stays cooked, today stays
+// planned, and Google still has the recipe event.
+func TestDesignateDeliveryRollsBackWhenCalendarDeleteFails(t *testing.T) {
+	e := newEnv(t)
+	svc := e.dinnersService(t)
+	start, dates, names, today := e.currentWeek(t)
+	e.connectCalendar(t)
+	e.start(t)
+	e.model.QueueGenerate(e.weekReplyOn(dates, "", names...))
+	drafted, err := e.svc.StartDraft(t.Context(), start, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job := e.waitJob(t, drafted.JobID); job.Status != jobs.StatusSucceeded {
+		t.Fatalf("draft job %s, error %v", job.Status, job.Error)
+	}
 	if _, _, err := e.svc.Push(t.Context(), start); err != nil {
 		t.Fatal(err)
 	}
-	if inserts, updates := e.google.EventWrites(); inserts != 0 || updates != 1 {
-		t.Errorf("push after cooking again: %d inserts and %d updates, want 0 and 1", inserts, updates)
+	beforeRev := e.revision(t, start)
+	beforeIDs := e.eventIDs(t, start)
+	todayID := plan.EventID(start, mustDate(today))
+	beforeEvent := e.google.Events(dinnersCal.ID)[todayID]
+	if beforeEvent.ID == "" || !strings.Contains(beforeEvent.Description, "https://") {
+		t.Fatalf("today's event = %+v, want a recipe event", beforeEvent)
 	}
-	restored := e.google.Events(dinnersCal.ID)[todayID].Description
-	if !strings.Contains(restored, "https://meals.example.com/dinner/"+e.ids["Beef Chili"]) || !strings.Contains(restored, "Start by 1:30 pm") {
-		t.Errorf("today's event description = %q, want the recipe link and start time", restored)
+	e.google.FailEventWrite(1, http.StatusBadRequest)
+
+	_, err = svc.Update(t.Context(), e.ids["Beef Chili"], dinners.Patch{MealSource: ptrMeal(dinners.MealSourceDelivery)}, "member-1")
+	if err == nil {
+		t.Fatal("designate succeeded, want a calendar failure and no change")
 	}
+
+	var source string
+	if err := e.st.Reader.QueryRowContext(t.Context(), `SELECT meal_source FROM dinners WHERE id = ?`, e.ids["Beef Chili"]).Scan(&source); err != nil {
+		t.Fatal(err)
+	}
+	if source != dinners.MealSourceCook {
+		t.Errorf("meal_source = %s, want cook", source)
+	}
+	got, err := e.svc.Get(t.Context(), start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != plan.StatusSynced {
+		t.Errorf("status = %s, want synced", got.Status)
+	}
+	if rev := e.revision(t, start); rev != beforeRev {
+		t.Errorf("revision = %d, want %d", rev, beforeRev)
+	}
+	day := dayByDate(t, got, today)
+	if day.Dinner == nil || day.Dinner.Name != "Beef Chili" || day.Dinner.MealSource != dinners.MealSourceCook {
+		t.Errorf("today = %+v, want Beef Chili still cooked and planned", day.Dinner)
+	}
+	if ids := e.eventIDs(t, start); !maps.Equal(ids, beforeIDs) {
+		t.Errorf("event ids = %v, want %v", ids, beforeIDs)
+	}
+	if ev := e.google.Events(dinnersCal.ID)[todayID]; ev.Description != beforeEvent.Description || ev.Summary != beforeEvent.Summary {
+		t.Errorf("today's event = summary %q description %q, want it unchanged", ev.Summary, ev.Description)
+	}
+}
+
+func ptrMeal(v string) *string { return &v }
+
+// nightNames is each day's dinner name, its manual label, or "" when the
+// night is cleared.
+func nightNames(p plan.Plan) []string {
+	names := make([]string, len(p.Days))
+	for i, d := range p.Days {
+		switch {
+		case d.Dinner != nil:
+			names[i] = d.Dinner.Name
+		case d.ManualLabel != nil:
+			names[i] = *d.ManualLabel
+		}
+	}
+	return names
+}
+
+// homeScreen reads Home from e's plan service. Call it before e.start: it
+// registers jobs on e's runner.
+func (e *env) homeScreen(t *testing.T) *home.Service {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	notifier := notifytest.New(t, e.st)
+	grounder := recipestest.NewGrounder(t, e.st, t.TempDir(), &recipestest.Search{}, &recipestest.Pages{}, &recipestest.Images{}, &llm.Fake{})
+	suggestSvc, err := suggest.NewService(e.st, grounder, func(context.Context, string, skills.SideQuestsRequest) (skills.SideQuests, error) {
+		return skills.SideQuests{}, errors.New("no model in this test")
+	}, e.runner, notifier, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := make([]byte, secretbox.KeySize)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatal(err)
+	}
+	box, err := secretbox.New(base64.StdEncoding.EncodeToString(key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	chatSvc, err := chat.NewService(e.st, box, publicURL, http.DefaultTransport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shop, err := shopping.NewService(e.st, func(context.Context, string, skills.ArchiveTitleRequest) (skills.ArchiveTitle, error) {
+		return skills.ArchiveTitle{}, errors.New("no model in this test")
+	}, e.runner, notifier, chatSvc, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := home.NewService(household.NewSettingsService(e.st), e.svc, suggestSvc, shop, notifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return svc
 }

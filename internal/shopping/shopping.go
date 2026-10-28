@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -427,12 +428,25 @@ func (s *Service) storeTitle(ctx context.Context, p TitleJob) (string, error) {
 	if err != nil || title != "" {
 		return title, err
 	}
-	out, err := s.title(ctx, titleScope(p), skills.ArchiveTitleRequest{Dinners: p.Dinners})
+	// A job queued before a dinner was designated Delivery or Dining Out
+	// still carries that dinner's name. Title the Supply run as it is now.
+	fresh, err := s.freshTitle(ctx, q, p)
+	if err != nil {
+		return "", err
+	}
+	out, err := s.title(ctx, titleScope(fresh), skills.ArchiveTitleRequest{Dinners: fresh.Dinners})
 	if err != nil {
 		return "", fmt.Errorf("shopping: title: %w", err)
 	}
 	write, cancel := jobs.FinalWriteContext(ctx)
 	defer cancel()
+	again, err := s.freshTitle(write, q, p)
+	if err != nil {
+		return "", err
+	}
+	if again.Revision != fresh.Revision || !slices.Equal(again.Dinners, fresh.Dinners) {
+		return "", errors.New("shopping: store title: the Supply run changed before its title was stored")
+	}
 	n, err := q.SetShoppingListTitle(write, db.SetShoppingListTitleParams{
 		Title: sql.NullString{String: out.Title, Valid: true}, UpdatedAt: store.Now().String(), ID: p.ListID,
 	})
@@ -447,6 +461,59 @@ func (s *Service) storeTitle(ctx context.Context, p TitleJob) (string, error) {
 		err = errors.New("shopping: store title: the Supply run is still untitled")
 	}
 	return title, err
+}
+
+// freshTitle is the title job to run for p. A job queued before a dinner
+// was designated Delivery or Dining Out, or before the plan revision
+// moved, titles the cooked dinners the week has now. A rename leaves the
+// revision alone, so that job still titles the names it was queued with.
+// A list frozen or replaced is an error, as currentTitle reports.
+func (s *Service) freshTitle(ctx context.Context, q *db.Queries, p TitleJob) (TitleJob, error) {
+	list, err := q.GetShoppingList(ctx, p.WeekStart)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return TitleJob{}, fmt.Errorf("shopping: title: read list: %w", err)
+	}
+	if err != nil || list.ID != p.ListID || frozen(list) {
+		return TitleJob{}, errors.New("shopping: store title: the Supply run was frozen or replaced before its title was stored")
+	}
+	fresh, err := freezeTitleJob(ctx, q, list)
+	if err != nil {
+		return TitleJob{}, err
+	}
+	stale, err := titleNamesStale(ctx, q, p, fresh.Revision)
+	if err != nil {
+		return TitleJob{}, err
+	}
+	if stale {
+		return fresh, nil
+	}
+	return p, nil
+}
+
+// titleNamesStale reports whether p must not title the dinner names it
+// stored. The plan revision moving means the week was edited after the job
+// was queued. A stored name that is now Delivery or Dining Out would title
+// a dinner the Supply run no longer shops.
+func titleNamesStale(ctx context.Context, q *db.Queries, p TitleJob, revision int64) (bool, error) {
+	if revision != p.Revision {
+		return true, nil
+	}
+	rows, err := q.ListUnarchivedDinners(ctx)
+	if err != nil {
+		return false, fmt.Errorf("shopping: title: read dinners: %w", err)
+	}
+	uncooked := make(map[string]struct{})
+	for _, row := range rows {
+		if !dinners.Cooked(row.Dinner.MealSource) {
+			uncooked[row.Dinner.Name] = struct{}{}
+		}
+	}
+	for _, name := range p.Dinners {
+		if _, ok := uncooked[name]; ok {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // currentTitle returns the title of p's Supply run, or "" while it is

@@ -166,9 +166,14 @@ type Service struct {
 	groundJob *jobs.Kind[GroundJob]
 	// backfillJob enqueues KindBackfillPhotos jobs.
 	backfillJob *jobs.Kind[BackfillJob]
-	// wake is called after every committed change to a dinner's method or
-	// minutes, which can move its crock-pot start reminder.
+	// wake is called after every committed change to a dinner's method,
+	// minutes or meal source, which can move its crock-pot start reminder.
 	wake func()
+	// reconciler removes Calendar events when a dinner stops being cooked.
+	// Nil until the server wires the plan service. A designation that has
+	// a Calendar event and no reconciler fails instead of leaving the
+	// event in place.
+	reconciler PlanReconciler
 
 	// groundingsMu guards groundings: the KindGroundDinner jobs running,
 	// by dinner id, so archiving or renaming a dinner can stop them.
@@ -221,6 +226,23 @@ func NewService(st *store.Store, grounder *recipes.Grounder, runner *jobs.Runner
 	}
 	s.backfillJob = backfill
 	return s, nil
+}
+
+// PlanReconciler removes Calendar events for a dinner that is no longer
+// cooked. RemoveCalendarEvents deletes eventIDs on the household's chosen
+// calendar. An event Google does not have is already gone. It writes
+// nothing in the database: the caller commits only after it returns nil,
+// and rolls back when it fails, so a dinner stays as it was when an event
+// cannot be removed.
+type PlanReconciler interface {
+	RemoveCalendarEvents(ctx context.Context, eventIDs []string) error
+}
+
+// SetPlanReconciler wires the plan service that removes Calendar events
+// when a dinner becomes Delivery or Dining Out. The server calls it once
+// both services exist.
+func (s *Service) SetPlanReconciler(r PlanReconciler) {
+	s.reconciler = r
 }
 
 // Created is a new Regular with the id of the job grounding it, which is
@@ -484,7 +506,7 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 	}
 
 	var row db.Dinner
-	var renamed, regrounding bool
+	var renamed, regrounding, sourceChanged bool
 	err = s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		q := db.New(tx)
 		cur, err := q.GetDinner(ctx, id)
@@ -545,7 +567,8 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 			return fmt.Errorf("dinners: update %s: %w", id, err)
 		}
 		if p.MealSource != nil && *p.MealSource != cur.MealSource {
-			if err := reconcileMealSource(ctx, q, cur.ID, *p.MealSource); err != nil {
+			sourceChanged = true
+			if err := s.reconcileMealSource(ctx, tx, cur.ID, *p.MealSource); err != nil {
 				return err
 			}
 		}
@@ -556,7 +579,7 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 	if err != nil {
 		return Dinner{}, err
 	}
-	if p.Method != nil || p.MinutesTotal != nil {
+	if p.Method != nil || p.MinutesTotal != nil || sourceChanged {
 		s.wake()
 	}
 	if renamed {
@@ -579,15 +602,26 @@ func (s *Service) Update(ctx context.Context, id string, p Patch, updatedBy stri
 	return fromRow(row), nil
 }
 
-// reconcileMealSource applies dinner id's new meal source to planning.
-// Each plan day on or after today loses its Calendar event, and a synced
-// plan of such a day becomes changed, so the next Push to Calendar writes
-// the day for the source it has now. When source is not cooked, a current
-// Supply run loses the dinner's group and its ingredients, so it is not
-// shown, counted, sent or later archived that way. A past plan day, and a
-// Supply run already in the archive, are left as they were. Becoming
-// cooked again does not put ingredients back; the next Supply run does.
-func reconcileMealSource(ctx context.Context, q *db.Queries, id, source string) error {
+// reconcileMealSource applies dinner id's new meal source to planning,
+// inside the update's transaction. A past plan day, and a Supply run
+// already in the archive, are left as they were.
+//
+// When source is cooked, each current or future plan day that still has
+// the dinner loses its stored Calendar event id and a synced plan becomes
+// changed, so the next Push to Calendar writes the cooked dinner. Becoming
+// cooked again does not put the dinner back on a night it was removed
+// from, and does not put ingredients back; the next Supply run does.
+//
+// When source is Delivery or Dining Out, those plan days are cleared
+// (dinner_id NULL, like an unplanned night) and a synced plan becomes
+// changed. A current Supply run loses the dinner's group and its
+// ingredients. Calendar events for those days are deleted after the
+// database changes and before the transaction commits. If a delete fails,
+// the transaction rolls back, so the dinner, its plans and its Supply run
+// stay as they were. The Calendar call runs while this transaction holds
+// the writer, so the delete and the commit cannot land apart.
+func (s *Service) reconcileMealSource(ctx context.Context, tx *sql.Tx, id, source string) error {
+	q := db.New(tx)
 	settings, err := q.GetHouseholdSettings(ctx)
 	if err != nil {
 		return fmt.Errorf("dinners: read household settings: %w", err)
@@ -605,9 +639,12 @@ func reconcileMealSource(ctx context.Context, q *db.Queries, id, source string) 
 		return fmt.Errorf("dinners: read plans of %s: %w", id, err)
 	}
 	stamp := store.Now().String()
-	plans := make(map[string]struct{})
-	for _, day := range days {
-		if day.CalendarEventID.Valid {
+	if Cooked(source) {
+		plans := make(map[string]struct{})
+		for _, day := range days {
+			if !day.CalendarEventID.Valid {
+				continue
+			}
 			n, err := q.ClearPlanDayCalendarEvent(ctx, db.ClearPlanDayCalendarEventParams{
 				UpdatedAt: stamp, PlanID: day.PlanID, Date: day.Date,
 			})
@@ -617,6 +654,32 @@ func reconcileMealSource(ctx context.Context, q *db.Queries, id, source string) 
 			if n != 1 {
 				return fmt.Errorf("dinners: plan %s day %s kept its calendar event", day.PlanID, day.Date)
 			}
+			plans[day.PlanID] = struct{}{}
+		}
+		for planID := range plans {
+			if err := q.MarkWeekPlanEdited(ctx, db.MarkWeekPlanEditedParams{UpdatedAt: stamp, ID: planID}); err != nil {
+				return fmt.Errorf("dinners: mark plan %s edited: %w", planID, err)
+			}
+		}
+		return nil
+	}
+	eventIDs := make([]string, 0)
+	for _, day := range days {
+		if day.CalendarEventID.Valid {
+			eventIDs = append(eventIDs, day.CalendarEventID.String)
+		}
+	}
+	if len(eventIDs) > 0 && s.reconciler == nil {
+		return errors.New("dinners: cannot remove the Calendar events of a Delivery or Dining Out dinner")
+	}
+	plans := make(map[string]struct{})
+	for _, day := range days {
+		n, err := q.ClearPlanDay(ctx, db.ClearPlanDayParams{UpdatedAt: stamp, PlanID: day.PlanID, Date: day.Date})
+		if err != nil {
+			return fmt.Errorf("dinners: clear plan day %s: %w", day.Date, err)
+		}
+		if n != 1 {
+			return fmt.Errorf("dinners: plan %s has no day %s", day.PlanID, day.Date)
 		}
 		plans[day.PlanID] = struct{}{}
 	}
@@ -624,9 +687,6 @@ func reconcileMealSource(ctx context.Context, q *db.Queries, id, source string) 
 		if err := q.MarkWeekPlanEdited(ctx, db.MarkWeekPlanEditedParams{UpdatedAt: stamp, ID: planID}); err != nil {
 			return fmt.Errorf("dinners: mark plan %s edited: %w", planID, err)
 		}
-	}
-	if Cooked(source) {
-		return nil
 	}
 	groups, err := q.ListCurrentShoppingGroupsByDinner(ctx, id)
 	if err != nil {
@@ -639,6 +699,12 @@ func reconcileMealSource(ctx context.Context, q *db.Queries, id, source string) 
 		if err := q.DeleteShoppingGroup(ctx, groupID); err != nil {
 			return fmt.Errorf("dinners: remove supply run group %s: %w", groupID, err)
 		}
+	}
+	if len(eventIDs) == 0 {
+		return nil
+	}
+	if err := s.reconciler.RemoveCalendarEvents(ctx, eventIDs); err != nil {
+		return fmt.Errorf("dinners: remove calendar events of %s: %w", id, err)
 	}
 	return nil
 }

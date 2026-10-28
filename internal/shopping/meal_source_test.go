@@ -12,6 +12,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/db"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/household"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/jobs"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes/recipestest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
 )
@@ -161,6 +162,49 @@ func TestDesignateDeliveryDropsTheCurrentSupplyRun(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// TestDesignateDeliveryReplacesStaleTitle: a title job queued while a dinner
+// is cooked does not title the Supply run with that dinner once it has been
+// designated Delivery, even when the job runs only after the designation.
+// The title is asked for the dinners the Supply run still has.
+func TestDesignateDeliveryReplacesStaleTitle(t *testing.T) {
+	e := newEnv(t)
+	if err := household.SeedSettings(t.Context(), e.st, "America/New_York"); err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	grounder := recipestest.NewGrounder(t, e.st, t.TempDir(), &recipestest.Search{}, &recipestest.Pages{}, &recipestest.Images{}, &llm.Fake{})
+	svc, err := dinners.NewService(e.st, grounder, e.runner, func() {}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.dinner(t, "Beef Chili", ing{"ground beef", "1", "lb"})
+	e.dinner(t, "Pizza Night", ing{"pizza dough", "1", "lb"})
+	e.plan(t, "Beef Chili", "Pizza Night")
+	e.model.QueueGenerate(titled("Chili Night"))
+	generated := e.generate(t)
+	if generated.TitleJobID == nil {
+		t.Fatal("generation enqueued no title job")
+	}
+
+	if _, err := svc.Update(t.Context(), e.ids["Pizza Night"], dinners.Patch{MealSource: ptr(dinners.MealSourceDelivery)}, "member-1"); err != nil {
+		t.Fatal(err)
+	}
+	e.start(t)
+	wantJob(t, e.waitTitle(t, generated), jobs.StatusSucceeded, "")
+	reqs := e.model.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("%d model calls, want 1", len(reqs))
+	}
+	user := reqs[0].Messages[0].Content
+	if strings.Contains(user, "Pizza Night") {
+		t.Errorf("title request = %q, want no Pizza Night", user)
+	}
+	if !strings.Contains(user, "Beef Chili") {
+		t.Errorf("title request = %q, want Beef Chili", user)
+	}
+	wantTitle(t, "stored title", e.storedTitle(t), "Chili Night")
+}
 
 // archiveDinnerGroup stores an archived Supply run of the previous week
 // with one item of the dinner named name, and returns the item id.

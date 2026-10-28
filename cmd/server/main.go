@@ -162,6 +162,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	dinnerSvc.SetPlanReconciler(planSvc)
 
 	shopSvc, err := shopping.NewService(db, archiveTitler(ai, guard), runner, notifier, chatSvc, logger)
 	if err != nil {

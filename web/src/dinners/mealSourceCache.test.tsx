@@ -1,12 +1,13 @@
 import { QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { Link, Route, Routes } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { HomePage } from '../home/HomePage.tsx'
 import { PlanPage } from '../plan/PlanPage.tsx'
-import { createNetworkStatus } from '../pwa/networkStatus.ts'
+import { createNetworkStatus, type NetworkWindow } from '../pwa/networkStatus.ts'
 import { RegularsSettingsPage } from '../settings/RegularsSettingsPage.tsx'
+import { SAVED_KEY } from '../shopping/offline.ts'
 import { SupplyRunPage } from '../shopping/SupplyRunPage.tsx'
 import { HOUSEHOLD_SETTINGS } from '../test/ApiProviders.tsx'
 import { InDataRouter } from '../test/dataRouter.tsx'
@@ -93,6 +94,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
   Reflect.deleteProperty(window, 'matchMedia')
+  localStorage.clear()
 })
 
 // renderLoaded opens Home, the plan, the Supply run and the dinner, each
@@ -174,7 +176,7 @@ async function renderLoaded() {
 }
 
 describe('a Delivery edit already loaded on Home, the plan, the Supply run and the dinner', () => {
-  it('drops the photo and the Recipe affordance before those reads return', async () => {
+  it('takes the dinner off Home and the Draft board before those reads return', async () => {
     const { holdReads } = await renderLoaded()
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit Beef tacos' }))
@@ -185,15 +187,15 @@ describe('a Delivery edit already loaded on Home, the plan, the Supply run and t
     holdReads()
 
     fireEvent.click(screen.getByRole('link', { name: 'Home' }))
-    const tonight = await screen.findByRole('region', { name: 'Tonight' })
-    expect(within(tonight).queryByRole('button', { name: 'Recipe' })).not.toBeInTheDocument()
-    expect(within(tonight).getByRole('img', { name: 'Beef tacos' }).tagName).toBe('DIV')
+    expect(await screen.findByRole('heading', { name: 'No quest planned tonight' })).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Tonight' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Beef tacos')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('link', { name: 'Plan' }))
     const week = await screen.findByRole('list', { name: 'Dinners this week' })
     const monday = within(week).getByRole('listitem', { name: 'Monday' })
-    expect(within(monday).queryByRole('button', { name: 'Beef tacos' })).not.toBeInTheDocument()
-    expect(within(monday).getByRole('img', { name: 'Beef tacos', hidden: true }).tagName).toBe('DIV')
+    expect(within(monday).getByText('Nothing planned')).toBeInTheDocument()
+    expect(within(monday).queryByText('Beef tacos')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('link', { name: 'Supply run' }))
     await screen.findByRole('heading', { name: 'Shopping list' })
@@ -203,5 +205,119 @@ describe('a Delivery edit already loaded on Home, the plan, the Supply run and t
     expect(await screen.findByText(/is not cooked at home/)).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Ingredients' })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Ingredients' })).not.toBeInTheDocument()
+  })
+})
+
+const ARCHIVE_WEEK = '2026-09-28'
+
+describe('a Delivery edit when the current Supply run is only saved on this device', () => {
+  it('drops that dinner from the saved current run and keeps an archived run', async () => {
+    const current = {
+      ...RUN,
+      needed_count: 2,
+      total_count: 2,
+      groups: [
+        RUN.groups[0],
+        {
+          dinner: { id: 'd4', name: 'Pot roast', status: 'regular', meal_source: 'cook' },
+          date: '2026-10-06',
+          day: 'Tuesday',
+          items: [{ id: 'i2', name: 'Chuck roast', qty: '3 lb', needed: true }],
+        },
+      ],
+    }
+    const archived = {
+      ...RUN,
+      weekStart: ARCHIVE_WEEK,
+      label: 'Week 40 · Sep 28 – Oct 4',
+      status: 'archived',
+    }
+    localStorage.setItem(
+      SAVED_KEY,
+      JSON.stringify({
+        schedule: {
+          timezone: HOUSEHOLD_SETTINGS.timezone,
+          plan_draft_dow: HOUSEHOLD_SETTINGS.plan_draft_dow,
+          plan_draft_time: HOUSEHOLD_SETTINGS.plan_draft_time,
+        },
+        runs: { [WEEK]: current, [ARCHIVE_WEEK]: archived },
+        queue: [],
+      }),
+    )
+
+    let onLine = true
+    const win = Object.assign(new EventTarget(), {
+      navigator: {
+        get onLine() {
+          return onLine
+        },
+      },
+    }) as NetworkWindow & EventTarget
+    const regulars: DinnerBody[] = [TACOS]
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      if (!onLine) throw new TypeError('offline')
+      const path = String(input)
+      const method = init?.method ?? 'GET'
+      const key = `${method} ${path}`
+      if (key === 'GET /api/v1/me') return jsonResponse(200, ME)
+      if (key === 'GET /api/v1/settings/household') return jsonResponse(200, HOUSEHOLD_SETTINGS)
+      if (key === 'GET /api/v1/dinners?status=regular') return jsonResponse(200, { dinners: regulars })
+      if (key === 'GET /api/v1/dinners?status=quest_log') return jsonResponse(200, { dinners: [] })
+      if (key === 'PATCH /api/v1/dinners/d1') {
+        const currentDinner = regulars[0]
+        if (currentDinner === undefined) throw new Error('no Regular to edit')
+        const body = JSON.parse(String(init?.body)) as { meal_source: DinnerBody['meal_source'] }
+        const edited: DinnerBody = { ...currentDinner, meal_source: body.meal_source }
+        regulars[0] = edited
+        return jsonResponse(200, edited)
+      }
+      throw new Error(`unexpected fetch: ${key}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    mockViewport(1280)
+    const api = createApiClient(fakeLocation('/'), createNetworkStatus(win), createVerifiedSession(localStorage))
+    await api.loadMe()
+    render(
+      <ApiProvider client={api}>
+        <QueryClientProvider client={createQueryClient()}>
+          <InDataRouter path="/settings/regulars">
+            <nav>
+              <Link to={`/plan/shopping?week=${WEEK}`}>Supply run</Link>
+            </nav>
+            <Routes>
+              <Route path="/settings/regulars" element={<RegularsSettingsPage />} />
+              <Route path="/plan/shopping" element={<SupplyRunPage />} />
+            </Routes>
+          </InDataRouter>
+        </QueryClientProvider>
+      </ApiProvider>,
+    )
+
+    await screen.findByRole('heading', { level: 2, name: /^On rotation/ })
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Beef tacos' }))
+    const sheet = within(screen.getByRole('dialog', { name: 'Edit Beef tacos' }))
+    fireEvent.click(sheet.getByRole('radio', { name: 'Delivery' }))
+    fireEvent.click(sheet.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    const saved = JSON.parse(localStorage.getItem(SAVED_KEY) ?? '') as {
+      runs: Record<string, { groups: { dinner: { name: string }; items: { name: string }[] }[]; needed_count: number; total_count: number; status: string }>
+    }
+    expect(saved.runs[WEEK]?.groups.map((group) => group.dinner.name)).toEqual(['Pot roast'])
+    expect(saved.runs[WEEK]?.needed_count).toBe(1)
+    expect(saved.runs[WEEK]?.total_count).toBe(1)
+    expect(saved.runs[ARCHIVE_WEEK]?.status).toBe('archived')
+    expect(saved.runs[ARCHIVE_WEEK]?.groups.map((group) => group.dinner.name)).toEqual(['Beef tacos'])
+    expect(saved.runs[ARCHIVE_WEEK]?.groups[0]?.items.map((item) => item.name)).toEqual(['Ground beef'])
+
+    onLine = false
+    act(() => {
+      win.dispatchEvent(new Event('offline'))
+    })
+    fireEvent.click(screen.getByRole('link', { name: 'Supply run' }))
+    expect(await screen.findByRole('region', { name: 'Pot roast' })).toBeInTheDocument()
+    expect(screen.getByText('Chuck roast')).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Beef tacos' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Ground beef')).not.toBeInTheDocument()
   })
 })

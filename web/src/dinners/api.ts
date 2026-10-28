@@ -4,8 +4,9 @@ import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import type { Home } from '../home/api.ts'
 import { HOME_KEY } from '../home/api.ts'
-import type { Plan } from '../plan/api.ts'
+import type { Plan, PlanDay } from '../plan/api.ts'
 import type { SupplyRun } from '../shopping/api.ts'
+import { reconcileSavedMealSource } from '../shopping/offline.ts'
 import { archiveDinner, checkRemovals, knownArchived, useArchived, type SendRemoval } from './archived.ts'
 import type { DinnerDetail } from './detail.ts'
 
@@ -391,37 +392,34 @@ export function useRemoveRegular() {
   })
 }
 
+// clearedNight is day with dinner id removed: an unplanned night, which is
+// what the server stores when that dinner becomes Delivery or Dining Out.
+function clearedNight(day: PlanDay, id: string, mealSource: MealSource): PlanDay {
+  if (day.dinner === null || day.dinner.id !== id) return day
+  if (mealSource === 'cook') return { ...day, dinner: { ...day.dinner, meal_source: mealSource } }
+  return { ...day, dinner: null, is_new: false, start_by: null }
+}
+
 // showMealSource shows dinner id's meal source on every plan, Home, Supply
-// run and dinner detail already read here. A source other than cook drops
-// that dinner's Supply-run group, which the server has removed, and clears
-// a plan day's start-by, which only a cooked crock-pot dinner has. A manual
-// or cleared night has no dinner, so it is left as it is. A read
-// not yet made is left unread. The screens are read again afterwards, and
-// until that answer lands none of them can still offer the old photo or
-// Recipe control.
+// run and dinner detail already read here, and on a current Supply run saved
+// on this device. A source other than cook takes the dinner off those plan
+// days and off Home, and drops that dinner's Supply-run group, which the
+// server has removed. A manual or cleared night has no dinner, so it is left
+// as it is. An archived Supply run keeps the group it was shopped with. A
+// read not yet made is left unread. The screens are read again afterwards.
 function showMealSource(queryClient: QueryClient, id: string, mealSource: MealSource) {
   queryClient.setQueriesData<Plan | null>({ queryKey: ['plans'] }, (plan) => {
-    if (plan == null) return plan
-    const affected = plan.days.some(
-      (day) =>
-        day.dinner !== null &&
-        day.dinner.id === id &&
-        (day.dinner.meal_source !== mealSource || (mealSource !== 'cook' && day.start_by !== null)),
-    )
-    if (!affected) return plan
-    return {
-      ...plan,
-      days: plan.days.map((day) =>
-        day.dinner !== null && day.dinner.id === id
-          ? { ...day, start_by: mealSource === 'cook' ? day.start_by : null, dinner: { ...day.dinner, meal_source: mealSource } }
-          : day,
-      ),
-    }
+    if (plan == null || !plan.days.some((day) => day.dinner !== null && day.dinner.id === id)) return plan
+    return { ...plan, days: plan.days.map((day) => clearedNight(day, id, mealSource)) }
   })
   queryClient.setQueryData<Home>(HOME_KEY, (home) => {
-    if (home === undefined || home.tonight === null || home.tonight.id !== id || home.tonight.meal_source === mealSource) return home
-    return { ...home, tonight: { ...home.tonight, meal_source: mealSource } }
+    if (home === undefined || home.tonight === null || home.tonight.id !== id) return home
+    if (mealSource === 'cook') {
+      return home.tonight.meal_source === mealSource ? home : { ...home, tonight: { ...home.tonight, meal_source: mealSource } }
+    }
+    return { ...home, tonight: null }
   })
+  reconcileSavedMealSource(id, mealSource)
   queryClient.setQueriesData<SupplyRun | null>({ queryKey: ['shopping'] }, (run) => {
     if (run == null || !run.groups.some((group) => group.dinner.id === id)) return run
     // An archived run keeps the group it was shopped with. A current one

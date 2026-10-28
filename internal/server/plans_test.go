@@ -371,6 +371,9 @@ func TestPutPlanDay(t *testing.T) {
 		code         string
 	}{
 		{"2026-10-12/days/2026-10-14", `{}`, http.StatusBadRequest, "invalid_request"},
+		{"2026-10-12/days/2026-10-14", `{"dinner_id":"` + e.questLog + `","manual_label":"mummy dogs"}`, http.StatusBadRequest, "invalid_request"},
+		{"2026-10-12/days/2026-10-14", `{"manual_label":"   "}`, http.StatusBadRequest, "invalid_request"},
+		{"2026-10-12/days/2026-10-14", `{"clear":false}`, http.StatusBadRequest, "invalid_request"},
 		{"2026-10-12/days/2026-10-14", `{"dinner_id":7}`, http.StatusBadRequest, "invalid_request"},
 		{"2026-10-12/days/2026-10-14", `{"dinner_id":"x","extra":1}`, http.StatusBadRequest, "invalid_request"},
 		{"2026-10-12/days/2026-10-20", `{"dinner_id":"` + e.questLog + `"}`, http.StatusBadRequest, "invalid_date"},
@@ -390,6 +393,38 @@ func TestPutPlanDay(t *testing.T) {
 	rec, body = callDinners(t, e.h, http.MethodPut, plansPath+"2026-10-12/days/2026-10-15", `{"dinner_id":"`+e.questLog+`"}`)
 	if rec.Code != http.StatusConflict || errorCode(body) != "dinner_not_plannable" {
 		t.Errorf("PUT archived dinner = %d %v, want 409 dinner_not_plannable", rec.Code, body)
+	}
+}
+
+func TestPutManualNight(t *testing.T) {
+	t.Parallel()
+	e := newPlansRouter(t)
+	var before int
+	if err := e.st.Reader.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM dinners`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	rec, body := callDinners(t, e.h, http.MethodPut, plansPath+"2026-10-12/days/2026-10-17", `{"manual_label":" mummy dogs "}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT manual = %d: %s", rec.Code, rec.Body)
+	}
+	saturday := body["days"].([]any)[5].(map[string]any)
+	if saturday["date"] != "2026-10-17" || saturday["dinner"] != nil || saturday["manual_label"] != "mummy dogs" || saturday["is_new"] != false {
+		t.Fatalf("Saturday = %v, want mummy dogs and no dinner", saturday)
+	}
+	var after int
+	if err := e.st.Reader.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM dinners`).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("dinners = %d, want %d", after, before)
+	}
+	rec, body = callDinners(t, e.h, http.MethodPut, plansPath+"2026-10-12/days/2026-10-17", `{"clear":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT clear = %d: %s", rec.Code, rec.Body)
+	}
+	saturday = body["days"].([]any)[5].(map[string]any)
+	if saturday["dinner"] != nil || saturday["manual_label"] != nil {
+		t.Fatalf("Saturday after clear = %v, want nothing planned", saturday)
 	}
 }
 

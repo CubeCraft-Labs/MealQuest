@@ -72,6 +72,11 @@
   padding: 2px 18px 16px;
 }
 
+/* A one-off night: the name alone, with no photo and no recipe. */
+.manualFoot {
+  padding: 18px 18px 16px;
+}
+
 .cardText {
   min-width: 0;
   display: flex;

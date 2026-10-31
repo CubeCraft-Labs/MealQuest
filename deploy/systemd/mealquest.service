@@ -6,15 +6,28 @@
 # the DOCKER-USER rules are applied, and not at all if that unit fails.
 # PartOf=docker.service propagates a Docker stop or restart here, so a
 # Docker restart re-applies the firewall before the stack comes back.
+#
+# Restart=on-failure re-runs this unit when ExecStart exits non-zero, so a
+# Docker restart that races a same-host dependency (OIDC discovery HTTP 503)
+# comes back with no operator. systemctl stop is not a failure, so a stack
+# stopped on purpose stays stopped. StartLimitBurst=20 inside
+# StartLimitIntervalSec=900 is the whole retry budget at RestartSec=15s
+# (about five minutes when each attempt returns quickly). Past that the
+# unit stays failed and the journal records "Start request repeated too
+# quickly." The app stays fail-fast; this unit does the retry.
 [Unit]
 Description=MealQuest compose stack
 Requires=mealquest-firewall.service
 After=mealquest-firewall.service docker.service
 PartOf=docker.service
+StartLimitIntervalSec=900
+StartLimitBurst=20
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+Restart=on-failure
+RestartSec=15s
 ExecStart=/usr/bin/docker compose -f /home/overseer/mealquest/deploy/compose.yaml up -d
 ExecStop=/usr/bin/docker compose -f /home/overseer/mealquest/deploy/compose.yaml down
 

@@ -1516,13 +1516,15 @@ Production is the compose project `mealquest` on 10.60.1.14
 from the root `Dockerfile`, `litestream` replicating the database to the
 NAS over SFTP, and `searxng` on the internal network only. Configuration is
 `deploy/.env` and file secrets in `deploy/secrets/`, neither committed. The
-services never restart themselves; systemd units in `deploy/systemd/` own
-the host:
+services never restart themselves (`restart: "no"`); systemd units in
+`deploy/systemd/` own the host. `mealquest.service` retries a failed start
+(`Restart=on-failure`, bounded by its start limit) and does not retry
+`systemctl stop`.
 
 | Unit | Does |
 | --- | --- |
 | `mealquest-firewall.service` | Restricts port 8090 to Traefik in `DOCKER-USER`; required before the stack starts. |
-| `mealquest.service` | Starts and stops the compose stack. |
+| `mealquest.service` | Starts and stops the compose stack, and retries a failed start within its start limit. |
 | `mealquest-media-backup.timer` / `.service` | Backs up cached photos to the NAS nightly at 03:30. |
 | `mealquest-auto-deploy.timer` / `.service` | Automated deploy of `main` (below). |
 

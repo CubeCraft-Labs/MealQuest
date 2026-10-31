@@ -16,7 +16,7 @@ import (
 )
 
 // sourceCase is a recipe page an idea grounds in: its link and the site
-// name its page gives (empty for none, so the host is stored instead).
+// name its page gives (empty for none, so no name is stored).
 type sourceCase struct {
 	dish, link, site string
 	// want is the idea's source_url and site_name; nil is null.
@@ -33,7 +33,7 @@ const (
 
 // sourceCases are a clean link, credited by its page's name, and links
 // carrying a token in the query and the userinfo whose pages name no site,
-// so the stored name is the link's host.
+// so no name is stored and, the links being unsafe, none is shown.
 var sourceCases = []sourceCase{
 	{"Chicken Curry", cleanSourceLink, "Curry House", cleanSourceLink, "Curry House"},
 	{"Beef Stew", "https://" + queryHost + "/stew?access_token=" + queryToken, "", nil, nil},
@@ -137,8 +137,9 @@ func legacyIdea(name, link, site string) map[string]any {
 }
 
 // A job of either idea kind whose result was stored before sources were
-// made safe is served with the sources a job stored now holds: neither a
-// token-bearing link nor a name taken from its host.
+// made safe, and upgraded by migration 0022, is served with the sources a
+// job stored now holds: neither a token-bearing link nor a name taken from
+// its host.
 func TestJobServesLegacyIdeaResultsWithOnlySafeSources(t *testing.T) {
 	t.Parallel()
 	model, normalize, search, pages, images := newQuickFakes()
@@ -162,7 +163,10 @@ func TestJobServesLegacyIdeaResultsWithOnlySafeSources(t *testing.T) {
 			id, kind, string(js)); err != nil {
 			t.Fatal(err)
 		}
-		checkIdeaSources(t, h, id)
+	}
+	applySiteNameMigration(t, st)
+	for kind := range map[string]bool{ideas.KindFromIngredients: true, ideas.KindQuick: true} {
+		checkIdeaSources(t, h, "legacy-"+kind)
 	}
 }
 

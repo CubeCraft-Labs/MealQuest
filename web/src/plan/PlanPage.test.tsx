@@ -9,6 +9,7 @@ import { SupplyRunPage } from '../shopping/SupplyRunPage.tsx'
 import { cacheFallbackHeader } from '../sw/routes.ts'
 import { HOUSEHOLD_SETTINGS } from '../test/ApiProviders.tsx'
 import { declaredStyle } from '../test/cssRules.ts'
+import { expectMinHitArea } from '../test/hitArea.ts'
 import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { mockViewport } from '../test/matchMedia.ts'
 import { ago, cooking, duration, PlanPage } from './PlanPage.tsx'
@@ -265,6 +266,21 @@ function supplyRun(needed: number) {
     needed_count: needed,
     total_count: 32,
     groups: [],
+  }
+}
+
+// makesSupplyRun answers POST /api/v1/shopping/2026-10-05/generate with
+// generate and, as the server does, GET of the week's Supply run with the
+// one made once generate has made it: until then the week has none.
+function makesSupplyRun(generate: () => Response): Record<string, Responder> {
+  let made = false
+  return {
+    'GET /api/v1/shopping/2026-10-05': () => (made ? jsonResponse(200, supplyRun(28)) : errorResponse(404, 'not_found')),
+    'POST /api/v1/shopping/2026-10-05/generate': () => {
+      const response = generate()
+      made ||= response.ok
+      return response
+    },
   }
 }
 
@@ -584,7 +600,7 @@ describe('PlanPage', () => {
     const fetchMock = stubServer({
       [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
       [`POST ${PUSH}`]: () => jsonResponse(200, syncedNow(SUPPLY_RUN_FAILED)),
-      'POST /api/v1/shopping/2026-10-05/generate': () => generate(),
+      ...makesSupplyRun(() => generate()),
     })
     await renderPage()
 
@@ -616,7 +632,7 @@ describe('PlanPage', () => {
     stubServer({
       [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
       [`POST ${PUSH}`]: () => jsonResponse(200, syncedNow(SUPPLY_RUN_FAILED)),
-      'POST /api/v1/shopping/2026-10-05/generate': () => jsonResponse(200, { ...supplyRun(28), skipped: [] }),
+      ...makesSupplyRun(() => jsonResponse(200, { ...supplyRun(28), skipped: [] })),
     })
     await renderPage()
 
@@ -701,7 +717,7 @@ describe('PlanPage', () => {
     stubServer({
       [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
       [`POST ${PUSH}`]: () => jsonResponse(200, syncedNow(SUPPLY_RUN_FAILED)),
-      'POST /api/v1/shopping/2026-10-05/generate': () => jsonResponse(200, { ...supplyRun(28), skipped: [] }),
+      ...makesSupplyRun(() => jsonResponse(200, { ...supplyRun(28), skipped: [] })),
     })
     const queryClient = createQueryClient()
     await renderPage(queryClient, <SupplyRunScreen />)
@@ -1254,7 +1270,7 @@ describe('PlanPage', () => {
       expect(declaredStyle(friday).background).toBe('var(--color-bg)')
       expect(declaredStyle(friday).boxShadow).toBe('inset 0 0 0 2px var(--color-accent)')
       expect(declaredStyle(within(friday).getByText('FRI · SWAPPING…')).color).toBe('var(--color-accent-700)')
-      expect(declaredStyle(within(friday).getByText('Pizza night')).color).toBe('var(--color-neutral-600)')
+      expect(declaredStyle(within(friday).getByText('Pizza night')).color).toBe('var(--color-neutral-700)')
 
       // "Quest log · N | Regulars · N", on the Quest log first.
       expect(await within(sheet).findByRole('radio', { name: 'Quest log · 1', checked: true })).toBeInTheDocument()
@@ -1421,6 +1437,64 @@ describe('PlanPage', () => {
 
       expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't swap Friday's dinner. dinner_not_plannable message")
       expect(within(tile('FRI')).getByText('Pizza night')).toBeInTheDocument()
+    })
+
+    it("still shows a swap's failure on coming back to the week, through another, and asks for the swap again only on Retry", async () => {
+      const fetchMock = stubServer({
+        [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+        [`GET ${NEXT_WEEK}`]: () => errorResponse(404, 'not_found'),
+        [`GET /api/v1/plans/2026-10-19`]: () => errorResponse(404, 'not_found'),
+        ...lists,
+        [`PUT ${FRIDAY}`]: () => errorResponse(409, 'dinner_not_plannable'),
+      })
+      await renderPage()
+
+      fireEvent.click(await within(await openFriday()).findByRole('button', { name: /Lemon orzo/ }))
+      expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't swap Friday's dinner. dinner_not_plannable message")
+      fireEvent.click(screen.getByRole('button', { name: 'Next week' }))
+      expect(await screen.findByRole('button', { name: 'Draft this week' })).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Next week' }))
+      await waitFor(() => expect(screen.getByTestId('search')).toHaveTextContent('?week=2026-10-19'))
+      expect(await screen.findByRole('button', { name: 'Draft this week' })).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Previous week' }))
+      await waitFor(() => expect(screen.getByTestId('search')).toHaveTextContent('?week=2026-10-12'))
+      fireEvent.click(screen.getByRole('button', { name: 'Previous week' }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't swap Friday's dinner. dinner_not_plannable message")
+      expect(within(tile('FRI')).getByText('Pizza night')).toBeInTheDocument()
+      expect(puts(fetchMock)).toHaveLength(1)
+    })
+
+    it('reads the plan again when the dinner is already on another day, and offers to choose another rather than send it again', async () => {
+      // Meanwhile lemon orzo was planned on Wednesday.
+      let read = planBody('draft')
+      const fetchMock = stubServer({
+        [`GET ${THIS_WEEK}`]: () => jsonResponse(200, read),
+        ...lists,
+        [`PUT ${FRIDAY}`]: () => errorResponse(409, 'dinner_already_planned'),
+      })
+      await renderPage()
+
+      const sheet = await openFriday()
+      read = planBody('draft')
+      read.days[2] = { ...read.days[2]!, dinner: { ...read.days[2]!.dinner, id: 'q1', name: 'Lemon orzo' }, is_new: true }
+      fireEvent.click(await within(sheet).findByRole('button', { name: /Lemon orzo/ }))
+
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent("Couldn't swap Friday's dinner. Lemon orzo is already on another day this week.")
+      expect(within(alert).queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+      await waitFor(() => expect(within(tile('WED · NEW')).getByText('Lemon orzo')).toBeInTheDocument())
+      expect(within(tile('FRI')).getByText('Pizza night')).toBeInTheDocument()
+
+      // Choosing again opens Friday's sheet on the plan read, where lemon
+      // orzo is already this week; nothing is sent again.
+      fireEvent.click(within(alert).getByRole('button', { name: 'Choose another dinner' }))
+      const again = screen.getByRole('dialog', { name: 'Swap Friday' })
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      const orzo = within(within(again).getByRole('list', { name: 'Quest log' })).getByRole('listitem')
+      expect(within(orzo).getByText('Already this week')).toBeInTheDocument()
+      expect(within(orzo).queryByRole('button')).not.toBeInTheDocument()
+      expect(puts(fetchMock)).toHaveLength(1)
     })
 
     it('waits for a pending swap before Rebuild week, keeping its failure', async () => {
@@ -1764,6 +1838,9 @@ describe.each([
       const chip = within(within(strip).getByRole('list', { name: 'Quest log dinners' })).getByRole('listitem')
       expect(chip).toHaveTextContent('Lemon orzo')
       expect(declaredStyle(within(chip).getByRole('img', { hidden: true, name: 'Lemon orzo' })).width).toBe('28px')
+      // The 28 px photo makes a 38 px chip; the chip is a button, so it
+      // keeps the 44 px tap minimum.
+      expectMinHitArea(within(chip).getByRole('button', { name: /Lemon orzo/ }))
       // The strip follows the grid.
       const grid = await screen.findByRole('list', { name: 'Dinners this week' })
       expect(grid.compareDocumentPosition(strip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()

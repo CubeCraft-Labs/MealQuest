@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -151,6 +152,73 @@ func (c FlowCookie) Read(r *http.Request, v flowValue, now time.Time) error {
 		return fmt.Errorf("%s cookie expired", c.name)
 	}
 	return nil
+}
+
+// maxPendingStates bounds each flow's pending states. The login route is
+// unauthenticated, so without a bound anyone could grow the set without
+// limit; one household never has close to this many flows in progress.
+const maxPendingStates = 10000
+
+// ErrTooManyPending means a flow's pending states are at maxPendingStates,
+// so a new flow is refused until older ones expire.
+var ErrTooManyPending = errors.New("too many sign-in flows in progress")
+
+// PendingStates holds the state of every redirect flow started and not yet
+// completed, until its flow cookie expires. A copy of a flow cookie verifies
+// until it expires, so a flow is single-use only because its callback
+// consumes the state here. The states live in memory — MealQuest runs as one
+// process — so a flow started before a restart fails closed after it.
+type PendingStates struct {
+	ttl    time.Duration
+	mu     sync.Mutex
+	states map[string]time.Time
+	// order is every added state in the order added. Every state is pending
+	// for the same ttl, so it is also expiry order and Add forgets expired
+	// states from its front.
+	order []pendingState
+}
+
+type pendingState struct {
+	state   string
+	expires time.Time
+}
+
+// NewPendingStates returns an empty set whose states are pending for ttl,
+// the flow cookie's lifetime.
+func NewPendingStates(ttl time.Duration) *PendingStates {
+	return &PendingStates{ttl: ttl, states: map[string]time.Time{}}
+}
+
+// Add records state, started at now, as pending and forgets expired ones.
+// It fails with ErrTooManyPending when maxPendingStates are pending.
+func (p *PendingStates) Add(state string, now time.Time) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	expired := 0
+	for expired < len(p.order) && !now.Before(p.order[expired].expires) {
+		delete(p.states, p.order[expired].state)
+		expired++
+	}
+	p.order = p.order[expired:]
+	// The bound counts every unexpired state, consumed or not: a consumed
+	// state leaves states at once but order only when it expires.
+	if len(p.order) >= maxPendingStates {
+		return ErrTooManyPending
+	}
+	expires := now.Add(p.ttl)
+	p.states[state] = expires
+	p.order = append(p.order, pendingState{state: state, expires: expires})
+	return nil
+}
+
+// Consume removes state from the pending states, reporting whether it was
+// there.
+func (p *PendingStates) Consume(state string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, ok := p.states[state]
+	delete(p.states, state)
+	return ok
 }
 
 // returnPath validates the optional post-login return path. Empty means "/".

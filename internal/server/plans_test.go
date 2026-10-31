@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/harness"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/ai/skills"
@@ -93,7 +94,7 @@ func newPlansRouterTitled(t *testing.T, title shopping.Titler) plansEnv {
 		t.Fatal(err)
 	}
 	notifier := notifytest.New(t, st)
-	svc, err := plan.NewService(st, fail, runner, googleSvc, notifier, func() {}, pub, logger)
+	svc, err := plan.NewService(st, fail, runner, googleSvc, notifier, func() {}, pub, time.Now, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +108,7 @@ func newPlansRouterTitled(t *testing.T, title shopping.Titler) plansEnv {
 		t.Fatal(err)
 	}
 	h, err := NewRouter(logger, "dev", nil, stubAuth{}, stubSessions{}, newTestSettings(t), newTestSearch(t), newTestAI(t), chatSvc,
-		newTestDinners(t), newTestSuggest(t), svc, shop, googleSvc, newTestPush(t), newTestIdeas(t), newTestHome(t), runner, newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
+		newTestDinnersOn(t, st), newTestSuggest(t), svc, shop, googleSvc, newTestPush(t), newTestIdeas(t), newTestHome(t), runner, newTestPhotos(t), fstest.MapFS{"index.html": {Data: []byte(fixtureIndex)}})
 	if err != nil {
 		t.Fatal(err)
 	}

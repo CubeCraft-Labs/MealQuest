@@ -1,5 +1,5 @@
-// Command generate-icons writes the PWA icons in web/public from the
-// MealQuest logo. Run it from the repository root:
+// Command generate-icons writes the PWA icons and favicons in web/public from
+// the MealQuest logo. Run it from the repository root:
 //
 //	go run ./web/scripts/generate-icons
 //
@@ -9,10 +9,13 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -26,6 +29,9 @@ const (
 	public        = "web/public"
 	maskableScale = 0.66
 )
+
+// faviconSizes are the images packed into favicon.ico.
+var faviconSizes = []int{16, 32, 48}
 
 func main() {
 	if err := run(); err != nil {
@@ -49,6 +55,8 @@ func run() error {
 		{"icons/icon-192.png", resized(logo, 192)},
 		{"icons/icon-512.png", resized(logo, 512)},
 		{"icons/icon-maskable-512.png", maskable(logo, 512)},
+		{"icons/favicon-16.png", resized(logo, 16)},
+		{"icons/favicon-32.png", resized(logo, 32)},
 		{"apple-touch-icon.png", resized(logo, 180)},
 	}
 	for _, out := range outputs {
@@ -58,7 +66,51 @@ func run() error {
 		}
 		fmt.Printf("wrote %s (%dx%d)\n", path, out.image.Rect.Dx(), out.image.Rect.Dy())
 	}
+	ico, err := favicon(logo)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(public, "favicon.ico")
+	if err := os.WriteFile(path, ico, 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("wrote %s (%v)\n", path, faviconSizes)
 	return nil
+}
+
+// favicon is an ICO file holding the logo at each of faviconSizes as an
+// embedded PNG: a 6-byte header, a 16-byte directory entry per image, then
+// the images.
+func favicon(logo image.Image) ([]byte, error) {
+	var images [][]byte
+	for _, size := range faviconSizes {
+		var buf bytes.Buffer
+		if err := encode(&buf, resized(logo, size)); err != nil {
+			return nil, fmt.Errorf("encode favicon %dx%d: %w", size, size, err)
+		}
+		images = append(images, buf.Bytes())
+	}
+	var out bytes.Buffer
+	le := binary.LittleEndian
+	out.Write(le.AppendUint16(nil, 0))                   // reserved
+	out.Write(le.AppendUint16(nil, 1))                   // type: icon
+	out.Write(le.AppendUint16(nil, uint16(len(images)))) // image count
+	offset := 6 + 16*len(images)
+	for i, size := range faviconSizes {
+		out.WriteByte(byte(size))           // width
+		out.WriteByte(byte(size))           // height
+		out.WriteByte(0)                    // palette size: none
+		out.WriteByte(0)                    // reserved
+		out.Write(le.AppendUint16(nil, 1))  // colour planes
+		out.Write(le.AppendUint16(nil, 32)) // bits per pixel
+		out.Write(le.AppendUint32(nil, uint32(len(images[i]))))
+		out.Write(le.AppendUint32(nil, uint32(offset)))
+		offset += len(images[i])
+	}
+	for _, img := range images {
+		out.Write(img)
+	}
+	return out.Bytes(), nil
 }
 
 // load decodes the logo. The file is a PNG despite its .jpg name, so the
@@ -84,12 +136,16 @@ func save(path string, img image.Image) error {
 	if err != nil {
 		return err
 	}
-	enc := png.Encoder{CompressionLevel: png.BestCompression}
-	if err := enc.Encode(f, img); err != nil {
+	if err := encode(f, img); err != nil {
 		f.Close()
 		return fmt.Errorf("encode %s: %w", path, err)
 	}
 	return f.Close()
+}
+
+func encode(w io.Writer, img image.Image) error {
+	enc := png.Encoder{CompressionLevel: png.BestCompression}
+	return enc.Encode(w, img)
 }
 
 func resized(logo image.Image, size int) *image.RGBA {

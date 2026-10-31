@@ -1,10 +1,11 @@
 import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import { Card } from '../ui/Card.tsx'
+import { useBreakpoint, useOrientation } from '../shell/useBreakpoint.ts'
 import { AIAssistantCard } from './AISettingsPage.tsx'
 import { HouseholdSettingsSections } from './HouseholdSettingsPage.tsx'
 import { LeaveGuard } from './LeaveGuard.tsx'
 import { ChatWebhookCard, NotificationsCard } from './NotificationsPage.tsx'
 import { RecipeSearchCard } from './RecipeSearchCard.tsx'
+import { RegularsManager } from './RegularsSettingsPage.tsx'
 import styles from './SettingsTabs.module.css'
 
 type Tab = 'household' | 'regulars' | 'notifications-ai'
@@ -21,7 +22,10 @@ const step: Record<string, number> = { ArrowRight: 1, ArrowLeft: -1 }
 // sub-tabs instead of the mobile list. Every tab stays mounted while hidden,
 // so a draft survives switching tabs, and one leave guard covers them all.
 // hidden hides the page but keeps it mounted, drafts and leave guard included.
+// On an upright tablet the two columns stack into one.
 export function SettingsTabs({ hidden = false }: { hidden?: boolean }) {
+  const layout = useBreakpoint()
+  const orientation = useOrientation()
   const [tab, setTab] = useState<Tab>('notifications-ai')
   const [householdDirty, setHouseholdDirty] = useState(false)
   const [aiDirty, setAIDirty] = useState(false)
@@ -64,7 +68,10 @@ export function SettingsTabs({ hidden = false }: { hidden?: boolean }) {
   }
 
   return (
-    <div className={styles.page} hidden={hidden}>
+    <div
+      className={[styles.page, layout === 'tablet' && orientation === 'portrait' && styles.portrait].filter(Boolean).join(' ')}
+      hidden={hidden}
+    >
       <header className={styles.header}>
         <div className={styles.heading}>
           <h1 className={styles.title}>Settings</h1>
@@ -94,13 +101,7 @@ export function SettingsTabs({ hidden = false }: { hidden?: boolean }) {
 
       {panel('household', styles.single, <HouseholdSettingsSections onDirtyChange={setHouseholdDirty} />)}
 
-      {panel(
-        'regulars',
-        styles.single,
-        // TODO(Feature 12): embed the Regular dinners screen here once Feature
-        // 12 builds it.
-        <Placeholder title="Regular dinners">Managing the household's Regulars arrives in a later update.</Placeholder>,
-      )}
+      {panel('regulars', styles.single, <RegularsManager />)}
 
       {panel(
         'notifications-ai',
@@ -119,19 +120,5 @@ export function SettingsTabs({ hidden = false }: { hidden?: boolean }) {
 
       <LeaveGuard dirty={householdDirty || aiDirty || recipeSearchDirty || chatDirty} />
     </div>
-  )
-}
-
-// Placeholder is a neutral card holding a section's place until the feature
-// that owns it renders it.
-function Placeholder({ title, children }: { title: string; children: ReactNode }) {
-  const titleId = useId()
-  return (
-    <Card className={styles.placeholder} aria-labelledby={titleId} role="region">
-      <h2 id={titleId} className={styles.cardTitle}>
-        {title}
-      </h2>
-      <p className={styles.hint}>{children}</p>
-    </Card>
   )
 }

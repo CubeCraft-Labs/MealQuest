@@ -17,8 +17,11 @@ export default defineConfig({
       srcDir: 'src',
       filename: 'sw.ts',
       injectRegister: 'script',
-      // Precache the shell, JS, CSS and the self-hosted fonts.
-      injectManifest: { globPatterns: ['**/*.{html,js,css,woff2}'] },
+      // Precache the shell, JS, CSS, the self-hosted fonts and every icon
+      // and favicon. The glob already covers the manifest icons, so the
+      // plugin does not add them a second time.
+      injectManifest: { globPatterns: ['**/*.{html,js,css,woff2,png,ico}'] },
+      includeManifestIcons: false,
       // The web manifest lives in manifest.json: its theme and background
       // colours are --color-accent and --color-bg from src/styles/tokens.css,
       // and hex colours may not be written in TypeScript.

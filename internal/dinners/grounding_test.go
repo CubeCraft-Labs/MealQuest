@@ -719,11 +719,11 @@ func TestCandidates(t *testing.T) {
 	}
 	first, second := got[0], got[1]
 	wantPhoto := dinners.PhotoURL(e.dinner(t, c.ID).PhotoID.String)
-	if first.Title != "Chicken Curry" || first.SiteName != "Curry House" ||
+	if first.Title != "Chicken Curry" || deref(first.SiteName) != "Curry House" ||
 		first.PhotoURL == nil || *first.PhotoURL != wantPhoto || first.Minutes == nil || *first.Minutes != 40 {
 		t.Errorf("first = %+v, want the stored curryA with photo %s", first, wantPhoto)
 	}
-	if second.Title != "Easy Weeknight Curry" || second.SiteName != "B Kitchen" ||
+	if second.Title != "Easy Weeknight Curry" || deref(second.SiteName) != "B Kitchen" ||
 		second.PhotoURL != nil || second.Minutes == nil || *second.Minutes != 25 {
 		t.Errorf("second = %+v, want curryB without a photo", second)
 	}

@@ -52,6 +52,12 @@
   color: var(--on-accent);
 }
 
+/* The app-wide grape focus ring barely shows on the dark bar (1.8:1); the
+   bar's ring is the light on-accent ink instead. */
+.item:focus-visible {
+  outline-color: var(--on-accent);
+}
+
 .label {
   font-family: var(--font-body);
   font-size: 13px;

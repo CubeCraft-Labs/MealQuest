@@ -76,35 +76,40 @@ func TestCreateRegularNeverNamesFromLink(t *testing.T) {
 	check("duplicate error", dup.Error())
 }
 
-// TestPageSiteNameWithholdsHosts: a stored site name that could be a host —
-// the link's own, in any case and without "www.", an IP address or a dotted
-// host name — is withheld; a name the page gave, dotless or with spaces, is
-// kept.
-func TestPageSiteNameWithholdsHosts(t *testing.T) {
+// TestSourceOfSiteName: a site name the page gave is shown as it stands,
+// even one shaped like a host and even over a link that is withheld; a
+// recipe whose page named none is named by its link's host without "www."
+// only when the link itself is shown, and is unnamed otherwise.
+func TestSourceOfSiteName(t *testing.T) {
 	t.Parallel()
-	const link = "https://www.TokenHost/recipes/stew"
+	const (
+		ordinary = "https://www.Kitchen.example/recipes/stew"
+		token    = "https://private-token.example.com/recipes/stew?access_token=abc123"
+	)
 	for _, tc := range []struct {
-		stored string
-		valid  bool
-		want   *string
+		stored        string
+		valid         bool
+		link          string
+		want, wantURL *string
 	}{
-		{"", false, nil},
-		{"tokenhost", true, nil},
-		{"TOKENHOST", true, nil},
-		{"private-token.example.com", true, nil},
-		{"Food.com", true, nil},
-		{"203.0.113.7", true, nil},
-		{"2001:db8::1", true, nil},
-		{"Delish", true, ptr("Delish")},
-		{"Bon Appétit", true, ptr("Bon Appétit")},
-		{"Mr. Food Test Kitchen", true, ptr("Mr. Food Test Kitchen")},
+		{"Delish", true, ordinary, ptr("Delish"), ptr(ordinary)},
+		{"Food.com", true, ordinary, ptr("Food.com"), ptr(ordinary)},
+		{"Bon Appétit", true, token, ptr("Bon Appétit"), nil},
+		{"", false, ordinary, ptr("Kitchen.example"), ptr(ordinary)},
+		{"", true, ordinary, ptr("Kitchen.example"), ptr(ordinary)},
+		{"", false, token, nil, nil},
+		{"", false, "https://203.0.113.7/stew", ptr("203.0.113.7"), ptr("https://203.0.113.7/stew")},
+		{"", false, "http://kitchen.example/stew", nil, nil},
 	} {
-		src, err := dinners.SourceOf(sql.NullString{String: tc.stored, Valid: tc.valid}, link)
+		src, err := dinners.SourceOf(sql.NullString{String: tc.stored, Valid: tc.valid}, tc.link)
 		if err != nil {
-			t.Fatalf("SourceOf(%q): %v", tc.stored, err)
+			t.Fatalf("SourceOf(%q, %q): %v", tc.stored, tc.link, err)
 		}
 		if got := src.SiteName; (got == nil) != (tc.want == nil) || (got != nil && *got != *tc.want) {
-			t.Errorf("SourceOf(%q) site name = %v, want %v", tc.stored, deref(got), deref(tc.want))
+			t.Errorf("SourceOf(%q, %q) site name = %v, want %v", tc.stored, tc.link, deref(got), deref(tc.want))
+		}
+		if got := src.URL; (got == nil) != (tc.wantURL == nil) || (got != nil && *got != *tc.wantURL) {
+			t.Errorf("SourceOf(%q, %q) url = %v, want %v", tc.stored, tc.link, deref(got), deref(tc.wantURL))
 		}
 	}
 	// A link that does not parse is an error with or without a site name.

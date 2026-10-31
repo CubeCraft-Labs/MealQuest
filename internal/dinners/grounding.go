@@ -304,7 +304,9 @@ type Candidate struct {
 	// may carry a token.
 	CandidateID string `json:"candidate_id"`
 	Title       string `json:"title"`
-	SiteName    string `json:"site_name"`
+	// SiteName is the page's site as SourceOf names it, null when it
+	// cannot be named without leaking the URL.
+	SiteName *string `json:"site_name"`
 	// PhotoURL is the cached photo of a page already grounded, else null.
 	PhotoURL *string `json:"photo_url"`
 	Minutes  *int    `json:"minutes"`
@@ -367,9 +369,13 @@ func (s *Service) Candidates(ctx context.Context, id string) ([]Candidate, error
 	out := make([]Candidate, len(offers))
 	urls := make(map[string]string, len(offers))
 	for i, o := range offers {
+		src, err := SourceOf(sql.NullString{String: o.SiteName, Valid: o.SiteName != ""}, o.URL)
+		if err != nil {
+			return nil, fmt.Errorf("%w: dinner %s: candidate %d: %w", ErrCandidatesFailed, id, i+1, err)
+		}
 		cid := s.candidateID(row.ID, o.URL)
 		urls[cid] = o.URL
-		out[i] = Candidate{CandidateID: cid, Title: o.Title, SiteName: o.SiteName, Minutes: o.Minutes}
+		out[i] = Candidate{CandidateID: cid, Title: o.Title, SiteName: src.SiteName, Minutes: o.Minutes}
 		if o.PhotoID != "" {
 			u := PhotoURL(o.PhotoID)
 			out[i].PhotoURL = &u

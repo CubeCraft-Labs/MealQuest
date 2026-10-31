@@ -121,6 +121,9 @@ type Querier interface {
 	// Records a pending or running batch as done or failed; a batch already
 	// finished is left as it is (0 rows).
 	FinishSuggestionBatch(ctx context.Context, arg FinishSuggestionBatchParams) (int64, error)
+	// Keeps the name each dinner of list list_id has now as its group's
+	// frozen_dinner_name, as the list is frozen into the Supply archive.
+	FreezeShoppingGroupNames(ctx context.Context, listID string) error
 	// Freezes list id into the Supply archive at frozen_at, unless it is
 	// frozen already.
 	FreezeShoppingList(ctx context.Context, arg FreezeShoppingListParams) (int64, error)
@@ -271,8 +274,10 @@ type Querier interface {
 	ListRecentPassedNames(ctx context.Context, limit int64) ([]string, error)
 	ListRecipeIngredients(ctx context.Context, recipeID string) ([]RecipeIngredient, error)
 	ListRecipeSteps(ctx context.Context, recipeID string) ([]RecipeStep, error)
-	// The groups of list list_id with their dinner's name and status, in list
-	// order. A group may keep a dinner archived since the list was made.
+	// The groups of list list_id with their dinner's name, status and meal
+	// source now, in list order. A group may keep a dinner archived since the
+	// list was made. A group of a frozen list shows its frozen_dinner_name
+	// instead.
 	ListShoppingGroupDinners(ctx context.Context, listID string) ([]ListShoppingGroupDinnersRow, error)
 	// The groups of list list_id, in list order.
 	ListShoppingGroups(ctx context.Context, listID string) ([]ShoppingGroup, error)

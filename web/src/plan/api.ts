@@ -1,5 +1,14 @@
 import { useCallback, useEffect } from 'react'
-import { useMutation, useMutationState, useQuery, useQueryClient, type Mutation, type QueryClient } from '@tanstack/react-query'
+import {
+  useMutation,
+  useMutationState,
+  useQuery,
+  useQueryClient,
+  type Mutation,
+  type Query,
+  type QueryClient,
+  type QueryKey,
+} from '@tanstack/react-query'
 import { ApiError, useApi, type ApiRead } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { knownArchived, useArchived } from '../dinners/archived.ts'
@@ -121,6 +130,12 @@ function parseDay(where: string, body: unknown): PlanDay {
   return { date: body.date, dinner, manual_label: null, is_new: body.is_new, start_by: body.start_by as string | null }
 }
 
+// RFC3339 is an RFC 3339 instant as the server writes it: a full date and
+// time, to the second or finer, and its offset, Z or ±hh:mm. A date alone,
+// or a time with no offset, which Date would read in this device's zone, is
+// not one.
+const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/
+
 // showArchived is plan with each dinner the server archived (archived)
 // shown archived — removed from Regulars, so it has no detail to open —
 // whatever the read said; a plan with none is plan itself.
@@ -137,7 +152,7 @@ export function showArchived(plan: Plan | null, archived: ReadonlySet<string>): 
 // syncedAt reads calendar_synced_at, an RFC 3339 instant or null.
 function syncedAt(where: string, value: unknown): Date | null {
   if (value === null) return null
-  const at = typeof value === 'string' ? new Date(value) : null
+  const at = typeof value === 'string' && RFC3339.test(value) ? new Date(value) : null
   if (at === null || Number.isNaN(at.getTime())) {
     throw new Error(`${where}: calendar_synced_at ${JSON.stringify(value)} is not an instant`)
   }
@@ -345,38 +360,54 @@ const weeksShown = new WeakMap<QueryClient, WeeksShown>()
 // time a week is shown, and is never removed, so a swap or push that settles
 // after its Draft board, or the whole Plan, is gone is still collected.
 //
-// When a week is shown, the settled ones of every other week are removed,
-// unless that week still has one pending: a pending one, and those an
-// earlier pending one must see, stay across leaving its week and coming
-// back. When one settles, the same is done, except that a week's latest,
-// when it failed, stays until a week is next shown, so that coming straight
-// back to it shows the failure. A week's latest push whose Supply run was
-// not made stays whatever is shown: the week has no shopping list until one
-// is made, which settles the push, or a push sent since replaces it, and
-// making it may still be under way when the week is left. The cache holds
-// at most the weeks shown's, those of weeks left pending, one push of each
-// week whose Supply run was not made, and one failure of each week whose
-// last pending one settled since a week was last shown.
+// A swap or push pending is kept, with every other of its kind and week:
+// an earlier pending one must see those sent after it, across leaving its
+// week and coming back. Once none of a kind and week is pending, only the
+// latest is needed, and the rest are removed, whenever a week is shown or
+// one settles. The latest itself stays while its week is shown. In a week
+// not shown it is removed, unless:
+//
+//   - it is a failed swap: it stays, whatever is shown, until the week's
+//     board leaves it behind (useWeekSwap, Rebuild week, Push to Calendar),
+//     so coming back to the week shows the failure;
+//   - it is a push whose Supply run was not made: the week has no shopping
+//     list until one is made, which settles the push, or a push sent since
+//     replaces it, and making it may still be under way when the week is
+//     left;
+//   - it is a failed push that settled after its week was left: it stays
+//     until a week is next shown, so coming straight back shows it.
+//
+// So once none of its kind is pending, a week keeps at most one settled
+// swap and one settled push, and a week left keeps none but those above:
+// settled swaps and pushes never accumulate.
 function keepWeekMutations(queryClient: QueryClient): WeeksShown {
   const kept = weeksShown.get(queryClient)
   if (kept !== undefined) return kept
   const mutations = queryClient.getMutationCache()
   // How many times each week is shown at once.
   const shown = new Map<string, number>()
+  // keep says whether the latest of its kind and week, none of which is
+  // pending, stays; settled says a mutation settling swept, not a week
+  // shown.
+  function keep(mutation: Mutation, of: { kind: 'swap' | 'push'; week: string }, settled: boolean): boolean {
+    if (shown.has(of.week)) return true
+    if (of.kind === 'swap') return failed(mutation)
+    return unmade(mutation) || (settled && failed(mutation))
+  }
   function sweep(settled: boolean) {
-    // The mutations of each kind of each week not shown, in the order sent.
-    const left = new Map<string, Mutation[]>()
+    // The mutations of each kind of each week, in the order sent.
+    const sent = new Map<string, { of: { kind: 'swap' | 'push'; week: string }; week: Mutation[] }>()
     for (const mutation of mutations.getAll()) {
       const of = weekMutation(mutation)
-      if (of === null || shown.has(of.week)) continue
+      if (of === null) continue
       const id = `${of.kind} ${of.week}`
-      left.set(id, [...(left.get(id) ?? []), mutation])
+      sent.set(id, { of, week: [...(sent.get(id)?.week ?? []), mutation] })
     }
-    for (const week of left.values()) {
+    for (const { of, week } of sent.values()) {
       if (week.some((mutation) => mutation.state.status === 'pending')) continue
       const latest = week.at(-1)
       for (const mutation of week) {
-        if (mutation === latest && (unmade(mutation) || (settled && failed(mutation)))) continue
+        if (mutation === latest && keep(mutation, of, settled)) continue
         mutations.remove(mutation)
       }
     }
@@ -405,6 +436,30 @@ function useWeekShown(weekStart: string) {
   useEffect(() => keepWeekMutations(queryClient).show(weekStart), [queryClient, weekStart])
 }
 
+// swapWrites counts, for each plan query, its updates that were a swap's
+// own optimistic write or rollback, not a plan read from the server.
+const swapWrites = new WeakMap<Query, number>()
+
+// serverReads is how many plans read from the server have landed in the
+// plan query: its updates, less the swaps' own writes. A plan read lands
+// whether or not it differs from the plan shown.
+function serverReads(query: Query): number {
+  return query.state.dataUpdateCount - (swapWrites.get(query) ?? 0)
+}
+
+// writeSwap updates the plan query as a swap's own write, which serverReads
+// does not count.
+function writeSwap(queryClient: QueryClient, query: Query, update: (plan: Plan | null | undefined) => Plan | null | undefined) {
+  const before = query.state.dataUpdateCount
+  queryClient.setQueryData<Plan | null>(query.queryKey, update)
+  swapWrites.set(query, (swapWrites.get(query) ?? 0) + query.state.dataUpdateCount - before)
+}
+
+// planQuery is the plan query keyed key, if the query cache has it.
+function planQuery(queryClient: QueryClient, key: QueryKey): Query | undefined {
+  return queryClient.getQueryCache().find({ queryKey: key, exact: true })
+}
+
 // swapKey keys the swaps of the week starting on weekStart in the mutation
 // cache, where they outlive the Draft board that sent them.
 function swapKey(weekStart: string) {
@@ -426,9 +481,13 @@ export type SwapDay = {
 // (PUT /api/v1/plans/{weekStart}/days/{date}). The day shows the dinner at
 // once, NEW when it came from the Quest log, with no start-by time until the
 // server answers with the plan as swapped, which then replaces it. A refused
-// swap puts the day back as it was, unless it has changed again meanwhile.
-// However the swap ends, the Quest log is read again: the server leaves a
-// dinner on the plan out of it.
+// swap puts the day back as it was, unless it has changed again meanwhile:
+// another swap wrote over it, or any plan read from the server landed
+// since, even one with the very day the swap wrote. A swap refused because
+// the dinner is already on another day of the week (409
+// dinner_already_planned) reads the plan again, so the household chooses
+// again from the plan as it is. However the swap ends, the Quest log is
+// read again: the server leaves a dinner on the plan out of it.
 //
 // The week's swaps live in the mutation cache, not in the component, so
 // leaving the week and coming back keeps them: pending and failed are read
@@ -455,7 +514,7 @@ export function useSwapDay(weekStart: string): SwapDay {
   function mutate(chosen: Swap) {
     // isLatest says whether no swap of the week was sent after this one.
     const isLatest = () => mutations.findAll({ mutationKey }).every((other) => other.mutationId <= mutation.mutationId)
-    const mutation = mutations.build<Plan, Error, Swap, { previous: PlanDay; swapped: PlanDay }>(queryClient, {
+    const mutation = mutations.build<Plan, Error, Swap, { previous: PlanDay; swapped: PlanDay; query: Query; reads: number }>(queryClient, {
       mutationKey,
       // Kept until dismissed or settled in a week not shown
       // (keepWeekMutations): a later swap must stay in the cache while an
@@ -468,24 +527,32 @@ export function useSwapDay(weekStart: string): SwapDay {
       },
       onMutate: async (swap) => {
         await queryClient.cancelQueries({ queryKey: key })
-        const plan = queryClient.getQueryData<Plan | null>(key)
+        const query = planQuery(queryClient, key)
+        const plan = query?.state.data as Plan | null | undefined
         const previous = plan?.days.find((day) => day.date === swap.date)
-        if (!plan || previous === undefined) throw new Error(`The week of ${weekStart} has no plan day ${swap.date} to swap.`)
+        if (query === undefined || !plan || previous === undefined) {
+          throw new Error(`The week of ${weekStart} has no plan day ${swap.date} to swap.`)
+        }
         const swapped = swappedDay(swap)
-        queryClient.setQueryData<Plan>(key, { ...plan, days: plan.days.map((day) => (day.date === swap.date ? swapped : day)) })
-        return { previous, swapped }
+        writeSwap(queryClient, query, () => ({ ...plan, days: plan.days.map((day) => (day.date === swap.date ? swapped : day)) }))
+        return { previous, swapped, query, reads: serverReads(query) }
       },
       onSuccess: (plan) => {
         if (isLatest()) queryClient.setQueryData<Plan>(key, plan)
       },
       // The day goes back only while it is still, field for field, the day
-      // this swap wrote: a later swap or plan read that replaced it is left
-      // alone.
-      onError: (_error, _swap, context) => {
-        if (context === undefined) return
-        queryClient.setQueryData<Plan | null>(key, (plan) =>
-          plan && { ...plan, days: plan.days.map((day) => (sameDay(day, context.swapped) ? context.previous : day)) },
-        )
+      // this swap wrote, and no plan read from the server has landed since
+      // (serverReads): a later swap that replaced it, or a read that did,
+      // even with the same day, is left alone.
+      onError: (error, _swap, context) => {
+        if (context !== undefined && planQuery(queryClient, key) === context.query && serverReads(context.query) === context.reads) {
+          writeSwap(queryClient, context.query, (plan) =>
+            plan && { ...plan, days: plan.days.map((day) => (sameDay(day, context.swapped) ? context.previous : day)) },
+          )
+        }
+        if (error instanceof ApiError && error.code === 'dinner_already_planned') {
+          void queryClient.invalidateQueries({ queryKey: key })
+        }
       },
       onSettled: () => queryClient.invalidateQueries({ queryKey: QUEST_LOG_KEY }),
     })

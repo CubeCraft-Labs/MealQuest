@@ -660,6 +660,74 @@ func TestBatchKeepsAtMostBatchSize(t *testing.T) {
 	}
 }
 
+// TestBatchReplacesSideQuestMadeIneligibleWhileHeld: a notifying batch
+// holds each round's Side quests until its last round is done; when the
+// household adds a dinner repeating one held from an earlier round while a
+// later round grounds, the batch lets it go and grounds a spare Side quest
+// in its place, so it still stores BatchSize and announces them once.
+func TestBatchReplacesSideQuestMadeIneligibleWhileHeld(t *testing.T) {
+	for _, trigger := range []string{suggest.TriggerScheduled, suggest.TriggerManual} {
+		t.Run(trigger, func(t *testing.T) {
+			e := newEnv(t)
+			e.start(t)
+			// Fajita Dish B is ungroundable, so the first round holds
+			// BatchSize-1 and a second round grounds the next; the last is
+			// the spare a third round grounds in place of Fajita Dish A.
+			var quests, want []string
+			for i := range suggest.BatchSize + 2 {
+				name := fmt.Sprintf("Fajita Dish %c", 'A'+i)
+				e.search.Results[name] = nil
+				if i != 1 {
+					e.recipe(t, name)
+				}
+				quests = append(quests, sideQuest(name, "Like your Chicken Fajitas.", "Chicken Fajitas"))
+				if i > 1 {
+					want = append(want, name)
+				}
+			}
+			e.reply(quests...)
+			// The second round's search waits, so the household adds a
+			// dinner repeating Fajita Dish A, held from the first round,
+			// while that round grounds.
+			second := fmt.Sprintf("Fajita Dish %c", 'A'+suggest.BatchSize)
+			gate := make(chan struct{})
+			e.search.Gates = map[string]chan struct{}{second: gate}
+
+			b, key := e.startBatch(t, trigger)
+			deadline := time.Now().Add(10 * time.Second)
+			for !slices.Contains(e.search.Queries(), second) {
+				if time.Now().After(deadline) {
+					close(gate)
+					t.Fatalf("search for %s never ran", second)
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			e.dinner(t, "Fajita Dish A", "regular")
+			close(gate)
+
+			job := e.waitJob(t, b.JobID)
+			if job.Status != jobs.StatusSucceeded {
+				t.Fatalf("batch job %s, error %v", job.Status, job.Error)
+			}
+			var res batchResult
+			if err := json.Unmarshal(job.Result, &res); err != nil {
+				t.Fatal(err)
+			}
+			if len(res.SuggestionIDs) != suggest.BatchSize || res.Dropped != 2 {
+				t.Errorf("batch result = %+v, want %d stored and 2 dropped", res, suggest.BatchSize)
+			}
+			if got := e.deckNames(t); !slices.Equal(got, want) {
+				t.Errorf("deck = %v, want %v", got, want)
+			}
+			rows := notifytest.Rows(t, e.st, notify.NewSuggestions)
+			title := fmt.Sprintf("%d new Side quests are in", suggest.BatchSize)
+			if len(rows) != 1 || rows[0].Key != key || rows[0].Payload.Title != title {
+				t.Errorf("new_suggestions rows = %+v, want one keyed %s titled %q", rows, key, title)
+			}
+		})
+	}
+}
+
 func TestDeckIsOldestFirst(t *testing.T) {
 	e := newEnv(t)
 	e.start(t)
@@ -1157,7 +1225,7 @@ func TestLaterBatchNeverResuggestsRenamedDrop(t *testing.T) {
 	fail := func(context.Context, string, skills.WeekRequest) (skills.Week, error) {
 		return skills.Week{}, errors.New("no draft in this test")
 	}
-	planSvc, err := plan.NewService(e.st, fail, e.runner, noCalendar{}, notifytest.New(t, e.st), func() {}, &url.URL{Scheme: "https", Host: "meals.example.com"}, logger)
+	planSvc, err := plan.NewService(e.st, fail, e.runner, noCalendar{}, notifytest.New(t, e.st), func() {}, &url.URL{Scheme: "https", Host: "meals.example.com"}, time.Now, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,6 +3,7 @@ package server
 import (
 	"database/sql"
 	"encoding/json"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/dinners"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/recipes/recipestest"
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/store"
+	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/migrations"
 )
 
 // getDetail answers GET /dinners/{id} for id, failing unless it is 200, and
@@ -70,8 +72,8 @@ func TestGetDinnerGroundedSideQuest(t *testing.T) {
 	}
 	for _, stmt := range []string{
 		`UPDATE dinners SET status = 'quest_log', origin = 'side_quest', is_favorite = 1 WHERE id = ?`,
-		`UPDATE recipe_ingredients SET position = 1 - position WHERE recipe_id = (SELECT recipe_id FROM dinners WHERE id = ?)`,
-		`UPDATE recipe_steps SET position = 1 - position WHERE recipe_id = (SELECT recipe_id FROM dinners WHERE id = ?)`,
+		`UPDATE recipe_ingredients SET position = 9 - position WHERE recipe_id = (SELECT recipe_id FROM dinners WHERE id = ?)`,
+		`UPDATE recipe_steps SET position = 9 - position WHERE recipe_id = (SELECT recipe_id FROM dinners WHERE id = ?)`,
 	} {
 		if _, err := e.st.Writer.Exec(stmt, id); err != nil {
 			t.Fatal(err)
@@ -330,14 +332,33 @@ func TestGetDinnerSourceURLOnlyWhenSafe(t *testing.T) {
 	}
 }
 
-// TestGetDinnerSiteNameNeverFromLink: a page that names no site is stored
-// under its host, so a recipe grounded in a pasted link whose host carries a
-// token has site_name null and nothing from the link in its detail; a page
-// that names its site keeps that name, even on a token-bearing host; and a
-// stored name shaped like another host, as a redirect leaves, is withheld.
-// The links carry a query, so source.url is withheld too and nothing of the
-// link may appear.
-func TestGetDinnerSiteNameNeverFromLink(t *testing.T) {
+// siteNameMigration is migration 0022, which clears the host-shaped site
+// names stored before extraction stopped storing hosts.
+const siteNameMigration = "0022_site_name_from_page.sql"
+
+// applySiteNameMigration runs siteNameMigration again over rows a test
+// stored as the code before it did, as upgrading a database holding them
+// does.
+func applySiteNameMigration(t *testing.T, st *store.Store) {
+	t.Helper()
+	body, err := fs.ReadFile(migrations.FS, siteNameMigration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Writer.ExecContext(t.Context(), string(body)); err != nil {
+		t.Fatalf("%s: %v", siteNameMigration, err)
+	}
+}
+
+// TestGetDinnerSiteNameProvenance: extraction stores only a site name the
+// page gave, never the URL's host, and the detail applies one rule to what
+// is stored. A name from page metadata is shown even over a token-bearing
+// link; a page naming no site stores no name, and is named by its link's
+// host only when the link is shown — so over a link with a token nothing
+// of the link reaches the client. A name stored before extraction stopped
+// storing hosts is read by the same rule once migration 0022 has cleared
+// it if it could be a host.
+func TestGetDinnerSiteNameProvenance(t *testing.T) {
 	t.Parallel()
 	e := newDinnersEnv(t)
 	const (
@@ -345,11 +366,14 @@ func TestGetDinnerSiteNameNeverFromLink(t *testing.T) {
 		namedToken = "named-token-def456"
 		bare       = "https://" + bareToken + ".example.com/recipe?print=1"
 		named      = "https://www." + namedToken + ".example.com/recipe?print=1"
+		ordinary   = "https://www.kitchen.example/recipes/curry"
 	)
 	e.pages.Bodies[bare] = recipestest.RecipePage("Chicken Curry", "", "https://a.example/curry.jpg", 40)
 	e.pages.Bodies[named] = recipestest.RecipePage("Weeknight Curry", "Curry House", "https://b.example/curry.jpg", 25)
+	e.pages.Bodies[ordinary] = recipestest.RecipePage("Green Curry", "", "https://c.example/curry.jpg", 30)
 	e.images.JPEGs["https://a.example/curry.jpg"] = recipestest.JPEG(t, 400, 320, 1)
 	e.images.JPEGs["https://b.example/curry.jpg"] = recipestest.JPEG(t, 400, 320, 2)
+	e.images.JPEGs["https://c.example/curry.jpg"] = recipestest.JPEG(t, 400, 320, 3)
 	ground := func(dish, page string) (id, recipeID string) {
 		t.Helper()
 		id = createDinner(t, e.h, `{"name":"`+dish+`"}`) // runner not started: stays pending
@@ -362,15 +386,18 @@ func TestGetDinnerSiteNameNeverFromLink(t *testing.T) {
 		}
 		return id, recipeID
 	}
-	storedSite := func(recipeID string) string {
+	storedSite := func(recipeID string) any {
 		t.Helper()
-		var site string
+		var site sql.NullString
 		if err := e.st.Reader.QueryRow(`SELECT site_name FROM recipes WHERE id = ?`, recipeID).Scan(&site); err != nil {
 			t.Fatal(err)
 		}
-		return site
+		if !site.Valid {
+			return nil
+		}
+		return site.String
 	}
-	check := func(what, id string, leaks []string, want any) {
+	check := func(what, id string, leaks []string, want map[string]any) {
 		t.Helper()
 		rec, _ := callDinners(t, e.h, http.MethodGet, dinnersPath+"/"+id, "")
 		if rec.Code != http.StatusOK {
@@ -382,28 +409,48 @@ func TestGetDinnerSiteNameNeverFromLink(t *testing.T) {
 			}
 		}
 		raw, _ := getDetail(t, e.h, id)
-		if src, _ := raw["source"].(map[string]any); !reflect.DeepEqual(src, map[string]any{"site_name": want, "url": nil}) {
-			t.Errorf("source of %s = %v, want site_name %v and url null", what, raw["source"], want)
+		if src, _ := raw["source"].(map[string]any); !reflect.DeepEqual(src, want) {
+			t.Errorf("source of %s = %v, want %v", what, raw["source"], want)
 		}
 	}
 
-	bareID, bareRecipe := ground("Chicken curry", bare)
-	if got := storedSite(bareRecipe); got != bareToken+".example.com" {
-		t.Fatalf("stored site_name = %q, want the link's host", got)
-	}
-	check("a page naming no site", bareID, []string{bare, bareToken, "example.com"}, nil)
-
 	namedID, namedRecipe := ground("Weeknight curry", named)
 	if got := storedSite(namedRecipe); got != "Curry House" {
-		t.Fatalf("stored site_name = %q, want the page's", got)
+		t.Fatalf("stored site_name = %v, want the page's", got)
 	}
-	check("a page naming its site", namedID, []string{named, namedToken, "example.com"}, "Curry House")
+	check("a metadata-derived name over a token-bearing link", namedID, []string{named, namedToken, "example.com"},
+		map[string]any{"site_name": "Curry House", "url": nil})
 
-	const redirectHost = "redirect-token-ghi789.example.net"
-	if _, err := e.st.Writer.Exec(`UPDATE recipes SET site_name = ? WHERE id = ?`, redirectHost, namedRecipe); err != nil {
-		t.Fatal(err)
+	bareID, bareRecipe := ground("Chicken curry", bare)
+	if got := storedSite(bareRecipe); got != nil {
+		t.Fatalf("stored site_name = %v, want null: the page names no site", got)
 	}
-	check("a page named by a redirect's host", namedID, []string{redirectHost, "redirect-token", namedToken}, nil)
+	check("a hostname-derived name over a token-bearing link", bareID, []string{bare, bareToken, "example.com"},
+		map[string]any{"site_name": nil, "url": nil})
+
+	ordinaryID, ordinaryRecipe := ground("Green curry", ordinary)
+	if got := storedSite(ordinaryRecipe); got != nil {
+		t.Fatalf("stored site_name = %v, want null: the page names no site", got)
+	}
+	check("a hostname-derived name over an ordinary link", ordinaryID, nil,
+		map[string]any{"site_name": "kitchen.example", "url": ordinary})
+
+	// Rows as extraction stored them before it stopped storing hosts: the
+	// token-bearing link's own host, and a redirect's host under a page
+	// that named its site, are cleared by 0022; a page's own name stays.
+	const redirectHost = "redirect-token-ghi789.example.net"
+	for recipeID, site := range map[string]string{bareRecipe: bareToken + ".example.com", namedRecipe: redirectHost, ordinaryRecipe: "Green Kitchen"} {
+		if _, err := e.st.Writer.Exec(`UPDATE recipes SET site_name = ? WHERE id = ?`, site, recipeID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	applySiteNameMigration(t, e.st)
+	check("a row stored before, named by its token-bearing link's host", bareID, []string{bare, bareToken, "example.com"},
+		map[string]any{"site_name": nil, "url": nil})
+	check("a row stored before, named by a redirect's host", namedID, []string{redirectHost, "redirect-token", namedToken},
+		map[string]any{"site_name": nil, "url": nil})
+	check("a row stored before, named by its page", ordinaryID, nil,
+		map[string]any{"site_name": "Green Kitchen", "url": ordinary})
 }
 
 // TestGetDinnerWhyPickedIsCreatingSuggestion: why_picked is the reason of
@@ -445,27 +492,5 @@ func TestGetDinnerWhyPickedIsCreatingSuggestion(t *testing.T) {
 
 	if _, got := getDetail(t, e.h, id); got.WhyPicked == nil || *got.WhyPicked != reason {
 		t.Errorf("why_picked = %v, want %q", got.WhyPicked, reason)
-	}
-}
-
-// TestGetDinnerDuplicatePositionFails: a recipe with two ingredients or two
-// steps at one position has no order anyone can trust, so its detail is a
-// 500 rather than the recipe in some order.
-func TestGetDinnerDuplicatePositionFails(t *testing.T) {
-	t.Parallel()
-	e := newDinnersEnv(t)
-	for _, table := range []string{"recipe_ingredients", "recipe_steps"} {
-		id := createDinner(t, e.h, `{"name":"Family chili `+table+`"}`)
-		if rec, _ := callDinners(t, e.h, http.MethodPost, dinnersPath+"/"+id+"/ground",
-			`{"manual":{"ingredients":["1 lb beef","1 can beans"],"steps":["Brown.","Simmer."],"minutes":240,"method":"crockpot"}}`); rec.Code != http.StatusOK {
-			t.Fatalf("POST ground = %d: %s", rec.Code, rec.Body)
-		}
-		if _, err := e.st.Writer.Exec(`UPDATE `+table+` SET position = 0 WHERE recipe_id = (SELECT recipe_id FROM dinners WHERE id = ?)`, id); err != nil {
-			t.Fatal(err)
-		}
-		rec, _ := callDinners(t, e.h, http.MethodGet, dinnersPath+"/"+id, "")
-		if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "Simmer.") || strings.Contains(rec.Body.String(), "1 lb beef") {
-			t.Errorf("GET with duplicate %s positions = %d: %s, want 500 and no recipe", table, rec.Code, rec.Body)
-		}
 	}
 }

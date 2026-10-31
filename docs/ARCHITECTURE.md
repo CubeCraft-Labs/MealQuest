@@ -1525,9 +1525,16 @@ budget is a total of 20 start attempts (`StartLimitIntervalSec=infinity`,
 wait forever — and `TimeoutStopSec=90s` bounds the SIGTERM grace after
 that kill. systemd does not clear this counter when the start succeeds;
 `ExecStartPost` runs `systemctl reset-failed` only after `ExecStart` exits
-0, so a recovered stack gets a fresh budget and a failure streak does not.
-After the 20th failed attempt the next start is refused ("Start request
-repeated too quickly.") and the unit stays failed. Quick failures reach
+0. The command is not prefixed with `-`, so a non-zero `reset-failed`
+fails the unit instead of leaving it active with a consumed counter.
+systemd skips `ExecStop=` for that failure (it happens before the service
+is fully up) and `Restart=on-failure` retries. The failed reset does not
+clear the counter, and `StartLimitIntervalSec=infinity` never opens a new
+window, so those retries stay inside the same 20-attempt bound and cannot
+loop without a bound. A reset that exits 0 gives a recovered stack a fresh
+budget. A failure streak that never reaches `ExecStartPost` does not. After
+the 20th failed attempt the next start is refused ("Start request repeated
+too quickly.") and the unit stays failed. Quick failures reach
 that refusal in 20×15s = 300s. If every attempt burns both timeouts, the
 refusal is at 20×(300+90+15) = 8100s. `mealquest-auto-deploy.service`'s
 `ExecCondition` is unchanged (`systemctl is-active --quiet

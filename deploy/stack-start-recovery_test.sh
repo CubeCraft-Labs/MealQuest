@@ -18,7 +18,9 @@
 # StartLimitIntervalSec=infinity the window never reopens. A refused
 # start does not schedule another restart. Becoming active does not clear
 # the counter; ExecStartPost's reset-failed does, and only after ExecStart
-# exits 0.
+# exits 0 and reset-failed itself exits 0. A non-zero reset-failed is not
+# ignored (no "-" prefix): it fails the unit, leaves the counter consumed,
+# and Restart=on-failure retries inside the same StartLimitBurst.
 #
 # No systemd, docker, or network. make test runs this via deploy-test.
 set -euo pipefail
@@ -111,6 +113,19 @@ else
     || die "TimeoutStopSec=$timeout_stop_raw is not a whole number of seconds or infinity"
 fi
 execstartpost=$(directive ExecStartPost "$unit" || true)
+# A leading "-" is systemd's ignore-failure prefix. reset-failed still has
+# to exit 0 to clear the counter; the prefix only hides a non-zero status.
+reset_ignores_failure=0
+reset_is_reset=0
+case "$execstartpost" in
+  "-/usr/bin/systemctl reset-failed mealquest.service")
+    reset_ignores_failure=1
+    reset_is_reset=1
+    ;;
+  "/usr/bin/systemctl reset-failed mealquest.service")
+    reset_is_reset=1
+    ;;
+esac
 partof=$(directive PartOf "$unit" || true)
 svc_type=$(directive Type "$unit" || true)
 remain=$(directive RemainAfterExit "$unit" || true)
@@ -206,11 +221,36 @@ do_start() {
     log "Started MealQuest compose stack."
     # systemd 259 does not clear start_ratelimit when the unit becomes
     # active (only unit_reset_failed does). ExecStartPost runs only after
-    # ExecStart exits 0, which is that reset.
-    if [[ "$execstartpost" == "-/usr/bin/systemctl reset-failed mealquest.service" ]]; then
+    # ExecStart exits 0. A leading "-" ignores a non-zero reset-failed, so
+    # the unit stays active and the counter stays consumed. Without it, a
+    # non-zero reset-failed fails the unit. Restart=on-failure retries, and
+    # because the counter was not cleared those retries stay inside
+    # StartLimitBurst. systemd skips ExecStop= when this failure happens
+    # before the service is fully up; the bound is the start limit, not a
+    # stop.
+    if [[ "$reset_is_reset" -eq 1 && "$reset_fails" -eq 0 ]]; then
       begin=-1
       num=0
       log "STEP ExecStartPost reset-failed; start-limit counter cleared"
+    elif [[ "$reset_is_reset" -eq 1 && "$reset_fails" -eq 1 ]]; then
+      log "STEP ExecStartPost reset-failed exited non-zero; start-limit counter not cleared"
+      if [[ "$reset_ignores_failure" -eq 1 ]]; then
+        log "STEP ExecStartPost failure ignored; unit stays active with a consumed start-limit counter"
+      else
+        state=failed
+        result=exit-code
+        log "mealquest.service: Control process exited, code=exited, status=1/FAILURE"
+        log "mealquest.service: Failed with result 'exit-code'."
+        log "STEP ExecStartPost failure failed the unit"
+        if [[ "$restart_mode" == on-failure ]]; then
+          scheduled=$((now + restart_sec))
+          log "mealquest.service: Scheduled restart job, restart counter is at ${starts}."
+          log "STEP Restart=on-failure scheduled at t=${scheduled}s after a failed reset-failed"
+        else
+          scheduled=-1
+          log "STEP Restart=$restart_mode schedules nothing after a failed reset-failed"
+        fi
+      fi
     fi
   fi
 }
@@ -276,6 +316,7 @@ reset() {
   scheduled=-1
   fail_budget=0
   attempt_secs=0
+  reset_fails=0
   ticks_ran=0
   ticks_skipped=0
 }
@@ -311,8 +352,8 @@ scenario_policy_is_bounded() {
     || die "TimeoutStopSec must be set and finite (got '${timeout_stop_raw}')"
   [[ "$timeout_stop" -ge 30 && "$timeout_stop" -le 120 ]] \
     || die "TimeoutStopSec=${timeout_stop}s is outside 30..120"
-  [[ "$execstartpost" == "-/usr/bin/systemctl reset-failed mealquest.service" ]] \
-    || die "ExecStartPost must clear the start-limit counter after a successful ExecStart (got '$execstartpost')"
+  [[ "$execstartpost" == "/usr/bin/systemctl reset-failed mealquest.service" ]] \
+    || die "ExecStartPost must clear the start-limit counter after a successful ExecStart and must not ignore a failed reset (got '$execstartpost')"
   local quick=$(( burst * restart_sec ))
   local worst=$(( burst * (timeout_start + timeout_stop + restart_sec) ))
   echo "RESULT Restart=on-failure RestartSec=${restart_sec}s StartLimitBurst=$burst StartLimitIntervalSec=infinity TimeoutStartSec=${timeout_start}s TimeoutStopSec=${timeout_stop}s quick=${quick}s worst=${worst}s span=${span}s"
@@ -524,6 +565,55 @@ scenario_hung_start_is_capped_and_bounded() {
   echo "RESULT hung ExecStart stopped at $starts after ${worst}s; stayed failed; auto-deploy skipped"
 }
 
+# Production change that fails this: a leading "-" on ExecStartPost, so
+# systemd ignores a non-zero reset-failed. The unit is then active with
+# the start-limit counter still consumed — a successful start that did
+# not restore the budget. Without the prefix the same failure fails the
+# unit, and Restart=on-failure retries stay inside StartLimitBurst
+# because the counter was not cleared and the window never reopens.
+scenario_failed_reset_is_not_a_successful_fresh_budget_start() {
+  if [[ "$execstartpost" == "-/usr/bin/systemctl reset-failed mealquest.service" ]]; then
+    reset
+    reset_fails=1
+    fail_budget=0
+    do_start "initial"
+    [[ "$state" == active && "$begin" -ge 0 && "$num" -ge 1 ]] \
+      || die "harness did not model an ignored reset failure (state=$state begin=$begin num=$num)"
+    die "a failed reset-failed was reported as a successful start with a consumed counter (state=$state begin=$begin num=$num)"
+  fi
+  [[ "$execstartpost" == "/usr/bin/systemctl reset-failed mealquest.service" ]] \
+    || die "ExecStartPost must fail the unit when reset-failed fails (got '$execstartpost')"
+
+  reset
+  reset_fails=1
+  fail_budget=0
+  do_start "initial"
+  [[ "$state" == failed && "$result" == exit-code ]] \
+    || die "failed reset-failed reported a successful start (state=$state result=$result)"
+  [[ "$begin" -ge 0 && "$num" -ge 1 ]] \
+    || die "failed reset-failed cleared the start-limit counter (begin=$begin num=$num)"
+  ! journal_has "start-limit counter cleared" \
+    || die "a failed reset was logged as a fresh budget"
+  journal_has "ExecStartPost failure failed the unit" \
+    || die "journal lacks the failed reset-failed"
+  drain
+  [[ "$starts" -eq "$burst" ]] \
+    || die "failed reset-failed ran $starts starts, want StartLimitBurst=$burst"
+  [[ "$state" == failed ]] || die "reset-failure streak left state=$state"
+  journal_has "Start request repeated too quickly." \
+    || die "a failed reset-failed retried without hitting the start limit"
+  [[ "$manual_starts" -eq 0 ]] || die "manual start counted"
+  local frozen=$starts
+  now=$((now + 100000))
+  drain
+  [[ "$starts" -eq "$frozen" ]] \
+    || die "reset-failure streak continued after the total bound (starts=$starts)"
+  auto_deploy_tick
+  [[ "$ticks_ran" -eq 0 && "$ticks_skipped" -eq 1 ]] \
+    || die "auto-deploy ran against a unit failed by reset-failed (ran=$ticks_ran skipped=$ticks_skipped)"
+  echo "RESULT a failed reset-failed failed the start; streak stopped at $starts (StartLimitBurst) and did not clear the counter"
+}
+
 scenario_clean_exit_does_not_restart() {
   reset
   fail_budget=0
@@ -562,6 +652,7 @@ run "a dependency that stays down hits the start limit and stays failed" scenari
 run "a slow failed start still stops at the total bound" scenario_slow_failure_is_a_total_bound
 run "a hung start is capped and still stops at the total bound" scenario_hung_start_is_capped_and_bounded
 run "a successful start restores a full budget for the next streak" scenario_success_restores_budget_for_the_next_streak
+run "a failed reset-failed is not a successful fresh-budget start" scenario_failed_reset_is_not_a_successful_fresh_budget_start
 run "a clean oneshot exit is not restarted" scenario_clean_exit_does_not_restart
 
 [[ "$failures" -eq 0 ]] || { echo "$failures stack-start recovery test(s) failed" >&2; exit 1; }

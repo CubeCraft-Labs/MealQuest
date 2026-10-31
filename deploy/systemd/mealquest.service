@@ -17,12 +17,18 @@
 # StartLimitIntervalSec. infinity never does, so StartLimitBurst=20 is the
 # total number of start attempts until the counter is cleared. Becoming
 # active does not clear it; only unit_reset_failed does. ExecStartPost runs
-# `systemctl reset-failed` after ExecStart exits 0, so a recovered stack
-# and an ordinary restart get a fresh budget. A failed ExecStart does not
-# run ExecStartPost, so a failure streak consumes the budget. The next
-# start is refused, the unit stays failed, and the journal records
-# "Start request repeated too quickly." Nothing schedules another restart
-# after that.
+# `systemctl reset-failed` after ExecStart exits 0. The command has no "-"
+# prefix, so a non-zero reset-failed fails the unit instead of leaving it
+# active with a consumed counter. systemd then skips ExecStop= (the
+# failure is before the service is fully up) and Restart=on-failure
+# retries. The failed reset did not clear the counter, and infinity never
+# opens a new window, so those retries stay inside StartLimitBurst and
+# cannot loop without a bound. A reset that exits 0 is what gives a
+# recovered stack and an ordinary restart a fresh budget. A failed
+# ExecStart does not run ExecStartPost, so a failure streak consumes the
+# budget. The next start is refused, the unit stays failed, and the
+# journal records "Start request repeated too quickly." Nothing schedules
+# another restart after that.
 #
 # Type=oneshot leaves TimeoutStartSec unset, which means infinity. Setting
 # it makes systemd kill ExecStart and record timeout, which
@@ -52,7 +58,7 @@ RestartSec=15s
 TimeoutStartSec=300s
 TimeoutStopSec=90s
 ExecStart=/usr/bin/docker compose -f /home/overseer/mealquest/deploy/compose.yaml up -d
-ExecStartPost=-/usr/bin/systemctl reset-failed mealquest.service
+ExecStartPost=/usr/bin/systemctl reset-failed mealquest.service
 ExecStop=/usr/bin/docker compose -f /home/overseer/mealquest/deploy/compose.yaml down
 
 [Install]

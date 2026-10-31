@@ -1544,13 +1544,36 @@ Production is the compose project `mealquest` on 10.60.1.14
 from the root `Dockerfile`, `litestream` replicating the database to the
 NAS over SFTP, and `searxng` on the internal network only. Configuration is
 `deploy/.env` and file secrets in `deploy/secrets/`, neither committed. The
-services never restart themselves; systemd units in `deploy/systemd/` own
-the host:
+services never restart themselves (`restart: "no"`); systemd units in
+`deploy/systemd/` own the host. `mealquest.service` retries a failed start
+(`Restart=on-failure`) and does not retry `systemctl stop`. The retry
+budget is a total of 20 start attempts (`StartLimitIntervalSec=infinity`,
+`StartLimitBurst=20`): a slow `ExecStart` cannot open a new window.
+`TimeoutStartSec=300s` ends a hung start — a oneshot unit would otherwise
+wait forever — and `TimeoutStopSec=90s` bounds the SIGTERM grace after
+that kill. systemd does not clear this counter when the start succeeds;
+`ExecStartPost` runs `systemctl reset-failed` only after `ExecStart` exits
+0. The command is not prefixed with `-`, so a non-zero `reset-failed`
+fails the unit instead of leaving it active with a consumed counter.
+systemd skips `ExecStop=` for that failure (it happens before the service
+is fully up) and `Restart=on-failure` retries. The failed reset does not
+clear the counter, and `StartLimitIntervalSec=infinity` never opens a new
+window, so those retries stay inside the same 20-attempt bound and cannot
+loop without a bound. A reset that exits 0 gives a recovered stack a fresh
+budget. A failure streak that never reaches `ExecStartPost` does not. After
+the 20th failed attempt the next start is refused ("Start request repeated
+too quickly.") and the unit stays failed. Quick failures reach
+that refusal in 20×15s = 300s. If every attempt burns both timeouts, the
+refusal is at 20×(300+90+15) = 8100s. `mealquest-auto-deploy.service`'s
+`ExecCondition` is unchanged (`systemctl is-active --quiet
+mealquest.service`): it never starts or redeploys an operator-stopped
+stack, and a stack that has exhausted this budget stays failed for an
+operator.
 
 | Unit | Does |
 | --- | --- |
 | `mealquest-firewall.service` | Restricts port 8090 to Traefik in `DOCKER-USER`; required before the stack starts. |
-| `mealquest.service` | Starts and stops the compose stack. |
+| `mealquest.service` | Starts and stops the compose stack. Retries a failed start up to 20 times total, then stays failed. |
 | `mealquest-media-backup.timer` / `.service` | Backs up cached photos to the NAS nightly at 03:30. |
 | `mealquest-auto-deploy.timer` / `.service` | Automated deploy of `main` (below). |
 
@@ -1567,7 +1590,10 @@ and deploys `refs/remotes/origin/main` only when it differs from the last
 SHA in the deploy record `/home/overseer/mealquest-auto-deploy.log`, its
 GitHub Actions CI check is `success`, every other check GitHub reports is
 also `success`, its last attempt did not fail, and
-`mealquest.service` is active. It stops at the first failure and never
+`mealquest.service` is active. That active check is the auto-deploy
+unit's `ExecCondition` and is unchanged: an inactive stack, whether an
+operator stopped it or its start limit is exhausted, is not started or
+redeployed. The deploy stops at the first failure and never
 retries a failed SHA; `--ref <ref>` is the manual override. Installing,
 seeding the record and enabling the timer are host steps in the runbook's
 "Automated deploys". Database restore and the boot configuration are in

@@ -5,7 +5,9 @@
 #
 # ExecCondition= skips the run while mealquest.service is not active, so a
 # stack stopped on purpose (a database or media restore) is never redeployed
-# under the operator. It is deliberately not Requires=/Requisite= on
+# under the operator. The same unchanged condition leaves a stack that has
+# exhausted mealquest.service's start limit failed for an operator; this
+# unit does not start it. It is deliberately not Requires=/Requisite= on
 # mealquest.service: those would start the stack, or stop this run when the
 # deploy itself restarts mealquest.service. Runs as overseer, who owns the
 # checkout and uses sudo for the runbook's privileged steps.

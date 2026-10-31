@@ -7,20 +7,41 @@
 # PartOf=docker.service propagates a Docker stop or restart here, so a
 # Docker restart re-applies the firewall before the stack comes back.
 #
-# Restart=on-failure re-runs this unit when ExecStart exits non-zero, so a
-# Docker restart that races a same-host dependency (OIDC discovery HTTP 503)
-# comes back with no operator. systemctl stop is not a failure, so a stack
-# stopped on purpose stays stopped. StartLimitBurst=20 inside
-# StartLimitIntervalSec=900 is the whole retry budget at RestartSec=15s
-# (about five minutes when each attempt returns quickly). Past that the
-# unit stays failed and the journal records "Start request repeated too
-# quickly." The app stays fail-fast; this unit does the retry.
+# Restart=on-failure re-runs this unit when ExecStart exits non-zero or
+# times out, so a Docker restart that races a same-host dependency (OIDC
+# discovery HTTP 503) comes back with no operator. systemctl stop is not
+# a failure, so a stack stopped on purpose stays stopped.
+#
+# The retry budget is a total bound, not a rate window. systemd 259
+# ratelimit_below opens a new window only when (now - begin) >
+# StartLimitIntervalSec. infinity never does, so StartLimitBurst=20 is the
+# total number of start attempts until the counter is cleared. Becoming
+# active does not clear it; only unit_reset_failed does. ExecStartPost runs
+# `systemctl reset-failed` after ExecStart exits 0, so a recovered stack
+# and an ordinary restart get a fresh budget. A failed ExecStart does not
+# run ExecStartPost, so a failure streak consumes the budget. The next
+# start is refused, the unit stays failed, and the journal records
+# "Start request repeated too quickly." Nothing schedules another restart
+# after that.
+#
+# Type=oneshot leaves TimeoutStartSec unset, which means infinity. Setting
+# it makes systemd kill ExecStart and record timeout, which
+# Restart=on-failure retries. TimeoutStopSec is the SIGTERM grace after
+# that kill; a process that exits on its own does not consume it. Worst
+# case, every attempt burns both timeouts: 20*(300+90+15)=8100s. Quick
+# failures, where ExecStart returns immediately, reach the refusal in
+# 20*15s=300s.
+#
+# mealquest-auto-deploy.service keeps its ExecCondition
+# (systemctl is-active --quiet mealquest.service). Auto-deploy does not
+# start or redeploy an operator-stopped stack, and a stack that has
+# exhausted this budget stays failed for an operator.
 [Unit]
 Description=MealQuest compose stack
 Requires=mealquest-firewall.service
 After=mealquest-firewall.service docker.service
 PartOf=docker.service
-StartLimitIntervalSec=900
+StartLimitIntervalSec=infinity
 StartLimitBurst=20
 
 [Service]
@@ -28,7 +49,10 @@ Type=oneshot
 RemainAfterExit=yes
 Restart=on-failure
 RestartSec=15s
+TimeoutStartSec=300s
+TimeoutStopSec=90s
 ExecStart=/usr/bin/docker compose -f /home/overseer/mealquest/deploy/compose.yaml up -d
+ExecStartPost=-/usr/bin/systemctl reset-failed mealquest.service
 ExecStop=/usr/bin/docker compose -f /home/overseer/mealquest/deploy/compose.yaml down
 
 [Install]

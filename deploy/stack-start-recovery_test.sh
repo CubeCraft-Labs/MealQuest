@@ -6,18 +6,19 @@
 # Docker restart → Authentik not ready → mealquest-mealquest-1 exits 1
 # (auth: OIDC discovery: provider answered HTTP 503) → mealquest.service
 # failed → mealquest-auto-deploy ExecCondition false. Recovery is the
-# stack unit's own Restart=, not a change to that condition: auto-deploy
-# still runs only while the unit is active, so it cannot redeploy a stack
-# an operator stopped.
+# stack unit's own Restart=. That ExecCondition is unchanged
+# (systemctl is-active --quiet mealquest.service): auto-deploy never
+# starts or redeploys an operator-stopped stack, and a stack that has
+# exhausted the start limit stays failed for an operator.
 #
-# The state machine is systemd's. systemd.service(5): Restart=on-failure
-# schedules another start after a non-zero ExecStart, and does not run
-# when the service is stopped with systemctl stop or any other systemd
-# stop/restart. systemd 259 src/basic/ratelimit.c ratelimit_below: a new
-# start-limit window opens only when (now - begin) > StartLimitIntervalSec;
-# the burst-th start is allowed (num <= burst) and the next is refused.
-# A refused start does not schedule another restart, including after the
-# window later expires.
+# The state machine is systemd 259. Restart=on-failure schedules another
+# start after a non-zero ExecStart or a start timeout, and does not run
+# when the service is stopped with systemctl stop. ratelimit_below allows
+# the burst-th start (num <= burst) and refuses the next. With
+# StartLimitIntervalSec=infinity the window never reopens. A refused
+# start does not schedule another restart. Becoming active does not clear
+# the counter; ExecStartPost's reset-failed does, and only after ExecStart
+# exits 0.
 #
 # No systemd, docker, or network. make test runs this via deploy-test.
 set -euo pipefail
@@ -79,12 +80,37 @@ burst_raw=$(directive StartLimitBurst "$unit" || true)
 interval_raw=$(directive StartLimitIntervalSec "$unit" || true)
 # Manager defaults (DefaultStartLimitBurst=5, DefaultStartLimitIntervalSec=10s)
 # apply when the unit sets neither. Recovery must not depend on them:
-# the policy test requires the unit to set both.
+# the policy test requires the unit to set both. "infinity" is the
+# systemd.time(7) span that never opens a new window.
 burst=${burst_raw:-5}
 interval=${interval_raw:-10}
-if [[ ! "$burst" =~ ^[0-9]+$ || ! "$interval" =~ ^[0-9]+$ ]]; then
-  die "start limit is not a whole number (burst=$burst interval=$interval)"
+if [[ ! "$burst" =~ ^[0-9]+$ ]]; then
+  die "StartLimitBurst is not a whole number (burst=$burst)"
 fi
+if [[ "$interval" != infinity && ! "$interval" =~ ^[0-9]+$ ]]; then
+  die "StartLimitIntervalSec is not a whole number or infinity (interval=$interval)"
+fi
+timeout_start_raw=$(directive TimeoutStartSec "$unit" || true)
+timeout_stop_raw=$(directive TimeoutStopSec "$unit" || true)
+# Type=oneshot with no TimeoutStartSec= is infinity (systemd 259
+# service_add_extras). An empty TimeoutStopSec= is the manager default, 90s.
+if [[ -z "$timeout_start_raw" || "$timeout_start_raw" == infinity ]]; then
+  timeout_start=infinity
+else
+  timeout_start=$(parse_seconds "$timeout_start_raw")
+  [[ "$timeout_start" != INVALID && -n "$timeout_start" ]] \
+    || die "TimeoutStartSec=$timeout_start_raw is not a whole number of seconds or infinity"
+fi
+if [[ -z "$timeout_stop_raw" ]]; then
+  timeout_stop=90
+elif [[ "$timeout_stop_raw" == infinity ]]; then
+  timeout_stop=infinity
+else
+  timeout_stop=$(parse_seconds "$timeout_stop_raw")
+  [[ "$timeout_stop" != INVALID && -n "$timeout_stop" ]] \
+    || die "TimeoutStopSec=$timeout_stop_raw is not a whole number of seconds or infinity"
+fi
+execstartpost=$(directive ExecStartPost "$unit" || true)
 partof=$(directive PartOf "$unit" || true)
 svc_type=$(directive Type "$unit" || true)
 remain=$(directive RemainAfterExit "$unit" || true)
@@ -94,8 +120,15 @@ exec_condition=$(directive ExecCondition "$autodeploy" || true)
 log() { printf '%s\n' "$*" | tee -a "$journal" >&2; }
 
 # Copied from systemd 259 ratelimit_below, in whole seconds.
+# StartLimitIntervalSec=infinity: (now - begin) > interval is never true,
+# so the counter is not time-reset. begin < 0 is the initial state and the
+# state after ExecStartPost reset-failed (ratelimit_reset).
 rate_limit_allows() {
-  if [[ "$begin" -lt 0 || $((now - begin)) -gt "$interval" ]]; then
+  local expired=0
+  if [[ "$interval" != infinity && "$begin" -ge 0 && $((now - begin)) -gt "$interval" ]]; then
+    expired=1
+  fi
+  if [[ "$begin" -lt 0 || "$expired" -eq 1 ]]; then
     begin=$now
     num=1
     return 0
@@ -110,26 +143,53 @@ do_start() {
     manual_starts=$((manual_starts + 1))
   fi
   if ! rate_limit_allows; then
-    # systemd 259 leaves Result=exit-code and logs this line. It does not
-    # keep scheduling after the refusal, including once the window expires.
+    # systemd 259 checks the start limit in service_test_startable, before
+    # service_start resets result. service_enter_dead keeps a prior failure
+    # result, so a streak ends as exit-code or timeout and the journal
+    # still records "Start request repeated too quickly." The refused start
+    # does not run ExecStart and does not schedule another restart.
     state=failed
-    result=exit-code
+    if [[ "$result" != exit-code && "$result" != timeout ]]; then
+      result=start-limit-hit
+    fi
     scheduled=-1
     log "mealquest.service: Start request repeated too quickly."
-    log "mealquest.service: Failed with result 'exit-code'."
+    log "mealquest.service: Failed with result '${result}'."
     log "STEP start refused (Start request repeated too quickly) reason=$why t=${now}s"
     return 0
   fi
   starts=$((starts + 1))
-  log "STEP ExecStart (#${starts}) reason=$why t=${now}s"
+  # The rate limit is checked at the beginning of the start. ExecStart then
+  # consumes wall clock before the next check. A hang past TimeoutStartSec
+  # is killed (systemd 259: "start operation timed out. Terminating."); if
+  # the process ignores SIGTERM, TimeoutStopSec is the grace before SIGKILL.
+  local ran=$attempt_secs
+  local killed=0
+  if [[ "$timeout_start" != infinity && "$ran" -gt "$timeout_start" ]]; then
+    [[ "$timeout_stop" != infinity ]] || die "TimeoutStopSec=infinity; a hung ExecStart has no finite kill grace"
+    ran=$((timeout_start + timeout_stop))
+    killed=1
+    log "mealquest.service: start operation timed out. Terminating."
+    log "STEP ExecStart (#${starts}) reason=$why t=${now}s killed at TimeoutStartSec=${timeout_start}s"
+  else
+    log "STEP ExecStart (#${starts}) reason=$why t=${now}s"
+  fi
+  now=$((now + ran))
   if [[ "$fail_budget" -gt 0 ]]; then
     fail_budget=$((fail_budget - 1))
     state=failed
-    result=exit-code
-    log "mealquest-mealquest-1 exited (1): {\"level\":\"ERROR\",\"msg\":\"server stopped\",\"error\":\"auth: OIDC discovery: provider answered HTTP 503\"}"
-    log "mealquest.service: Main process exited, code=exited, status=1/FAILURE"
-    log "mealquest.service: Failed with result 'exit-code'."
-    log "STEP unit failed (result=exit-code) t=${now}s"
+    if [[ "$killed" -eq 1 ]]; then
+      result=timeout
+      log "mealquest.service: Main process exited, code=killed, status=15/TERM"
+      log "mealquest.service: Failed with result 'timeout'."
+      log "STEP unit failed (result=timeout) t=${now}s"
+    else
+      result=exit-code
+      log "mealquest-mealquest-1 exited (1): {\"level\":\"ERROR\",\"msg\":\"server stopped\",\"error\":\"auth: OIDC discovery: provider answered HTTP 503\"}"
+      log "mealquest.service: Main process exited, code=exited, status=1/FAILURE"
+      log "mealquest.service: Failed with result 'exit-code'."
+      log "STEP unit failed (result=exit-code) t=${now}s"
+    fi
     if [[ "$restart_mode" == on-failure ]]; then
       scheduled=$((now + restart_sec))
       log "mealquest.service: Scheduled restart job, restart counter is at ${starts}."
@@ -144,6 +204,14 @@ do_start() {
     scheduled=-1
     log "STEP ExecStart exited 0; RemainAfterExit=yes so the unit is active t=${now}s"
     log "Started MealQuest compose stack."
+    # systemd 259 does not clear start_ratelimit when the unit becomes
+    # active (only unit_reset_failed does). ExecStartPost runs only after
+    # ExecStart exits 0, which is that reset.
+    if [[ "$execstartpost" == "-/usr/bin/systemctl reset-failed mealquest.service" ]]; then
+      begin=-1
+      num=0
+      log "STEP ExecStartPost reset-failed; start-limit counter cleared"
+    fi
   fi
 }
 
@@ -207,6 +275,7 @@ reset() {
   manual_starts=0
   scheduled=-1
   fail_budget=0
+  attempt_secs=0
   ticks_ran=0
   ticks_skipped=0
 }
@@ -229,12 +298,24 @@ scenario_policy_is_bounded() {
   local span=$(( (burst - 1) * restart_sec ))
   [[ "$span" -ge 180 && "$span" -le 600 ]] \
     || die "retry span ${span}s is outside 180..600 (brief outage coverage, then stop)"
-  # (now - begin) > interval opens a new window and would retry forever if
-  # the refusing attempt lands outside it. +5s per start is ExecStart time.
-  local margin=$(( burst * (restart_sec + 5) ))
-  [[ "$interval" -ge "$margin" ]] \
-    || die "StartLimitIntervalSec=${interval}s < ${margin}s (burst*(RestartSec+5)); retries would not stay bounded"
-  echo "RESULT Restart=on-failure RestartSec=${restart_sec}s StartLimitBurst=$burst StartLimitIntervalSec=${interval}s span=${span}s"
+  # A finite window is not a total bound: a slow ExecStart can make
+  # (now - begin) > interval before the burst is spent, and ratelimit_below
+  # then starts a new window. infinity never does.
+  [[ "$interval" == infinity ]] \
+    || die "StartLimitIntervalSec=$interval is a window a slow ExecStart can outrun; want infinity"
+  [[ "$timeout_start" != infinity ]] \
+    || die "TimeoutStartSec is unset; Type=oneshot would wait forever on a hung ExecStart"
+  [[ "$timeout_start" -ge 120 && "$timeout_start" -le 600 ]] \
+    || die "TimeoutStartSec=${timeout_start}s is outside 120..600"
+  [[ -n "$timeout_stop_raw" && "$timeout_stop" != infinity ]] \
+    || die "TimeoutStopSec must be set and finite (got '${timeout_stop_raw}')"
+  [[ "$timeout_stop" -ge 30 && "$timeout_stop" -le 120 ]] \
+    || die "TimeoutStopSec=${timeout_stop}s is outside 30..120"
+  [[ "$execstartpost" == "-/usr/bin/systemctl reset-failed mealquest.service" ]] \
+    || die "ExecStartPost must clear the start-limit counter after a successful ExecStart (got '$execstartpost')"
+  local quick=$(( burst * restart_sec ))
+  local worst=$(( burst * (timeout_start + timeout_stop + restart_sec) ))
+  echo "RESULT Restart=on-failure RestartSec=${restart_sec}s StartLimitBurst=$burst StartLimitIntervalSec=infinity TimeoutStartSec=${timeout_start}s TimeoutStopSec=${timeout_stop}s quick=${quick}s worst=${worst}s span=${span}s"
 }
 
 scenario_exec_condition_is_active_only() {
@@ -320,7 +401,7 @@ scenario_stop_cancels_pending_restart() {
   docker_restart
   [[ "$starts" -eq 1 && "$state" == failed ]] || die "setup start did not fail (starts=$starts state=$state)"
   operator_stop
-  now=$((now + restart_sec * burst + interval))
+  now=$((now + restart_sec * burst + 100000))
   drain
   [[ "$starts" -eq 1 ]] || die "operator stop was followed by further starts (starts=$starts)"
   [[ "$state" == inactive ]] || die "state=$state, want inactive"
@@ -343,14 +424,104 @@ scenario_start_limit_stops_the_loop() {
   journal_has "Start request repeated too quickly." || die "journal lacks the rate-limit refusal"
   journal_has "Failed with result 'exit-code'." || die "journal lacks the failed result"
   local frozen=$starts
-  now=$((now + interval + restart_sec + 5))
+  # Time passing must not grant another attempt. infinity has no window
+  # to wait out; a large step covers a finite window too.
+  now=$((now + 100000))
   drain
   [[ "$starts" -eq "$frozen" ]] || die "retried after the start limit (starts=$starts)"
   auto_deploy_tick
   [[ "$ticks_ran" -eq 0 && "$ticks_skipped" -eq 1 ]] \
     || die "auto-deploy ran against a unit past the start limit"
   [[ "$manual_starts" -eq 0 ]] || die "manual start counted"
-  echo "RESULT stayed failed after $burst starts (Start request repeated too quickly); no further start after the window; auto-deploy skipped"
+  echo "RESULT stayed failed after $burst starts (Start request repeated too quickly); no further start; auto-deploy skipped"
+}
+
+# Production change that fails this: StartLimitIntervalSec is a finite
+# window a slow ExecStart can outrun, so retries continue past
+# StartLimitBurst. Each failed start takes 120s, longer than a
+# one-second-per-attempt budget and longer than 900/20s. The clock
+# advances during ExecStart, before the next rate-limit check.
+scenario_slow_failure_is_a_total_bound() {
+  reset
+  state=active
+  fail_budget=100000
+  attempt_secs=120
+  docker_restart
+  drain
+  [[ "$starts" -eq "$burst" ]] || die "slow ExecStart runs=$starts, want a total bound of StartLimitBurst=$burst (t=${now}s)"
+  [[ "$state" == failed && "$result" == exit-code ]] \
+    || die "state=$state result=$result, want failed/exit-code"
+  journal_has "Start request repeated too quickly." || die "journal lacks the start-limit refusal"
+  [[ "$interval" == infinity ]] || die "StartLimitIntervalSec=$interval is still a window a slower start can outrun"
+  local frozen=$starts
+  local stamp=$now
+  [[ "$stamp" -gt $((burst * attempt_secs)) ]] \
+    || die "slow attempts did not advance the clock (t=${stamp}s)"
+  # Past any finite window the old rate limit would have reopened.
+  now=$((now + 100000))
+  drain
+  [[ "$starts" -eq "$frozen" ]] || die "retried after the total bound (starts=$starts, was $frozen)"
+  auto_deploy_tick
+  [[ "$ticks_ran" -eq 0 && "$ticks_skipped" -eq 1 ]] \
+    || die "auto-deploy ran against a stack that exhausted the retry budget (ran=$ticks_ran skipped=$ticks_skipped)"
+  [[ "$manual_starts" -eq 0 ]] || die "manual start counted"
+  echo "RESULT slow ExecStart (${attempt_secs}s) stopped at $starts starts; stayed failed at t=${stamp}s; auto-deploy skipped"
+}
+
+# Production change that fails this: a successful start leaves the
+# infinity counter consumed, so the next failure streak is shorter than
+# StartLimitBurst (or, with a finite window, slow attempts run forever).
+scenario_success_restores_budget_for_the_next_streak() {
+  reset
+  state=active
+  fail_budget=3
+  attempt_secs=0
+  docker_restart
+  drain
+  [[ "$state" == active && "$starts" -eq 4 ]] \
+    || die "recovery setup failed (state=$state starts=$starts)"
+  local used=$starts
+  fail_budget=100000
+  attempt_secs=120
+  docker_restart
+  drain
+  local second=$((starts - used))
+  [[ "$second" -eq "$burst" ]] \
+    || die "after a successful start, slow failures ran $second, want a fresh StartLimitBurst=$burst"
+  [[ "$state" == failed ]] || die "second streak did not stay failed (state=$state)"
+  journal_has "Start request repeated too quickly." || die "journal lacks the start-limit refusal"
+  echo "RESULT a successful start cleared the counter; the next slow streak stopped at $second"
+}
+
+# Production change that fails this: TimeoutStartSec unset (oneshot's
+# default is infinity) or StartLimitIntervalSec a window the hang can
+# outrun. The process ignores SIGTERM, so each attempt costs
+# TimeoutStartSec + TimeoutStopSec + RestartSec, burst times, then stops.
+scenario_hung_start_is_capped_and_bounded() {
+  reset
+  state=active
+  fail_budget=100000
+  attempt_secs=100000
+  docker_restart
+  drain
+  [[ "$starts" -eq "$burst" ]] || die "hung ExecStart runs=$starts, want StartLimitBurst=$burst (t=${now}s)"
+  [[ "$state" == failed && "$result" == timeout ]] \
+    || die "state=$state result=$result, want failed/timeout"
+  journal_has "start operation timed out. Terminating." || die "journal lacks the start timeout"
+  journal_has "Start request repeated too quickly." || die "journal lacks the start-limit refusal"
+  [[ "$interval" == infinity ]] || die "StartLimitIntervalSec=$interval can be outrun by a longer hang"
+  [[ "$timeout_start" != infinity && "$timeout_stop" != infinity ]] \
+    || die "TimeoutStartSec=$timeout_start TimeoutStopSec=$timeout_stop is not a finite cap"
+  local worst=$(( burst * (timeout_start + timeout_stop + restart_sec) ))
+  [[ "$now" -eq "$worst" ]] || die "hung streak wall clock ${now}s, want ${worst}s"
+  local frozen=$starts
+  now=$((now + 100000))
+  drain
+  [[ "$starts" -eq "$frozen" ]] || die "retried after the hung-start bound (starts=$starts)"
+  auto_deploy_tick
+  [[ "$ticks_ran" -eq 0 && "$ticks_skipped" -eq 1 ]] \
+    || die "auto-deploy ran against a stack that exhausted the retry budget"
+  echo "RESULT hung ExecStart stopped at $starts after ${worst}s; stayed failed; auto-deploy skipped"
 }
 
 scenario_clean_exit_does_not_restart() {
@@ -358,7 +529,7 @@ scenario_clean_exit_does_not_restart() {
   fail_budget=0
   do_start "initial"
   [[ "$state" == active && "$starts" -eq 1 ]] || die "clean start did not become active"
-  now=$((now + interval))
+  now=$((now + 100000))
   drain
   [[ "$starts" -eq 1 ]] || die "a clean oneshot exit was restarted (starts=$starts)"
   echo "RESULT a successful oneshot exit stays active with one ExecStart"
@@ -388,6 +559,9 @@ run "docker restart with OIDC 503 recovers without a manual start" scenario_oidc
 run "a stack stopped with systemctl stop is not auto-started" scenario_operator_stop_stays_stopped
 run "an operator stop cancels a pending failure restart" scenario_stop_cancels_pending_restart
 run "a dependency that stays down hits the start limit and stays failed" scenario_start_limit_stops_the_loop
+run "a slow failed start still stops at the total bound" scenario_slow_failure_is_a_total_bound
+run "a hung start is capped and still stops at the total bound" scenario_hung_start_is_capped_and_bounded
+run "a successful start restores a full budget for the next streak" scenario_success_restores_budget_for_the_next_streak
 run "a clean oneshot exit is not restarted" scenario_clean_exit_does_not_restart
 
 [[ "$failures" -eq 0 ]] || { echo "$failures stack-start recovery test(s) failed" >&2; exit 1; }

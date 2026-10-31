@@ -66,10 +66,13 @@ type supplyRunItem struct {
 }
 
 // generatedSupplyRun is the POST /shopping/{weekStart}/generate answer:
-// the Supply run as made, and the plan days with nothing to shop for.
+// the Supply run as made, the plan days with nothing to shop for, and the
+// title_job_id of the job titling it, which GET /jobs/{id} reports on;
+// null when the Supply run already has its title.
 type generatedSupplyRun struct {
 	supplyRun
-	Skipped []shopping.SkippedDay `json:"skipped"`
+	Skipped    []shopping.SkippedDay `json:"skipped"`
+	TitleJobID *string               `json:"title_job_id"`
 }
 
 // sendChatRequest is the POST /shopping/{weekStart}/send-chat body:
@@ -114,7 +117,7 @@ func getSupplyRun(logger *slog.Logger, svc *shopping.Service) http.HandlerFunc {
 }
 
 // postSupplyRunGenerate makes, or remakes, the week's Supply run from its
-// plan and answers with it and the plan days it skipped.
+// plan and answers with it, the plan days it skipped and its title job.
 func postSupplyRunGenerate(logger *slog.Logger, svc *shopping.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		week, ok := weekStartOrFail(w, r, logger)
@@ -135,7 +138,7 @@ func postSupplyRunGenerate(logger *slog.Logger, svc *shopping.Service) http.Hand
 		if skipped == nil {
 			skipped = []shopping.SkippedDay{}
 		}
-		writeJSON(w, r, logger, http.StatusOK, generatedSupplyRun{supplyRun: out, Skipped: skipped})
+		writeJSON(w, r, logger, http.StatusOK, generatedSupplyRun{supplyRun: out, Skipped: skipped, TitleJobID: g.TitleJobID})
 	}
 }
 
@@ -225,8 +228,9 @@ type archivePeriod struct {
 }
 
 // archivePost is one week's Supply run in the Supply archive. label is
-// the week label, which stands in for title while it is null, and
-// onHandCount counts the items marked "have it".
+// the week label, which stands in for title while it is null,
+// onHandCount counts the items marked "have it", and frozen is false
+// while the list can still be changed from the Supply run.
 type archivePost struct {
 	WeekStart   string   `json:"weekStart"`
 	Label       string   `json:"label"`
@@ -236,6 +240,7 @@ type archivePost struct {
 	OnHandCount int      `json:"onHandCount"`
 	Dinners     []string `json:"dinners"`
 	Current     bool     `json:"current"`
+	Frozen      bool     `json:"frozen"`
 }
 
 // getSupplyArchive answers GET /shopping/archive?by=week|month|year with
@@ -265,6 +270,7 @@ func getSupplyArchive(logger *slog.Logger, svc *shopping.Service) http.HandlerFu
 					OnHandCount: post.OnHand,
 					Dinners:     post.Dinners,
 					Current:     post.Current,
+					Frozen:      post.Frozen,
 				}
 			}
 			out.Periods[i] = archivePeriod{Key: p.Key, Heading: p.Heading, Posts: posts}

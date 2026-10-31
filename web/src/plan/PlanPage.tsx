@@ -10,7 +10,7 @@ import { Confirm } from '../settings/LeaveGuard.tsx'
 import { methodLabels } from '../settings/RegularsSettingsPage.tsx'
 import { formatClockTime, useHouseholdSettings } from '../settings/api.ts'
 import { supplyRunScreen, useGenerateSupplyRun, useSupplyRun, WEEK_PARAM } from '../shopping/api.ts'
-import { useBreakpoint, type Breakpoint } from '../shell/useBreakpoint.ts'
+import { useBreakpoint, useOrientation, type Breakpoint } from '../shell/useBreakpoint.ts'
 import { Button } from '../ui/Button.tsx'
 import buttonStyles from '../ui/Button.module.css'
 import { EmptyState } from '../ui/EmptyState.tsx'
@@ -128,6 +128,12 @@ export function ago(at: Date, now: Date): string {
   if (hours < 24) return `${hours} hr ago`
   const days = Math.floor(hours / 24)
   return days === 1 ? '1 day ago' : `${days} days ago`
+}
+
+// alreadyPlanned says whether a swap was refused because its dinner is
+// already on another day of the week: sending it again cannot succeed.
+function alreadyPlanned(error: Error): boolean {
+  return error instanceof ApiError && error.code === 'dinner_already_planned'
 }
 
 // pushedToCalendar says whether drafting over a plan of this status needs
@@ -485,9 +491,18 @@ function WeekBoard({
       </ErrorBanner>
     )
   ) : swap.failed !== null ? (
-    <ErrorBanner onRetry={() => swapIn(swap.failed!.swap)}>
-      Couldn't swap {weekdayName(swap.failed.swap.date)}'s dinner. {swap.failed.error.message}
-    </ErrorBanner>
+    alreadyPlanned(swap.failed.error) && 'dinner' in swap.failed.swap ? (
+      // The plan is read again (useSwapDay): the household chooses another
+      // dinner from it rather than sending the refused swap again.
+      <ErrorBanner onRetry={() => openSwap(swap.failed!.swap.date)} retryLabel="Choose another dinner">
+        Couldn't swap {weekdayName(swap.failed.swap.date)}'s dinner. {swap.failed.swap.dinner.name} is already on another day
+        this week.
+      </ErrorBanner>
+    ) : (
+      <ErrorBanner onRetry={() => swapIn(swap.failed!.swap)}>
+        Couldn't swap {weekdayName(swap.failed.swap.date)}'s dinner. {swap.failed.error.message}
+      </ErrorBanner>
+    )
   ) : startDraft.isError ? (
     <ErrorBanner onRetry={rebuild}>Couldn't start drafting this week. {startDraft.error.message}</ErrorBanner>
   ) : result.error !== null ? (
@@ -765,8 +780,10 @@ function PushFailure({ error, cached, onRetry }: { error: Error; cached: boolean
 // week; the week buttons keep ?week= on the week shown. The board keeps its place in the tree across layouts, so crossing a
 // breakpoint keeps a draft being followed. From tablet up a dinner is
 // dragged from the strip or the panel onto a day of the grid to swap it in.
+// An upright tablet lays the week out four days over three.
 export function PlanPage() {
   const layout = useBreakpoint()
+  const orientation = useOrientation()
   const settings = useHouseholdSettings()
   const [params, setParams] = useSearchParams()
   const chosen = params.get(WEEK_PARAM)
@@ -791,7 +808,11 @@ export function PlanPage() {
   }
   return (
     <PlanDragProvider>
-      <div className={`${styles.page} ${styles[`${layout}Page`]}`}>
+      <div
+        className={[styles.page, styles[`${layout}Page`], layout === 'tablet' && orientation === 'portrait' && styles.portraitPage]
+          .filter(Boolean)
+          .join(' ')}
+      >
         <div className={styles.board}>
           {content}
           {layout === 'tablet' && <QuestLogStrip />}

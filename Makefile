@@ -88,7 +88,8 @@ sqlc:
 	$(SQLC) generate
 
 # Fails on any difference from the committed generated code, including new
-# or deleted files.
+# or deleted files. A failing git status is itself a failure: its empty
+# output would otherwise read as "no drift".
 sqlc-check: sqlc
-	@drift="$$(git status --porcelain --untracked-files=all -- $(SQLC_OUT))"; \
+	@drift="$$(git status --porcelain --untracked-files=all -- $(SQLC_OUT))" || { echo "git status failed; cannot check internal/db for drift"; exit 1; }; \
 	if [ -n "$$drift" ]; then echo "internal/db is stale; run make sqlc and commit:"; echo "$$drift"; git diff -- $(SQLC_OUT); exit 1; fi

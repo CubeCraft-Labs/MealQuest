@@ -83,6 +83,12 @@
   gap: 20px;
 }
 
+/* An upright tablet stacks the columns: Notifications above the AI
+   assistant and Recipe search. */
+.portrait .columns {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .column {
   min-width: 0;
   display: flex;
@@ -94,25 +100,4 @@
 .column > * {
   padding: 24px;
   border-radius: 30px;
-}
-
-.placeholder {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.cardTitle {
-  margin: 0;
-  font-family: var(--font-heading);
-  font-size: 22px;
-  font-weight: 400;
-}
-
-.hint {
-  margin: 0;
-  font-family: var(--font-body);
-  font-size: 14px;
-  line-height: 1.45;
-  color: var(--color-neutral-700);
 }

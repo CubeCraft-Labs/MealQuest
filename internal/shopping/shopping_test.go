@@ -692,7 +692,7 @@ func TestGenerateRefusesFrozenList(t *testing.T) {
 	e.dinner(t, "Pad Thai", ing{"rice noodles", "8", "oz"})
 	e.plan(t, "Beef Chili")
 	e.generate(t)
-	if _, err := e.st.Writer.Exec(`UPDATE shopping_lists SET status = 'archived', frozen_at = '2026-10-19T04:05:00Z'`); err != nil {
+	if _, err := e.st.Writer.Exec(`UPDATE shopping_lists SET status = 'archived', frozen_at = '2026-10-19T04:05:00Z'; UPDATE shopping_groups SET frozen_dinner_name = (SELECT name FROM dinners WHERE dinners.id = dinner_id) WHERE list_id IN (SELECT id FROM shopping_lists WHERE frozen_at IS NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	e.swap(t, "2026-10-12", "Pad Thai")
@@ -867,7 +867,7 @@ func TestSetNeededRefusesFrozenList(t *testing.T) {
 	e.dinner(t, "Beef Chili", ing{"ground beef", "1", "lb"})
 	e.plan(t, "Beef Chili")
 	l := e.generate(t).List
-	if _, err := e.st.Writer.Exec(`UPDATE shopping_lists SET status = 'archived', frozen_at = '2026-10-19T04:05:00Z'`); err != nil {
+	if _, err := e.st.Writer.Exec(`UPDATE shopping_lists SET status = 'archived', frozen_at = '2026-10-19T04:05:00Z'; UPDATE shopping_groups SET frozen_dinner_name = (SELECT name FROM dinners WHERE dinners.id = dinner_id) WHERE list_id IN (SELECT id FROM shopping_lists WHERE frozen_at IS NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
 

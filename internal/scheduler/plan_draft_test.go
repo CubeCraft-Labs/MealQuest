@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -86,7 +87,21 @@ func (c noCalendar) PushEvents(context.Context, []gcal.Event, func() error) erro
 // pass the fake clock's waits do not expect.
 func (e *env) plans(ids map[string]string) *planEnv {
 	e.t.Helper()
-	return e.newPlans(ids, func() {})
+	return e.newPlans(ids, func() {}, time.Now)
+}
+
+// scheduledPlans is plans whose today is read from the clock of the
+// scheduler start last started, as in the server, so a draft's plan_ready
+// title follows the fake clock. It drafts only once a scheduler started.
+func (e *env) scheduledPlans(ids map[string]string) *planEnv {
+	e.t.Helper()
+	return e.newPlans(ids, func() {}, func() time.Time {
+		s := e.sched.Load()
+		if s == nil {
+			panic("plan service read the clock before a scheduler started")
+		}
+		return s.Now()
+	})
 }
 
 // wakingPlans is plans whose changes wake the scheduler, as in the server.
@@ -94,11 +109,12 @@ func (e *env) plans(ids map[string]string) *planEnv {
 // the wake's pass with changed.
 func (e *env) wakingPlans(ids map[string]string) *planEnv {
 	e.t.Helper()
-	return e.newPlans(ids, e.wake)
+	return e.newPlans(ids, e.wake, time.Now)
 }
 
-// newPlans is plans whose service calls wake after a plan change.
-func (e *env) newPlans(ids map[string]string, wake func()) *planEnv {
+// newPlans is plans whose service calls wake after a plan change and reads
+// today from now.
+func (e *env) newPlans(ids map[string]string, wake func(), now func() time.Time) *planEnv {
 	e.t.Helper()
 	p := &planEnv{e: e, model: &llm.Fake{}, ids: ids, logs: &syncBuffer{}}
 	guard, err := harness.NewGuard(harness.DefaultMaxCalls)
@@ -119,7 +135,7 @@ func (e *env) newPlans(ids map[string]string, wake func()) *planEnv {
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	p.svc, err = plan.NewService(e.st, drafter, runner, noCalendar{e.t}, notifytest.New(e.t, e.st), wake, publicURL, logger)
+	p.svc, err = plan.NewService(e.st, drafter, runner, noCalendar{e.t}, notifytest.New(e.t, e.st), wake, publicURL, now, logger)
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -236,6 +252,41 @@ func (e *env) planReady() []string {
 	return keys
 }
 
+// readyRow is a stored plan_ready notification as these tests check it.
+type readyRow struct {
+	Key     string
+	Channel notify.Channel
+	Title   string
+}
+
+// planReadyRows returns every plan_ready notification stored, oldest
+// first, each week's Google Chat row before its push row.
+func (e *env) planReadyRows() []readyRow {
+	e.t.Helper()
+	var out []readyRow
+	for _, r := range notifytest.Rows(e.t, e.st, notify.PlanReady) {
+		out = append(out, readyRow{Key: r.Key, Channel: r.Channel, Title: r.Payload.Title})
+	}
+	return out
+}
+
+// nextWeekReady is the plan_ready rows of a draft of the week starting
+// week, drafted the week before: one to Google Chat and one to push.
+func nextWeekReady(week string) []readyRow {
+	const title = "Next week's plan is ready"
+	key := string(notify.PlanReady) + ":" + week
+	return []readyRow{{key, notify.ChannelChat, title}, {key, notify.ChannelPush, title}}
+}
+
+// wantReady fails unless the plan_ready rows are got.
+func wantReady(t *testing.T, what string, got []readyRow, want ...[]readyRow) {
+	t.Helper()
+	all := slices.Concat(want...)
+	if !slices.Equal(got, all) {
+		t.Fatalf("%s: plan_ready rows = %+v, want %+v", what, got, all)
+	}
+}
+
 var (
 	succeeded = draftJob{Status: string(jobs.StatusSucceeded)}
 	aiFailed  = draftJob{Status: string(jobs.StatusFailed), Error: plan.ReasonAIFailed}
@@ -258,7 +309,7 @@ func mustLocalDate(s string) store.LocalDate {
 // by its Monday once.
 func TestPlanDraftDraftsNextWeek(t *testing.T) {
 	e := newEnv(t)
-	p := e.plans(e.pool())
+	p := e.scheduledPlans(e.pool())
 	p.reply(w43)
 	p.reply(w44)
 
@@ -272,6 +323,7 @@ func TestPlanDraftDraftsNextWeek(t *testing.T) {
 	wantDrafts(t, "at Friday 09:00", e.drafts(), succeeded)
 	wantKeys(t, "plans at Friday 09:00", e.weekPlans(), []string{"2026-10-19"})
 	wantKeys(t, "plan_ready of W43", e.planReady(), []string{"plan_ready:2026-10-19"})
+	wantReady(t, "plan_ready rows of W43", e.planReadyRows(), nextWeekReady("2026-10-19"))
 	got, err := p.svc.Get(context.Background(), w43)
 	if err != nil {
 		t.Fatal(err)
@@ -284,6 +336,7 @@ func TestPlanDraftDraftsNextWeek(t *testing.T) {
 	wantDrafts(t, "W44", e.drafts(), succeeded, succeeded)
 	wantKeys(t, "plans", e.weekPlans(), []string{"2026-10-19", "2026-10-26"})
 	wantKeys(t, "plan_ready of W43 and W44", e.planReady(), []string{"plan_ready:2026-10-19", "plan_ready:2026-10-26"})
+	wantReady(t, "plan_ready rows of W43 and W44", e.planReadyRows(), nextWeekReady("2026-10-19"), nextWeekReady("2026-10-26"))
 	wantKeys(t, "schedule_runs", e.claimed(scheduler.PlanDraft), []string{"2026-W42", "2026-W43", "2026-W44"})
 }
 
@@ -292,23 +345,25 @@ func TestPlanDraftDraftsNextWeek(t *testing.T) {
 // notifies no one and says so.
 func TestPlanDraftLeavesAnExistingPlan(t *testing.T) {
 	e := newEnv(t)
-	p := e.plans(e.pool())
+	p := e.scheduledPlans(e.pool())
 	p.reply(w43)
 	p.reply(w43) // a second draft would succeed too
+	r := e.start(at(2026, 10, 16, 8, 0), p.svc.DraftSchedule())
 	if _, err := p.svc.StartDraft(context.Background(), w43, false); err != nil {
 		t.Fatal(err)
 	}
 	wantDrafts(t, "manual draft", e.drafts(), succeeded)
 	wantKeys(t, "plan_ready of the manual draft", e.planReady(), []string{"plan_ready:2026-10-19"})
+	wantReady(t, "plan_ready rows of the manual draft", e.planReadyRows(), nextWeekReady("2026-10-19"))
 	before, err := p.svc.Get(context.Background(), w43)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	r := e.start(at(2026, 10, 16, 8, 0), p.svc.DraftSchedule())
 	r.runUntil(at(2026, 10, 16, 9, 0))
 	wantDrafts(t, "with a plan", e.drafts(), succeeded)
 	wantKeys(t, "plan_ready with a plan", e.planReady(), []string{"plan_ready:2026-10-19"})
+	wantReady(t, "plan_ready rows with a plan", e.planReadyRows(), nextWeekReady("2026-10-19"))
 	wantKeys(t, "schedule_runs", e.claimed(scheduler.PlanDraft), []string{"2026-W42", "2026-W43"})
 	after, err := p.svc.Get(context.Background(), w43)
 	if err != nil {
@@ -328,23 +383,25 @@ func TestPlanDraftLeavesAnExistingPlan(t *testing.T) {
 func TestPlanDraftNoDuplicateAfterRestart(t *testing.T) {
 	e := newEnv(t)
 	ids := e.pool()
-	p := e.plans(ids)
+	p := e.scheduledPlans(ids)
 	p.reply(w43)
 	r := e.start(at(2026, 10, 16, 8, 0), p.svc.DraftSchedule())
 	r.runUntil(at(2026, 10, 16, 9, 0))
 	wantDrafts(t, "first process", e.drafts(), succeeded)
+	wantReady(t, "plan_ready rows of the first process", e.planReadyRows(), nextWeekReady("2026-10-19"))
 	r.stop()
 	p.stop()
 
 	// The restarted process has a new job runner, plan service and
 	// scheduler; it would answer a second draft if one were started.
-	p2 := e.plans(ids)
+	p2 := e.scheduledPlans(ids)
 	p2.reply(w43)
 	r2 := e.start(at(2026, 10, 16, 10, 0), p2.svc.DraftSchedule())
 	r2.runUntil(at(2026, 10, 23, 8, 59))
 	wantDrafts(t, "after restart", e.drafts(), succeeded)
 	wantKeys(t, "plans after restart", e.weekPlans(), []string{"2026-10-19"})
 	wantKeys(t, "plan_ready after restart", e.planReady(), []string{"plan_ready:2026-10-19"})
+	wantReady(t, "plan_ready rows after restart", e.planReadyRows(), nextWeekReady("2026-10-19"))
 	wantKeys(t, "schedule_runs", e.claimed(scheduler.PlanDraft), []string{"2026-W42", "2026-W43"})
 }
 
@@ -355,7 +412,7 @@ func TestPlanDraftNoDuplicateAfterRestart(t *testing.T) {
 func TestPlanDraftAIFailureEmitsNothing(t *testing.T) {
 	e := newEnv(t)
 	ids := e.pool()
-	p := e.plans(ids)
+	p := e.scheduledPlans(ids)
 	p.model.QueueGenerate(llm.GenerateResult{Err: errors.New("provider down")})
 
 	r := e.start(at(2026, 10, 16, 8, 0), p.svc.DraftSchedule())
@@ -363,6 +420,7 @@ func TestPlanDraftAIFailureEmitsNothing(t *testing.T) {
 	wantDrafts(t, "after the AI failed", e.drafts(), aiFailed)
 	wantKeys(t, "plans after the AI failed", e.weekPlans(), nil)
 	wantKeys(t, "plan_ready after the AI failed", e.planReady(), nil)
+	wantReady(t, "plan_ready rows after the AI failed", e.planReadyRows())
 	wantKeys(t, "schedule_runs", e.claimed(scheduler.PlanDraft), []string{"2026-W42", "2026-W43"})
 
 	var status, msg string
@@ -378,11 +436,12 @@ func TestPlanDraftAIFailureEmitsNothing(t *testing.T) {
 
 	r.stop()
 	p.stop()
-	p2 := e.plans(ids)
+	p2 := e.scheduledPlans(ids)
 	p2.reply(w43)
 	e.start(at(2026, 10, 16, 10, 0), p2.svc.DraftSchedule())
 	wantDrafts(t, "after restart", e.drafts(), aiFailed)
 	wantKeys(t, "plan_ready after restart", e.planReady(), nil)
+	wantReady(t, "plan_ready rows after restart", e.planReadyRows())
 }
 
 // TestPlanDraftFollowsSettingsWithoutRestart: a plan_draft_dow and
@@ -391,7 +450,7 @@ func TestPlanDraftAIFailureEmitsNothing(t *testing.T) {
 // week.
 func TestPlanDraftFollowsSettingsWithoutRestart(t *testing.T) {
 	e := newEnv(t)
-	p := e.plans(e.pool())
+	p := e.scheduledPlans(e.pool())
 	p.reply(w43)
 
 	r := e.start(at(2026, 10, 12, 12, 0), p.svc.DraftSchedule()) // Monday
@@ -402,6 +461,7 @@ func TestPlanDraftFollowsSettingsWithoutRestart(t *testing.T) {
 	r.runUntil(at(2026, 10, 14, 18, 30))
 	wantDrafts(t, "at Wednesday 18:30", e.drafts(), succeeded)
 	wantKeys(t, "plan_ready", e.planReady(), []string{"plan_ready:2026-10-19"})
+	wantReady(t, "plan_ready rows", e.planReadyRows(), nextWeekReady("2026-10-19"))
 
 	// Friday 09:00, the old fire time, drafts nothing more.
 	r.runUntil(at(2026, 10, 16, 9, 0))

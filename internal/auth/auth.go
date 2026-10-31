@@ -79,6 +79,7 @@ type Auth struct {
 	provider *oidc.Provider
 	client   *http.Client
 	cookie   loginCookie
+	pending  *PendingStates
 	sessions Sessions
 	allowed  []string
 	// endSessionURL is the provider's end_session_endpoint; logout ends
@@ -157,6 +158,7 @@ func New(ctx context.Context, cfg Config, sessions Sessions, logger *slog.Logger
 		client:        client,
 		allowed:       slices.Clone(cfg.AllowedGroups),
 		cookie:        newLoginCookie(cfg.SecretKey),
+		pending:       NewPendingStates(loginCookieTTL),
 		sessions:      sessions,
 		endSessionURL: discovered.EndSessionURI,
 		logger:        logger,
@@ -250,7 +252,13 @@ func (a *Auth) login(w http.ResponseWriter, r *http.Request) {
 		Verifier: oauth2.GenerateVerifier(),
 		Return:   returnTo,
 	}
-	if err := a.cookie.set(w, state, time.Now()); err != nil {
+	now := time.Now()
+	if err := a.pending.Add(state.State, now); err != nil {
+		a.logger.WarnContext(r.Context(), "login refused", "error", err)
+		http.Error(w, "too many sign-ins in progress; try again later", http.StatusServiceUnavailable)
+		return
+	}
+	if err := a.cookie.set(w, state, now); err != nil {
 		a.logger.ErrorContext(r.Context(), "set login cookie", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -262,7 +270,7 @@ func (a *Auth) login(w http.ResponseWriter, r *http.Request) {
 }
 
 // callback completes the flow: it checks state against the login cookie,
-// exchanges the code, verifies the ID token and nonce, then starts a session
+// consumes it, exchanges the code, verifies the ID token and nonce, then starts a session
 // if the account is in an allowed group. Membership is checked on every
 // login, so an account removed from the group is refused at its next one.
 func (a *Auth) callback(w http.ResponseWriter, r *http.Request) {
@@ -280,6 +288,13 @@ func (a *Auth) callback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	if subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(state.State)) != 1 {
 		a.logger.WarnContext(ctx, "login callback state mismatch")
+		http.Error(w, "sign-in state mismatch; start again", http.StatusBadRequest)
+		return
+	}
+	// A copy of the cookie verifies until it expires, so the state is
+	// single-use only because it is consumed here.
+	if !a.pending.Consume(state.State) {
+		a.logger.WarnContext(ctx, "login callback state already used")
 		http.Error(w, "sign-in state mismatch; start again", http.StatusBadRequest)
 		return
 	}

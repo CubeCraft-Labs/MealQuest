@@ -62,14 +62,14 @@ type Ingredient struct {
 	RawText string  `json:"raw_text"`
 }
 
-// Source is the site a recipe was fetched from. SiteName is the name the
-// page itself gives its site, and null when it gives none or the stored
-// name could have come from a link (see pageSiteName). URL is the page's
-// link only when it is verifiably free of secrets (see safeSourceURL), and
-// null otherwise: a link pasted or offered as a candidate may carry a
-// personal token, so a client links the credit only when URL is not null.
-// Source is set for every fetched recipe, so a client always credits it:
-// by SiteName, else by URL's host, else without naming the site.
+// Source is the site a recipe was fetched from, as SourceOf gives it.
+// SiteName is the name the page gives its site, else the host of URL when
+// URL is shown, else null. URL is the page's link only when it is
+// verifiably free of secrets (see safeSourceURL), and null otherwise: a
+// link pasted or offered as a candidate may carry a personal token, so a
+// client links the credit only when URL is not null. Source is set for
+// every fetched recipe, so a client always credits it: by SiteName, else
+// without naming the site.
 type Source struct {
 	SiteName *string `json:"site_name"`
 	URL      *string `json:"url"`
@@ -169,10 +169,7 @@ func readRecipe(ctx context.Context, q *db.Queries, recipeID string, d *Detail) 
 	if err != nil {
 		return fmt.Errorf("ingredients: %w", err)
 	}
-	for i, ing := range ings {
-		if i > 0 && ing.Position == ings[i-1].Position {
-			return duplicatePosition("ingredient", ing.Position)
-		}
+	for _, ing := range ings {
 		d.Ingredients = append(d.Ingredients, Ingredient{
 			Name:    nullString(ing.Name),
 			Qty:     nullString(ing.Qty),
@@ -185,52 +182,46 @@ func readRecipe(ctx context.Context, q *db.Queries, recipeID string, d *Detail) 
 	if err != nil {
 		return fmt.Errorf("steps: %w", err)
 	}
-	for i, step := range steps {
-		if i > 0 && step.Position == steps[i-1].Position {
-			return duplicatePosition("step", step.Position)
-		}
+	for _, step := range steps {
 		d.Steps = append(d.Steps, step.Text)
 	}
 	return nil
 }
 
 // SourceOf is the Source of a recipe fetched from sourceURL whose stored
-// site name is siteName: the name only when the page gave it (see
-// pageSiteName) and the link only when it is free of secrets (see
-// safeSourceURL). It is the one way a fetched recipe's source reaches a
-// client. A sourceURL that does not parse is an error, whether or not a
-// site name is stored.
+// site name is siteName, the name its page gave (recipes.Recipe.SiteName),
+// null when the page named none. It is the one rule by which a fetched
+// recipe's source reaches a client — the recipe detail, an idea and a
+// recipe candidate offered for a dinner alike:
+//
+//   - the link is shown only when it is free of secrets (see
+//     safeSourceURL);
+//   - a site name the page gave is shown as it stands, as the page
+//     publishes it to everyone who reads it;
+//   - otherwise the site is named by the link's host without a leading
+//     "www.", and only when the link itself is shown, so the name tells
+//     nothing the shown link does not; else it is null.
+//
+// A host is never stored as a site name, so a stored name is always the
+// page's: migration 0022 cleared the names stored before that, when a
+// page naming no site was stored under its host. A sourceURL that does not
+// parse is an error, whether or not a site name is stored.
 func SourceOf(siteName sql.NullString, sourceURL string) (Source, error) {
 	link, err := url.Parse(sourceURL)
 	if err != nil {
 		// Not wrapped: url.Parse's error quotes the link.
 		return Source{}, errors.New("source url does not parse")
 	}
-	return Source{SiteName: pageSiteName(siteName, link), URL: safeSourceURL(sourceURL)}, nil
-}
-
-// pageSiteName is the stored site name of a recipe fetched from link
-// when it is one the page gave, else nil. A page that names no site is
-// stored under recipes.HostSiteName of the URL it was served from: the
-// pasted link's host, which may hold a personal token (a private
-// subdomain), or that of a page the link redirected to, which is not
-// stored. Nothing records which a stored name is, so any name that could
-// be a host — the link's own host, an IP address, or a dotted host name —
-// is treated as one and withheld. A site that names itself as a domain,
-// such as "Food.com", loses its name with them: a credit that does not
-// name the site is better than one that leaks a link.
-func pageSiteName(stored sql.NullString, link *url.URL) *string {
-	if !stored.Valid {
-		return nil
+	src := Source{URL: safeSourceURL(sourceURL)}
+	switch {
+	case siteName.Valid && siteName.String != "":
+		name := siteName.String
+		src.SiteName = &name
+	case src.URL != nil:
+		host := strings.TrimPrefix(link.Hostname(), "www.")
+		src.SiteName = &host
 	}
-	name := stored.String
-	if strings.EqualFold(name, recipes.HostSiteName(link)) || net.ParseIP(name) != nil {
-		return nil
-	}
-	if u, err := url.Parse("https://" + name + "/"); err == nil && u.Host == name && strings.Contains(name, ".") {
-		return nil
-	}
-	return &name
+	return src, nil
 }
 
 // safeSourceURL is sourceURL when it is verifiably free of secrets — an
@@ -294,12 +285,4 @@ func browserHost(u *url.URL) bool {
 		return ip != nil && ip.To4() != nil && !strings.Contains(host, ":")
 	}
 	return true
-}
-
-// duplicatePosition is the error for two recipe items of kind at position.
-// Position is the only record of recipe order, and the id that breaks the
-// tie says nothing about it, so a recipe with a duplicate is refused rather
-// than shown in an order nobody can trust.
-func duplicatePosition(kind string, position int64) error {
-	return fmt.Errorf("two %ss at position %d: recipe order is unknown", kind, position)
 }

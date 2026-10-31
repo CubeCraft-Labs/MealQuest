@@ -107,12 +107,12 @@ function Where() {
 // renderPage loads /me (for the CSRF token every write needs) and renders
 // the Supply run at path, routed beside the dinner detail screen a card
 // opens.
-async function renderPage(path = '/plan/shopping') {
+async function renderPage(path = '/plan/shopping', queryClient = createQueryClient()) {
   const api = createApiClient(fakeLocation('/plan/shopping'), createNetworkStatus(window), createVerifiedSession(localStorage))
   await api.loadMe()
   return render(
     <ApiProvider client={api}>
-      <QueryClientProvider client={createQueryClient()}>
+      <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={[path]}>
           <Routes>
             <Route path="/dinner/:id" element={<DinnerDetailPage />} />
@@ -685,15 +685,63 @@ describe('SupplyRunPage', () => {
   })
 
   it('offers to make the list when the week has none, and shows the list made', async () => {
+    let made = false
     const fetchMock = stubServer({
-      [`GET ${THIS_WEEK}`]: () => errorResponse(404, 'not_found'),
-      [`POST ${GENERATE}`]: () => jsonResponse(200, { ...supplyRun(), skipped: [] }),
+      [`GET ${THIS_WEEK}`]: () => (made ? jsonResponse(200, supplyRun()) : errorResponse(404, 'not_found')),
+      [`POST ${GENERATE}`]: () => {
+        made = true
+        return jsonResponse(200, { ...supplyRun(), skipped: [] })
+      },
     })
     await renderPage()
 
     expect(await screen.findByRole('heading', { name: 'No shopping list yet' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Make the shopping list' }))
     expect(await screen.findByText('4 / 6')).toBeInTheDocument()
+    expect(writes(fetchMock)).toEqual([`POST ${GENERATE} undefined`])
+  })
+
+  it('keeps the list made when a read sent before it was made answers after it', async () => {
+    const queryClient = createQueryClient()
+    const made = deferred()
+    const late = deferred()
+    const again = deferred()
+    let reads = 0
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => {
+        reads++
+        if (reads === 1) return errorResponse(404, 'not_found')
+        return reads === 2 ? late.response : again.response
+      },
+      [`POST ${GENERATE}`]: () => made.response,
+    })
+    await renderPage('/plan/shopping', queryClient)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Make the shopping list' }))
+    // A read of the week sent while the list is being made, so from before it.
+    void queryClient.invalidateQueries({ queryKey: ['shopping', '2026-10-05'] })
+    await waitFor(() => expect(reads).toBe(2))
+    made.send(jsonResponse(200, { ...supplyRun(), skipped: [] }))
+    expect(await screen.findByText('4 / 6')).toBeInTheDocument()
+    // The list made is written, and the week read again from the server.
+    await waitFor(() => expect(reads).toBe(3))
+
+    // The read from before the list was made answers only now.
+    late.send(errorResponse(404, 'not_found'))
+    await late.response
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(screen.getByText('4 / 6')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'No shopping list yet' })).not.toBeInTheDocument()
+
+    // The read sent after it was made is the one shown: by then the
+    // household has the ground beef.
+    const groups = GROUPS.map((group, g) => ({
+      ...group,
+      items: group.items.map((item, i) => (g === 0 && i === 0 ? { ...item, needed: false } : item)),
+    }))
+    again.send(jsonResponse(200, supplyRun({ needed_count: 3, groups })))
+    expect(await screen.findByText('3 / 6')).toBeInTheDocument()
+    expect(reads).toBe(3)
     expect(writes(fetchMock)).toEqual([`POST ${GENERATE} undefined`])
   })
 

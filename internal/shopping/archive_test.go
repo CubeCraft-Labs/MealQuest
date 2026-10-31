@@ -381,6 +381,9 @@ func postLine(p shopping.Post) string {
 	if p.Current {
 		cur = " | current"
 	}
+	if !p.Frozen {
+		cur += " | open"
+	}
 	return p.WeekStart + " " + p.Label + " | " + title + " | " + strings.Join(p.Dinners, ", ") + " | " +
 		strconv.Itoa(p.Items) + " items, " + strconv.Itoa(p.OnHand) + " on hand" + cur
 }
@@ -422,12 +425,12 @@ func TestArchiveGroups(t *testing.T) {
 	if _, err := e.st.Writer.Exec(`UPDATE shopping_lists SET title = 'Chili, Noodles & Co' WHERE week_start = '2026-12-28'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.st.Writer.Exec(`UPDATE shopping_lists SET status = 'archived', frozen_at = '2027-01-03T11:05:00.000Z' WHERE week_start < '2027-01-04'`); err != nil {
+	if _, err := e.st.Writer.Exec(`UPDATE shopping_lists SET status = 'archived', frozen_at = '2027-01-03T11:05:00.000Z' WHERE week_start < '2027-01-04'; UPDATE shopping_groups SET frozen_dinner_name = (SELECT name FROM dinners WHERE dinners.id = dinner_id) WHERE list_id IN (SELECT id FROM shopping_lists WHERE frozen_at IS NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
 
 	posts := map[string]string{
-		"jan": "2027-01-04 Week 1 · Jan 4 – 10 | - | Pad Thai, Beef Chili | 5 items, 1 on hand | current",
+		"jan": "2027-01-04 Week 1 · Jan 4 – 10 | - | Pad Thai, Beef Chili | 5 items, 1 on hand | current | open",
 		"dec": "2026-12-28 Week 53 · Dec 28 – Jan 3 | Chili, Noodles & Co | Beef Chili, Pad Thai | 5 items, 2 on hand",
 		"d07": "2026-12-07 Week 50 · Dec 7 – 13 | - | Pad Thai | 2 items, 0 on hand",
 		"nov": "2026-11-30 Week 49 · Nov 30 – Dec 6 | - | Pot Roast | 1 items, 1 on hand",

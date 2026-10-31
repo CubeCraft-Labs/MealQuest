@@ -84,6 +84,17 @@ type Event struct {
 	// offers none: the app checks with the server that the dinner still has
 	// a recipe before it opens one, and names it when it does not.
 	Dinner *Dinner
+	// PlannedDinnerID is the dinner a day-of or crock-pot start reminder is
+	// about, whether or not the reminder offers a recipe. It is empty for a
+	// manual night, which has no dinner, and for every other event. The
+	// worker suppresses a queued reminder when this dinner is no longer
+	// planned for the reminder's date.
+	PlannedDinnerID string
+	// ManualLabel is the one-off night a day-of reminder was queued for.
+	// It is empty for a dinner reminder and for every other event. The
+	// worker suppresses a queued reminder when the plan day on the
+	// reminder's date no longer has this label.
+	ManualLabel string
 	// Week is the Monday of the week the event concerns, for the senders'
 	// message builders; zero when the event concerns no week.
 	Week store.LocalDate
@@ -105,8 +116,19 @@ type Payload struct {
 	// Tag is the event key, so a notification shown again for the same
 	// event replaces the first.
 	Tag string `json:"tag"`
-	// Dinner is the dinner whose recipe URL opens, or absent.
+	// Dinner is the dinner whose recipe URL opens, or absent. It is not how a
+	// reminder names the dinner it is about: PlannedDinnerID is, and it is
+	// set whether or not a recipe is offered.
 	Dinner *Dinner `json:"dinner,omitempty"`
+	// PlannedDinnerID is the dinner a day-of or crock-pot start reminder is
+	// about, whether or not it offers a recipe. Absent for a manual night
+	// and for every other event. The push notice does not include it: the
+	// service worker treats dinner as the recipe it offers.
+	PlannedDinnerID string `json:"planned_dinner_id,omitempty"`
+	// ManualLabel is the one-off night a day-of reminder was queued for.
+	// Absent for a dinner reminder and for every other event. The push
+	// notice does not include it.
+	ManualLabel string `json:"manual_label,omitempty"`
 	// Week is the YYYY-MM-DD Monday of the event's week, or absent.
 	Week string `json:"week,omitempty"`
 }
@@ -135,6 +157,20 @@ const RecipeCallToAction = " · Recipe →"
 // recipe and has no other text, when that dinner was archived: it has no
 // recipe to open.
 const ArchivedBody = "This dinner was removed, so its recipe is gone."
+
+// UncookedBody is the body of a reminder for a dinner that is not cooked
+// at home. It offers no recipe. An unknown source is an error: nothing is
+// substituted for it.
+func UncookedBody(source string) (string, error) {
+	switch source {
+	case "delivery":
+		return "This dinner is delivery, so it has no recipe.", nil
+	case "dining_out":
+		return "This dinner is dining out, so it has no recipe.", nil
+	default:
+		return "", fmt.Errorf("notify: meal source %q is not delivery or dining out", source)
+	}
+}
 
 // OpensRecipe reports whether the app path raw opens a dinner's recipe.
 func OpensRecipe(raw string) bool {
@@ -296,7 +332,7 @@ func (s *Service) emitTx(ctx context.Context, tx *sql.Tx, ev Event, channels fun
 	if err := validate(ev); err != nil {
 		return err
 	}
-	payload := Payload{Event: ev.Type, Title: ev.Title, Body: ev.Body, URL: ev.URL, Tag: ev.Key, Dinner: ev.Dinner}
+	payload := Payload{Event: ev.Type, Title: ev.Title, Body: ev.Body, URL: ev.URL, Tag: ev.Key, Dinner: ev.Dinner, PlannedDinnerID: ev.PlannedDinnerID, ManualLabel: ev.ManualLabel}
 	if !ev.Week.IsZero() {
 		payload.Week = ev.Week.String()
 	}
@@ -379,6 +415,9 @@ func validate(ev Event) error {
 	if !isAppPath(ev.URL) {
 		return fmt.Errorf("%w: %s url %q is not a path-absolute same-origin path", ErrInvalidEvent, ev.Key, ev.URL)
 	}
+	if ev.PlannedDinnerID != "" && (strings.TrimSpace(ev.PlannedDinnerID) != ev.PlannedDinnerID || strings.Contains(ev.PlannedDinnerID, "/")) {
+		return fmt.Errorf("%w: %s planned dinner id %q is not a dinner id", ErrInvalidEvent, ev.Key, ev.PlannedDinnerID)
+	}
 	if ev.Dinner == nil {
 		if OpensRecipe(ev.URL) {
 			return fmt.Errorf("%w: %s url %q opens a recipe but the event names no dinner", ErrInvalidEvent, ev.Key, ev.URL)
@@ -390,6 +429,9 @@ func validate(ev Event) error {
 	}
 	if ev.URL != RecipePath(ev.Dinner.ID) {
 		return fmt.Errorf("%w: %s url %q is not the recipe of its dinner %s", ErrInvalidEvent, ev.Key, ev.URL, ev.Dinner.ID)
+	}
+	if ev.PlannedDinnerID != "" && ev.PlannedDinnerID != ev.Dinner.ID {
+		return fmt.Errorf("%w: %s planned dinner %s is not its dinner %s", ErrInvalidEvent, ev.Key, ev.PlannedDinnerID, ev.Dinner.ID)
 	}
 	return nil
 }

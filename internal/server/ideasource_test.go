@@ -137,7 +137,7 @@ func legacyIdea(name, link, site string) map[string]any {
 }
 
 // A job of either idea kind whose result was stored before sources were
-// made safe, and upgraded by migration 0020, is served with the sources a
+// made safe, and upgraded by migration 0022, is served with the sources a
 // job stored now holds: neither a token-bearing link nor a name taken from
 // its host.
 func TestJobServesLegacyIdeaResultsWithOnlySafeSources(t *testing.T) {

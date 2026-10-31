@@ -19,7 +19,7 @@ func mustDate(t *testing.T, s string) store.LocalDate {
 
 // payloadOf is the payload notify stores for ev.
 func payloadOf(ev notify.Event) notify.Payload {
-	p := notify.Payload{Event: ev.Type, Title: ev.Title, Body: ev.Body, URL: ev.URL, Tag: ev.Key, Dinner: ev.Dinner}
+	p := notify.Payload{Event: ev.Type, Title: ev.Title, Body: ev.Body, URL: ev.URL, Tag: ev.Key, Dinner: ev.Dinner, PlannedDinnerID: ev.PlannedDinnerID, ManualLabel: ev.ManualLabel}
 	if !ev.Week.IsZero() {
 		p.Week = ev.Week.String()
 	}
@@ -35,6 +35,7 @@ func TestMessages(t *testing.T) {
 		key, url, week     string
 		title, body, chatT string
 		dinner             *notify.Dinner
+		planned            string
 	}{
 		{
 			name:  "plan ready",
@@ -97,46 +98,50 @@ func TestMessages(t *testing.T) {
 			chatT: "This week's Supply run is ready: 1 item to buy for 1 dinner. Open the Supply run →",
 		},
 		{
-			name:   "day-of reminder",
-			ev:     DayOfReminder(mustDate(t, "2026-10-15"), "01J9Z8Y7X6W5V4T3S2R1Q0P9N8", "Tacos", true),
-			key:    "day_of_reminder:2026-10-15",
-			url:    "/dinner/01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
-			week:   "2026-10-12",
-			title:  "Tonight: Tacos · Recipe →",
-			body:   "",
-			chatT:  "Tonight: Tacos · Recipe →",
-			dinner: &notify.Dinner{ID: "01J9Z8Y7X6W5V4T3S2R1Q0P9N8", Name: "Tacos"},
+			name:    "day-of reminder",
+			ev:      DayOfReminder(mustDate(t, "2026-10-15"), "01J9Z8Y7X6W5V4T3S2R1Q0P9N8", "Tacos", true),
+			key:     "day_of_reminder:2026-10-15",
+			url:     "/dinner/01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+			week:    "2026-10-12",
+			title:   "Tonight: Tacos · Recipe →",
+			body:    "",
+			chatT:   "Tonight: Tacos · Recipe →",
+			dinner:  &notify.Dinner{ID: "01J9Z8Y7X6W5V4T3S2R1Q0P9N8", Name: "Tacos"},
+			planned: "01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
 		},
 		{
-			name:  "day-of reminder of an archived dinner",
-			ev:    DayOfReminder(mustDate(t, "2026-10-15"), "01J9Z8Y7X6W5V4T3S2R1Q0P9N8", "Tacos", false),
-			key:   "day_of_reminder:2026-10-15",
-			url:   "/plan?week=2026-10-12",
-			week:  "2026-10-12",
-			title: "Tonight: Tacos",
-			body:  "This dinner was removed, so its recipe is gone.",
-			chatT: "Tonight: Tacos: This dinner was removed, so its recipe is gone. Open the plan →",
+			name:    "day-of reminder of an archived dinner",
+			ev:      DayOfReminder(mustDate(t, "2026-10-15"), "01J9Z8Y7X6W5V4T3S2R1Q0P9N8", "Tacos", false),
+			key:     "day_of_reminder:2026-10-15",
+			url:     "/plan?week=2026-10-12",
+			week:    "2026-10-12",
+			title:   "Tonight: Tacos",
+			body:    "This dinner was removed, so its recipe is gone.",
+			chatT:   "Tonight: Tacos: This dinner was removed, so its recipe is gone. Open the plan →",
+			planned: "01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
 		},
 		{
-			name:   "crock-pot start reminder",
-			ev:     StartReminder(mustDate(t, "2026-10-15"), "01J9Z8Y7X6W5V4T3S2R1Q0P9N8", "Beef Chili", time.Date(2026, 10, 15, 9, 30, 0, 0, time.FixedZone("CDT", -5*60*60)), true),
-			key:    "day_of_reminder:start:2026-10-15",
-			url:    "/dinner/01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
-			week:   "2026-10-12",
-			title:  "Start the crock pot by 9:30 am",
-			body:   "Beef Chili",
-			chatT:  "Start the crock pot by 9:30 am: Beef Chili. Open the recipe →",
-			dinner: &notify.Dinner{ID: "01J9Z8Y7X6W5V4T3S2R1Q0P9N8", Name: "Beef Chili"},
+			name:    "crock-pot start reminder",
+			ev:      StartReminder(mustDate(t, "2026-10-15"), "01J9Z8Y7X6W5V4T3S2R1Q0P9N8", "Beef Chili", time.Date(2026, 10, 15, 9, 30, 0, 0, time.FixedZone("CDT", -5*60*60)), true),
+			key:     "day_of_reminder:start:2026-10-15",
+			url:     "/dinner/01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+			week:    "2026-10-12",
+			title:   "Start the crock pot by 9:30 am",
+			body:    "Beef Chili",
+			chatT:   "Start the crock pot by 9:30 am: Beef Chili. Open the recipe →",
+			dinner:  &notify.Dinner{ID: "01J9Z8Y7X6W5V4T3S2R1Q0P9N8", Name: "Beef Chili"},
+			planned: "01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
 		},
 		{
-			name:  "crock-pot start reminder of an archived dinner",
-			ev:    StartReminder(mustDate(t, "2026-10-15"), "01J9Z8Y7X6W5V4T3S2R1Q0P9N8", "Beef Chili", time.Date(2026, 10, 15, 9, 30, 0, 0, time.FixedZone("CDT", -5*60*60)), false),
-			key:   "day_of_reminder:start:2026-10-15",
-			url:   "/plan?week=2026-10-12",
-			week:  "2026-10-12",
-			title: "Start the crock pot by 9:30 am",
-			body:  "Beef Chili",
-			chatT: "Start the crock pot by 9:30 am: Beef Chili. Open the plan →",
+			name:    "crock-pot start reminder of an archived dinner",
+			ev:      StartReminder(mustDate(t, "2026-10-15"), "01J9Z8Y7X6W5V4T3S2R1Q0P9N8", "Beef Chili", time.Date(2026, 10, 15, 9, 30, 0, 0, time.FixedZone("CDT", -5*60*60)), false),
+			key:     "day_of_reminder:start:2026-10-15",
+			url:     "/plan?week=2026-10-12",
+			week:    "2026-10-12",
+			title:   "Start the crock pot by 9:30 am",
+			body:    "Beef Chili",
+			chatT:   "Start the crock pot by 9:30 am: Beef Chili. Open the plan →",
+			planned: "01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
 		},
 		{
 			name:  "new suggestions",
@@ -175,6 +180,9 @@ func TestMessages(t *testing.T) {
 		}
 		if (ev.Dinner == nil) != (tc.dinner == nil) || (ev.Dinner != nil && *ev.Dinner != *tc.dinner) {
 			t.Errorf("%s: dinner = %+v, want %+v", tc.name, ev.Dinner, tc.dinner)
+		}
+		if ev.PlannedDinnerID != tc.planned {
+			t.Errorf("%s: planned dinner = %q, want %q", tc.name, ev.PlannedDinnerID, tc.planned)
 		}
 		if got := Text(payloadOf(ev)); got != tc.chatT {
 			t.Errorf("%s: Text = %q, want %q", tc.name, got, tc.chatT)

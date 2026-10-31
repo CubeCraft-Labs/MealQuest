@@ -487,7 +487,7 @@ func sourceOf(gr recipes.Grounded) (dinners.Source, error) {
 // dinners.SourceOf). A result stored now already holds it, and one stored
 // before sources were made safe holds the grounded recipe's own, with ""
 // for no site name, as sourceOf reads it, less any name that could be a
-// host, which migration 0020 cleared; a null link, which only a result
+// host, which migration 0022 cleared; a null link, which only a result
 // stored now holds, is checked as "".
 func shownSource(sourceURL, siteName *string) (dinners.Source, error) {
 	var link string

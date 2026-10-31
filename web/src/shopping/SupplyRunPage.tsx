@@ -104,7 +104,7 @@ function GroupCard({
     <section className={styles.group} aria-label={dinner.name}>
       <header className={styles.groupHeader}>
         <h2 className={styles.dinner}>
-          {opensRecipe(dinner.status, cached) ? (
+          {opensRecipe(dinner.status, cached, dinner.meal_source) ? (
             <button type="button" className={styles.dinnerLink} onClick={onRecipe}>
               {dinner.name}
             </button>

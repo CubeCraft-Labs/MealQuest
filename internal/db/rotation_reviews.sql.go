@@ -109,7 +109,7 @@ func (q *Queries) GetPendingRotationReview(ctx context.Context, dinnerID string)
 }
 
 const listPendingRotationReviews = `-- name: ListPendingRotationReviews :many
-SELECT rotation_reviews.plan_date, dinners.id, dinners.name, dinners.normalized_name, dinners.status, dinners.origin, dinners.method, dinners.minutes_total, dinners.difficulty, dinners.cuisine, dinners.is_favorite, dinners.recipe_id, dinners.photo_id, dinners.grounding_status, dinners.updated_by, dinners.created_at, dinners.updated_at, dinners.recipe_url, dinners.grounding_error, dinners.grounding_revision
+SELECT rotation_reviews.plan_date, dinners.id, dinners.name, dinners.normalized_name, dinners.status, dinners.origin, dinners.method, dinners.minutes_total, dinners.difficulty, dinners.cuisine, dinners.is_favorite, dinners.recipe_id, dinners.photo_id, dinners.grounding_status, dinners.updated_by, dinners.created_at, dinners.updated_at, dinners.recipe_url, dinners.grounding_error, dinners.grounding_revision, dinners.meal_source
 FROM rotation_reviews
 JOIN dinners ON dinners.id = rotation_reviews.dinner_id
 WHERE rotation_reviews.status = 'pending' AND dinners.status = 'tried'
@@ -153,6 +153,7 @@ func (q *Queries) ListPendingRotationReviews(ctx context.Context) ([]ListPending
 			&i.Dinner.RecipeUrl,
 			&i.Dinner.GroundingError,
 			&i.Dinner.GroundingRevision,
+			&i.Dinner.MealSource,
 		); err != nil {
 			return nil, err
 		}
@@ -173,6 +174,7 @@ FROM plan_days
 JOIN dinners ON dinners.id = plan_days.dinner_id
 WHERE plan_days.date = ?1
 	AND dinners.status = 'quest_log'
+	AND dinners.meal_source = 'cook'
 	AND NOT EXISTS (
 		SELECT 1 FROM rotation_reviews
 		WHERE rotation_reviews.dinner_id = dinners.id
@@ -182,7 +184,8 @@ ORDER BY dinners.id
 `
 
 // The ids of the dinners with status quest_log planned on date, on a plan
-// of any status, that have no Rotation check for date yet.
+// of any status, that have no Rotation check for date yet. Delivery and
+// dining out are not cooked, so they are not tried and open no check.
 func (q *Queries) ListTriedCandidates(ctx context.Context, date string) ([]string, error) {
 	rows, err := q.db.QueryContext(ctx, listTriedCandidates, date)
 	if err != nil {

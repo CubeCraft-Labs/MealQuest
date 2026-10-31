@@ -41,7 +41,7 @@ const PLAN = {
   calendar_synced_at: null,
   days: DAYS.map((date, i) => ({
     date,
-    dinner: { id: `d${i}`, name: `Dinner ${i}`, status: 'regular', photo: null, minutes: 30, method: 'stovetop', origin: 'regular' },
+    dinner: { id: `d${i}`, name: `Dinner ${i}`, status: 'regular', photo: null, minutes: 30, method: 'stovetop', origin: 'regular', meal_source: 'cook' },
     is_new: false,
     start_by: null,
   })),
@@ -59,7 +59,7 @@ const SUPPLY_RUN = {
   total_count: 1,
   groups: [
     {
-      dinner: { id: 'd0', name: 'Dinner 0', status: 'regular' },
+      dinner: { id: 'd0', name: 'Dinner 0', status: 'regular', meal_source: 'cook' },
       date: '2026-10-05',
       day: 'Monday',
       items: [{ id: 'i1', name: 'Ground beef', qty: '1 lb', needed: true }],
@@ -77,6 +77,7 @@ const DETAIL = {
   difficulty: 'easy',
   cuisine: 'korean',
   is_favorite: false,
+  meal_source: 'cook',
   photo_urls: null,
   ingredients: [{ name: 'Ground beef', qty: '1', unit: 'lb', note: null, raw_text: '1 lb ground beef' }],
   steps: ['Brown the beef.'],

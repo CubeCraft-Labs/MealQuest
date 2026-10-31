@@ -580,6 +580,11 @@ button.cardRecipe:focus-visible {
   margin: -14px;
 }
 
+/* A night with no tag keeps the swap icon at the foot's end. */
+.cardFooter .swapButton.swapEnd {
+  margin-left: auto;
+}
+
 .cardFooter .cardTag {
   margin-right: auto;
   padding: 3px 8px;

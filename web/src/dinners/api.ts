@@ -2,6 +2,11 @@ import { useIsMutating, useMutation, useQuery, useQueryClient, type QueryClient 
 import { useCallback, useEffect } from 'react'
 import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
+import type { Home } from '../home/api.ts'
+import { HOME_KEY } from '../home/api.ts'
+import type { Plan, PlanDay } from '../plan/api.ts'
+import type { SupplyRun } from '../shopping/api.ts'
+import { reconcileSavedMealSource } from '../shopping/offline.ts'
 import { archiveDinner, checkRemovals, knownArchived, useArchived, type SendRemoval } from './archived.ts'
 import type { DinnerDetail } from './detail.ts'
 
@@ -16,6 +21,14 @@ export const GROUNDING_POLL_MS = 3000
 export const METHODS = ['stovetop', 'oven', 'crockpot', 'grill', 'other'] as const
 export const DIFFICULTIES = ['easy', 'medium', 'hard'] as const
 export const GROUNDING_STATUSES = ['pending', 'grounded', 'failed', 'manual'] as const
+export const MEAL_SOURCES = ['cook', 'delivery', 'dining_out'] as const
+
+// MEAL_SOURCE_LABEL is how the household reads a dinner's meal source.
+export const MEAL_SOURCE_LABEL = {
+  cook: 'Cook at home',
+  delivery: 'Delivery',
+  dining_out: 'Dining out',
+} as const satisfies Record<MealSource, string>
 
 // PLANNED_DINNER_STATUSES is every status a dinner on a plan day or a Supply
 // run can have now: archived once it was removed from Regulars after the
@@ -25,17 +38,19 @@ export const PLANNED_DINNER_STATUSES = ['suggested', 'quest_log', 'tried', 'regu
 export type Method = (typeof METHODS)[number]
 export type Difficulty = (typeof DIFFICULTIES)[number]
 export type GroundingStatus = (typeof GROUNDING_STATUSES)[number]
+export type MealSource = (typeof MEAL_SOURCES)[number]
 export type PlannedDinnerStatus = (typeof PLANNED_DINNER_STATUSES)[number]
 
 // opensRecipe says whether a dinner on a plan day, Home, a Supply run, the
 // Regulars or the Quest log offers its recipe: only when the server itself just said it is not
-// archived. A status from a read the service worker answered from its cache,
+// archived and it is cooked at home. A status from a read the service worker answered from its cache,
 // or one saved on this device (cached), may be stale — another device may
 // have archived the dinner since — so it offers no recipe, whose detail
-// could be gone; nor does a status not known (null). A read from the server
-// offers it again.
-export function opensRecipe(status: PlannedDinnerStatus | null, cached: boolean): boolean {
-  return !cached && status !== null && status !== 'archived'
+// could be gone; nor does a status not known (null), nor a meal source not
+// known. Delivery and dining out have no recipe. A read from the server
+// offers a cooked dinner again.
+export function opensRecipe(status: PlannedDinnerStatus | null, cached: boolean, mealSource: MealSource | null): boolean {
+  return !cached && status !== null && status !== 'archived' && mealSource === 'cook'
 }
 
 // Regular is the part of a dinner the Regulars screens read. photo_id is
@@ -56,6 +71,7 @@ export type Regular = {
   grounding_status: GroundingStatus
   grounding_error: string | null
   photo_backfill_eligible: boolean
+  meal_source: MealSource
   pending?: true
 }
 
@@ -65,7 +81,13 @@ export type Regular = {
 export type NewRegular = { name: string; recipe_url?: string }
 
 // RegularPatch is a PATCH /api/v1/dinners/{id} body; every field is optional.
-export type RegularPatch = Partial<{ name: string; method: Method; minutes_total: number; difficulty: Difficulty }>
+export type RegularPatch = Partial<{
+  name: string
+  method: Method
+  minutes_total: number
+  difficulty: Difficulty
+  meal_source: MealSource
+}>
 
 // ManualRecipe is a recipe the household types in; the server needs its
 // minutes and method.
@@ -171,6 +193,7 @@ export function parseDinner(where: string, body: unknown): Regular {
       return v
     }),
     photo_backfill_eligible: body.photo_backfill_eligible,
+    meal_source: oneOf(where, 'meal_source', MEAL_SOURCES, body.meal_source),
   }
 }
 
@@ -287,6 +310,7 @@ export function useAddRegular() {
         grounding_status: 'pending',
         grounding_error: null,
         photo_backfill_eligible: false,
+        meal_source: 'cook',
         pending: true,
         cached: false,
       }
@@ -370,8 +394,89 @@ export function useRemoveRegular() {
   })
 }
 
+// supplyRunWithout is run without dinner id's group. An archived run keeps
+// the group it was shopped with. A run that does not have the dinner is
+// left as it is.
+function supplyRunWithout(run: SupplyRun, id: string): SupplyRun {
+  if (run.status === 'archived' || !run.groups.some((group) => group.dinner.id === id)) return run
+  const groups = run.groups.filter((group) => group.dinner.id !== id)
+  let needed = 0
+  let total = 0
+  for (const group of groups) {
+    for (const item of group.items) {
+      total += 1
+      if (item.needed) needed += 1
+    }
+  }
+  return { ...run, groups, needed_count: needed, total_count: total }
+}
+
+// withMealSource is day with dinner id's meal source set. The night stays
+// planned: a designation never clears a cached plan.
+function withMealSource(day: PlanDay, id: string, mealSource: MealSource): PlanDay {
+  if (day.dinner === null || day.dinner.id !== id || day.dinner.meal_source === mealSource) return day
+  return { ...day, dinner: { ...day.dinner, meal_source: mealSource } }
+}
+
+// weeksWhosePlanOmits is the cached weeks whose plan does not list dinnerId.
+// A week not yet read is left out: there is no plan here to judge.
+function weeksWhosePlanOmits(queryClient: QueryClient, dinnerId: string): Set<string> {
+  const weeks = new Set<string>()
+  for (const [key, plan] of queryClient.getQueriesData<Plan | null>({ queryKey: ['plans'] })) {
+    if (queryClient.getQueryState(key)?.status !== 'success') continue
+    const week = key[1]
+    if (typeof week !== 'string') continue
+    if (plan != null && plan.days.some((day) => day.dinner?.id === dinnerId)) continue
+    weeks.add(week)
+  }
+  return weeks
+}
+
+// showMealSource shows dinner id's meal source where that is already known.
+// Setting it back to cook updates a cached plan day, Home and a Supply run
+// in place. Delivery or Dining Out leaves every plan cache as it was: a
+// designated dinner is not cleared off a plan, including a past week. A
+// Supply run saved on this device is reconciled only for a week whose cached
+// plan no longer has the dinner. The dinner's own detail is updated either
+// way. The screens are read again afterwards.
+function showMealSource(queryClient: QueryClient, id: string, mealSource: MealSource) {
+  if (mealSource === 'cook') {
+    queryClient.setQueriesData<Plan | null>({ queryKey: ['plans'] }, (plan) => {
+      if (plan == null || !plan.days.some((day) => day.dinner !== null && day.dinner.id === id)) return plan
+      return { ...plan, days: plan.days.map((day) => withMealSource(day, id, mealSource)) }
+    })
+    queryClient.setQueryData<Home>(HOME_KEY, (home) => {
+      if (home === undefined || home.tonight === null || home.tonight.id !== id || home.tonight.meal_source === mealSource) return home
+      return { ...home, tonight: { ...home.tonight, meal_source: mealSource } }
+    })
+    reconcileSavedMealSource(id, mealSource)
+    queryClient.setQueriesData<SupplyRun | null>({ queryKey: ['shopping'] }, (run) => {
+      if (run == null || !run.groups.some((group) => group.dinner.id === id)) return run
+      return {
+        ...run,
+        groups: run.groups.map((group) =>
+          group.dinner.id === id ? { ...group, dinner: { ...group.dinner, meal_source: mealSource } } : group,
+        ),
+      }
+    })
+  } else {
+    const weeks = weeksWhosePlanOmits(queryClient, id)
+    if (weeks.size > 0) {
+      reconcileSavedMealSource(id, mealSource, weeks)
+      queryClient.setQueriesData<SupplyRun | null>({ queryKey: ['shopping'] }, (run) =>
+        run == null || !weeks.has(run.weekStart) ? run : supplyRunWithout(run, id),
+      )
+    }
+  }
+  queryClient.setQueryData<DinnerDetail>(dinnerDetailKey(id), (dinner) =>
+    dinner === undefined || dinner.meal_source === mealSource ? dinner : { ...dinner, meal_source: mealSource },
+  )
+}
+
 // useEditRegular saves changes to a Regular (PATCH /api/v1/dinners/{id})
-// and shows the server's answer once it is saved.
+// and shows the server's answer once it is saved. A meal-source edit shows
+// that source where showMealSource does, then reads the plan, Home, Supply
+// run and dinner again. A refused designation changes none of those caches.
 export function useEditRegular() {
   const { apiFetch } = useApi()
   const queryClient = useQueryClient()
@@ -379,8 +484,18 @@ export function useEditRegular() {
     mutationKey: REGULARS_MUTATION_KEY,
     mutationFn: async ({ id, patch }: { id: string; patch: RegularPatch }) =>
       parseDinner(`PATCH ${DINNERS_PATH}/{id}`, await apiFetch<unknown>(dinnerPath(id), { method: 'PATCH', body: patch })),
-    onSuccess: (dinner) => replace(queryClient, dinner),
-    onSettled: () => settle(queryClient),
+    onSuccess: (dinner, { patch }) => {
+      replace(queryClient, dinner)
+      if (patch.meal_source !== undefined) showMealSource(queryClient, dinner.id, dinner.meal_source)
+    },
+    onSettled: (_dinner, _error, { id, patch }) => {
+      settle(queryClient)
+      if (patch.meal_source === undefined) return
+      void queryClient.invalidateQueries({ queryKey: ['plans'] })
+      void queryClient.invalidateQueries({ queryKey: HOME_KEY })
+      void queryClient.invalidateQueries({ queryKey: ['shopping'] })
+      void queryClient.invalidateQueries({ queryKey: dinnerDetailKey(id) })
+    },
   })
 }
 

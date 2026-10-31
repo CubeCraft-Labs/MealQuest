@@ -12,7 +12,7 @@ import { ApiError, useApi, type ApiClient, type ApiRead } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { meQueryKey } from '../AuthBootstrap.tsx'
 import { archivedNow, knownArchived, onArchived, useArchived } from '../dinners/archived.ts'
-import { oneOf, PLANNED_DINNER_STATUSES, type PlannedDinnerStatus } from '../dinners/api.ts'
+import { MEAL_SOURCES, oneOf, PLANNED_DINNER_STATUSES, type MealSource, type PlannedDinnerStatus } from '../dinners/api.ts'
 import { settleUnmadePushes } from '../plan/api.ts'
 import type { NetworkStatus } from '../pwa/networkStatus.ts'
 import { HOUSEHOLD_SETTINGS_KEY, type HouseholdSettings } from '../settings/api.ts'
@@ -76,7 +76,7 @@ export type SupplyRunItem = { id: string; name: string; qty: string | null; need
 // dinners carried their status (see savedDinnerStatus), and has not been read
 // again since.
 export type SupplyRunGroup = {
-  dinner: { id: string; name: string; status: PlannedDinnerStatus | null }
+  dinner: { id: string; name: string; status: PlannedDinnerStatus | null; meal_source: MealSource | null }
   date: string
   items: SupplyRunItem[]
 }
@@ -143,7 +143,14 @@ const serverDinnerStatus: DinnerStatus = (where, value) => oneOf(where, 'dinner 
 const savedDinnerStatus: DinnerStatus = (where, value) =>
   value === undefined || value === null ? null : serverDinnerStatus(where, value)
 
-function parseGroup(where: string, body: unknown, dinnerStatus: DinnerStatus): SupplyRunGroup {
+// A Supply run saved by an earlier build may not name a meal source. One
+// not known offers no recipe. A read from the server must name one.
+function mealSource(where: string, value: unknown, allowMissing: boolean): MealSource | null {
+  if ((value === undefined || value === null) && allowMissing) return null
+  return oneOf(where, 'meal_source', MEAL_SOURCES, value)
+}
+
+function parseGroup(where: string, body: unknown, dinnerStatus: DinnerStatus, allowMissingSource: boolean): SupplyRunGroup {
   if (
     !isRecord(body) ||
     !isRecord(body.dinner) ||
@@ -159,6 +166,7 @@ function parseGroup(where: string, body: unknown, dinnerStatus: DinnerStatus): S
       id: body.dinner.id,
       name: body.dinner.name,
       status: dinnerStatus(where, body.dinner.status),
+      meal_source: mealSource(where, body.dinner.meal_source, allowMissingSource),
     },
     date: body.date,
     items: body.items.map((item) => parseItem(where, item)),
@@ -178,10 +186,17 @@ function instant(where: string, field: string, value: unknown): Date | null {
 // parseSupplyRun reads a Supply run the server sent; cached says the service
 // worker answered it.
 export function parseSupplyRun(where: string, weekStart: string, body: unknown, cached: boolean): SupplyRun {
-  return parseRun(where, weekStart, body, serverDinnerStatus, cached)
+  return parseRun(where, weekStart, body, serverDinnerStatus, false, cached)
 }
 
-function parseRun(where: string, weekStart: string, body: unknown, dinnerStatus: DinnerStatus, cached: boolean): SupplyRun {
+function parseRun(
+  where: string,
+  weekStart: string,
+  body: unknown,
+  dinnerStatus: DinnerStatus,
+  allowMissingSource: boolean,
+  cached: boolean,
+): SupplyRun {
   if (
     !isRecord(body) ||
     body.weekStart !== weekStart ||
@@ -199,7 +214,7 @@ function parseRun(where: string, weekStart: string, body: unknown, dinnerStatus:
     sent_to_chat_at: instant(where, 'sent_to_chat_at', body.sent_to_chat_at),
     chat_send_unconfirmed_at: instant(where, 'chat_send_unconfirmed_at', body.chat_send_unconfirmed_at),
     ...parseCounts(where, body),
-    groups: body.groups.map((group) => parseGroup(where, group, dinnerStatus)),
+    groups: body.groups.map((group) => parseGroup(where, group, dinnerStatus, allowMissingSource)),
     cached,
   }
 }
@@ -210,7 +225,7 @@ function parseRun(where: string, weekStart: string, body: unknown, dinnerStatus:
 // dinners' statuses (savedDinnerStatus).
 function savedSupplyRun(weekStart: string): SupplyRun | undefined {
   const saved = savedRun(weekStart)
-  return saved === undefined ? undefined : parseRun(`Saved ${SAVED_KEY}`, weekStart, saved, savedDinnerStatus, true)
+  return saved === undefined ? undefined : parseRun(`Saved ${SAVED_KEY}`, weekStart, saved, savedDinnerStatus, true, true)
 }
 
 // showArchived is run with each dinner the server archived (archived) shown

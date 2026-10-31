@@ -28,9 +28,10 @@ const (
 // PhotoBackfillEligible reports whether a photo backfill grounds r: the
 // condition ListPhotoBackfillDinners lists dinners by, and GroundFailedDinner
 // and RefailDinnerGrounding write under, for one dinner. The dinner is
-// unarchived, failed, with no photo and no pasted recipe_url.
+// cooked at home, unarchived, failed, with no photo and no pasted recipe_url.
 func PhotoBackfillEligible(r db.Dinner) bool {
-	return r.Status != StatusArchived &&
+	return Cooked(r.MealSource) &&
+		r.Status != StatusArchived &&
 		r.GroundingStatus == GroundingFailed &&
 		!r.PhotoID.Valid &&
 		!r.RecipeUrl.Valid

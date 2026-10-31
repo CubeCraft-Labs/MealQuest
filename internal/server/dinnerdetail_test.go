@@ -117,6 +117,7 @@ func TestGetDinnerGroundedSideQuest(t *testing.T) {
 		Source:          &dinners.Source{SiteName: str("Curry House"), URL: str(curryPage)},
 		GroundingStatus: "grounded",
 		WhyPicked:       str(reason),
+		MealSource:      dinners.MealSourceCook,
 	}
 	if !reflect.DeepEqual(got, want) {
 		gj, _ := json.Marshal(got)
@@ -159,6 +160,7 @@ func TestGetDinnerManualRegular(t *testing.T) {
 		Ingredients:     []dinners.Ingredient{{RawText: "1 lb beef"}, {RawText: "1 can beans"}},
 		Steps:           []string{"Brown.", "Simmer."},
 		GroundingStatus: "manual",
+		MealSource:      dinners.MealSourceCook,
 	}
 	if !reflect.DeepEqual(got, want) {
 		gj, _ := json.Marshal(got)
@@ -330,9 +332,9 @@ func TestGetDinnerSourceURLOnlyWhenSafe(t *testing.T) {
 	}
 }
 
-// siteNameMigration is migration 0020, which clears the host-shaped site
+// siteNameMigration is migration 0022, which clears the host-shaped site
 // names stored before extraction stopped storing hosts.
-const siteNameMigration = "0020_site_name_from_page.sql"
+const siteNameMigration = "0022_site_name_from_page.sql"
 
 // applySiteNameMigration runs siteNameMigration again over rows a test
 // stored as the code before it did, as upgrading a database holding them
@@ -354,7 +356,7 @@ func applySiteNameMigration(t *testing.T, st *store.Store) {
 // link; a page naming no site stores no name, and is named by its link's
 // host only when the link is shown — so over a link with a token nothing
 // of the link reaches the client. A name stored before extraction stopped
-// storing hosts is read by the same rule once migration 0020 has cleared
+// storing hosts is read by the same rule once migration 0022 has cleared
 // it if it could be a host.
 func TestGetDinnerSiteNameProvenance(t *testing.T) {
 	t.Parallel()
@@ -435,7 +437,7 @@ func TestGetDinnerSiteNameProvenance(t *testing.T) {
 
 	// Rows as extraction stored them before it stopped storing hosts: the
 	// token-bearing link's own host, and a redirect's host under a page
-	// that named its site, are cleared by 0020; a page's own name stays.
+	// that named its site, are cleared by 0022; a page's own name stays.
 	const redirectHost = "redirect-token-ghi789.example.net"
 	for recipeID, site := range map[string]string{bareRecipe: bareToken + ".example.com", namedRecipe: redirectHost, ordinaryRecipe: "Green Kitchen"} {
 		if _, err := e.st.Writer.Exec(`UPDATE recipes SET site_name = ? WHERE id = ?`, site, recipeID); err != nil {

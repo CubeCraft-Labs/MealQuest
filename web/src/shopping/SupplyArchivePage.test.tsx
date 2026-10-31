@@ -316,7 +316,7 @@ const FROZEN = {
   total_count: 2,
   groups: [
     {
-      dinner: { id: 'd1', name: 'Friday pizza', status: 'regular' },
+      dinner: { id: 'd1', name: 'Friday pizza', status: 'regular', meal_source: 'cook' },
       date: '2026-10-02',
       items: [
         { id: 'i1', name: 'Pizza dough', qty: '2 balls', needed: true },
@@ -336,7 +336,7 @@ const CURRENT = {
   status: 'current',
   groups: [
     {
-      dinner: { id: 'd2', name: 'Beef tacos', status: 'regular' },
+      dinner: { id: 'd2', name: 'Beef tacos', status: 'regular', meal_source: 'cook' },
       date: '2026-10-05',
       items: [
         { id: 'i3', name: 'Corn tortillas', qty: '12', needed: true },

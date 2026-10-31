@@ -96,12 +96,12 @@ Evidence form: server-side API responses and timestamps for the steps inside
 the app, plus the owner's explicit confirmations for the three steps that
 land outside it — the 7 calendar events, the Google Chat message and the
 push notification on the phone. The owner's confirmation quotes are recorded
-on Maestro task `0544e318-9b5f-4264-9884-1ec8cb63fd49`.
+on Maestro task `0544e318-9b5f-4264-9884-1ec8cb63fd49`. Those confirmations
+are the production-smoke evidence. The owner accepted them as the
+disposition of this smoke on 2026-10-31.
 
-**Deviation: phone screenshots were not captured for any step.** The task
-closed with the owner's explicit confirmations standing in for them. No
-screenshot evidence exists for this smoke; whether the owner supplies
-screenshots or confirms this disposition is pending the owner's decision.
+**Phone screenshots were not captured.** No screenshot evidence exists for
+this smoke, and none is claimed.
 
 ## Final restore drill — 2026-10-12
 

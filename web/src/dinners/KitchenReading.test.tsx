@@ -26,6 +26,7 @@ function detail(overrides: Record<string, unknown> = {}) {
     difficulty: 'easy',
     cuisine: 'korean',
     is_favorite: false,
+    meal_source: 'cook',
     photo_urls: null,
     ingredients: [
       { name: 'Ground beef', qty: '1', unit: 'lb', note: null, raw_text: '1 lb ground beef' },
@@ -59,8 +60,8 @@ function planBody(weekStart: string, ...bowlsOn: number[]) {
       date: new Date(start + i * 86_400_000).toISOString().slice(0, 10),
       dinner:
         bowlsOn.includes(i)
-          ? { id: 'd1', name: 'Korean beef bowls', status: 'quest_log', photo: null, minutes: 30, method: 'stovetop' }
-          : { id: `p${i}`, name: `Dinner ${i}`, status: 'regular', photo: null, minutes: 30, method: 'stovetop' },
+          ? { id: 'd1', name: 'Korean beef bowls', status: 'quest_log', photo: null, minutes: 30, method: 'stovetop', meal_source: 'cook' }
+          : { id: `p${i}`, name: `Dinner ${i}`, status: 'regular', photo: null, minutes: 30, method: 'stovetop', meal_source: 'cook' },
       is_new: bowlsOn.includes(i),
       start_by: null,
     })),

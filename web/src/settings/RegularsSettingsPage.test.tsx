@@ -132,6 +132,7 @@ const TACOS_RECIPE = {
   difficulty: 'easy',
   cuisine: null,
   is_favorite: true,
+  meal_source: 'cook',
   photo_urls: null,
   ingredients: [
     { name: 'Ground beef', qty: '1', unit: 'lb', note: null, raw_text: '1 lb ground beef' },
@@ -427,6 +428,54 @@ describe('RegularsSettingsPage', () => {
     await waitFor(() => expect(screen.queryByText('Chicken enchiladas')).not.toBeInTheDocument())
   })
 
+  it('sets a Regular to Delivery and back to cooked, with no recipe or photo', async () => {
+    const delivery = dinnerBody('d8', 'Pizza delivery', {
+      method: 'oven',
+      minutes_total: 20,
+      photo_url: '/media/photos/p8-400.jpg',
+      meal_source: 'delivery',
+    })
+    const server = stubServer([delivery], {
+      'PATCH /api/v1/dinners/d8': (body) => {
+        const edited = { ...delivery, ...(body as object) }
+        server.regulars = [edited]
+        return jsonResponse(200, edited)
+      },
+    })
+    await renderPage()
+
+    const item = within(row('Pizza delivery'))
+    expect(item.getByText('Delivery')).toBeInTheDocument()
+    expect(item.queryByRole('button', { name: /^Pizza delivery/ })).not.toBeInTheDocument()
+    expect(item.queryByRole('link')).not.toBeInTheDocument()
+    expect(item.getByRole('img', { name: 'Pizza delivery' }).tagName).toBe('DIV')
+
+    editRow('Pizza delivery')
+    const sheet = within(screen.getByRole('dialog', { name: 'Edit Pizza delivery' }))
+    expect(sheet.getByRole('radio', { name: 'Delivery' })).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(sheet.getByRole('radio', { name: 'Cook at home' }))
+    fireEvent.click(sheet.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(sent(server.fetchMock)).toEqual([
+      { request: 'PATCH /api/v1/dinners/d8', body: { meal_source: 'cook' } },
+    ])
+    expect(within(row('Pizza delivery')).getByRole('button', { name: /^Pizza delivery/ })).toBeInTheDocument()
+    expect(within(row('Pizza delivery')).queryByText('Delivery')).not.toBeInTheDocument()
+
+    editRow('Pizza delivery')
+    const again = within(screen.getByRole('dialog', { name: 'Edit Pizza delivery' }))
+    fireEvent.click(again.getByRole('radio', { name: 'Dining out' }))
+    fireEvent.click(again.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(sent(server.fetchMock)[1]).toEqual({
+      request: 'PATCH /api/v1/dinners/d8',
+      body: { meal_source: 'dining_out' },
+    })
+    expect(within(row('Pizza delivery')).getByText('Dining out')).toBeInTheDocument()
+    expect(within(row('Pizza delivery')).queryByRole('button', { name: /^Pizza delivery/ })).not.toBeInTheDocument()
+  })
+
   it('edits a Regular: name, method, minutes and difficulty', async () => {
     const server = stubServer([TACOS], {
       'PATCH /api/v1/dinners/d1': (body) => {
@@ -518,8 +567,8 @@ describe('RegularsSettingsPage', () => {
       needed_count: 2,
       total_count: 2,
       groups: [
-        { dinner: { id: 'd1', name: 'Beef tacos', status: 'regular' }, date: '2026-10-05', day: 'Monday', items: [{ id: 'i1', name: 'Ground beef', qty: '1 lb', needed: true }] },
-        { dinner: { id: 'd4', name: 'Pot roast', status: 'regular' }, date: '2026-10-06', day: 'Tuesday', items: [{ id: 'i2', name: 'Chuck roast', qty: '3 lb', needed: true }] },
+        { dinner: { id: 'd1', name: 'Beef tacos', status: 'regular', meal_source: 'cook' }, date: '2026-10-05', day: 'Monday', items: [{ id: 'i1', name: 'Ground beef', qty: '1 lb', needed: true }] },
+        { dinner: { id: 'd4', name: 'Pot roast', status: 'regular', meal_source: 'cook' }, date: '2026-10-06', day: 'Tuesday', items: [{ id: 'i2', name: 'Chuck roast', qty: '3 lb', needed: true }] },
       ],
     }
 

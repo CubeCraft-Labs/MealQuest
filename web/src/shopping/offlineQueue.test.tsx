@@ -97,7 +97,7 @@ function stubServer(
     ...counts(week),
     groups: [
       {
-        dinner: { id: week === '2026-10-05' ? 'd0' : 'd1', name: week === '2026-10-05' ? 'Beef tacos' : 'Chicken curry', status: 'regular' },
+        dinner: { id: week === '2026-10-05' ? 'd0' : 'd1', name: week === '2026-10-05' ? 'Beef tacos' : 'Chicken curry', status: 'regular', meal_source: 'cook' },
         date: week,
         items: itemsOf(week).map((item) => ({ ...item, needed: needed.get(item.id)! })),
       },

@@ -1,4 +1,4 @@
--- 0019_shopping_group_frozen_name: a Supply run frozen into the Supply
+-- 0021_shopping_group_frozen_name: a Supply run frozen into the Supply
 -- archive keeps the names its dinners had when it was frozen. A dinner can
 -- be renamed at any time, so a frozen list reads each group's dinner name
 -- from frozen_dinner_name, never from the dinner, as 0012 does for a Pass.

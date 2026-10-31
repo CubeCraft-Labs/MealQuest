@@ -55,7 +55,7 @@ export type BatchResult = { batch_id: string; stage: string; suggestion_ids: str
 // QuestLogDinner is a dinner in the Quest log, as the Quest log sheet lists
 // it: photo, name, difficulty and minutes, with the method a swap carries
 // onto the plan.
-export type QuestLogDinner = Pick<Regular, 'id' | 'name' | 'photo_id' | 'difficulty' | 'method' | 'minutes_total'> & {
+export type QuestLogDinner = Pick<Regular, 'id' | 'name' | 'photo_id' | 'difficulty' | 'method' | 'minutes_total' | 'meal_source'> & {
   cached: boolean
 }
 
@@ -137,8 +137,8 @@ export function useQuestLog() {
       const { body, cached } = await apiRead<unknown>(QUEST_LOG_PATH)
       if (!isRecord(body) || !Array.isArray(body.dinners)) throw new Error(`${where}: response has no dinners list`)
       return body.dinners.map((dinner) => {
-        const { id, name, photo_id, difficulty, method, minutes_total } = parseDinner(where, dinner)
-        return { id, name, photo_id, difficulty, method, minutes_total, cached }
+        const { id, name, photo_id, difficulty, method, minutes_total, meal_source } = parseDinner(where, dinner)
+        return { id, name, photo_id, difficulty, method, minutes_total, meal_source, cached }
       })
     },
     select: useCallback(
@@ -284,6 +284,7 @@ export function useDecide() {
               difficulty: quest.difficulty,
               method: null,
               minutes_total: null,
+              meal_source: 'cook',
               cached: true,
             }),
       )

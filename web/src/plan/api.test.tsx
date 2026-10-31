@@ -56,7 +56,7 @@ function planBody(changes: Record<number, { id: string; name: string; is_new?: b
           id: change?.id ?? `d${i}`,
           name: change?.name ?? `Dinner ${i}`,
           status: change?.is_new ? 'quest_log' : 'regular',
-          photo: null, minutes: null, method: null as string | null, origin: 'regular' },
+          photo: null, minutes: null, method: null as string | null, origin: 'regular', meal_source: 'cook' },
         is_new: change?.is_new ?? false,
         start_by: change?.start_by ?? null,
       }
@@ -105,8 +105,8 @@ async function renderSwaps() {
   return { ...hook, queryClient, plan: () => queryClient.getQueryData<Plan>(planKey(WEEK))! }
 }
 
-const ORZO = { date: '2026-10-09', dinner: { id: 'q1', name: 'Lemon orzo', status: 'quest_log' as const, photo_id: undefined, minutes: null, method: null }, fromQuestLog: true }
-const FISH = { date: '2026-10-05', dinner: { id: 'r1', name: 'Fish tacos', status: 'regular' as const, photo_id: undefined, minutes: null, method: null }, fromQuestLog: false }
+const ORZO = { date: '2026-10-09', dinner: { id: 'q1', name: 'Lemon orzo', status: 'quest_log' as const, photo_id: undefined, minutes: null, method: null, meal_source: 'cook' as const }, fromQuestLog: true }
+const FISH = { date: '2026-10-05', dinner: { id: 'r1', name: 'Fish tacos', status: 'regular' as const, photo_id: undefined, minutes: null, method: null, meal_source: 'cook' as const }, fromQuestLog: false }
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -134,7 +134,7 @@ describe('usePlan', () => {
     const plan = await renderPlan()
 
     expect(plan.data?.calendar_synced_at).toEqual(new Date('2026-10-07T15:58:00Z'))
-    expect(plan.data?.days.map((day) => day.dinner.method)).toEqual([null, null, 'crockpot', null, null, null, null])
+    expect(plan.data?.days.map((day) => day.dinner?.method)).toEqual([null, null, 'crockpot', null, null, null, null])
   })
 
   it("reads each dinner's status now, archived for one removed from Regulars after the plan was made", async () => {
@@ -143,7 +143,7 @@ describe('usePlan', () => {
     stubServer({ [`GET ${PLAN}`]: () => jsonResponse(200, body) })
     const plan = await renderPlan()
 
-    expect(plan.data?.days.map((day) => day.dinner.status)).toEqual([
+    expect(plan.data?.days.map((day) => day.dinner?.status)).toEqual([
       'regular',
       'archived',
       'regular',
@@ -201,16 +201,16 @@ describe('useSwapDay', () => {
 
     act(() => result.current.swap.mutate(ORZO))
     act(() => result.current.swap.mutate(FISH))
-    await waitFor(() => expect(plan().days[0]!.dinner.name).toBe('Fish tacos'))
+    await waitFor(() => expect(plan().days[0]!.dinner?.name).toBe('Fish tacos'))
 
     // Whichever reply settles, Monday stays swapped: Friday's plan, the
     // earlier one, never lands over it.
     for (const [settled, day] of order.entries()) {
       await act(async () => replies[day].send(jsonResponse(200, day === 'friday' ? fridayPlan : bothPlan)))
       await waitFor(() => expect(queryClient.isMutating()).toBe(1 - settled))
-      expect(plan().days[0]!.dinner.name).toBe('Fish tacos')
+      expect(plan().days[0]!.dinner?.name).toBe('Fish tacos')
     }
-    expect(plan().days.map((day) => day.dinner.name)).toEqual(bothPlan.days.map((day) => day.dinner.name))
+    expect(plan().days.map((day) => day.dinner?.name)).toEqual(bothPlan.days.map((day) => day.dinner.name))
   })
 
   it("does not take an earlier swap's failure for the week's", async () => {
@@ -224,7 +224,7 @@ describe('useSwapDay', () => {
 
     act(() => result.current.swap.mutate(ORZO))
     act(() => result.current.swap.mutate(FISH))
-    await waitFor(() => expect(plan().days[0]!.dinner.name).toBe('Fish tacos'))
+    await waitFor(() => expect(plan().days[0]!.dinner?.name).toBe('Fish tacos'))
     await act(async () => friday.send(errorResponse(409, 'dinner_not_plannable')))
 
     await waitFor(() => expect(result.current.swap.pending).toBe(false))
@@ -242,13 +242,21 @@ describe('useSwapDay', () => {
     const { result, plan, queryClient } = await renderSwaps()
 
     act(() => result.current.swap.mutate(ORZO))
-    await waitFor(() => expect(plan().days[4]).toEqual({ date: '2026-10-09', dinner: ORZO.dinner, is_new: true, start_by: null }))
+    await waitFor(() =>
+      expect(plan().days[4]).toEqual({ date: '2026-10-09', dinner: ORZO.dinner, manual_label: null, is_new: true, start_by: null }),
+    )
     read = planBody({ 4: { id: 'q1', name: 'Lemon orzo', is_new: true, start_by: '2026-10-09T14:00:00-04:00' } })
     await act(() => result.current.plan.refetch())
     await act(async () => friday.send(errorResponse(409, 'dinner_not_plannable')))
 
     await waitFor(() => expect(queryClient.isMutating()).toBe(0))
-    expect(plan().days[4]).toEqual({ date: '2026-10-09', dinner: ORZO.dinner, is_new: true, start_by: '2026-10-09T14:00:00-04:00' })
+    expect(plan().days[4]).toEqual({
+      date: '2026-10-09',
+      dinner: ORZO.dinner,
+      manual_label: null,
+      is_new: true,
+      start_by: '2026-10-09T14:00:00-04:00',
+    })
     expect(result.current.swap.failed?.error.message).toBe('dinner_not_plannable message')
   })
 
@@ -263,7 +271,7 @@ describe('useSwapDay', () => {
 
     // The read finds Friday lemon orzo, field for field the day the swap
     // wrote: the server has it, whatever this swap's PUT is answered with.
-    const swapped = { date: '2026-10-09', dinner: ORZO.dinner, is_new: true, start_by: null }
+    const swapped = { date: '2026-10-09', dinner: ORZO.dinner, manual_label: null, is_new: true, start_by: null }
     act(() => result.current.swap.mutate(ORZO))
     await waitFor(() => expect(plan().days[4]).toEqual(swapped))
     read = planBody({ 4: { id: 'q1', name: 'Lemon orzo', is_new: true } })
@@ -287,14 +295,14 @@ describe('useSwapDay', () => {
 
     act(() => result.current.swap.mutate(ORZO))
     act(() => result.current.swap.mutate(FISH))
-    await waitFor(() => expect(plan().days[0]!.dinner.name).toBe('Fish tacos'))
+    await waitFor(() => expect(plan().days[0]!.dinner?.name).toBe('Fish tacos'))
     await act(async () => friday.send(errorResponse(500, 'internal')))
 
-    await waitFor(() => expect(plan().days[4]!.dinner.name).toBe('Dinner 4'))
-    expect(plan().days[0]!.dinner.name).toBe('Fish tacos')
+    await waitFor(() => expect(plan().days[4]!.dinner?.name).toBe('Dinner 4'))
+    expect(plan().days[0]!.dinner?.name).toBe('Fish tacos')
     await act(async () => monday.send(errorResponse(500, 'internal')))
     await waitFor(() => expect(queryClient.isMutating()).toBe(0))
-    expect(plan().days.map((day) => day.dinner.name)).toEqual(planBody().days.map((day) => day.dinner.name))
+    expect(plan().days.map((day) => day.dinner?.name)).toEqual(planBody().days.map((day) => day.dinner.name))
   })
 
   it('reads the plan again when the dinner is already on another day of the week, and sends the swap only once', async () => {
@@ -309,8 +317,8 @@ describe('useSwapDay', () => {
     read = planBody({ 2: { id: 'q1', name: 'Lemon orzo', is_new: true } })
     act(() => result.current.swap.mutate(ORZO))
 
-    await waitFor(() => expect(plan().days[2]!.dinner.name).toBe('Lemon orzo'))
-    expect(plan().days[4]!.dinner.name).toBe('Dinner 4')
+    await waitFor(() => expect(plan().days[2]!.dinner?.name).toBe('Lemon orzo'))
+    expect(plan().days[4]!.dinner?.name).toBe('Dinner 4')
     await waitFor(() => expect(queryClient.isMutating()).toBe(0))
     expect(result.current.swap.failed?.error.message).toBe('dinner_already_planned message')
     const sent = vi.mocked(fetch).mock.calls.map(([input, init]) => `${init?.method ?? 'GET'} ${String(input)}`)
@@ -620,7 +628,7 @@ describe('week mutations', () => {
 describe('showArchived', () => {
   it('shows each dinner the server archived archived, whatever the read said, and leaves a plan without one as it is', () => {
     const plan = parsePlan(`GET ${PLAN}`, WEEK, planBody({ 2: { id: 'd1', name: 'Dinner 1' } }), false)
-    const statuses = (shown: Plan | null) => shown!.days.map((day) => `${day.dinner.id} ${day.dinner.status}`)
+    const statuses = (shown: Plan | null) => shown!.days.map((day) => `${day.dinner!.id} ${day.dinner!.status}`)
 
     expect(statuses(showArchived(plan, new Set(['d1'])))).toEqual([
       'd0 regular',

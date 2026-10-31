@@ -83,17 +83,37 @@ func ListReady(week store.LocalDate, needed, dinners int) notify.Event {
 	}
 }
 
+// ManualNightReminder is the day_of_reminder event of a one-off night
+// named label planned on date. It names the label and opens the week's
+// plan. It offers no recipe and no dinner. It carries label so a queued
+// reminder can be suppressed once that night's label changes or the night
+// is cleared.
+func ManualNightReminder(date store.LocalDate, label string) notify.Event {
+	week := household.WeekStart(date)
+	return notify.Event{
+		Type:        notify.DayOfReminder,
+		Key:         string(notify.DayOfReminder) + ":" + date.String(),
+		Title:       "Tonight: " + label,
+		URL:         notify.PlanPath(week),
+		Week:        week,
+		ManualLabel: label,
+	}
+}
+
 // DayOfReminder is the day_of_reminder event of the dinner dinnerID, named
-// name, planned on date. A dinner with a recipe (viewable) is "Tonight:
-// Tacos · Recipe →", a title carrying its own call to action, opening its
-// recipe. One archived since it was planned has no recipe: it is "Tonight:
-// Tacos" with notify.ArchivedBody, opening the week's plan, and offers no recipe.
+// name, planned on date. It carries dinnerID whether or not it offers a
+// recipe, so a queued reminder can be suppressed once that dinner leaves
+// the date. A dinner with a recipe (viewable) is "Tonight: Tacos · Recipe →",
+// a title carrying its own call to action, opening its recipe. One archived
+// since it was planned has no recipe: it is "Tonight: Tacos" with
+// notify.ArchivedBody, opening the week's plan, and offers no recipe.
 func DayOfReminder(date store.LocalDate, dinnerID, name string, viewable bool) notify.Event {
 	week := household.WeekStart(date)
 	ev := notify.Event{
-		Type: notify.DayOfReminder,
-		Key:  string(notify.DayOfReminder) + ":" + date.String(),
-		Week: week,
+		Type:            notify.DayOfReminder,
+		Key:             string(notify.DayOfReminder) + ":" + date.String(),
+		Week:            week,
+		PlannedDinnerID: dinnerID,
 	}
 	if !viewable {
 		ev.Title = "Tonight: " + name
@@ -107,21 +127,43 @@ func DayOfReminder(date store.LocalDate, dinnerID, name string, viewable bool) n
 	return ev
 }
 
+// UncookedReminder is the day-of reminder for a Delivery or Dining Out
+// dinner dinnerID, named name, planned on date: it names the dinner, carries
+// dinnerID and offers no recipe. An unknown meal source is an error.
+func UncookedReminder(date store.LocalDate, dinnerID, name, mealSource string) (notify.Event, error) {
+	body, err := notify.UncookedBody(mealSource)
+	if err != nil {
+		return notify.Event{}, err
+	}
+	week := household.WeekStart(date)
+	return notify.Event{
+		Type:            notify.DayOfReminder,
+		Key:             string(notify.DayOfReminder) + ":" + date.String(),
+		Title:           "Tonight: " + name,
+		Body:            body,
+		URL:             notify.PlanPath(week),
+		Week:            week,
+		PlannedDinnerID: dinnerID,
+	}, nil
+}
+
 // StartReminder is the day_of_reminder event, keyed
 // day_of_reminder:start:{date}, reminding the household to start the
 // crock-pot dinner dinnerID, named name and planned on date, by startBy,
 // a time in the household zone: "Start the crock pot by 9:30 am". It opens
 // the dinner's recipe when it has one (viewable), and the week's plan when
-// the dinner was archived since it was planned.
+// the dinner was archived since it was planned. It carries dinnerID either
+// way.
 func StartReminder(date store.LocalDate, dinnerID, name string, startBy time.Time, viewable bool) notify.Event {
 	week := household.WeekStart(date)
 	ev := notify.Event{
-		Type:  notify.DayOfReminder,
-		Key:   string(notify.DayOfReminder) + ":start:" + date.String(),
-		Title: "Start the crock pot by " + startBy.Format("3:04 pm"),
-		Body:  name,
-		URL:   notify.PlanPath(week),
-		Week:  week,
+		Type:            notify.DayOfReminder,
+		Key:             string(notify.DayOfReminder) + ":start:" + date.String(),
+		Title:           "Start the crock pot by " + startBy.Format("3:04 pm"),
+		Body:            name,
+		URL:             notify.PlanPath(week),
+		Week:            week,
+		PlannedDinnerID: dinnerID,
 	}
 	if viewable {
 		ev.URL = notify.RecipePath(dinnerID)

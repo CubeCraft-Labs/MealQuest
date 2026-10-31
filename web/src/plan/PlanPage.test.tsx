@@ -47,6 +47,7 @@ function planBody(status: string, names = NAMES) {
         minutes: i === 2 ? 240 : 30,
         method: i === 2 ? 'crockpot' : 'stovetop',
         origin: i === 2 || i === 5 ? 'side_quest' : 'regular',
+        meal_source: 'cook',
       },
       is_new: i === 2 || i === 5,
       start_by: i === 2 ? '2026-10-07T13:30:00-04:00' : null,
@@ -119,6 +120,7 @@ function dinner(id: string, name: string, difficulty: string | null, minutes: nu
     grounding_status: 'grounded',
     grounding_error: null,
     photo_backfill_eligible: false,
+    meal_source: 'cook',
   }
 }
 
@@ -142,6 +144,7 @@ const PIZZA_RECIPE = {
   difficulty: 'easy',
   cuisine: null,
   is_favorite: false,
+  meal_source: 'cook',
   photo_urls: null,
   ingredients: [
     { name: 'Pizza dough', qty: '1', unit: 'lb', note: null, raw_text: '1 lb pizza dough' },
@@ -1525,6 +1528,94 @@ describe('PlanPage', () => {
   })
 })
 
+describe('manual night', () => {
+  const SATURDAY = `${THIS_WEEK}/days/2026-10-10`
+
+  function withSaturday(day: Record<string, unknown>) {
+    const body = planBody('draft')
+    body.days[5] = { ...body.days[5]!, ...day } as (typeof body.days)[number]
+    return body
+  }
+
+  it('sets a day to a one-off name from the swap sheet', async () => {
+    let answer!: (response: Response) => void
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      ...lists,
+      [`PUT ${SATURDAY}`]: () => new Promise<Response>((resolve) => (answer = resolve)),
+    })
+    await renderPage()
+
+    fireEvent.click(within(await waitFor(() => tile('SAT · NEW'))).getByRole('button'))
+    const sheet = await screen.findByRole('dialog', { name: 'Swap Saturday' })
+    expect(within(sheet).getByText('Replaces Korean beef bowls')).toBeInTheDocument()
+    fireEvent.change(within(sheet).getByRole('textbox', { name: 'One night only' }), { target: { value: '  mummy dogs  ' } })
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Use this name' }))
+
+    await waitFor(() => expect(puts(fetchMock)).toEqual([`${SATURDAY} {"manual_label":"mummy dogs"}`]))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(within(tile('SAT')).getByText('mummy dogs')).toBeInTheDocument()
+
+    await act(async () => answer(jsonResponse(200, withSaturday({ dinner: null, manual_label: 'mummy dogs', is_new: false, start_by: null }))))
+    const saturday = tile('SAT')
+    expect(within(saturday).getByText('mummy dogs')).toBeInTheDocument()
+    expect(within(saturday).queryByRole('img')).not.toBeInTheDocument()
+    expect(within(saturday).queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  it('shows a one-off night as plain text, then replaces it and clears it', async () => {
+    mockViewport(1440)
+    const manual = withSaturday({ dinner: null, manual_label: 'mummy dogs', is_new: false, start_by: null })
+    const replaced = planBody('draft')
+    replaced.days[5] = {
+      ...replaced.days[5]!,
+      dinner: { ...replaced.days[5]!.dinner, id: 'r1', name: 'Fish tacos', status: 'regular' },
+      is_new: false,
+      start_by: null,
+    }
+    const cleared = withSaturday({ dinner: null, manual_label: null, is_new: false, start_by: null })
+    let mode: 'manual' | 'dinner' | 'clear' = 'manual'
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, mode === 'manual' ? manual : mode === 'dinner' ? replaced : cleared),
+      ...lists,
+      [`PUT ${SATURDAY}`]: () => jsonResponse(200, mode === 'dinner' ? replaced : cleared),
+    })
+    await renderPage()
+
+    const week = () => screen.getByRole('list', { name: 'Dinners this week' })
+    const saturday = () => within(week()).getByRole('listitem', { name: 'Saturday' })
+    expect(await within(await waitFor(() => saturday())).findByText('mummy dogs')).toBeInTheDocument()
+    expect(within(saturday()).queryByRole('img')).not.toBeInTheDocument()
+    expect(within(saturday()).queryByRole('link')).not.toBeInTheDocument()
+    expect(within(saturday()).queryByRole('button', { name: 'mummy dogs' })).not.toBeInTheDocument()
+    expect(within(saturday()).queryByText('Regular')).not.toBeInTheDocument()
+    expect(within(saturday()).queryByText('Side quest')).not.toBeInTheDocument()
+
+    fireEvent.click(within(saturday()).getByRole('button', { name: 'Swap Saturday' }))
+    const sheet = await screen.findByRole('dialog', { name: 'Swap Saturday' })
+    expect(within(sheet).getByText('Replaces mummy dogs')).toBeInTheDocument()
+    fireEvent.click(await within(sheet).findByRole('radio', { name: 'Regulars · 2' }))
+    mode = 'dinner'
+    fireEvent.click(await within(sheet).findByRole('button', { name: /Fish tacos/ }))
+    await waitFor(() => expect(puts(fetchMock)).toEqual([`${SATURDAY} {"dinner_id":"r1"}`]))
+    expect(await within(saturday()).findByRole('button', { name: 'Fish tacos' })).toBeInTheDocument()
+
+    fireEvent.click(within(saturday()).getByRole('button', { name: 'Swap Saturday' }))
+    mode = 'clear'
+    fireEvent.click(await within(await screen.findByRole('dialog', { name: 'Swap Saturday' })).findByRole('button', { name: 'Clear this night' }))
+    await waitFor(() => expect(puts(fetchMock)).toEqual([`${SATURDAY} {"dinner_id":"r1"}`, `${SATURDAY} {"clear":true}`]))
+    expect(await within(saturday()).findByText('Nothing planned')).toBeInTheDocument()
+    expect(within(saturday()).queryByRole('link')).not.toBeInTheDocument()
+    expect(within(saturday()).queryByRole('img')).not.toBeInTheDocument()
+  })
+})
+
+function puts(fetchMock: Mock<typeof fetch>) {
+  return fetchMock.mock.calls
+    .filter(([, init]) => init?.method === 'PUT')
+    .map(([input, init]) => `${String(input)} ${String(init?.body)}`)
+}
+
 describe.each([
   { width: 768, layout: 'tablet', photoHeight: '96px', nameSize: '16px' },
   { width: 1180, layout: 'tablet', photoHeight: '96px', nameSize: '16px' },
@@ -2459,7 +2550,7 @@ describe('duration', () => {
 })
 
 describe('cooking', () => {
-  const dinner = { id: 'd1', name: 'Tikka masala', status: 'regular' as const, photo_id: undefined }
+  const dinner = { id: 'd1', name: 'Tikka masala', status: 'regular' as const, photo_id: undefined, minutes: null, method: null, meal_source: 'cook' as const }
   it.each([
     [{ method: 'crockpot' as const, minutes: 360 }, 'Crock pot · 6\u00a0hr'],
     [{ method: 'crockpot' as const, minutes: null }, 'Crock pot'],

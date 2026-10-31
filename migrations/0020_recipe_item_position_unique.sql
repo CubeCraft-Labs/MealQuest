@@ -1,4 +1,4 @@
--- 0018_recipe_item_position_unique: position is the only record of recipe
+-- 0020_recipe_item_position_unique: position is the only record of recipe
 -- order, so a recipe never has two ingredients or two steps at one
 -- position. Writers replace a recipe's items whole, numbered from 0, and
 -- the detail read orders by position alone. A database already holding a

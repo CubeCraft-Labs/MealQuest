@@ -1,4 +1,4 @@
--- 0020_site_name_from_page: recipes.site_name now holds only the name a
+-- 0022_site_name_from_page: recipes.site_name now holds only the name a
 -- recipe page gives its site (its publisher's name or og:site_name), and is
 -- null when the page names none; a client is credited with the link's host
 -- only when dinners.SourceOf finds the link safe to show. Before this, a

@@ -62,7 +62,7 @@ func putNotificationSettings(logger *slog.Logger, svc *household.SettingsService
 			writeError(w, r, logger, http.StatusInternalServerError, "internal", "internal error")
 			return
 		}
-		body, err := decodePatch[notificationsBody](http.MaxBytesReader(w, r.Body, maxSettingsBody))
+		body, err := decodePatch[notificationsBody](http.MaxBytesReader(w, r.Body, MaxSettingsBody))
 		if err != nil {
 			writeError(w, r, logger, http.StatusBadRequest, "invalid_request", err.Error())
 			return

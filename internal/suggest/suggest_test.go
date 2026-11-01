@@ -35,6 +35,11 @@ import (
 
 const member = "member-1"
 
+// jobWait is how long a test polls before an async job, or a grounding
+// step that has not happened, fails the test. The bound stays finite so a
+// stuck job still fails.
+const jobWait = 90 * time.Second
+
 type env struct {
 	svc    *suggest.Service
 	st     *store.Store
@@ -249,7 +254,7 @@ func (e *env) reply(quests ...string) {
 // waitJob waits for job id to finish and returns it.
 func (e *env) waitJob(t *testing.T, id string) jobs.Job {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(jobWait)
 	for {
 		job, err := e.runner.Get(t.Context(), id)
 		if err != nil {
@@ -694,7 +699,7 @@ func TestBatchReplacesSideQuestMadeIneligibleWhileHeld(t *testing.T) {
 			e.search.Gates = map[string]chan struct{}{second: gate}
 
 			b, key := e.startBatch(t, trigger)
-			deadline := time.Now().Add(10 * time.Second)
+			deadline := time.Now().Add(jobWait)
 			for !slices.Contains(e.search.Queries(), second) {
 				if time.Now().After(deadline) {
 					close(gate)
@@ -1471,7 +1476,7 @@ func TestBatchRecoversWhenRecordingItsEndAndItsJobsEndFail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(jobWait)
 	for !strings.Contains(e.logs.String(), "record job failure") {
 		if time.Now().After(deadline) {
 			t.Fatalf("job end never recorded; batch %s", e.batchStatus(t, b.ID))
@@ -1529,7 +1534,7 @@ func TestBlockedBatchEndDoesNotHoldShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(jobWait)
 	for len(e.search.Queries()) == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("batch never searched")

@@ -134,8 +134,8 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	// The session middleware wraps the whole /api/v1 and /media subrouters
 	// rather than being added with Use: chi skips a subrouter's middleware
 	// when it has no routes, which would leave it unguarded.
-	signedIn := requireSession(logger, sessions)
-	csrf := requireCSRF(logger)
+	signedIn := RequireSession(logger, sessions)
+	csrf := RequireCSRF(logger)
 	apiV1, media := chi.NewRouter(), chi.NewRouter()
 	for _, sub := range []*chi.Mux{apiV1, media} {
 		sub.MethodNotAllowed(methodNotAllowed)
@@ -218,11 +218,13 @@ func NewRouter(logger *slog.Logger, version string, trusted forwarded.Trusted, a
 	return r, nil
 }
 
-type errorBody struct {
-	Error apiError `json:"error"`
+// ErrorBody is the JSON body of an API error response.
+type ErrorBody struct {
+	Error APIError `json:"error"`
 }
 
-type apiError struct {
+// APIError is the error object in an API error response.
+type APIError struct {
 	Code      string `json:"code"`
 	Message   string `json:"message"`
 	Retryable bool   `json:"retryable"`

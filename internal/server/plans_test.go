@@ -397,6 +397,93 @@ func TestPutPlanDay(t *testing.T) {
 	}
 }
 
+// TestPutPlanDayEveningExactlyOne: PUT sets a Delivery evening or a
+// Dining-out evening, replacing a dinner, and clears it. A body that sets
+// more than one of dinner_id, manual_label, meal_source and clear, or a
+// meal_source that is not delivery or dining out, is 400 invalid_request
+// and leaves the day as it was.
+func TestPutPlanDayEveningExactlyOne(t *testing.T) {
+	t.Parallel()
+	e := newPlansRouter(t)
+	var before int
+	if err := e.st.Reader.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM dinners`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	rec, body := callDinners(t, e.h, http.MethodGet, plansPath+"2026-10-12", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET plan = %d: %s", rec.Code, rec.Body)
+	}
+	saturday := body["days"].([]any)[5].(map[string]any)
+	if saturday["dinner"] == nil || saturday["meal_source"] != "cook" || saturday["manual_label"] != nil {
+		t.Fatalf("Saturday before = %v, want a cooked dinner", saturday)
+	}
+
+	rec, body = callDinners(t, e.h, http.MethodPut, plansPath+"2026-10-12/days/2026-10-17", `{"meal_source":"delivery"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT delivery = %d: %s", rec.Code, rec.Body)
+	}
+	saturday = body["days"].([]any)[5].(map[string]any)
+	if saturday["dinner"] != nil || saturday["manual_label"] != nil || saturday["meal_source"] != "delivery" || saturday["is_new"] != false || saturday["start_by"] != nil {
+		t.Fatalf("Saturday = %v, want a Delivery evening", saturday)
+	}
+	monday := body["days"].([]any)[0].(map[string]any)
+	if monday["dinner"] == nil || monday["meal_source"] != "cook" {
+		t.Fatalf("Monday = %v, want its dinner", monday)
+	}
+	var after int
+	if err := e.st.Reader.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM dinners`).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("dinners = %d, want %d", after, before)
+	}
+
+	rec, body = callDinners(t, e.h, http.MethodPut, plansPath+"2026-10-12/days/2026-10-17", `{"meal_source":"dining_out"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT dining out = %d: %s", rec.Code, rec.Body)
+	}
+	saturday = body["days"].([]any)[5].(map[string]any)
+	if saturday["dinner"] != nil || saturday["manual_label"] != nil || saturday["meal_source"] != "dining_out" {
+		t.Fatalf("Saturday = %v, want a Dining-out evening", saturday)
+	}
+
+	for _, raw := range []string{
+		`{}`,
+		`{"meal_source":"delivery","dinner_id":"` + e.questLog + `"}`,
+		`{"meal_source":"delivery","manual_label":"mummy dogs"}`,
+		`{"meal_source":"delivery","clear":true}`,
+		`{"dinner_id":"` + e.questLog + `","manual_label":"mummy dogs","meal_source":"delivery","clear":true}`,
+		`{"meal_source":"cook"}`,
+		`{"meal_source":"takeout"}`,
+		`{"meal_source":""}`,
+		`{"meal_source":1}`,
+		`{"clear":false}`,
+	} {
+		rec, body = callDinners(t, e.h, http.MethodPut, plansPath+"2026-10-12/days/2026-10-17", raw)
+		apiErr, _ := body["error"].(map[string]any)
+		if rec.Code != http.StatusBadRequest || apiErr["code"] != "invalid_request" || apiErr["retryable"] != false || apiErr["message"] == "" {
+			t.Errorf("PUT %s = %d %v, want 400 invalid_request", raw, rec.Code, body)
+		}
+	}
+	rec, body = callDinners(t, e.h, http.MethodGet, plansPath+"2026-10-12", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET plan = %d: %s", rec.Code, rec.Body)
+	}
+	saturday = body["days"].([]any)[5].(map[string]any)
+	if saturday["meal_source"] != "dining_out" || saturday["dinner"] != nil || saturday["manual_label"] != nil {
+		t.Fatalf("Saturday after refused bodies = %v, want dining out unchanged", saturday)
+	}
+
+	rec, body = callDinners(t, e.h, http.MethodPut, plansPath+"2026-10-12/days/2026-10-17", `{"clear":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT clear = %d: %s", rec.Code, rec.Body)
+	}
+	saturday = body["days"].([]any)[5].(map[string]any)
+	if saturday["dinner"] != nil || saturday["manual_label"] != nil || saturday["meal_source"] != "cook" {
+		t.Fatalf("Saturday after clear = %v, want nothing planned", saturday)
+	}
+}
+
 func TestPutManualNight(t *testing.T) {
 	t.Parallel()
 	e := newPlansRouter(t)

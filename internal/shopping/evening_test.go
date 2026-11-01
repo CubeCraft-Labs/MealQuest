@@ -27,22 +27,25 @@ func TestGenerateSkipsDeliveryEvening(t *testing.T) {
 	}
 
 	g := e.generate(t)
-	var sawOther bool
+	var sawGroup, sawIngredient bool
 	for _, grp := range g.List.Groups {
 		if grp.Date == "2026-10-17" || grp.DinnerName == "Pad Thai" {
 			t.Errorf("group = %+v, want no Saturday group", grp)
 		}
 		if grp.DinnerName == "Chicken Fajitas" {
-			sawOther = true
+			sawGroup = true
 			for _, item := range grp.Items {
 				if item.Name == "chicken breast" {
-					sawOther = true
+					sawIngredient = true
 				}
 			}
 		}
 	}
-	if !sawOther {
-		t.Error("Supply run has no Chicken Fajitas group, want the other nights' ingredients")
+	if !sawGroup {
+		t.Error("Supply run has no Chicken Fajitas group, want the other night's group")
+	}
+	if !sawIngredient {
+		t.Error("Chicken Fajitas has no chicken breast, want the other night's ingredient")
 	}
 	if len(g.List.Groups) != 6 {
 		t.Errorf("groups = %d, want 6", len(g.List.Groups))

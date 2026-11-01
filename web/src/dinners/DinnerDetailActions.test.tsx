@@ -77,6 +77,7 @@ function planBody(weekStart: string, names: string[], ids = names.map((_, i) => 
       dinner: { id: ids[i], name, status: 'regular', photo: null, minutes: 30, method: 'stovetop', meal_source: 'cook' },
       is_new: false,
       start_by: null,
+      meal_source: 'cook' as const,
     })),
   }
 }

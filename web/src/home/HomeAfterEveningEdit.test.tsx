@@ -384,6 +384,94 @@ describe('Home after a board evening edit', () => {
     expect(screen.queryByTestId('skeleton-tonight')).not.toBeInTheDocument()
     expect(homeReads(fetchMock)).toBe(reads + 1)
   })
+
+  // Home can mount again while the board edit is still pending, so it paints
+  // the cached Tonight. When that edit then succeeds, the previous dinner and
+  // its Recipe button leave, including while the fresh Home read is held, and
+  // the dinner the edit chose appears once that read resolves.
+  it('clears a mounted Home Tonight when the board edit succeeds after returning while that edit is still pending', async () => {
+    let plan = planBody()
+    let home = homeOf(TONIGHT, null)
+    let releasePut: (() => void) | undefined
+    let releaseHeldHome: (() => void) | undefined
+    let holdHomeRead = false
+    const fetchMock = stubServer({
+      [`GET ${HOME_PATH}`]: () => {
+        if (!holdHomeRead) return jsonResponse(200, home)
+        return new Promise<Response>((resolve) => {
+          releaseHeldHome = () => resolve(jsonResponse(200, home))
+        })
+      },
+      [`GET ${PLAN}`]: () => jsonResponse(200, plan),
+      [`PUT ${WEDNESDAY}`]: () =>
+        new Promise<Response>((resolve) => {
+          releasePut = () => {
+            plan = fishPlan()
+            home = homeOf(FISH, null)
+            resolve(jsonResponse(200, plan))
+          }
+        }),
+    })
+    const api = createApiClient(fakeLocation('/'), createNetworkStatus(window), createVerifiedSession(localStorage))
+    await api.loadMe()
+    render(
+      <ApiProvider client={api}>
+        <QueryClientProvider client={createQueryClient()}>
+          <InDataRouter path="/">
+            <AppRoutes />
+          </InDataRouter>
+        </QueryClientProvider>
+      </ApiProvider>,
+    )
+
+    const first = await screen.findByRole('region', { name: 'Tonight' })
+    expect(within(first).getByRole('heading', { name: 'Crock pot tikka masala' })).toBeInTheDocument()
+    expect(within(first).getByRole('button', { name: 'Recipe' })).toBeInTheDocument()
+    expect(homeReads(fetchMock)).toBe(1)
+
+    go('Plan')
+    expect(await screen.findByRole('heading', { name: 'Oct 5 – 11' })).toBeInTheDocument()
+    await screen.findByText('Crock pot tikka masala')
+    fireEvent.click(screen.getByText('WED · NEW').closest('li')!.querySelector('button')!)
+    const sheet = await screen.findByRole('dialog', { name: 'Swap Wednesday' })
+    fireEvent.click(await within(sheet).findByRole('radio', { name: 'Regulars · 2' }))
+    fireEvent.click(within(sheet).getByRole('button', { name: /Fish tacos/ }))
+    await waitFor(() => expect(puts(fetchMock).at(-1)).toBe(`${WEDNESDAY} {"dinner_id":"r1"}`))
+    expect(screen.getByRole('button', { name: 'Evening for Wednesday' })).toBeDisabled()
+
+    go('Home')
+    const cached = await screen.findByRole('region', { name: 'Tonight' })
+    expect(within(cached).getByRole('heading', { name: 'Crock pot tikka masala' })).toBeInTheDocument()
+    expect(within(cached).getByRole('button', { name: 'Recipe' })).toBeInTheDocument()
+    expect(homeReads(fetchMock)).toBe(1)
+
+    const reads = homeReads(fetchMock)
+    holdHomeRead = true
+    releasePut!()
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: 'Crock pot tikka masala' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Recipe' })).not.toBeInTheDocument()
+    })
+    expect(screen.getByTestId('skeleton-tonight')).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Tonight' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Fish tacos' })).not.toBeInTheDocument()
+    expect(homeReads(fetchMock)).toBe(reads + 1)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+    expect(screen.queryByRole('heading', { name: 'Crock pot tikka masala' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Recipe' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('skeleton-tonight')).toBeInTheDocument()
+    expect(homeReads(fetchMock)).toBe(reads + 1)
+
+    releaseHeldHome!()
+    const card = await screen.findByRole('region', { name: 'Tonight' })
+    expect(within(card).getByRole('heading', { name: 'Fish tacos' })).toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: 'Recipe' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Crock pot tikka masala' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('skeleton-tonight')).not.toBeInTheDocument()
+    expect(homeReads(fetchMock)).toBe(reads + 1)
+  })
 })
 
 function expectNoStaleTonight() {

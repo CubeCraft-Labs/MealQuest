@@ -33,7 +33,7 @@ func getChatWebhook(logger *slog.Logger, svc *chat.Service) http.HandlerFunc {
 // answers the settings as GET does.
 func putChatWebhook(logger *slog.Logger, svc *chat.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		body, err := decodePatch[chatWebhookBody](http.MaxBytesReader(w, r.Body, maxSettingsBody))
+		body, err := decodePatch[chatWebhookBody](http.MaxBytesReader(w, r.Body, MaxSettingsBody))
 		if err != nil {
 			writeError(w, r, logger, http.StatusBadRequest, "invalid_request", err.Error())
 			return

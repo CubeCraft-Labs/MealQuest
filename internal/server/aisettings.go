@@ -38,7 +38,7 @@ func getAISettings(logger *slog.Logger, svc *aisettings.Service) http.HandlerFun
 
 func patchAISettings(logger *slog.Logger, svc *aisettings.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		patch, err := decodePatch[aisettings.Patch](http.MaxBytesReader(w, r.Body, maxAISettingsBody))
+		patch, err := decodePatch[aisettings.Patch](http.MaxBytesReader(w, r.Body, MaxAISettingsBody))
 		if err != nil {
 			writeError(w, r, logger, http.StatusBadRequest, "invalid_request", err.Error())
 			return
@@ -51,7 +51,7 @@ func patchAISettings(logger *slog.Logger, svc *aisettings.Service) http.HandlerF
 // only its last four characters.
 func putAIKey(logger *slog.Logger, svc *aisettings.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		body, err := decodePatch[apiKeyBody](http.MaxBytesReader(w, r.Body, maxSettingsBody))
+		body, err := decodePatch[apiKeyBody](http.MaxBytesReader(w, r.Body, MaxSettingsBody))
 		if err == nil && body.APIKey == nil {
 			err = errors.New("api_key: is required")
 		}
@@ -126,7 +126,7 @@ func writeAIFailure(w http.ResponseWriter, r *http.Request, logger *slog.Logger,
 		writeError(w, r, logger, http.StatusConflict, "settings_changed", err.Error())
 	case errors.Is(err, aisettings.ErrProviderFailed):
 		logger.WarnContext(r.Context(), action+" failed", "error", err)
-		status, e := http.StatusBadGateway, apiError{Code: "provider_error", Message: err.Error()}
+		status, e := http.StatusBadGateway, APIError{Code: "provider_error", Message: err.Error()}
 		switch {
 		case errors.Is(err, llm.ErrAuth):
 			e.Code = "auth_failed"

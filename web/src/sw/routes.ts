@@ -7,8 +7,9 @@
 // as the server sees them — percent-decoded, before and after dot segments are
 // resolved — so /%61uth/login is /auth/login; a malformed encoding is
 // network-only. So is a request that asks for no cache (cache: 'no-store'):
-// the app's recipe check (apiCheck) must reach the server or fail, never be
-// answered from a cached copy.
+// the app's recipe check, and a Home read after a board edit, both go
+// through apiCheck and must reach the server or fail, never be answered
+// from a cached copy.
 
 export type Route =
   // Network with a 3 s timeout, then the last cached response.

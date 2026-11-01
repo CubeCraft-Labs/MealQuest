@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect } from 'react'
 import { useApi } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
@@ -175,18 +175,46 @@ function isZone(zone: string): boolean {
   }
 }
 
+// homeServerCurrent is how many board edits still need a Home read the
+// server answered. A service worker cache fallback is not that read: it is
+// the Tonight from before the edit. The mark stays until a live read
+// succeeds, including when Home is not mounted for the edit itself.
+const homeServerCurrent = new WeakMap<QueryClient, number>()
+
+// requireServerCurrentHome marks Home reads as server-current until one
+// succeeds. A board edit calls it before resetting Home, so the read that
+// follows cannot accept the service worker's cached Tonight.
+export function requireServerCurrentHome(queryClient: QueryClient): void {
+  homeServerCurrent.set(queryClient, (homeServerCurrent.get(queryClient) ?? 0) + 1)
+}
+
 // useHome is the Home screen's summary (GET /api/v1/home). Home is read
 // again at the household's next local midnight, counted from each read, so
 // a Home left open does not keep yesterday's date and dinner. Tonight's
 // dinner shows archived once it was removed on this device
 // (archived.ts).
+//
+// After a board edit (requireServerCurrentHome), that read is apiCheck:
+// cache 'no-store', which the service worker leaves on the network
+// (sw/routes.ts), and a rejection when a worker from an earlier build still
+// answers with X-MealQuest-Cache-Fallback. The cached body is never Home's
+// data, so Tonight stays the skeleton or the load error until a live read
+// succeeds. A Home read with no edit pending is apiRead, and may be the
+// saved copy.
 export function useHome() {
-  const { apiRead } = useApi()
+  const { apiRead, apiCheck } = useApi()
   const queryClient = useQueryClient()
   const archived = useArchived()
   const home = useQuery({
     queryKey: HOME_KEY,
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
+      const generation = homeServerCurrent.get(queryClient)
+      if (generation !== undefined) {
+        const body = await apiCheck<unknown>(HOME_PATH, signal)
+        const parsed = parseHome(`GET ${HOME_PATH}`, body, false)
+        if (homeServerCurrent.get(queryClient) === generation) homeServerCurrent.delete(queryClient)
+        return parsed
+      }
       const read = await apiRead<unknown>(HOME_PATH)
       return parseHome(`GET ${HOME_PATH}`, read.body, read.cached)
     },

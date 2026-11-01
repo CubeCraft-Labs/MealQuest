@@ -14,6 +14,7 @@ import { isRecord } from '../api/errors.ts'
 import { knownArchived, useArchived } from '../dinners/archived.ts'
 import { MEAL_SOURCE_LABEL, MEAL_SOURCES, METHODS, oneOf, photoId, PLANNED_DINNER_STATUSES, type MealSource, type Method, type PlannedDinnerStatus } from '../dinners/api.ts'
 import { QUEST_LOG_KEY } from '../discover/api.ts'
+import { HOME_KEY, requireServerCurrentHome } from '../home/api.ts'
 import { noteGoogleFailure } from '../settings/calendarApi.ts'
 import { supplyRunKey } from '../shopping/api.ts'
 
@@ -571,6 +572,27 @@ export function useSwapDay(weekStart: string): SwapDay {
         // including a Delivery or Dining-out evening, changes which nights
         // are shopped, so the list is read again.
         void queryClient.invalidateQueries({ queryKey: supplyRunKey(weekStart) })
+        // Tonight on Home is today's evening (Delivery, Dining out, another
+        // dinner, or a cleared night). Reset the Home query rather than
+        // removing or invalidating it. Removal drops the cache entry but
+        // leaves a Home that mounted during this edit — while the PUT was
+        // still pending — showing that observer's previous Tonight, and
+        // starts no fresh read. Invalidation would refetch while that
+        // previous Tonight stayed in the cache, and Home renders it while
+        // the new read is pending. Reset clears the observer's data and
+        // refetches a Home that is mounted, so the dinner this edit replaced
+        // cannot stay on screen; a Home that is not mounted has no data
+        // until its next read. That read has to be the server's: the service
+        // worker's NetworkFirst cache of /home can answer the GET with the
+        // previous Tonight when the network fails or times out after this
+        // PUT. requireServerCurrentHome sends it network-only (apiCheck) and
+        // rejects X-MealQuest-Cache-Fallback, so that copy never becomes
+        // Tonight. The 30-second staleTime and useHome's midnight invalidate
+        // are unchanged: a return that did not edit a day still shows the
+        // cached Tonight, and a Home left open still refreshes at local
+        // midnight without clearing the card.
+        requireServerCurrentHome(queryClient)
+        void queryClient.resetQueries({ queryKey: HOME_KEY })
       },
       // The day goes back only while it is still, field for field, the day
       // this swap wrote, and no plan read from the server has landed since

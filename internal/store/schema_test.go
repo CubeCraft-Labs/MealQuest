@@ -325,6 +325,11 @@ func TestSchemaEnumChecksRejectInvalidValues(t *testing.T) {
 		// A day that already has a dinner cannot also carry a manual label.
 		{"plan_days", "manual_label", "leftovers"},
 		{"plan_days", "manual_label", ""},
+		// A day that already has a dinner cannot be a Delivery or Dining-out
+		// evening, and meal_source has no other value.
+		{"plan_days", "meal_source", "delivery"},
+		{"plan_days", "meal_source", "dining_out"},
+		{"plan_days", "meal_source", "takeout"},
 		{"rotation_reviews", "status", "open"},
 		{"rotation_reviews", "decision", "promote"},
 		{"shopping_lists", "status", "frozen"},
@@ -355,6 +360,38 @@ func TestSchemaEnumChecksRejectInvalidValues(t *testing.T) {
 			row[c.column] = c.bad
 			inRolledBackTx(t, s, func(tx *sql.Tx) {
 				wantConstraintError(t, insertSchemaRow(tx, c.table, row), "CHECK", fmt.Sprintf("%s.%s = %v", c.table, c.column, c.bad))
+			})
+		})
+	}
+}
+
+// TestSchemaPlanDayEveningAllowsANightWithNoDinner: a Delivery or
+// Dining-out evening is a plan day with no dinner and no manual label. A
+// dinner or a label on that evening is refused.
+func TestSchemaPlanDayEveningAllowsANightWithNoDinner(t *testing.T) {
+	s := seededStore(t)
+	for _, source := range []string{"delivery", "dining_out"} {
+		t.Run(source, func(t *testing.T) {
+			inRolledBackTx(t, s, func(tx *sql.Tx) {
+				row := testRow("plan_days", 1)
+				row["dinner_id"] = nil
+				row["manual_label"] = nil
+				row["meal_source"] = source
+				if err := insertSchemaRow(tx, "plan_days", row); err != nil {
+					t.Fatalf("evening %s rejected: %v", source, err)
+				}
+			})
+			inRolledBackTx(t, s, func(tx *sql.Tx) {
+				row := testRow("plan_days", 1)
+				row["meal_source"] = source
+				wantConstraintError(t, insertSchemaRow(tx, "plan_days", row), "CHECK", source+" with a dinner")
+			})
+			inRolledBackTx(t, s, func(tx *sql.Tx) {
+				row := testRow("plan_days", 1)
+				row["dinner_id"] = nil
+				row["manual_label"] = "leftovers"
+				row["meal_source"] = source
+				wantConstraintError(t, insertSchemaRow(tx, "plan_days", row), "CHECK", source+" with a manual label")
 			})
 		})
 	}

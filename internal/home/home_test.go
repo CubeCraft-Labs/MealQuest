@@ -195,15 +195,44 @@ func TestTonightManualNightHasNoDinner(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := e.at(t, "2026-10-13 18:00")
-	if h.Tonight != nil || h.ManualTonight == nil || *h.ManualTonight != "mummy dogs" {
-		t.Fatalf("tonight = %+v, manual = %v, want mummy dogs and no dinner", h.Tonight, h.ManualTonight)
+	if h.Tonight != nil || h.ManualTonight == nil || *h.ManualTonight != "mummy dogs" || h.Evening != nil {
+		t.Fatalf("tonight = %+v, manual = %v, evening = %v, want mummy dogs and no dinner", h.Tonight, h.ManualTonight, h.Evening)
 	}
 	if _, err := e.st.Writer.ExecContext(t.Context(), `UPDATE plan_days SET manual_label = NULL WHERE date = '2026-10-13'`); err != nil {
 		t.Fatal(err)
 	}
 	h = e.at(t, "2026-10-13 18:00")
-	if h.Tonight != nil || h.ManualTonight != nil {
-		t.Fatalf("cleared tonight = %+v, manual = %v, want neither", h.Tonight, h.ManualTonight)
+	if h.Tonight != nil || h.ManualTonight != nil || h.Evening != nil {
+		t.Fatalf("cleared tonight = %+v, manual = %v, evening = %v, want neither", h.Tonight, h.ManualTonight, h.Evening)
+	}
+}
+
+// TestTonightDeliveryEveningHasNoDinner: a Delivery or Dining-out evening
+// is tonight's state and not a dinner, a free-text label, or a cleared
+// night. A cooked night on another day is still its dinner.
+func TestTonightDeliveryEveningHasNoDinner(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	e.planWeek(t)
+	for _, source := range []string{"delivery", "dining_out"} {
+		if _, err := e.st.Writer.ExecContext(t.Context(), `UPDATE plan_days SET dinner_id = NULL, manual_label = NULL, meal_source = ?, is_new = 0 WHERE date = '2026-10-13'`, source); err != nil {
+			t.Fatal(err)
+		}
+		h := e.at(t, "2026-10-13 18:00")
+		if h.Tonight != nil || h.ManualTonight != nil || h.Evening == nil || *h.Evening != source {
+			t.Fatalf("%s tonight = %+v, manual = %v, evening = %v, want the evening and no dinner", source, h.Tonight, h.ManualTonight, h.Evening)
+		}
+	}
+	monday := e.at(t, "2026-10-12 18:00")
+	if monday.Tonight == nil || monday.Tonight.Name != "Dinner 2026-10-12" || monday.ManualTonight != nil || monday.Evening != nil {
+		t.Fatalf("monday = %+v manual %v evening %v, want Dinner 2026-10-12", monday.Tonight, monday.ManualTonight, monday.Evening)
+	}
+	if _, err := e.st.Writer.ExecContext(t.Context(), `UPDATE plan_days SET meal_source = 'cook' WHERE date = '2026-10-13'`); err != nil {
+		t.Fatal(err)
+	}
+	cleared := e.at(t, "2026-10-13 18:00")
+	if cleared.Tonight != nil || cleared.ManualTonight != nil || cleared.Evening != nil {
+		t.Fatalf("cleared tonight = %+v, manual = %v, evening = %v, want neither", cleared.Tonight, cleared.ManualTonight, cleared.Evening)
 	}
 }
 

@@ -25,10 +25,12 @@ type planDraft struct {
 }
 
 // planDaySwap is the PUT /plans/{weekStart}/days/{date} body. Exactly one
-// of dinner_id, manual_label and clear is set.
+// of dinner_id, manual_label, meal_source and clear is set. meal_source
+// sets a Delivery or Dining-out evening (delivery or dining_out).
 type planDaySwap struct {
 	DinnerID    *string `json:"dinner_id"`
 	ManualLabel *string `json:"manual_label"`
+	MealSource  *string `json:"meal_source"`
 	Clear       *bool   `json:"clear"`
 }
 
@@ -89,14 +91,16 @@ func putPlanDay(logger *slog.Logger, svc *plan.Service) http.HandlerFunc {
 		date := chi.URLParam(r, "date")
 		var p plan.Plan
 		switch {
-		case body.DinnerID != nil && body.ManualLabel == nil && body.Clear == nil:
+		case body.DinnerID != nil && body.ManualLabel == nil && body.MealSource == nil && body.Clear == nil:
 			p, err = svc.Swap(r.Context(), week, date, *body.DinnerID)
-		case body.ManualLabel != nil && body.DinnerID == nil && body.Clear == nil:
+		case body.ManualLabel != nil && body.DinnerID == nil && body.MealSource == nil && body.Clear == nil:
 			p, err = svc.SetManual(r.Context(), week, date, *body.ManualLabel)
-		case body.Clear != nil && *body.Clear && body.DinnerID == nil && body.ManualLabel == nil:
+		case body.MealSource != nil && body.DinnerID == nil && body.ManualLabel == nil && body.Clear == nil:
+			p, err = svc.SetEvening(r.Context(), week, date, *body.MealSource)
+		case body.Clear != nil && *body.Clear && body.DinnerID == nil && body.ManualLabel == nil && body.MealSource == nil:
 			p, err = svc.ClearDay(r.Context(), week, date)
 		default:
-			writeError(w, r, logger, http.StatusBadRequest, "invalid_request", "dinner_id, manual_label or clear: set exactly one")
+			writeError(w, r, logger, http.StatusBadRequest, "invalid_request", "dinner_id, manual_label, meal_source or clear: set exactly one")
 			return
 		}
 		if err != nil {
@@ -232,9 +236,12 @@ func writePlanError(w http.ResponseWriter, r *http.Request, logger *slog.Logger,
 	var notPlannable *plan.DinnerNotPlannableError
 	var notCooked *plan.NotCookedError
 	var label *plan.InvalidManualLabelError
+	var evening *plan.InvalidEveningError
 	switch {
 	case errors.As(err, &label):
 		writeError(w, r, logger, http.StatusBadRequest, "invalid_request", label.Error())
+	case errors.As(err, &evening):
+		writeError(w, r, logger, http.StatusBadRequest, "invalid_request", evening.Error())
 	case errors.As(err, &day):
 		writeError(w, r, logger, http.StatusBadRequest, "invalid_date", day.Error())
 	case errors.As(err, &week):

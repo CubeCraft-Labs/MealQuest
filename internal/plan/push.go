@@ -60,7 +60,8 @@ type pushDay struct {
 // "Start by {time}" for a crock-pot dinner whose minutes are known, and
 // the dinner's link under the public URL. A manual night is an event
 // whose summary and description are the label alone, at the same time,
-// with no dinner link. A cleared night is deleted. Its id is EventID.
+// with no dinner link. A cleared night, and a Delivery or Dining-out
+// evening, is deleted: there is no dinner event to write. Its id is EventID.
 //
 // A push writes the days Calendar does not show as planned: those never
 // pushed, swapped, or redrafted to another dinner since, whose
@@ -194,9 +195,11 @@ func (s *Service) pushDays(ctx context.Context, weekStart store.LocalDate) (plan
 		case r.ManualLabel.Valid:
 			event, err = s.manualEvent(zone, settings.Timezone, settings.DinnerTime, weekStart, dates[i], r.ManualLabel.String)
 		default:
-			// A cleared night is removed, so Calendar does not keep a
-			// dinner the plan no longer has. The id is the day's own, so
-			// the removal hits the event a previous push wrote.
+			// A cleared night, and a Delivery or Dining-out evening, has
+			// no dinner to write. The event is removed, so Calendar does
+			// not keep a dinner the plan no longer has. The id is the
+			// day's own, so the removal hits the event a previous push
+			// wrote. An evening that was never written is not created.
 			event = gcal.Event{ID: EventID(weekStart, dates[i]), Remove: true}
 		}
 		if err != nil {

@@ -102,10 +102,10 @@ Columns ending in `_ct` hold AES-256-GCM ciphertext (via `secretbox`).
 | `suggestion_batches` | trigger, status, ai_run_id. |
 | `suggestions` | dinner_id, batch_id, name (the name the dish was suggested under, kept whatever its dinner is later renamed, so a Pass stays an immutable record every later batch dedupes against), reason, cited_regular_ids (JSON), status, decided_at. |
 | `week_plans` | week_start (unique), status (`draft` / `synced` / `changed`), ai_note, ai_run_id, calendar_synced_at, revision (raised by every swap and stored draft). |
-| `plan_days` | plan_id, date (unique per plan), dinner_id, manual_label (a one-off free-text night, that day only, never a `dinners` row; mutually exclusive with dinner_id; both null when the night is cleared), is_new, calendar_event_id (set while the chosen calendar shows the day as planned, including after a cleared night's event is removed so the next full push removes it again; cleared when the night changes, another calendar is chosen or Google Calendar is disconnected). |
+| `plan_days` | plan_id, date (unique per plan), dinner_id, manual_label (a one-off free-text night, that day only, never a `dinners` row; mutually exclusive with dinner_id; both null when the night is cleared or is a non-cook evening), meal_source (`cook` / `delivery` / `dining_out`; `cook` is a dinner, a manual night or cleared; `delivery` is a Delivery evening and `dining_out` a Dining-out evening, and either has no dinner and no manual label — the schema CHECK refuses any other combination), is_new, calendar_event_id (set while the chosen calendar shows the day as planned, including after a cleared night's or a non-cook evening's event is removed so the next full push removes it again; cleared when the night changes, another calendar is chosen or Google Calendar is disconnected). |
 | `rotation_reviews` | dinner_id + plan_date (unique), status, decision (`keep` / `drop` / `not_made`), name (set only by a drop: the dinner's name when dropped, kept whatever it is later renamed, so a drop stays among the passed names), decided_at, updated_by. |
 | `shopping_lists` | week_start (unique), plan_id, title (the AI-written post title; NULL until written or when the AI fails, when the week label is shown instead; never empty), status (`current` / `archived`), sent_to_chat_at, chat_send_unconfirmed_at (a send to Google Chat recorded as begun before posting and cleared once its outcome is known; left set when it may or may not have posted), frozen_at. |
-| `shopping_groups` / `shopping_items` | One group per plan day with ingredients: dinner_id, date, position (by date), frozen_dinner_name (the dinner's name when its list was frozen into the Supply archive, kept whatever it is later renamed; NULL while the list is current, which shows its dinners' names now; never empty). Item name, qty (the display quantity, NULL when the recipe gives none), needed (bool), position. Made by `shopping.Generate` from the plan, with no model call: an item is a grounded recipe ingredient's normalized name with qty and unit joined ("2 cups"), or a manual recipe's line as typed with no qty. Regenerating keeps the id and needed flag of an item whose (dinner_id, name) is unchanged. A manual label or a cleared night has no dinner, so it adds no group and is not listed as skipped. |
+| `shopping_groups` / `shopping_items` | One group per plan day with ingredients: dinner_id, date, position (by date), frozen_dinner_name (the dinner's name when its list was frozen into the Supply archive, kept whatever it is later renamed; NULL while the list is current, which shows its dinners' names now; never empty). Item name, qty (the display quantity, NULL when the recipe gives none), needed (bool), position. Made by `shopping.Generate` from the plan, with no model call: an item is a grounded recipe ingredient's normalized name with qty and unit joined ("2 cups"), or a manual recipe's line as typed with no qty. Regenerating keeps the id and needed flag of an item whose (dinner_id, name) is unchanged. A manual label, a cleared night, or a Delivery or Dining-out evening has no dinner, so it adds no group and is not listed as skipped. |
 | `ai_settings` | One row: provider, base_url, model, temperature, system_prompt, api_key_ct, api_key_last4, key_verified_at. |
 | `recipe_search_settings` | One row: provider (`searxng` / `brave`), base_url (the SearXNG instance), api_key_ct and api_key_last4 (Brave). |
 | `integrations_google` | One row: refresh_token_ct, calendar_id, calendar_name, connected_at, last_sync_error. |
@@ -509,11 +509,11 @@ automatic** (D-021).
   /api/v1/plans/{weekStart}` returns `{id, week_start, week_label, status,
   ai_note, calendar_synced_at, updated_at, days}`, or 404 when the week has
   no plan; `days` are the seven days Monday first, each `{date, dinner: {id,
-  name, status, photo, minutes, method, origin, meal_source} | null, manual_label, is_new, start_by}`.
-  A day is a dinner (`manual_label` null), a one-off `manual_label` with
-  `dinner` null, or cleared (both null). The
+  name, status, photo, minutes, method, origin, meal_source} | null, manual_label, meal_source, is_new, start_by}`.
+  A day is exactly one of a dinner (`meal_source` `cook`, `manual_label` null), a one-off `manual_label` with
+  `dinner` null and `meal_source` `cook`, a Delivery evening (`meal_source` `delivery`) or a Dining-out evening (`meal_source` `dining_out`) with neither a dinner nor a label, or cleared (both null, `meal_source` `cook`). The day's `meal_source` is that state, not the dinner's: a dinner later marked Delivery still has `cook` on the day and `delivery` on `dinner`. The
   dinner's `status` is its status now — `archived` once it was removed after
-  the plan was made, when it has no detail to open. `meal_source` is
+  the plan was made, when it has no detail to open. The dinner's `meal_source` is
   `cook`, `delivery` or `dining_out`. A current or future plan does not
   gain a delivery or dining-out dinner by editing one that is already
   planned: that edit is 409 `planned` until the dinner is removed from the
@@ -521,8 +521,8 @@ automatic** (D-021).
   never planned. A past plan can still name a dinner later marked delivery
   or dining out; that day has `photo` null, no recipe link and no
   crock-pot `start_by`. `is_new` means
-  the dinner was planned from the Quest log, and is false for a manual or
-  cleared night; `start_by` is the household's
+  the dinner was planned from the Quest log, and is false for a manual night,
+  a Delivery or Dining-out evening, or a cleared night; `start_by` is the household's
   dinner time on that date minus `minutes_total`, computed on read, for a
   crock-pot dinner with known minutes, else null. `POST
   /api/v1/plans/{weekStart}/draft` takes `{confirm?}` and answers 202
@@ -550,11 +550,13 @@ automatic** (D-021).
   `ai_failed`. `PUT /api/v1/plans/{weekStart}/days/{date}` takes exactly one of
   `{dinner_id}` (a Regular or Quest log dinner), `{manual_label}` (a free-text
   night, trimmed, at most 120 characters, and a name once normalized — the
-  same bounds as a dinner name) or `{clear: true}`. It swaps the day,
-  recomputes `is_new` (false for a label or a clear), clears the day's
+  same bounds as a dinner name), `{meal_source}` (`delivery` for a Delivery
+  evening or `dining_out` for a Dining-out evening; any other value, including
+  `cook`, is 400 `invalid_request`) or `{clear: true}`. It swaps the day,
+  recomputes `is_new` (false for a label, an evening or a clear), clears the day's
   `calendar_event_id`, moves a `synced` plan to `changed`, and answers 200
-  with the plan. A manual label writes no `dinners` row. Anything other than
-  exactly one of those fields is 400 `invalid_request`, as is a label that
+  with the plan. A manual label and a non-cook evening write no `dinners` row.
+  Anything other than exactly one of those fields is 400 `invalid_request`, as is a label that
   fails the name bounds. A date outside the week is 400 `invalid_date`, an unknown dinner or
   a week with no plan 404, any other dinner 409 `dinner_not_plannable`, a
   delivery or dining-out dinner 409 `not_cooked`, and
@@ -565,7 +567,7 @@ automatic** (D-021).
   `MarkTried(date)` moves every `quest_log` dinner planned on that date, on a plan of any
   status, to `tried`, opens a `pending` `rotation_reviews` row for it and
   emits its `rotation_review`, in one transaction.
-  A manual label or a cleared night is not a dinner, so it opens no review.
+  A manual label, a Delivery or Dining-out evening, or a cleared night is not a dinner, so it opens no review.
   A dinner already checked for that date is left as it is and not
   notified again, so it is idempotent. `GET /api/v1/rotation-reviews` returns `{reviews}`, the
   pending checks whose dinner is still tried, oldest `plan_date` first,
@@ -999,7 +1001,9 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
     week's plan, and still carrying that dinner's id. A manual night is
     "Tonight: {label}" with no dinner and no recipe, opening the week's
     plan (`/plan?week={weekStart}`), and carries that label. A cleared
-    night emits nothing. The
+    night emits nothing. A Delivery or Dining-out evening emits nothing
+    either: there is nothing to cook, and it is not a dinner reminder.
+    The
     `day_of_reminder` schedule calls it at `reminder_time`.
   - `day_of_reminder:start:{date}` (URL `/dinner/{id}`) through
     `plan.Service.EmitStartReminder(date)`, "Start the crock pot by
@@ -1231,7 +1235,9 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
   touch. A manual night is an event at the
   same time whose summary and description are the label alone, with no
   dinner link, so it is not pushed as a dinner. A cleared night's event is
-  deleted (a missing event is already gone).
+  deleted (a missing event is already gone). A Delivery or Dining-out
+  evening is not a dinner, so Push writes no dinner event for it and
+  deletes one a previous push wrote, the same as a cleared night.
   - **Deterministic event ids**: lowercase unpadded base32hex of SHA-256 of
     `mealquest|{weekStart}|{date}` — 52 characters of `a`–`v` and `0`–`9`,
     within Google's id rule. Each event is inserted; a 409 (the id exists,
@@ -1360,6 +1366,8 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
     "dateLabel": "Friday, Oct 2",
     "timezone": "America/Chicago",
     "tonight": {"id": "…", "name": "…", "status": "regular", "photo": "/media/…", "origin": "regular", "minutes_total": 40},
+    "manualTonight": null,
+    "evening": null,
     "sideQuestCount": 10,
     "shoppingList": {"weekStart": "2026-10-05", "label": "Week 41 · Oct 5 – 11", "ready": true, "sentToChatAt": null},
     "recentUpdates": {"unread": true}
@@ -1367,7 +1375,13 @@ Fake-clock tests of a schedule live in `internal/scheduler`, where
   ```
 
   `tonight` is today's day of the current week's plan (`plan.Get`), null
-  when the week has no plan; it changes at the household's local
+  when the week has no plan, today is cleared, today is a manual night, or
+  today is a Delivery or Dining-out evening. `manualTonight` is today's
+  free-text label, null otherwise. `evening` is `delivery` or `dining_out`
+  when today is that non-cook evening, and null otherwise. A free-text
+  label cannot carry that state: the label is a name the household typed,
+  and Delivery and Dining out are the plan day's own state. At most one of
+  `tonight`, `manualTonight` and `evening` is set. Tonight changes at the household's local
   midnight, so the PWA reads Home again at the next local midnight of
   `timezone`, the household's IANA zone. `tonight.status` is the dinner's
   status now — `archived` once it was removed after the plan was made, when

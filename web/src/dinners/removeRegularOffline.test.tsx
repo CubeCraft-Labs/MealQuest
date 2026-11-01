@@ -63,6 +63,7 @@ const plan = {
     dinner: { id: IDS[i], name: NAMES[i], status: 'regular', photo: null, minutes: 30, method: 'stovetop', origin: 'regular', meal_source: 'cook' },
     is_new: false,
     start_by: null,
+    meal_source: 'cook',
   })),
   updated_at: '2026-10-04T15:00:00Z',
 }

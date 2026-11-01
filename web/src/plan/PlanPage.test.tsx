@@ -51,6 +51,7 @@ function planBody(status: string, names = NAMES) {
       },
       is_new: i === 2 || i === 5,
       start_by: i === 2 ? '2026-10-07T13:30:00-04:00' : null,
+      meal_source: 'cook' as const,
     })),
     updated_at: '2026-10-04T15:00:00Z',
   }
@@ -302,6 +303,16 @@ function tile(kicker: string) {
   return screen.getByText(kicker).closest('li')!
 }
 
+// dayControl is the control that opens the swap sheet on a Draft-board tile.
+// The evening menu is the other button on the tile.
+function dayControl(kicker: string) {
+  const swap = within(tile(kicker))
+    .getAllByRole('button')
+    .find((button) => button.getAttribute('aria-haspopup') !== 'menu')
+  if (swap === undefined) throw new Error(`no swap control on ${kicker}`)
+  return swap
+}
+
 describe('PlanPage', () => {
   it('renders mock 1f for a draft: title, Draft tag, the assistant note and the 2-column grid', async () => {
     stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')) })
@@ -401,7 +412,7 @@ describe('PlanPage', () => {
     expect(pushing).toBeDisabled()
     expect(pushing).toHaveAttribute('aria-busy', 'true')
     expect(screen.getByRole('button', { name: 'Rebuild week' })).toBeDisabled()
-    fireEvent.click(within(tile('MON')).getByRole('button'))
+    fireEvent.click(dayControl('MON'))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 
     answer.send(jsonResponse(200, syncedNow()))
@@ -1253,7 +1264,7 @@ describe('PlanPage', () => {
     }
 
     async function openFriday() {
-      fireEvent.click(within(await waitFor(() => tile('FRI'))).getByRole('button'))
+      fireEvent.click(await waitFor(() => dayControl('FRI')))
       return screen.findByRole('dialog', { name: 'Swap Friday' })
     }
 
@@ -1313,7 +1324,7 @@ describe('PlanPage', () => {
       // Once the swap has settled the sheet opens again, and reads the Quest
       // log again: the server leaves a dinner on the plan out of it.
       await waitFor(() => {
-        fireEvent.click(within(tile('FRI · NEW')).getByRole('button'))
+        fireEvent.click(dayControl('FRI · NEW'))
         expect(screen.getByRole('dialog', { name: 'Swap Friday' })).toHaveTextContent('Replaces Lemon orzo')
       })
       await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input) === QUEST_LOG)).toHaveLength(2))
@@ -1331,7 +1342,7 @@ describe('PlanPage', () => {
       })
       await renderPage()
 
-      fireEvent.click(within(await waitFor(() => tile('WED · NEW'))).getByRole('button'))
+      fireEvent.click(await waitFor(() => dayControl('WED · NEW')))
       const sheet = await screen.findByRole('dialog', { name: 'Swap Wednesday' })
       fireEvent.click(await within(sheet).findByRole('radio', { name: 'Regulars · 2' }))
       fireEvent.click(within(sheet).getByRole('button', { name: /Fish tacos/ }))
@@ -1408,13 +1419,13 @@ describe('PlanPage', () => {
       await leaveAndReturn()
 
       // Friday's swap is still pending: Monday does not open.
-      fireEvent.click(within(tile('MON')).getByRole('button'))
+      fireEvent.click(dayControl('MON'))
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'Rebuild week' })).toBeDisabled()
 
       await act(async () => answer(jsonResponse(200, swappedBody())))
       await waitFor(() => expect(screen.getByRole('button', { name: 'Rebuild week' })).toBeEnabled())
-      fireEvent.click(within(tile('MON')).getByRole('button'))
+      fireEvent.click(dayControl('MON'))
       expect(screen.getByRole('dialog', { name: 'Swap Monday' })).toBeInTheDocument()
       expect(puts(fetchMock)).toHaveLength(1)
     })
@@ -1546,7 +1557,7 @@ describe('manual night', () => {
     })
     await renderPage()
 
-    fireEvent.click(within(await waitFor(() => tile('SAT · NEW'))).getByRole('button'))
+    fireEvent.click(await waitFor(() => dayControl('SAT · NEW')))
     const sheet = await screen.findByRole('dialog', { name: 'Swap Saturday' })
     expect(within(sheet).getByText('Replaces Korean beef bowls')).toBeInTheDocument()
     fireEvent.change(within(sheet).getByRole('textbox', { name: 'One night only' }), { target: { value: '  mummy dogs  ' } })
@@ -2535,6 +2546,228 @@ describe('PlanPage at 768 px', () => {
     expect(within(tuesday).getByRole('img', { hidden: true, name: 'Spaghetti bolognese' })).toBeInTheDocument()
     expect(within(tuesday).getByText('Stovetop · 30 min')).toBeInTheDocument()
     expect(within(within(grid).getByRole('listitem', { name: 'Wednesday' })).getByText('Start by 1:30 pm')).toBeInTheDocument()
+  })
+})
+
+describe.each([
+  { width: 390 },
+  { width: 768 },
+  { width: 1440 },
+])('evening on the plan board at $width px', ({ width }) => {
+  beforeEach(() => mockViewport(width))
+
+  const MONDAY = `${THIS_WEEK}/days/2026-10-05`
+  const SUPPLY = '/api/v1/shopping/2026-10-05'
+
+  function supplyReads(fetchMock: Mock<typeof fetch>) {
+    return fetchMock.mock.calls.filter(([input, init]) => (init?.method ?? 'GET') === 'GET' && String(input) === SUPPLY).length
+  }
+
+  function evening(day: string) {
+    return screen.getByRole('button', { name: `Evening for ${day}` })
+  }
+
+  async function openEvening(day: string) {
+    fireEvent.click(evening(day))
+    return screen.findByRole('menu', { name: `Evening for ${day}` })
+  }
+
+  async function openSwap(day: string, kicker: string) {
+    const named = screen.queryByRole('button', { name: `Swap ${day}` })
+    fireEvent.click(named ?? dayControl(kicker))
+    return screen.findByRole('dialog', { name: `Swap ${day}` })
+  }
+
+  function withEvening(index: number, source: 'delivery' | 'dining_out') {
+    const body = planBody('draft')
+    body.days[index] = {
+      date: DAYS[index]!,
+      dinner: null,
+      manual_label: null,
+      meal_source: source,
+      is_new: false,
+      start_by: null,
+    } as unknown as (typeof body.days)[number]
+    return body
+  }
+
+  it('sets Delivery and Dining out, reverts to a cooked dinner, and clears the night', async () => {
+    let answer!: (response: Response) => void
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      ...lists,
+      [`PUT ${MONDAY}`]: () => new Promise<Response>((resolve) => (answer = resolve)),
+    })
+    await renderPage()
+    await screen.findByText('Beef tacos')
+    const beforeSupply = supplyReads(fetchMock)
+
+    const menu = await openEvening('Monday')
+    expect(within(menu).getByRole('menuitemradio', { name: 'Delivery' })).toHaveAttribute('aria-checked', 'false')
+    expect(within(menu).getByRole('menuitemradio', { name: 'Dining out' })).toHaveAttribute('aria-checked', 'false')
+    expect(within(menu).getByRole('menuitem', { name: 'Clear this night' })).toBeEnabled()
+    fireEvent.click(within(menu).getByRole('menuitemradio', { name: 'Delivery' }))
+
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    expect(await screen.findByText('Delivery')).toBeInTheDocument()
+    expect(screen.queryByText('Beef tacos')).not.toBeInTheDocument()
+    await waitFor(() => expect(puts(fetchMock)).toEqual([`${MONDAY} {"meal_source":"delivery"}`]))
+    await act(async () => answer(jsonResponse(200, withEvening(0, 'delivery'))))
+    await waitFor(() => expect(supplyReads(fetchMock)).toBe(beforeSupply + 1))
+    await waitFor(() => expect(evening('Monday')).toBeEnabled())
+    expect(planReads(fetchMock)).toBe(1)
+
+    fireEvent.click(within(await openEvening('Monday')).getByRole('menuitemradio', { name: 'Dining out' }))
+    expect(await screen.findByText('Dining out')).toBeInTheDocument()
+    expect(screen.queryByText('Delivery')).not.toBeInTheDocument()
+    await waitFor(() => expect(puts(fetchMock)).toEqual([`${MONDAY} {"meal_source":"delivery"}`, `${MONDAY} {"meal_source":"dining_out"}`]))
+    await act(async () => answer(jsonResponse(200, withEvening(0, 'dining_out'))))
+    await waitFor(() => expect(evening('Monday')).toBeEnabled())
+
+    const sheet = await openSwap('Monday', 'MON')
+    expect(within(sheet).getByText('Replaces Dining out')).toBeInTheDocument()
+    fireEvent.click(await within(sheet).findByRole('radio', { name: 'Regulars · 2' }))
+    fireEvent.click(within(sheet).getByRole('button', { name: /Fish tacos/ }))
+    expect(await screen.findByText('Fish tacos')).toBeInTheDocument()
+    expect(screen.queryByText('Dining out')).not.toBeInTheDocument()
+    await waitFor(() => expect(puts(fetchMock).at(-1)).toBe(`${MONDAY} {"dinner_id":"r1"}`))
+    const cooked = planBody('draft')
+    cooked.days[0] = {
+      ...cooked.days[0]!,
+      dinner: { ...cooked.days[0]!.dinner, id: 'r1', name: 'Fish tacos' },
+    }
+    await act(async () => answer(jsonResponse(200, cooked)))
+    await waitFor(() => expect(evening('Monday')).toBeEnabled())
+
+    fireEvent.click(within(await openEvening('Monday')).getByRole('menuitem', { name: 'Clear this night' }))
+    expect(await screen.findByText('Nothing planned')).toBeInTheDocument()
+    expect(screen.queryByText('Fish tacos')).not.toBeInTheDocument()
+    await waitFor(() => expect(puts(fetchMock).at(-1)).toBe(`${MONDAY} {"clear":true}`))
+    await act(async () =>
+      answer(
+        jsonResponse(200, {
+          ...planBody('draft'),
+          days: planBody('draft').days.map((day, i) =>
+            i === 0 ? { ...day, dinner: null, manual_label: null, meal_source: 'cook', is_new: false, start_by: null } : day,
+          ),
+        }),
+      ),
+    )
+    await waitFor(() => expect(evening('Monday')).toBeEnabled())
+  })
+
+  it('renders Delivery and Dining out with no NEW mark and no start-by, and the day still opens', async () => {
+    const body = planBody('draft')
+    body.days[2] = {
+      date: DAYS[2]!,
+      dinner: null,
+      manual_label: null,
+      meal_source: 'delivery',
+      is_new: false,
+      start_by: null,
+    } as unknown as (typeof body.days)[number]
+    body.days[6] = {
+      date: DAYS[6]!,
+      dinner: null,
+      manual_label: null,
+      meal_source: 'dining_out',
+      is_new: false,
+      start_by: null,
+    } as unknown as (typeof body.days)[number]
+    stubServer({ [`GET ${THIS_WEEK}`]: () => jsonResponse(200, body), ...lists })
+    await renderPage()
+
+    expect(await screen.findByText('Delivery')).toBeInTheDocument()
+    expect(screen.getByText('Dining out')).toBeInTheDocument()
+    expect(screen.queryByText('Crock pot tikka masala')).not.toBeInTheDocument()
+    expect(screen.queryByText('Sheet-pan salmon')).not.toBeInTheDocument()
+    expect(screen.queryByText('WED · NEW')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Start by/)).not.toBeInTheDocument()
+    const wednesdayColumn = screen.queryByRole('listitem', { name: 'Wednesday' })
+    if (wednesdayColumn !== null) {
+      expect(within(wednesdayColumn).queryByText('Side quest')).not.toBeInTheDocument()
+      expect(within(wednesdayColumn).queryByRole('img')).not.toBeInTheDocument()
+    }
+
+    const wednesday = evening('Wednesday')
+    expect(wednesday).toHaveAttribute('aria-haspopup', 'menu')
+    expect(wednesday).toHaveAttribute('aria-expanded', 'false')
+    expectMinHitArea(wednesday)
+    const menu = await openEvening('Wednesday')
+    expect(wednesday).toHaveAttribute('aria-expanded', 'true')
+    expect(wednesday).toHaveAttribute('aria-controls', menu.id)
+    expect(within(menu).getByRole('menuitemradio', { name: 'Delivery' })).toHaveAttribute('aria-checked', 'true')
+    expect(within(menu).getByRole('menuitemradio', { name: 'Dining out' })).toHaveAttribute('aria-checked', 'false')
+    fireEvent.keyDown(menu, { key: 'Escape' })
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    expect(wednesday).toHaveFocus()
+
+    const sheet = await openSwap('Wednesday', 'WED')
+    expect(within(sheet).getByText('Replaces Delivery')).toBeInTheDocument()
+    expect(within(sheet).getByRole('button', { name: 'Clear this night' })).toBeEnabled()
+  })
+
+  it('puts the evening back and shows the failure when the change is refused', async () => {
+    let refuse = true
+    const pending = deferred()
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      ...lists,
+      [`PUT ${MONDAY}`]: () => (refuse ? pending.response : jsonResponse(200, withEvening(0, 'delivery'))),
+    })
+    await renderPage()
+    await screen.findByText('Beef tacos')
+    const beforeSupply = supplyReads(fetchMock)
+
+    fireEvent.click(within(await openEvening('Monday')).getByRole('menuitemradio', { name: 'Delivery' }))
+    expect(await screen.findByText('Delivery')).toBeInTheDocument()
+    expect(screen.queryByText('Beef tacos')).not.toBeInTheDocument()
+
+    await act(async () => pending.send(errorResponse(500, 'internal')))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't swap Monday's dinner. internal message")
+    expect(screen.getByText('Beef tacos')).toBeInTheDocument()
+    expect(screen.queryByText('Delivery')).not.toBeInTheDocument()
+    expect(supplyReads(fetchMock)).toBe(beforeSupply)
+
+    refuse = false
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('Delivery')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+    expect(puts(fetchMock)).toEqual([`${MONDAY} {"meal_source":"delivery"}`, `${MONDAY} {"meal_source":"delivery"}`])
+  })
+
+  it('chooses an evening from the keyboard', async () => {
+    const fetchMock = stubServer({
+      [`GET ${THIS_WEEK}`]: () => jsonResponse(200, planBody('draft')),
+      ...lists,
+      [`PUT ${MONDAY}`]: () => jsonResponse(200, withEvening(0, 'dining_out')),
+    })
+    await renderPage()
+    const control = await waitFor(() => evening('Monday'))
+    expect(control).toHaveAttribute('aria-haspopup', 'menu')
+    expect(control).toHaveAttribute('aria-expanded', 'false')
+    expectMinHitArea(control)
+    control.focus()
+    fireEvent.keyDown(control, { key: 'ArrowDown' })
+
+    const menu = await screen.findByRole('menu', { name: 'Evening for Monday' })
+    expect(control).toHaveAttribute('aria-expanded', 'true')
+    const delivery = within(menu).getByRole('menuitemradio', { name: 'Delivery' })
+    expect(delivery).toHaveFocus()
+    fireEvent.keyDown(delivery, { key: 'ArrowDown' })
+    const dining = within(menu).getByRole('menuitemradio', { name: 'Dining out' })
+    expect(dining).toHaveFocus()
+    fireEvent.keyDown(dining, { key: 'ArrowUp' })
+    expect(delivery).toHaveFocus()
+    fireEvent.keyDown(delivery, { key: 'ArrowDown' })
+    expect(dining).toHaveFocus()
+    fireEvent.keyDown(dining, { key: 'Enter' })
+
+    expect(await screen.findByText('Dining out')).toBeInTheDocument()
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    expect(control).toHaveFocus()
+    await waitFor(() => expect(puts(fetchMock)).toEqual([`${MONDAY} {"meal_source":"dining_out"}`]))
   })
 })
 

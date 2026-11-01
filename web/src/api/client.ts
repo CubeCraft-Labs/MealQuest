@@ -63,7 +63,8 @@ export type ApiClient = {
   // which the service worker leaves to the network (sw/routes.ts), so it
   // resolves with the server's answer or rejects — with a network error, an
   // ApiError, or an Error when a worker from an earlier build answered it
-  // from its cache anyway. signal aborts it, as it does an apiFetch.
+  // from its cache anyway. signal aborts it, as it does an apiFetch. The
+  // recipe check uses it, and so does the Home read after a board edit.
   apiCheck<T>(path: string, signal?: AbortSignal): Promise<T>
   // loadMe fetches GET /api/v1/me and caches its CSRF token; signal aborts
   // it, as it does an apiFetch.

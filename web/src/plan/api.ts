@@ -14,6 +14,7 @@ import { isRecord } from '../api/errors.ts'
 import { knownArchived, useArchived } from '../dinners/archived.ts'
 import { MEAL_SOURCE_LABEL, MEAL_SOURCES, METHODS, oneOf, photoId, PLANNED_DINNER_STATUSES, type MealSource, type Method, type PlannedDinnerStatus } from '../dinners/api.ts'
 import { QUEST_LOG_KEY } from '../discover/api.ts'
+import { HOME_KEY } from '../home/api.ts'
 import { noteGoogleFailure } from '../settings/calendarApi.ts'
 import { supplyRunKey } from '../shopping/api.ts'
 
@@ -571,6 +572,9 @@ export function useSwapDay(weekStart: string): SwapDay {
         // including a Delivery or Dining-out evening, changes which nights
         // are shopped, so the list is read again.
         void queryClient.invalidateQueries({ queryKey: supplyRunKey(weekStart) })
+        // Tonight on Home is today's evening (Delivery, Dining out, another
+        // dinner, or a cleared night), so Home is read again too.
+        void queryClient.invalidateQueries({ queryKey: HOME_KEY })
       },
       // The day goes back only while it is still, field for field, the day
       // this swap wrote, and no plan read from the server has landed since

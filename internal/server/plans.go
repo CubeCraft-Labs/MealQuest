@@ -131,7 +131,7 @@ type pushedPlan struct {
 // was not generated.
 type pushedSupplyRun struct {
 	Status     string    `json:"status"`
-	Error      *apiError `json:"error"`
+	Error      *APIError `json:"error"`
 	TitleJobID *string   `json:"title_job_id"`
 }
 
@@ -165,17 +165,17 @@ func postPlanPush(logger *slog.Logger, svc *plan.Service, shop *shopping.Service
 			run.TitleJobID = g.TitleJobID
 		} else if errors.Is(err, shopping.ErrFrozen) {
 			logger.InfoContext(ctx, "Supply run in the Supply archive left as it was after Push to Calendar", "week", week.String())
-			run = pushedSupplyRun{Status: "archived", Error: &apiError{Code: "archived", Message: err.Error()}}
+			run = pushedSupplyRun{Status: "archived", Error: &APIError{Code: "archived", Message: err.Error()}}
 		} else if errors.Is(err, shopping.ErrPlanChanged) {
 			logger.WarnContext(ctx, "plan edited after Push to Calendar; Supply run not made", "week", week.String())
-			run = pushedSupplyRun{Status: "failed", Error: &apiError{
+			run = pushedSupplyRun{Status: "failed", Error: &APIError{
 				Code:      "plan_changed",
 				Message:   "the plan is on Calendar as pushed, but it was edited before its Supply run was made, so no Supply run was made from it; push again",
 				Retryable: true,
 			}}
 		} else {
 			logger.ErrorContext(ctx, "generate Supply run after Push to Calendar", "week", week.String(), "error", err)
-			run = pushedSupplyRun{Status: "failed", Error: &apiError{
+			run = pushedSupplyRun{Status: "failed", Error: &APIError{
 				Code:      "supply_run_failed",
 				Message:   "the plan is on Calendar, but its Supply run could not be made; make it again from the Supply run",
 				Retryable: true,

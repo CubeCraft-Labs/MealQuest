@@ -222,7 +222,7 @@ func postDinnerFavorite(logger *slog.Logger, svc *dinners.Service) http.HandlerF
 }
 
 // actorOrFail returns the session's actor, or answers 500 when the request
-// has none, which behind requireSession is a wiring bug.
+// has none, which behind RequireSession is a wiring bug.
 func actorOrFail(w http.ResponseWriter, r *http.Request, logger *slog.Logger) (auth.Actor, bool) {
 	actor, ok := auth.ActorFrom(r.Context())
 	if !ok {

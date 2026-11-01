@@ -12,10 +12,10 @@ import (
 // GET /api/v1/me.
 const CSRFHeader = "X-MealQuest-CSRF"
 
-// requireCSRF passes GET requests to next; every other
+// RequireCSRF passes GET requests to next; every other
 // request must carry CSRFHeader equal to its session's CSRF token or get 403
-// csrf. It runs behind requireSession, which puts the session in the context.
-func requireCSRF(logger *slog.Logger) func(http.Handler) http.Handler {
+// csrf. It runs behind RequireSession, which puts the session in the context.
+func RequireCSRF(logger *slog.Logger) func(http.Handler) http.Handler {
 	forbidden := apiErrorHandler(logger, http.StatusForbidden, "csrf", "missing or invalid CSRF token")
 	internal := apiErrorHandler(logger, http.StatusInternalServerError, "internal", "internal error")
 	return func(next http.Handler) http.Handler {

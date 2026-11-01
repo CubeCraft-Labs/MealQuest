@@ -30,7 +30,7 @@ func getRecipeSearchSettings(logger *slog.Logger, svc *recipes.SearchSettingsSer
 // response, like GET's, never holds it.
 func patchRecipeSearchSettings(logger *slog.Logger, svc *recipes.SearchSettingsService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		patch, err := decodePatch[recipes.SearchSettingsPatch](http.MaxBytesReader(w, r.Body, maxSettingsBody))
+		patch, err := decodePatch[recipes.SearchSettingsPatch](http.MaxBytesReader(w, r.Body, MaxSettingsBody))
 		if err != nil {
 			writeError(w, r, logger, http.StatusBadRequest, "invalid_request", err.Error())
 			return

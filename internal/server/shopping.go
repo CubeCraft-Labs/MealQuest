@@ -170,11 +170,11 @@ func postSupplyRunSendChat(logger *slog.Logger, svc *shopping.Service) http.Hand
 			return
 		case errors.Is(err, shopping.ErrSendUnconfirmed):
 			logger.WarnContext(r.Context(), "send Supply run to Google Chat", "error", err)
-			writeAPIError(w, r, logger, http.StatusBadGateway, apiError{Code: "chat_unconfirmed", Message: shopping.ErrSendUnconfirmed.Error()})
+			writeAPIError(w, r, logger, http.StatusBadGateway, APIError{Code: "chat_unconfirmed", Message: shopping.ErrSendUnconfirmed.Error()})
 			return
 		case errors.As(err, &refused):
 			logger.WarnContext(r.Context(), "send Supply run to Google Chat", "error", err)
-			writeAPIError(w, r, logger, http.StatusBadGateway, apiError{Code: "chat_refused", Message: err.Error(), Retryable: refused.Retryable()})
+			writeAPIError(w, r, logger, http.StatusBadGateway, APIError{Code: "chat_refused", Message: err.Error(), Retryable: refused.Retryable()})
 			return
 		case err != nil:
 			writeShoppingError(w, r, logger, "send Supply run to Google Chat", err)

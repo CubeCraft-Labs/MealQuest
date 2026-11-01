@@ -11,9 +11,11 @@ import {
   HOUSEHOLD_SETTINGS,
   NOTIFICATION_SETTINGS,
   RECIPE_SEARCH_SETTINGS,
+  SETTINGS_REGULARS,
 } from '../test/ApiProviders.tsx'
 import { InDataRouter } from '../test/dataRouter.tsx'
-import { errorResponse, fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
+import { dinnerBody, type DinnerBody } from '../test/dinners.ts'
+import { fakeLocation, jsonResponse, ME } from '../test/fetchStub.ts'
 import { expectMinHitArea } from '../test/hitArea.ts'
 import { mockViewport } from '../test/matchMedia.ts'
 import { SettingsPage } from './SettingsPage.tsx'
@@ -32,6 +34,7 @@ function stubAPI(responders: Record<string, Responder> = {}): Mock<typeof fetch>
     'GET /api/v1/settings/recipe-search': () => jsonResponse(200, RECIPE_SEARCH_SETTINGS),
     'GET /api/v1/settings/notifications': () => jsonResponse(200, NOTIFICATION_SETTINGS),
     'GET /api/v1/settings/chat-webhook': () => jsonResponse(200, CHAT_WEBHOOK),
+    'GET /api/v1/dinners?status=regular': () => jsonResponse(200, SETTINGS_REGULARS),
     ...responders,
   }
   const fetchMock = vi.fn<typeof fetch>((input, init) => {
@@ -121,7 +124,7 @@ describe.each([1440, 1180])('SettingsPage at %i px (mock 2e)', (width) => {
     expect(tab('Regular dinners')).toHaveAttribute('aria-selected', 'true')
     expect(tab('Regular dinners')).toHaveFocus()
     expect(panel('Regular dinners')).toBeVisible()
-    expect(within(panel('Regular dinners')).getByRole('region', { name: 'Regular dinners' })).toBeInTheDocument()
+    expect(await within(panel('Regular dinners')).findByRole('heading', { name: 'On rotation · 1' })).toBeInTheDocument()
     expect(panel('Household')).not.toBeVisible()
 
     fireEvent.keyDown(tab('Regular dinners'), { key: 'End' })
@@ -165,6 +168,123 @@ describe.each([1440, 1180])('SettingsPage at %i px (mock 2e)', (width) => {
   })
 })
 
+const TACOS = dinnerBody('d1', 'Beef tacos', { method: 'stovetop', minutes_total: 40, difficulty: 'easy' })
+const PIZZA = dinnerBody('d3', 'Pizza night', { grounding_status: 'failed', grounding_error: 'no_recipe_found' })
+
+// stubRegulars answers the Regulars from server.regulars, so a write's
+// responder changes what the next read sees.
+function stubRegulars(regulars: DinnerBody[], responders: (server: { regulars: DinnerBody[] }) => Record<string, Responder>) {
+  const server = { regulars }
+  const fetchMock = stubAPI({
+    'GET /api/v1/dinners?status=regular': () => jsonResponse(200, { dinners: server.regulars }),
+    ...responders(server),
+  })
+  return { server, fetchMock }
+}
+
+// writes lists the requests other than GETs, as method, path and body.
+function writes(fetchMock: Mock<typeof fetch>) {
+  return fetchMock.mock.calls
+    .filter(([, init]) => (init?.method ?? 'GET') !== 'GET')
+    .map(([input, init]) => [init?.method, String(input), init?.body])
+}
+
+// openRegulars shows the Regular dinners tab once its Regulars have loaded.
+async function openRegulars() {
+  fireEvent.click(tab('Regular dinners'))
+  const regulars = within(panel('Regular dinners'))
+  await regulars.findByRole('heading', { level: 2, name: /^On rotation/ })
+  return regulars
+}
+
+function regularRow(name: string) {
+  const item = within(screen.getByRole('list', { name: 'Regulars' }))
+    .getAllByRole('listitem')
+    .find((li) => within(li).queryByText(name) !== null)
+  if (item === undefined) throw new Error(`no Regular row named ${name}`)
+  return within(item)
+}
+
+describe.each([1440, 1180])('SettingsPage Regular dinners tab at %i px (mock 2e)', (width) => {
+  it('lists the Regulars as /settings/regulars does, under the page title rather than its own', async () => {
+    stubRegulars([TACOS, PIZZA], () => ({}))
+    await renderAt(width)
+    const regulars = await openRegulars()
+    expect(regulars.getByRole('heading', { level: 2, name: 'On rotation · 2' })).toBeInTheDocument()
+    expect(regularRow('Beef tacos').getByText('Stovetop · 40 min')).toBeInTheDocument()
+    expect(regularRow('Beef tacos').getByText('Recipe found')).toBeInTheDocument()
+    expect(regularRow('Pizza night').getByText('Needs a recipe')).toBeInTheDocument()
+    expect(regulars.getByRole('textbox', { name: 'Add a Regular' })).toBeInTheDocument()
+    expect(screen.getAllByRole('heading', { level: 1 }).map((h) => h.textContent)).toEqual(['Settings'])
+    expect(regulars.queryByRole('button', { name: 'Back to Settings' })).not.toBeInTheDocument()
+  })
+
+  it('adds a Regular by name', async () => {
+    const { fetchMock } = stubRegulars([TACOS], (server) => ({
+      'POST /api/v1/dinners': (body) => {
+        const created = dinnerBody('d9', (body as { name: string }).name, { grounding_status: 'pending' })
+        server.regulars = [...server.regulars, created]
+        return jsonResponse(201, { ...created, grounding_job_id: 'job-1' })
+      },
+    }))
+    await renderAt(width)
+    const regulars = await openRegulars()
+    fireEvent.change(regulars.getByRole('textbox', { name: 'Add a Regular' }), { target: { value: 'Chicken enchiladas' } })
+    fireEvent.click(regulars.getByRole('button', { name: 'Add Regular' }))
+
+    expect(await regulars.findByRole('heading', { level: 2, name: 'On rotation · 2' })).toBeInTheDocument()
+    expect(regularRow('Chicken enchiladas').getByText('Finding recipe…')).toBeInTheDocument()
+    expect(writes(fetchMock)).toEqual([['POST', '/api/v1/dinners', JSON.stringify({ name: 'Chicken enchiladas' })]])
+  })
+
+  it('edits a Regular in its sheet', async () => {
+    const { fetchMock } = stubRegulars([TACOS], (server) => ({
+      'PATCH /api/v1/dinners/d1': (body) => {
+        const edited = { ...TACOS, ...(body as object) }
+        server.regulars = [edited]
+        return jsonResponse(200, edited)
+      },
+    }))
+    await renderAt(width)
+    await openRegulars()
+    fireEvent.click(regularRow('Beef tacos').getByRole('button', { name: 'Edit Beef tacos' }))
+    const sheet = within(screen.getByRole('dialog', { name: 'Edit Beef tacos' }))
+    fireEvent.change(sheet.getByLabelText('Minutes'), { target: { value: '25' } })
+    fireEvent.click(sheet.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(writes(fetchMock)).toEqual([['PATCH', '/api/v1/dinners/d1', JSON.stringify({ minutes_total: 25 })]])
+    expect(await regularRow('Beef tacos').findByText('Stovetop · 25 min')).toBeInTheDocument()
+  })
+
+  it('fixes the recipe of a Regular that needs one', async () => {
+    const { fetchMock } = stubRegulars([PIZZA], (server) => ({
+      'GET /api/v1/dinners/d3/recipe-candidates': () =>
+        jsonResponse(200, {
+          candidates: [
+            { candidate_id: 'https://example.com/pizza', title: 'Weeknight pizza', site_name: 'Example Kitchen', photo_url: null, minutes: 45 },
+          ],
+        }),
+      'POST /api/v1/dinners/d3/ground': () => {
+        const fixed = { ...PIZZA, grounding_status: 'grounded', grounding_error: null }
+        server.regulars = [fixed]
+        return jsonResponse(200, fixed)
+      },
+    }))
+    await renderAt(width)
+    await openRegulars()
+    fireEvent.click(regularRow('Pizza night').getByRole('button', { name: 'Fix recipe for Pizza night' }))
+    const sheet = within(screen.getByRole('dialog', { name: 'Fix recipe' }))
+    fireEvent.click(await sheet.findByRole('button', { name: 'Use Weeknight pizza from Example Kitchen' }))
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(writes(fetchMock)).toEqual([
+      ['POST', '/api/v1/dinners/d3/ground', JSON.stringify({ candidate_id: 'https://example.com/pizza' })],
+    ])
+    expect(await regularRow('Pizza night').findByText('Recipe found')).toBeInTheDocument()
+  })
+})
+
 describe('SettingsPage reminder time across tabs', () => {
   it('shows a reminder time saved on Notifications in the Household tab, keeping its draft', async () => {
     const saved = { ...HOUSEHOLD_SETTINGS }
@@ -195,10 +315,7 @@ describe('SettingsPage reminder time across tabs', () => {
 
 describe('SettingsPage across the 768 px breakpoint', () => {
   it('shows the mobile list below 768 px and the sub-tabs from 768 px', async () => {
-    stubAPI({
-      'GET /api/v1/dinners?status=regular': () => errorResponse(404, 'not_found'),
-      'GET /api/v1/integrations/google': () => jsonResponse(200, GOOGLE_NOT_CONNECTED),
-    })
+    stubAPI({ 'GET /api/v1/integrations/google': () => jsonResponse(200, GOOGLE_NOT_CONNECTED) })
     const resize = await renderAt(767)
     expect(screen.getByRole('link', { name: /^AI assistant/ })).toHaveAttribute('href', '/settings/ai')
     expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
@@ -209,10 +326,7 @@ describe('SettingsPage across the 768 px breakpoint', () => {
   })
 
   it('keeps an unsaved draft and its leave guard across 1180 px, 390 px and back', async () => {
-    stubAPI({
-      'GET /api/v1/dinners?status=regular': () => errorResponse(404, 'not_found'),
-      'GET /api/v1/integrations/google': () => jsonResponse(200, GOOGLE_NOT_CONNECTED),
-    })
+    stubAPI({ 'GET /api/v1/integrations/google': () => jsonResponse(200, GOOGLE_NOT_CONNECTED) })
     const resize = await renderAt(1180)
     fireEvent.change(await screen.findByRole('textbox', { name: 'System prompt' }), {
       target: { value: 'A draft' },

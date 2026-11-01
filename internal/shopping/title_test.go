@@ -239,7 +239,7 @@ func TestGenerateTitleNotStoredOnFrozenList(t *testing.T) {
 	e := titleWeek(t)
 	e.model.QueueGenerate(titled("Noodles, Tacos and Chili"))
 	e.beforeTitle = func() {
-		if _, err := e.st.Writer.Exec(`UPDATE shopping_lists SET status = 'archived', frozen_at = '2026-10-19T04:05:00Z'`); err != nil {
+		if _, err := e.st.Writer.Exec(`UPDATE shopping_lists SET status = 'archived', frozen_at = '2026-10-19T04:05:00Z'; UPDATE shopping_groups SET frozen_dinner_name = (SELECT name FROM dinners WHERE dinners.id = dinner_id) WHERE list_id IN (SELECT id FROM shopping_lists WHERE frozen_at IS NOT NULL)`); err != nil {
 			t.Error(err)
 		}
 	}
@@ -309,5 +309,40 @@ func TestGenerateTitleOverlapAcrossRename(t *testing.T) {
 	}
 	if got := e.storedTitle(t); got == nil || (*got != "Noodles, Tacos and Chili" && *got != "Drunken Noodles Week") {
 		t.Errorf("stored title = %v, want one of the two titles", deref(got))
+	}
+}
+
+// TestGenerateTitleNotStoredOnReplacedList: a list replaced by a new
+// untitled list of the same week once archive_title has answered, before
+// its title is stored, keeps the replacement untitled; the old list's
+// title job fails, and the failure is logged.
+func TestGenerateTitleNotStoredOnReplacedList(t *testing.T) {
+	e := titleWeek(t)
+	e.model.QueueGenerate(titled("Noodles, Tacos and Chili"))
+	e.afterTitle = func() {
+		for _, stmt := range []string{
+			`DELETE FROM shopping_items WHERE group_id IN (SELECT id FROM shopping_groups WHERE list_id IN (SELECT id FROM shopping_lists WHERE week_start = ?1))`,
+			`DELETE FROM shopping_groups WHERE list_id IN (SELECT id FROM shopping_lists WHERE week_start = ?1)`,
+			`UPDATE shopping_lists SET id = 'replacement' WHERE week_start = ?1`,
+		} {
+			if _, err := e.st.Writer.Exec(stmt, week.String()); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+
+	g := e.generate(t)
+	wantJob(t, e.waitTitle(t, g), jobs.StatusFailed, shopping.ReasonTitleFailed)
+
+	var id string
+	if err := e.st.Reader.QueryRow(`SELECT id FROM shopping_lists WHERE week_start = ?`, week.String()).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if id != "replacement" || id == g.List.ID {
+		t.Fatalf("week's list = %s, want the replacement of %s", id, g.List.ID)
+	}
+	wantUntitled(t, "replacement's title", e.storedTitle(t))
+	if !strings.Contains(e.log.String(), "the Supply run was frozen or replaced before its title was stored") {
+		t.Errorf("log lacks the failure:\n%s", e.log.String())
 	}
 }

@@ -158,7 +158,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
-	planSvc, err := plan.NewService(db, weekDrafter(ai, guard), runner, googleSvc, notifier, sched.Wake, cfg.PublicURL, logger)
+	planSvc, err := plan.NewService(db, weekDrafter(ai, guard), runner, googleSvc, notifier, sched.Wake, cfg.PublicURL, sched.Now, logger)
 	if err != nil {
 		return err
 	}

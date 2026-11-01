@@ -3,7 +3,8 @@
 #   make dev     Go server on :8080 plus Vite dev server on :5173 (proxies
 #                /api, /auth, /media to :8080). Needs the MEALQUEST_* env set.
 #   make test    gofmt check, go vet, go test -race, npm typecheck and test,
-#                and the auto-deploy CI gate test (deploy/auto-deploy_test.sh).
+#                and the deploy tests (deploy/auto-deploy_test.sh,
+#                deploy/stack-start-recovery_test.sh).
 #   make build   Build the PWA, embed it, build the static binary bin/mealquest.
 #   make docker  Build the container image from ./Dockerfile.
 #   make sqlc    Regenerate internal/db from sqlc.yaml with the pinned sqlc.
@@ -49,6 +50,7 @@ web-test:
 
 deploy-test:
 	deploy/auto-deploy_test.sh
+	deploy/stack-start-recovery_test.sh
 
 build: embed
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/mealquest ./cmd/server
@@ -86,7 +88,8 @@ sqlc:
 	$(SQLC) generate
 
 # Fails on any difference from the committed generated code, including new
-# or deleted files.
+# or deleted files. A failing git status is itself a failure: its empty
+# output would otherwise read as "no drift".
 sqlc-check: sqlc
-	@drift="$$(git status --porcelain --untracked-files=all -- $(SQLC_OUT))"; \
+	@drift="$$(git status --porcelain --untracked-files=all -- $(SQLC_OUT))" || { echo "git status failed; cannot check internal/db for drift"; exit 1; }; \
 	if [ -n "$$drift" ]; then echo "internal/db is stale; run make sqlc and commit:"; echo "$$drift"; git diff -- $(SQLC_OUT); exit 1; fi

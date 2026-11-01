@@ -3,16 +3,22 @@ import { act } from '@testing-library/react'
 type Listener = (event: MediaQueryListEvent) => void
 
 // Replaces window.matchMedia with one that answers min-width / max-width
-// queries for a pretend viewport width, and prefers-reduced-motion: reduce
-// with reducedMotion (jsdom has no matchMedia and no layout). Returns a
-// function that resizes the pretend viewport and notifies every query whose
-// answer changed.
-export function mockViewport(initialWidth: number, { reducedMotion = false } = {}): (width: number) => void {
+// queries for a pretend viewport width, orientation: portrait for its height
+// (a viewport given no height is landscape), and prefers-reduced-motion:
+// reduce with reducedMotion (jsdom has no matchMedia and no layout). Returns
+// a function that resizes the pretend viewport and notifies every query
+// whose answer changed.
+export function mockViewport(
+  initialWidth: number,
+  { reducedMotion = false, height: initialHeight = 0 } = {},
+): (width: number, height?: number) => void {
   let width = initialWidth
+  let height = initialHeight
   const lists: { list: MediaQueryList; listeners: Set<Listener> }[] = []
 
   function evaluate(query: string): boolean {
     if (query === '(prefers-reduced-motion: reduce)') return reducedMotion
+    if (query === '(orientation: portrait)') return height >= width
     const min = /\(min-width:\s*(\d+)px\)/.exec(query)
     const max = /\(max-width:\s*(\d+)px\)/.exec(query)
     if (!min && !max) throw new Error(`mockViewport cannot evaluate ${JSON.stringify(query)}`)
@@ -37,9 +43,10 @@ export function mockViewport(initialWidth: number, { reducedMotion = false } = {
     return list
   }
 
-  return (next: number) => {
+  return (nextWidth: number, nextHeight = 0) => {
     const before = lists.map(({ list }) => list.matches)
-    width = next
+    width = nextWidth
+    height = nextHeight
     act(() => {
       lists.forEach(({ list, listeners }, i) => {
         if (list.matches === before[i]) return

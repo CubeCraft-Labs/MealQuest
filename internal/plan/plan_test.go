@@ -148,7 +148,7 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.svc, err = plan.NewService(st, drafter, e.runner, e.gcal, notifytest.New(t, st), func() {}, publicURL, logger)
+	e.svc, err = plan.NewService(st, drafter, e.runner, e.gcal, notifytest.New(t, st), func() {}, publicURL, time.Now, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -86,7 +86,7 @@ behaviour, exercise it (hit the endpoint, render the page).
 | `migrations/` | SQL migrations, embedded and applied at boot by `internal/store`; sqlc queries in `migrations/queries/`. |
 | `web/` | React PWA source. |
 | `deploy/` | Deployment files: compose stack, systemd units, [deploy runbook](deploy/RUNBOOK.md) and the automated deploy (`auto-deploy.sh` with `systemd/mealquest-auto-deploy.*`). |
-| `docs/` | Project documentation, including [ARCHITECTURE.md](docs/ARCHITECTURE.md). |
+| `docs/` | Project documentation, including [ARCHITECTURE.md](docs/ARCHITECTURE.md), launch evidence in [LAUNCH.md](docs/LAUNCH.md), and Lighthouse reports in `docs/lighthouse/`. |
 | `design/` | Requirements and UI handoff. **Read-only reference** — do not edit. |
 | `Dockerfile` | Multi-stage image build, at the repository root. |
 | `Makefile` | `dev`, `test`, `build`, `docker`; `sqlc` and `sqlc-check` regenerate and check `internal/db`. |

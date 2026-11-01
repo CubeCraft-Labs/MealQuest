@@ -2,7 +2,8 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { useState, type ReactNode } from 'react'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
 import { createNetworkStatus } from '../pwa/networkStatus.ts'
-import { errorResponse, fakeLocation, jsonResponse } from './fetchStub.ts'
+import { dinnerBody } from './dinners.ts'
+import { fakeLocation, jsonResponse } from './fetchStub.ts'
 
 // AI_SETTINGS is a GET /api/v1/settings/ai body: Anthropic with a verified key.
 export const AI_SETTINGS = {
@@ -107,12 +108,16 @@ export const CHAT_WEBHOOK = {
   last_test_status: null,
 }
 
+// SETTINGS_REGULARS is a GET /api/v1/dinners?status=regular body: one
+// Regular, its recipe found.
+export const SETTINGS_REGULARS = { dinners: [dinnerBody('r1', 'Beef tacos')] }
+
 // SETTINGS_API answers the settings home's requests, for stubFetchByPath, as
-// today's server does: the dinners endpoint does not exist yet, and neither
-// Google Calendar nor Google Chat is connected. The home's sub-tabs stay mounted on mobile, so
-// it also reads the AI models and recipe search settings.
+// today's server does: one Regular on rotation, and neither Google Calendar
+// nor Google Chat connected. The home's sub-tabs stay mounted on mobile, so
+// it also reads the Regulars list, the AI models and recipe search settings.
 export const SETTINGS_API = {
-  '/api/v1/dinners?status=regular': () => errorResponse(404, 'not_found'),
+  '/api/v1/dinners?status=regular': () => jsonResponse(200, SETTINGS_REGULARS),
   '/api/v1/integrations/google': () => jsonResponse(200, GOOGLE_NOT_CONNECTED),
   '/api/v1/settings/notifications': () => jsonResponse(200, NOTIFICATION_SETTINGS),
   '/api/v1/settings/chat-webhook': () => jsonResponse(200, CHAT_WEBHOOK_NONE),

@@ -48,7 +48,7 @@ INSERT INTO recipe_ingredients (
 -- name: ListRecipeIngredients :many
 SELECT * FROM recipe_ingredients
 WHERE recipe_id = ?
-ORDER BY position, id;
+ORDER BY position;
 
 -- name: DeleteRecipeIngredients :exec
 DELETE FROM recipe_ingredients
@@ -64,7 +64,7 @@ INSERT INTO recipe_steps (
 -- name: ListRecipeSteps :many
 SELECT * FROM recipe_steps
 WHERE recipe_id = ?
-ORDER BY position, id;
+ORDER BY position;
 
 -- name: DeleteRecipeSteps :exec
 DELETE FROM recipe_steps

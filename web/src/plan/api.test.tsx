@@ -160,6 +160,17 @@ describe('usePlan', () => {
     ['a dinner status it does not know', (body: ReturnType<typeof planBody>) => (body.days[0]!.dinner.status = 'deleted'), 'dinner status "deleted"'],
     ['no dinner status', (body: ReturnType<typeof planBody>) => Reflect.deleteProperty(body.days[0]!.dinner, 'status'), 'dinner status undefined'],
     ['a sync time that is no instant', (body: ReturnType<typeof planBody>) => (body.calendar_synced_at = 'yesterday'), 'calendar_synced_at "yesterday"'],
+    // Date reads both, in this device's zone: neither says which instant.
+    [
+      'a sync time with no offset',
+      (body: ReturnType<typeof planBody>) => (body.calendar_synced_at = '2026-10-07T15:58:00'),
+      'calendar_synced_at "2026-10-07T15:58:00" is not an instant',
+    ],
+    [
+      'a sync date with no time',
+      (body: ReturnType<typeof planBody>) => (body.calendar_synced_at = '2026-10-07'),
+      'calendar_synced_at "2026-10-07" is not an instant',
+    ],
   ])('refuses a plan with %s', async (_, change, said) => {
     const body = planBody()
     change(body)
@@ -247,6 +258,72 @@ describe('useSwapDay', () => {
       start_by: '2026-10-09T14:00:00-04:00',
     })
     expect(result.current.swap.failed?.error.message).toBe('dinner_not_plannable message')
+  })
+
+  it('leaves a day a later plan read landed, the very day the swap wrote, when the swap of it fails', async () => {
+    const friday = deferred()
+    let read = planBody()
+    stubServer({
+      [`GET ${PLAN}`]: () => jsonResponse(200, read),
+      [`PUT ${FRIDAY}`]: () => friday.reply,
+    })
+    const { result, plan, queryClient } = await renderSwaps()
+
+    // The read finds Friday lemon orzo, field for field the day the swap
+    // wrote: the server has it, whatever this swap's PUT is answered with.
+    const swapped = { date: '2026-10-09', dinner: ORZO.dinner, manual_label: null, is_new: true, start_by: null }
+    act(() => result.current.swap.mutate(ORZO))
+    await waitFor(() => expect(plan().days[4]).toEqual(swapped))
+    read = planBody({ 4: { id: 'q1', name: 'Lemon orzo', is_new: true } })
+    await act(() => result.current.plan.refetch())
+    await act(async () => friday.send(errorResponse(500, 'internal')))
+
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0))
+    expect(plan().days[4]).toEqual(swapped)
+    expect(result.current.swap.failed?.error.message).toBe('internal message')
+  })
+
+  it('puts the day back when the swap of it fails with no plan read since, after a later swap of another day', async () => {
+    const friday = deferred()
+    const monday = deferred()
+    stubServer({
+      [`GET ${PLAN}`]: () => jsonResponse(200, planBody()),
+      [`PUT ${FRIDAY}`]: () => friday.reply,
+      [`PUT ${MONDAY}`]: () => monday.reply,
+    })
+    const { result, plan, queryClient } = await renderSwaps()
+
+    act(() => result.current.swap.mutate(ORZO))
+    act(() => result.current.swap.mutate(FISH))
+    await waitFor(() => expect(plan().days[0]!.dinner?.name).toBe('Fish tacos'))
+    await act(async () => friday.send(errorResponse(500, 'internal')))
+
+    await waitFor(() => expect(plan().days[4]!.dinner?.name).toBe('Dinner 4'))
+    expect(plan().days[0]!.dinner?.name).toBe('Fish tacos')
+    await act(async () => monday.send(errorResponse(500, 'internal')))
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0))
+    expect(plan().days.map((day) => day.dinner?.name)).toEqual(planBody().days.map((day) => day.dinner.name))
+  })
+
+  it('reads the plan again when the dinner is already on another day of the week, and sends the swap only once', async () => {
+    let read = planBody()
+    stubServer({
+      [`GET ${PLAN}`]: () => jsonResponse(200, read),
+      [`PUT ${FRIDAY}`]: () => errorResponse(409, 'dinner_already_planned'),
+    })
+    const { result, plan, queryClient } = await renderSwaps()
+
+    // Meanwhile lemon orzo was planned on Wednesday.
+    read = planBody({ 2: { id: 'q1', name: 'Lemon orzo', is_new: true } })
+    act(() => result.current.swap.mutate(ORZO))
+
+    await waitFor(() => expect(plan().days[2]!.dinner?.name).toBe('Lemon orzo'))
+    expect(plan().days[4]!.dinner?.name).toBe('Dinner 4')
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0))
+    expect(result.current.swap.failed?.error.message).toBe('dinner_already_planned message')
+    const sent = vi.mocked(fetch).mock.calls.map(([input, init]) => `${init?.method ?? 'GET'} ${String(input)}`)
+    expect(sent.filter((call) => call === `PUT ${FRIDAY}`)).toHaveLength(1)
+    expect(sent.filter((call) => call === `GET ${PLAN}`)).toHaveLength(2)
   })
 
   it('refuses to dismiss a pending swap', async () => {
@@ -392,6 +469,61 @@ describe('week mutations', () => {
     await waitFor(() => expect(weekMutations(queryClient, LATER)).toEqual(['push error']))
     hook.rerender({ week: WEEK })
     expect(weekMutations(queryClient, LATER)).toEqual([])
+  })
+
+  it("leaves behind a week's settled swaps but for the failure that speaks for it, which stays until its week leaves it behind", async () => {
+    let refuse = true
+    stubServer({
+      [`GET ${PLAN}`]: () => jsonResponse(200, planBody()),
+      [`PUT ${FRIDAY}`]: () => (refuse ? errorResponse(409, 'dinner_not_plannable') : jsonResponse(200, planBody())),
+      [`PUT ${MONDAY}`]: () => jsonResponse(200, planBody({ 0: { id: 'r1', name: 'Fish tacos' } })),
+      [`GET /api/v1/plans/${NEXT}`]: () => errorResponse(404, 'not_found'),
+      [`GET /api/v1/plans/${LATER}`]: () => errorResponse(404, 'not_found'),
+    })
+    const api = createApiClient(fakeLocation('/plan'), createNetworkStatus(window), createVerifiedSession(localStorage))
+    await api.loadMe()
+    const queryClient = createQueryClient()
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <ApiProvider client={api}>
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      </ApiProvider>
+    )
+    const hook = renderHook(({ week }) => ({ plan: usePlan(week), swap: useSwapDay(week) }), {
+      wrapper,
+      initialProps: { week: WEEK },
+    })
+    await waitFor(() => expect(hook.result.current.plan.isSuccess).toBe(true))
+
+    // Two swaps settle while the week is shown: the earlier is needed for
+    // ordering no longer, and only the latest stays.
+    act(() => hook.result.current.swap.mutate(FISH))
+    act(() => hook.result.current.swap.mutate(ORZO))
+    await waitFor(() => expect(weekMutations(queryClient, WEEK)).toEqual(['swap error']))
+
+    // Leaving the week, through two others, keeps the failure alone.
+    for (const week of [NEXT, LATER, NEXT]) {
+      hook.rerender({ week })
+      await waitFor(() => expect(hook.result.current.plan.isSuccess).toBe(true))
+      expect(weekMutations(queryClient, WEEK)).toEqual(['swap error'])
+    }
+
+    // Coming back shows it; it fails again, and again one stays.
+    hook.rerender({ week: WEEK })
+    expect(hook.result.current.swap.failed?.error.message).toBe('dinner_not_plannable message')
+    act(() => hook.result.current.swap.dismiss())
+    act(() => hook.result.current.swap.mutate(ORZO))
+    await waitFor(() => expect(hook.result.current.swap.failed).not.toBeNull())
+    expect(weekMutations(queryClient, WEEK)).toEqual(['swap error'])
+
+    // A swap that succeeds is left behind once the week is.
+    refuse = false
+    act(() => hook.result.current.swap.dismiss())
+    act(() => hook.result.current.swap.mutate(ORZO))
+    await waitFor(() => expect(hook.result.current.swap.succeeded).not.toBeNull())
+    expect(weekMutations(queryClient, WEEK)).toEqual(['swap success'])
+    hook.rerender({ week: NEXT })
+    await waitFor(() => expect(hook.result.current.plan.isSuccess).toBe(true))
+    expect(weekMutations(queryClient, WEEK)).toEqual([])
   })
 
   it('keeps a push whose Supply run was not made, settled in a week no longer shown, to be shown on coming back', async () => {

@@ -12,7 +12,7 @@ import {
 import { ApiError, useApi, type ApiRead } from '../api/index.ts'
 import { isRecord } from '../api/errors.ts'
 import { knownArchived, useArchived } from '../dinners/archived.ts'
-import { MEAL_SOURCES, METHODS, oneOf, photoId, PLANNED_DINNER_STATUSES, type MealSource, type Method, type PlannedDinnerStatus } from '../dinners/api.ts'
+import { MEAL_SOURCE_LABEL, MEAL_SOURCES, METHODS, oneOf, photoId, PLANNED_DINNER_STATUSES, type MealSource, type Method, type PlannedDinnerStatus } from '../dinners/api.ts'
 import { QUEST_LOG_KEY } from '../discover/api.ts'
 import { noteGoogleFailure } from '../settings/calendarApi.ts'
 import { supplyRunKey } from '../shopping/api.ts'
@@ -53,18 +53,24 @@ export type PlanDinner = {
 // PlanDay is one day of a plan: its household-local date, the dinner
 // planned or a one-off manual label (never both), whether that dinner is a
 // Quest-log pick, and, for a crock-pot dinner of known minutes, the instant
-// it must start by. A cleared night has neither a dinner nor a label.
+// it must start by. meal_source is the day's own evening: cook for a
+// dinner, a manual night or a cleared night, and delivery or dining_out
+// for that evening, which then has neither a dinner nor a label. A cleared
+// night has neither a dinner nor a label.
 export type PlanDay = {
   date: string
   dinner: PlanDinner | null
   manual_label: string | null
+  meal_source: MealSource
   is_new: boolean
   start_by: string | null
 }
 
-// planDayName is the name a plan day shows: the dinner, the one-off label,
-// or "Nothing planned" when the night is cleared.
+// planDayName is the name a plan day shows: Delivery or Dining out for
+// that evening, otherwise the dinner, the one-off label, or "Nothing
+// planned" when the night is cleared.
 export function planDayName(day: PlanDay): string {
+  if (day.meal_source === 'delivery' || day.meal_source === 'dining_out') return MEAL_SOURCE_LABEL[day.meal_source]
   if (day.dinner !== null) return day.dinner.name
   if (day.manual_label !== null) return day.manual_label
   return 'Nothing planned'
@@ -107,7 +113,12 @@ function parseDay(where: string, body: unknown): PlanDay {
       throw new Error(`${where}: a night with no dinner is not a quest and has no start time`)
     }
     if (manual !== null && manual.trim() === '') throw new Error(`${where}: a manual night has an empty name`)
-    return { date: body.date, dinner: null, manual_label: manual, is_new: false, start_by: null }
+    const mealSource = oneOf(where, 'meal_source', MEAL_SOURCES, body.meal_source)
+    if (mealSource !== 'cook') {
+      if (manual !== null) throw new Error(`${where}: a ${mealSource} evening also has a manual label`)
+      return { date: body.date, dinner: null, manual_label: null, meal_source: mealSource, is_new: false, start_by: null }
+    }
+    return { date: body.date, dinner: null, manual_label: manual, meal_source: 'cook', is_new: false, start_by: null }
   }
   if (
     !isRecord(body.dinner) ||
@@ -118,6 +129,8 @@ function parseDay(where: string, body: unknown): PlanDay {
     throw new Error(`${where}: response has a day that is not a plan day`)
   }
   if (manual !== null) throw new Error(`${where}: a plan day has both a dinner and a manual label`)
+  // Dinner status is read before the day's meal source so a plan cached
+  // before dinners carried a status still fails on that, as it did.
   const dinner: PlanDinner = {
     id: body.dinner.id,
     name: body.dinner.name,
@@ -127,7 +140,9 @@ function parseDay(where: string, body: unknown): PlanDay {
     method: body.dinner.method === null ? null : oneOf(where, 'method', METHODS, body.dinner.method),
     meal_source: oneOf(where, 'meal_source', MEAL_SOURCES, body.dinner.meal_source),
   }
-  return { date: body.date, dinner, manual_label: null, is_new: body.is_new, start_by: body.start_by as string | null }
+  const mealSource = oneOf(where, 'meal_source', MEAL_SOURCES, body.meal_source)
+  if (mealSource !== 'cook') throw new Error(`${where}: a night with a dinner is not a ${mealSource} evening`)
+  return { date: body.date, dinner, manual_label: null, meal_source: 'cook', is_new: body.is_new, start_by: body.start_by as string | null }
 }
 
 // RFC3339 is an RFC 3339 instant as the server writes it: a full date and
@@ -284,23 +299,33 @@ export function useStartDraft() {
   })
 }
 
+// EveningSource is a plan day's non-cook evening. Cook is a dinner, a
+// manual night or a cleared night, not one of these.
+export type EveningSource = Exclude<MealSource, 'cook'>
+
 // Swap is one day's edit: a dinner chosen from the Quest log or the
-// Regulars, a one-off manual label, or clearing the night.
+// Regulars, a one-off manual label, a Delivery or Dining-out evening, or
+// clearing the night.
 export type Swap =
   | { date: string; dinner: PlanDinner; fromQuestLog: boolean }
   | { date: string; manual_label: string }
+  | { date: string; meal_source: EveningSource }
   | { date: string; clear: true }
 
-function swapBody(swap: Swap): { dinner_id: string } | { manual_label: string } | { clear: true } {
+function swapBody(swap: Swap): { dinner_id: string } | { manual_label: string } | { meal_source: EveningSource } | { clear: true } {
   if ('clear' in swap) return { clear: true }
   if ('manual_label' in swap) return { manual_label: swap.manual_label }
+  if ('meal_source' in swap) return { meal_source: swap.meal_source }
   return { dinner_id: swap.dinner.id }
 }
 
 function swappedDay(swap: Swap): PlanDay {
-  if ('clear' in swap) return { date: swap.date, dinner: null, manual_label: null, is_new: false, start_by: null }
-  if ('manual_label' in swap) return { date: swap.date, dinner: null, manual_label: swap.manual_label, is_new: false, start_by: null }
-  return { date: swap.date, dinner: swap.dinner, manual_label: null, is_new: swap.fromQuestLog, start_by: null }
+  if ('clear' in swap) return { date: swap.date, dinner: null, manual_label: null, meal_source: 'cook', is_new: false, start_by: null }
+  if ('manual_label' in swap) return { date: swap.date, dinner: null, manual_label: swap.manual_label, meal_source: 'cook', is_new: false, start_by: null }
+  if ('meal_source' in swap) {
+    return { date: swap.date, dinner: null, manual_label: null, meal_source: swap.meal_source, is_new: false, start_by: null }
+  }
+  return { date: swap.date, dinner: swap.dinner, manual_label: null, meal_source: 'cook', is_new: swap.fromQuestLog, start_by: null }
 }
 
 // sameDinner says whether two planned dinners are the same in every field.
@@ -312,7 +337,8 @@ function sameDinner(a: PlanDinner | null, b: PlanDinner | null): boolean {
     a.status === b.status &&
     a.photo_id === b.photo_id &&
     a.minutes === b.minutes &&
-    a.method === b.method
+    a.method === b.method &&
+    a.meal_source === b.meal_source
   )
 }
 
@@ -322,6 +348,7 @@ function sameDay(a: PlanDay, b: PlanDay): boolean {
     a.date === b.date &&
     sameDinner(a.dinner, b.dinner) &&
     a.manual_label === b.manual_label &&
+    a.meal_source === b.meal_source &&
     a.is_new === b.is_new &&
     a.start_by === b.start_by
   )
@@ -538,7 +565,12 @@ export function useSwapDay(weekStart: string): SwapDay {
         return { previous, swapped, query, reads: serverReads(query) }
       },
       onSuccess: (plan) => {
-        if (isLatest()) queryClient.setQueryData<Plan>(key, plan)
+        if (!isLatest()) return
+        queryClient.setQueryData<Plan>(key, plan)
+        // The week's Supply run is made from the plan's dinners. A swap,
+        // including a Delivery or Dining-out evening, changes which nights
+        // are shopped, so the list is read again.
+        void queryClient.invalidateQueries({ queryKey: supplyRunKey(weekStart) })
       },
       // The day goes back only while it is still, field for field, the day
       // this swap wrote, and no plan read from the server has landed since

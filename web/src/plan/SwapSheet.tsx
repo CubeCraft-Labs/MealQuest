@@ -65,7 +65,7 @@ export function SwapSheet({ day, planned, onSwap, onClose }: SwapSheetProps) {
   const [source, setSource] = useState<Source>('quest_log')
   const [label, setLabel] = useState(day.manual_label ?? '')
   const named = planDayName(day)
-  const occupied = day.dinner !== null || day.manual_label !== null
+  const occupied = day.dinner !== null || day.manual_label !== null || day.meal_source !== 'cook'
   const lists = { quest_log: questLog, regulars }
   const list = lists[source]
 

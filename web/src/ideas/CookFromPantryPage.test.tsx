@@ -61,6 +61,7 @@ function tonightPlan() {
       dinner: { id: `d${i}`, name: i === 3 ? CURRY.name : `Dinner ${i}`, status: i === 3 ? 'quest_log' : 'regular', photo: null, minutes: 30, method: 'stovetop', origin: 'regular', meal_source: 'cook' },
       is_new: i === 3,
       start_by: null,
+      meal_source: 'cook',
     })),
     updated_at: '2026-10-08T15:00:00Z',
   }

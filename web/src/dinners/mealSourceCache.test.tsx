@@ -46,6 +46,7 @@ const PLAN = {
     },
     is_new: false,
     start_by: null,
+    meal_source: 'cook',
   })),
 }
 
@@ -221,6 +222,7 @@ function planFor(week: string, dates: string[], monday: { id: string; name: stri
           : { id: `x${week}-${i}`, name: `Other ${i}`, status: 'regular', photo: null, minutes: 30, method: 'stovetop', meal_source: 'cook' },
       is_new: false,
       start_by: null,
+      meal_source: 'cook',
     })),
   }
 }

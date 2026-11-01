@@ -25,47 +25,61 @@ SET status = ?, ai_note = ?, revision = revision + 1, updated_at = ?
 WHERE id = ?;
 
 -- name: PutPlanDay :exec
--- Plans dinner_id on date of plan_id, clearing any manual label. An
--- existing day keeps its calendar event id while its dinner stays the
--- same and it was not a manual label; a new dinner clears it, since
--- Calendar no longer shows the day as planned.
-INSERT INTO plan_days (id, plan_id, date, dinner_id, manual_label, is_new, created_at, updated_at)
-VALUES (?, ?, ?, ?, NULL, ?, ?, ?)
+-- Plans dinner_id on date of plan_id, clearing any manual label and any
+-- Delivery or Dining-out evening (meal_source cook). An existing day keeps
+-- its calendar event id while its dinner stays the same, it was not a
+-- manual label, and it was not a non-cook evening; a new dinner clears it,
+-- since Calendar no longer shows the day as planned.
+INSERT INTO plan_days (id, plan_id, date, dinner_id, manual_label, meal_source, is_new, created_at, updated_at)
+VALUES (?, ?, ?, ?, NULL, 'cook', ?, ?, ?)
 ON CONFLICT (plan_id, date) DO UPDATE
-SET dinner_id = excluded.dinner_id, manual_label = NULL, is_new = excluded.is_new,
+SET dinner_id = excluded.dinner_id, manual_label = NULL, meal_source = 'cook', is_new = excluded.is_new,
 	calendar_event_id = CASE
-		WHEN plan_days.dinner_id IS excluded.dinner_id AND plan_days.manual_label IS NULL THEN plan_days.calendar_event_id
+		WHEN plan_days.dinner_id IS excluded.dinner_id AND plan_days.manual_label IS NULL AND plan_days.meal_source = 'cook' THEN plan_days.calendar_event_id
 	END,
 	updated_at = excluded.updated_at;
 
 -- name: SwapPlanDay :execrows
 -- Plans dinner_id on an existing day of plan_id, clearing its manual
--- label and its calendar event id since Calendar no longer shows the day
--- as planned; a date the plan does not have is left as it is (0 rows).
+-- label, its Delivery or Dining-out evening, and its calendar event id
+-- since Calendar no longer shows the day as planned; a date the plan does
+-- not have is left as it is (0 rows).
 UPDATE plan_days
-SET dinner_id = ?, manual_label = NULL, is_new = ?, calendar_event_id = NULL, updated_at = ?
+SET dinner_id = ?, manual_label = NULL, meal_source = 'cook', is_new = ?, calendar_event_id = NULL, updated_at = ?
 WHERE plan_id = ? AND date = ?;
 
 -- name: SetManualPlanDay :execrows
 -- Names an existing day of plan_id with a one-off label and no dinner,
--- clearing its calendar event id. A date the plan does not have is left
--- as it is (0 rows).
+-- clearing a Delivery or Dining-out evening and its calendar event id. A
+-- date the plan does not have is left as it is (0 rows).
 UPDATE plan_days
-SET dinner_id = NULL, manual_label = ?, is_new = 0, calendar_event_id = NULL, updated_at = ?
+SET dinner_id = NULL, manual_label = ?, meal_source = 'cook', is_new = 0, calendar_event_id = NULL, updated_at = ?
+WHERE plan_id = ? AND date = ?;
+
+-- name: SetPlanDayEvening :execrows
+-- Marks an existing day of plan_id as a Delivery or Dining-out evening
+-- (meal_source delivery or dining_out): no dinner, no manual label, and
+-- its calendar event id cleared, since Calendar no longer shows a dinner
+-- that night. A date the plan does not have is left as it is (0 rows).
+UPDATE plan_days
+SET dinner_id = NULL, manual_label = NULL, meal_source = ?, is_new = 0, calendar_event_id = NULL, updated_at = ?
 WHERE plan_id = ? AND date = ?;
 
 -- name: ClearPlanDay :execrows
--- Clears an existing day of plan_id: no dinner and no manual label, and
--- its calendar event id, since Calendar no longer shows the day as
--- planned. A date the plan does not have is left as it is (0 rows).
+-- Clears an existing day of plan_id: no dinner, no manual label and no
+-- Delivery or Dining-out evening, and its calendar event id, since
+-- Calendar no longer shows the day as planned. A date the plan does not
+-- have is left as it is (0 rows).
 UPDATE plan_days
-SET dinner_id = NULL, manual_label = NULL, is_new = 0, calendar_event_id = NULL, updated_at = ?
+SET dinner_id = NULL, manual_label = NULL, meal_source = 'cook', is_new = 0, calendar_event_id = NULL, updated_at = ?
 WHERE plan_id = ? AND date = ?;
 
 -- name: ListPlanSlots :many
--- Every day of plan_id, Monday first. A day is a dinner (dinner_id set),
--- a one-off manual label, or cleared (both null).
-SELECT date, is_new, calendar_event_id, dinner_id, manual_label
+-- Every day of plan_id, Monday first. A day is a dinner (dinner_id set,
+-- meal_source cook), a one-off manual label (meal_source cook), a Delivery
+-- or Dining-out evening (meal_source delivery or dining_out, no dinner and
+-- no label), or cleared (meal_source cook and both null).
+SELECT date, is_new, calendar_event_id, dinner_id, manual_label, meal_source
 FROM plan_days
 WHERE plan_id = ?
 ORDER BY date;

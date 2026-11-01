@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io/fs"
 	"reflect"
@@ -177,8 +178,8 @@ func TestMigrateEmbeddedMigrations(t *testing.T) {
 	if err := Migrate(context.Background(), s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed,0018_plan_day_manual_label,0019_dinner_meal_source,0020_recipe_item_position_unique,0021_shopping_group_frozen_name,0022_site_name_from_page" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed,0018_plan_day_manual_label,0019_dinner_meal_source,0020_recipe_item_position_unique,0021_shopping_group_frozen_name,0022_site_name_from_page", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed,0018_plan_day_manual_label,0019_dinner_meal_source,0020_recipe_item_position_unique,0021_shopping_group_frozen_name,0022_site_name_from_page,0023_plan_day_evening" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed,0018_plan_day_manual_label,0019_dinner_meal_source,0020_recipe_item_position_unique,0021_shopping_group_frozen_name,0022_site_name_from_page,0023_plan_day_evening", got)
 	}
 }
 
@@ -198,8 +199,8 @@ func TestMigrateBootstrapThenEmbeddedInitApplies(t *testing.T) {
 	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed,0018_plan_day_manual_label,0019_dinner_meal_source,0020_recipe_item_position_unique,0021_shopping_group_frozen_name,0022_site_name_from_page" {
-		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed,0018_plan_day_manual_label,0019_dinner_meal_source,0020_recipe_item_position_unique,0021_shopping_group_frozen_name,0022_site_name_from_page", got)
+	if got := versions(migrationRows(t, s)); got != "0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed,0018_plan_day_manual_label,0019_dinner_meal_source,0020_recipe_item_position_unique,0021_shopping_group_frozen_name,0022_site_name_from_page,0023_plan_day_evening" {
+		t.Errorf("versions = %q, want 0000_bootstrap,0001_init,0002_household_settings_updated_by,0003_jobs_status,0004_ai_provider_presets,0005_ai_provider_xai,0006_ai_runs_status,0007_recipe_grounding,0008_dinner_recipe_url,0009_dinner_grounding_error,0010_dinner_grounding_revision,0011_ground_dinner_job_revision,0012_suggestion_name,0013_week_plan_revision,0014_rotation_review_name,0015_google_reconnect_required,0016_shopping_list_untitled,0017_shopping_list_chat_send_unconfirmed,0018_plan_day_manual_label,0019_dinner_meal_source,0020_recipe_item_position_unique,0021_shopping_group_frozen_name,0022_site_name_from_page,0023_plan_day_evening", got)
 	}
 	if !tableExists(t, s, "dinners") {
 		t.Error("table from 0001_init was not created")
@@ -783,6 +784,62 @@ func migrateBefore(t *testing.T, s *Store, prefix string) {
 	}
 	if err := Migrate(context.Background(), s.Writer, before); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestMigratePlanDayEveningKeepsExistingDays: rebuilding plan_days keeps a
+// dinner and a manual night, both as cook, and then accepts a Delivery
+// evening while still refusing one that also has a label.
+func TestMigratePlanDayEveningKeepsExistingDays(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	migrateBefore(t, s, "0023")
+	for _, stmt := range []string{
+		`INSERT INTO dinners (id, name, normalized_name, status, origin, is_favorite, grounding_status, created_at, updated_at)
+			VALUES ('dinner-1', 'Pho', 'pho', 'regular', 'regular', 0, 'grounded', 'c', 'u')`,
+		`INSERT INTO week_plans (id, week_start, status, created_at, updated_at)
+			VALUES ('plan-1', '2026-10-12', 'draft', 'c', 'u')`,
+		`INSERT INTO plan_days (id, plan_id, date, dinner_id, manual_label, is_new, created_at, updated_at)
+			VALUES ('day-1', 'plan-1', '2026-10-13', 'dinner-1', NULL, 0, 'c', 'u'),
+			       ('day-2', 'plan-1', '2026-10-14', NULL, 'mummy dogs', 0, 'c', 'u')`,
+	} {
+		if _, err := s.Writer.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("seed: %v\n%s", err, stmt)
+		}
+	}
+	if err := Migrate(ctx, s.Writer, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.Reader.QueryContext(ctx, `SELECT id, dinner_id, manual_label, meal_source FROM plan_days ORDER BY date`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var id string
+		var dinner, label sql.NullString
+		var source string
+		if err := rows.Scan(&id, &dinner, &label, &source); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, fmt.Sprintf("%s dinner=%s label=%s source=%s", id, dinner.String, label.String, source))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"day-1 dinner=dinner-1 label= source=cook",
+		"day-2 dinner= label=mummy dogs source=cook",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("plan days after 0023 = %v, want %v", got, want)
+	}
+	if _, err := s.Writer.ExecContext(ctx, `UPDATE plan_days SET dinner_id = NULL, manual_label = NULL, meal_source = 'delivery' WHERE id = 'day-1'`); err != nil {
+		t.Fatalf("delivery evening rejected: %v", err)
+	}
+	if _, err := s.Writer.ExecContext(ctx, `UPDATE plan_days SET meal_source = 'dining_out' WHERE id = 'day-2'`); err == nil {
+		t.Fatal("dining out with a manual label was accepted")
 	}
 }
 

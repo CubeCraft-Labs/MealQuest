@@ -237,29 +237,37 @@ type Plan struct {
 	UpdatedAt        string  `json:"updated_at"`
 }
 
-// Day is one day of a plan. A day is a dinner, a one-off manual label, or
-// cleared: dinner and manual_label are never both set.
+// Day is one day of a plan. A day is exactly one of a dinner, a Delivery
+// evening, a Dining-out evening, a one-off manual label, or cleared.
+// dinner and manual_label are never both set, and a non-cook evening has
+// neither.
 type Day struct {
 	// Date is household-local, YYYY-MM-DD.
 	Date string `json:"date"`
 	// Dinner is the dinner planned on the day, null when the day is a
-	// manual label or cleared.
+	// manual label, a Delivery or Dining-out evening, or cleared.
 	Dinner *Dinner `json:"dinner"`
 	// ManualLabel is the free-text name of a one-off night. It is not a
 	// dinner: no recipe, no photo, and no dinners row. Null when the day
-	// has a dinner or is cleared.
+	// has a dinner, is a Delivery or Dining-out evening, or is cleared.
 	ManualLabel *string `json:"manual_label"`
-	// IsNew is true for a dinner planned from the Quest log. A manual or
-	// cleared night is never new.
+	// MealSource is cook for a dinner, a manual night or a cleared night,
+	// and delivery or dining_out for that non-cook evening. It is the
+	// plan day's own state, not the dinner's meal source: a dinner later
+	// marked Delivery still has cook here and delivery on Dinner.
+	MealSource string `json:"meal_source"`
+	// IsNew is true for a dinner planned from the Quest log. A manual
+	// night, a non-cook evening or a cleared night is never new.
 	IsNew bool `json:"is_new"`
 	// StartBy is when a crock-pot dinner must start to be ready at the
-	// household's dinner time; null for any other dinner, a manual night
-	// and a cleared night.
+	// household's dinner time; null for any other dinner, a manual night,
+	// a Delivery or Dining-out evening and a cleared night.
 	StartBy *time.Time `json:"start_by"`
 }
 
-// ErrNoNight is a day-of reminder for a plan day that has neither a dinner
-// nor a manual label. Nothing is sent.
+// ErrNoNight is a day-of reminder for a plan day that has nothing to cook:
+// cleared, or a Delivery or Dining-out evening. Nothing is sent. A manual
+// night is not this: it names the night.
 var ErrNoNight = errors.New("the night has no dinner")
 
 // Dinner is a planned dinner as a plan day shows it.
@@ -401,10 +409,18 @@ func readPlan(ctx context.Context, q *db.Queries, weekStart store.LocalDate) (Pl
 // planDay is one plan slot as a Day. raw is the dinner row when the day
 // has one, for a caller that builds a calendar event from it.
 func planDay(ctx context.Context, q *db.Queries, zone *time.Location, date store.LocalDate, dinnerTime string, r db.ListPlanSlotsRow) (Day, *db.Dinner, error) {
+	switch r.MealSource {
+	case dinners.MealSourceCook, dinners.MealSourceDelivery, dinners.MealSourceDiningOut:
+	default:
+		return Day{}, nil, fmt.Errorf("plan: %s has meal source %q", r.Date, r.MealSource)
+	}
 	if r.DinnerID.Valid && r.ManualLabel.Valid {
 		return Day{}, nil, fmt.Errorf("plan: %s has a dinner and a manual label", r.Date)
 	}
-	day := Day{Date: r.Date, IsNew: r.IsNew == 1}
+	if r.MealSource != dinners.MealSourceCook && (r.DinnerID.Valid || r.ManualLabel.Valid) {
+		return Day{}, nil, fmt.Errorf("plan: %s is a %s evening and also has a dinner or a manual label", r.Date, r.MealSource)
+	}
+	day := Day{Date: r.Date, IsNew: r.IsNew == 1, MealSource: r.MealSource}
 	if !r.DinnerID.Valid {
 		if r.IsNew != 0 {
 			return Day{}, nil, fmt.Errorf("plan: %s has no dinner and is marked new", r.Date)

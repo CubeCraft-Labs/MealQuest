@@ -24,7 +24,7 @@ func (q *Queries) ClearCalendarEvents(ctx context.Context, updatedAt string) err
 
 const clearPlanDay = `-- name: ClearPlanDay :execrows
 UPDATE plan_days
-SET dinner_id = NULL, manual_label = NULL, is_new = 0, calendar_event_id = NULL, updated_at = ?
+SET dinner_id = NULL, manual_label = NULL, meal_source = 'cook', is_new = 0, calendar_event_id = NULL, updated_at = ?
 WHERE plan_id = ? AND date = ?
 `
 
@@ -34,9 +34,10 @@ type ClearPlanDayParams struct {
 	Date      string
 }
 
-// Clears an existing day of plan_id: no dinner and no manual label, and
-// its calendar event id, since Calendar no longer shows the day as
-// planned. A date the plan does not have is left as it is (0 rows).
+// Clears an existing day of plan_id: no dinner, no manual label and no
+// Delivery or Dining-out evening, and its calendar event id, since
+// Calendar no longer shows the day as planned. A date the plan does not
+// have is left as it is (0 rows).
 func (q *Queries) ClearPlanDay(ctx context.Context, arg ClearPlanDayParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, clearPlanDay, arg.UpdatedAt, arg.PlanID, arg.Date)
 	if err != nil {
@@ -344,7 +345,7 @@ func (q *Queries) ListPlanDays(ctx context.Context, planID string) ([]ListPlanDa
 }
 
 const listPlanSlots = `-- name: ListPlanSlots :many
-SELECT date, is_new, calendar_event_id, dinner_id, manual_label
+SELECT date, is_new, calendar_event_id, dinner_id, manual_label, meal_source
 FROM plan_days
 WHERE plan_id = ?
 ORDER BY date
@@ -356,10 +357,13 @@ type ListPlanSlotsRow struct {
 	CalendarEventID sql.NullString
 	DinnerID        sql.NullString
 	ManualLabel     sql.NullString
+	MealSource      string
 }
 
-// Every day of plan_id, Monday first. A day is a dinner (dinner_id set),
-// a one-off manual label, or cleared (both null).
+// Every day of plan_id, Monday first. A day is a dinner (dinner_id set,
+// meal_source cook), a one-off manual label (meal_source cook), a Delivery
+// or Dining-out evening (meal_source delivery or dining_out, no dinner and
+// no label), or cleared (meal_source cook and both null).
 func (q *Queries) ListPlanSlots(ctx context.Context, planID string) ([]ListPlanSlotsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listPlanSlots, planID)
 	if err != nil {
@@ -375,6 +379,7 @@ func (q *Queries) ListPlanSlots(ctx context.Context, planID string) ([]ListPlanS
 			&i.CalendarEventID,
 			&i.DinnerID,
 			&i.ManualLabel,
+			&i.MealSource,
 		); err != nil {
 			return nil, err
 		}
@@ -507,12 +512,12 @@ func (q *Queries) MarkWeekPlanSynced(ctx context.Context, arg MarkWeekPlanSynced
 }
 
 const putPlanDay = `-- name: PutPlanDay :exec
-INSERT INTO plan_days (id, plan_id, date, dinner_id, manual_label, is_new, created_at, updated_at)
-VALUES (?, ?, ?, ?, NULL, ?, ?, ?)
+INSERT INTO plan_days (id, plan_id, date, dinner_id, manual_label, meal_source, is_new, created_at, updated_at)
+VALUES (?, ?, ?, ?, NULL, 'cook', ?, ?, ?)
 ON CONFLICT (plan_id, date) DO UPDATE
-SET dinner_id = excluded.dinner_id, manual_label = NULL, is_new = excluded.is_new,
+SET dinner_id = excluded.dinner_id, manual_label = NULL, meal_source = 'cook', is_new = excluded.is_new,
 	calendar_event_id = CASE
-		WHEN plan_days.dinner_id IS excluded.dinner_id AND plan_days.manual_label IS NULL THEN plan_days.calendar_event_id
+		WHEN plan_days.dinner_id IS excluded.dinner_id AND plan_days.manual_label IS NULL AND plan_days.meal_source = 'cook' THEN plan_days.calendar_event_id
 	END,
 	updated_at = excluded.updated_at
 `
@@ -527,10 +532,11 @@ type PutPlanDayParams struct {
 	UpdatedAt string
 }
 
-// Plans dinner_id on date of plan_id, clearing any manual label. An
-// existing day keeps its calendar event id while its dinner stays the
-// same and it was not a manual label; a new dinner clears it, since
-// Calendar no longer shows the day as planned.
+// Plans dinner_id on date of plan_id, clearing any manual label and any
+// Delivery or Dining-out evening (meal_source cook). An existing day keeps
+// its calendar event id while its dinner stays the same, it was not a
+// manual label, and it was not a non-cook evening; a new dinner clears it,
+// since Calendar no longer shows the day as planned.
 func (q *Queries) PutPlanDay(ctx context.Context, arg PutPlanDayParams) error {
 	_, err := q.db.ExecContext(ctx, putPlanDay,
 		arg.ID,
@@ -571,7 +577,7 @@ func (q *Queries) RedraftWeekPlan(ctx context.Context, arg RedraftWeekPlanParams
 
 const setManualPlanDay = `-- name: SetManualPlanDay :execrows
 UPDATE plan_days
-SET dinner_id = NULL, manual_label = ?, is_new = 0, calendar_event_id = NULL, updated_at = ?
+SET dinner_id = NULL, manual_label = ?, meal_source = 'cook', is_new = 0, calendar_event_id = NULL, updated_at = ?
 WHERE plan_id = ? AND date = ?
 `
 
@@ -583,8 +589,8 @@ type SetManualPlanDayParams struct {
 }
 
 // Names an existing day of plan_id with a one-off label and no dinner,
-// clearing its calendar event id. A date the plan does not have is left
-// as it is (0 rows).
+// clearing a Delivery or Dining-out evening and its calendar event id. A
+// date the plan does not have is left as it is (0 rows).
 func (q *Queries) SetManualPlanDay(ctx context.Context, arg SetManualPlanDayParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, setManualPlanDay,
 		arg.ManualLabel,
@@ -626,9 +632,39 @@ func (q *Queries) SetPlanDayCalendarEvent(ctx context.Context, arg SetPlanDayCal
 	return result.RowsAffected()
 }
 
+const setPlanDayEvening = `-- name: SetPlanDayEvening :execrows
+UPDATE plan_days
+SET dinner_id = NULL, manual_label = NULL, meal_source = ?, is_new = 0, calendar_event_id = NULL, updated_at = ?
+WHERE plan_id = ? AND date = ?
+`
+
+type SetPlanDayEveningParams struct {
+	MealSource string
+	UpdatedAt  string
+	PlanID     string
+	Date       string
+}
+
+// Marks an existing day of plan_id as a Delivery or Dining-out evening
+// (meal_source delivery or dining_out): no dinner, no manual label, and
+// its calendar event id cleared, since Calendar no longer shows a dinner
+// that night. A date the plan does not have is left as it is (0 rows).
+func (q *Queries) SetPlanDayEvening(ctx context.Context, arg SetPlanDayEveningParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setPlanDayEvening,
+		arg.MealSource,
+		arg.UpdatedAt,
+		arg.PlanID,
+		arg.Date,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const swapPlanDay = `-- name: SwapPlanDay :execrows
 UPDATE plan_days
-SET dinner_id = ?, manual_label = NULL, is_new = ?, calendar_event_id = NULL, updated_at = ?
+SET dinner_id = ?, manual_label = NULL, meal_source = 'cook', is_new = ?, calendar_event_id = NULL, updated_at = ?
 WHERE plan_id = ? AND date = ?
 `
 
@@ -641,8 +677,9 @@ type SwapPlanDayParams struct {
 }
 
 // Plans dinner_id on an existing day of plan_id, clearing its manual
-// label and its calendar event id since Calendar no longer shows the day
-// as planned; a date the plan does not have is left as it is (0 rows).
+// label, its Delivery or Dining-out evening, and its calendar event id
+// since Calendar no longer shows the day as planned; a date the plan does
+// not have is left as it is (0 rows).
 func (q *Queries) SwapPlanDay(ctx context.Context, arg SwapPlanDayParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, swapPlanDay,
 		arg.DinnerID,

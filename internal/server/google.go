@@ -179,7 +179,7 @@ func writeGoogleFailure(w http.ResponseWriter, r *http.Request, logger *slog.Log
 		writeError(w, r, logger, http.StatusConflict, "google_reconnect_required",
 			"Google access was revoked or expired; connect Google Calendar again")
 	case errors.As(err, &calendar) && calendar.Retryable():
-		writeAPIError(w, r, logger, http.StatusServiceUnavailable, apiError{Code: "google_unavailable",
+		writeAPIError(w, r, logger, http.StatusServiceUnavailable, APIError{Code: "google_unavailable",
 			Message: "Google Calendar is busy right now; try again in a few minutes", Retryable: true})
 	default:
 		writeError(w, r, logger, http.StatusBadGateway, "google_failed", failed)

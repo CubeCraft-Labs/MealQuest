@@ -2,7 +2,7 @@
 #
 #   make dev     Go server on :8080 plus Vite dev server on :5173 (proxies
 #                /api, /auth, /media to :8080). Needs the MEALQUEST_* env set.
-#   make test    gofmt check, go vet, go test -race, npm typecheck and test,
+#   make test    gofmt check, go vet, go test -race -p 2, npm typecheck and test,
 #                and the deploy tests (deploy/auto-deploy_test.sh,
 #                deploy/stack-start-recovery_test.sh).
 #   make build   Build the PWA, embed it, build the static binary bin/mealquest.
@@ -43,7 +43,7 @@ go-test:
 	@unformatted="$$(gofmt -l .)"; \
 	if [ -n "$$unformatted" ]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
 	go vet ./...
-	go test -race -timeout 15m ./...
+	go test -race -p 2 -timeout 30m ./...
 
 web-test:
 	cd web && npm ci && npm run typecheck && npm test

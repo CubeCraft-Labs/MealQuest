@@ -9,10 +9,10 @@ import (
 	"code.cubecraftlabs.com/Maniacs_Mansion/Meal-Quest/internal/push"
 )
 
-// maxPushBody bounds a POST or DELETE /push/subscriptions body: an endpoint
+// MaxPushBody bounds a POST or DELETE /push/subscriptions body: an endpoint
 // of push.MaxEndpointBytes, the keys and a user agent of
 // push.MaxUserAgentBytes, with room for JSON escaping.
-const maxPushBody = 8 << 10
+const MaxPushBody = 8 << 10
 
 type vapidPublicKeyResponse struct {
 	PublicKey string `json:"public_key"`
@@ -50,7 +50,7 @@ func getVAPIDPublicKey(logger *slog.Logger, svc *push.Service) http.HandlerFunc 
 // stored updates it.
 func postPushSubscription(logger *slog.Logger, svc *push.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		body, err := decodePatch[pushSubscriptionBody](http.MaxBytesReader(w, r.Body, maxPushBody))
+		body, err := decodePatch[pushSubscriptionBody](http.MaxBytesReader(w, r.Body, MaxPushBody))
 		if err != nil {
 			writeError(w, r, logger, http.StatusBadRequest, "invalid_request", err.Error())
 			return
@@ -73,7 +73,7 @@ func postPushSubscription(logger *slog.Logger, svc *push.Service) http.HandlerFu
 // and answers 204, whether or not it was stored.
 func deletePushSubscription(logger *slog.Logger, svc *push.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		body, err := decodePatch[pushUnsubscribeBody](http.MaxBytesReader(w, r.Body, maxPushBody))
+		body, err := decodePatch[pushUnsubscribeBody](http.MaxBytesReader(w, r.Body, MaxPushBody))
 		if err != nil {
 			writeError(w, r, logger, http.StatusBadRequest, "invalid_request", err.Error())
 			return

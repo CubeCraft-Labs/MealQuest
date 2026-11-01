@@ -1,5 +1,5 @@
 import { QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { AppRoutes } from '../App.tsx'
 import { ApiProvider, createApiClient, createQueryClient, createVerifiedSession } from '../api/index.ts'
@@ -142,7 +142,7 @@ function dinner(id: string, name: string, difficulty: string | null, minutes: nu
   }
 }
 
-type Responder = () => Response
+type Responder = () => Response | Promise<Response>
 
 // stubServer answers "METHOD path". A week's Supply run that was not stubbed
 // is absent (404), as a week with no list is.
@@ -297,4 +297,99 @@ describe('Home after a board evening edit', () => {
       expect(homeReads(fetchMock)).toBe(reads + 1)
     }
   })
+
+  // The Home read after a successful swap is held open. From the return to
+  // Home until that read resolves, the dinner this edit replaced and its
+  // Recipe button stay off the page, and Home shows its loading skeleton.
+  it('never shows the previous dinner or its Recipe button while the fresh Home read is pending', async () => {
+    let plan = planBody()
+    let home = homeOf(TONIGHT, null)
+    let releaseHeldHome: (() => void) | undefined
+    let holdHomeRead = false
+    const fetchMock = stubServer({
+      [`GET ${HOME_PATH}`]: () => {
+        if (!holdHomeRead) return jsonResponse(200, home)
+        const response = jsonResponse(200, home)
+        return new Promise<Response>((resolve) => {
+          releaseHeldHome = () => resolve(response)
+        })
+      },
+      [`GET ${PLAN}`]: () => jsonResponse(200, plan),
+      [`PUT ${WEDNESDAY}`]: () => {
+        plan = fishPlan()
+        home = homeOf(FISH, null)
+        return jsonResponse(200, plan)
+      },
+    })
+    const api = createApiClient(fakeLocation('/'), createNetworkStatus(window), createVerifiedSession(localStorage))
+    await api.loadMe()
+    render(
+      <ApiProvider client={api}>
+        <QueryClientProvider client={createQueryClient()}>
+          <InDataRouter path="/">
+            <AppRoutes />
+          </InDataRouter>
+        </QueryClientProvider>
+      </ApiProvider>,
+    )
+
+    const tonight = await screen.findByRole('region', { name: 'Tonight' })
+    expect(within(tonight).getByRole('heading', { name: 'Crock pot tikka masala' })).toBeInTheDocument()
+    expect(within(tonight).getByRole('button', { name: 'Recipe' })).toBeInTheDocument()
+    expect(homeReads(fetchMock)).toBe(1)
+
+    go('Plan')
+    expect(await screen.findByRole('heading', { name: 'Oct 5 – 11' })).toBeInTheDocument()
+    await screen.findByText('Crock pot tikka masala')
+    fireEvent.click(screen.getByText('WED · NEW').closest('li')!.querySelector('button')!)
+    const sheet = await screen.findByRole('dialog', { name: 'Swap Wednesday' })
+    fireEvent.click(await within(sheet).findByRole('radio', { name: 'Regulars · 2' }))
+    fireEvent.click(within(sheet).getByRole('button', { name: /Fish tacos/ }))
+    await waitFor(() => expect(puts(fetchMock).at(-1)).toBe(`${WEDNESDAY} {"dinner_id":"r1"}`))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Evening for Wednesday' })).toBeEnabled())
+    expect(screen.getByText('Fish tacos')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Crock pot tikka masala' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Recipe' })).not.toBeInTheDocument()
+
+    const seen: string[] = []
+    const note = () => {
+      if (screen.queryByRole('heading', { name: 'Crock pot tikka masala' })) seen.push('Crock pot tikka masala')
+      if (screen.queryByRole('button', { name: 'Recipe' })) seen.push('Recipe')
+    }
+    const observer = new MutationObserver(note)
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true })
+    const reads = homeReads(fetchMock)
+    holdHomeRead = true
+    try {
+      go('Home')
+      note()
+      expectNoStaleTonight()
+      expect(homeReads(fetchMock)).toBe(reads + 1)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      })
+      note()
+      expect(seen).toEqual([])
+      expectNoStaleTonight()
+      expect(homeReads(fetchMock)).toBe(reads + 1)
+    } finally {
+      observer.disconnect()
+    }
+
+    releaseHeldHome!()
+    const card = await screen.findByRole('region', { name: 'Tonight' })
+    expect(within(card).getByRole('heading', { name: 'Fish tacos' })).toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: 'Recipe' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Crock pot tikka masala' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('skeleton-tonight')).not.toBeInTheDocument()
+    expect(homeReads(fetchMock)).toBe(reads + 1)
+  })
 })
+
+function expectNoStaleTonight() {
+  expect(screen.queryByRole('heading', { name: 'Crock pot tikka masala' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Recipe' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('region', { name: 'Tonight' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('heading', { name: 'Fish tacos' })).not.toBeInTheDocument()
+  expect(screen.getByTestId('skeleton-tonight')).toBeInTheDocument()
+}

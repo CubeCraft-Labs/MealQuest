@@ -573,8 +573,16 @@ export function useSwapDay(weekStart: string): SwapDay {
         // are shopped, so the list is read again.
         void queryClient.invalidateQueries({ queryKey: supplyRunKey(weekStart) })
         // Tonight on Home is today's evening (Delivery, Dining out, another
-        // dinner, or a cleared night), so Home is read again too.
-        void queryClient.invalidateQueries({ queryKey: HOME_KEY })
+        // dinner, or a cleared night). Remove the cached Home query rather
+        // than invalidating it. Invalidation would refetch, but the previous
+        // Tonight would stay in the cache, and Home renders that data while
+        // the new read is pending. With the query gone, the next Home paint
+        // has no Tonight until GET /api/v1/home completes, so the dinner this
+        // edit replaced cannot appear. The 30-second staleTime and useHome's
+        // midnight invalidate are unchanged: a return that did not edit a day
+        // still shows the cached Tonight, and a Home left open still refreshes
+        // at local midnight without clearing the card.
+        queryClient.removeQueries({ queryKey: HOME_KEY })
       },
       // The day goes back only while it is still, field for field, the day
       // this swap wrote, and no plan read from the server has landed since

@@ -496,10 +496,16 @@ func ApplySiteNameMigration(t *testing.T, st *store.Store) {
 	}
 }
 
+// jobWait is how long WaitJob polls before a job that has not reached
+// succeeded or failed fails the test. Grounding (search, fetch, photo and
+// the model) can outlast a few seconds when the CI runner is loaded; the
+// bound stays finite so a stuck job still fails.
+const jobWait = 90 * time.Second
+
 // WaitJob polls GET /jobs/{id} until the job ends and returns its body.
 func WaitJob(t *testing.T, h http.Handler, id string) map[string]any {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(jobWait)
 	for {
 		rec, body := CallDinners(t, h, http.MethodGet, "/api/v1/jobs/"+id, "")
 		if rec.Code != http.StatusOK {

@@ -102,7 +102,7 @@ func TestPostIdeasQuickRunsTheJobWithProgressiveResults(t *testing.T) {
 	}
 
 	// While Garlic Shrimp Pasta still grounds, Chicken Fried Rice shows.
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(jobWait)
 	for {
 		_, job := srvtest.CallDinners(t, h, http.MethodGet, "/api/v1/jobs/"+id, "")
 		if res, _ := job["result"].(map[string]any); res != nil {

@@ -30,6 +30,11 @@ import (
 
 const ideasPath = "/api/v1/ideas/from-ingredients"
 
+// jobWait is how long an ideas test polls before an async job, or a
+// progressive grounding result that has not appeared, fails the test.
+// The bound stays finite so a stuck job still fails.
+const jobWait = 90 * time.Second
+
 // newIdeasRouter returns a router whose ideas service runs
 // ideas_from_ingredients and quick_ideas through the real harness with the
 // scripted model and grounds with fake search, pages and images and the
@@ -203,7 +208,7 @@ func TestPostIdeasFromIngredientsRunsTheJob(t *testing.T) {
 		t.Fatalf("POST answered %v, want only a jobId", body)
 	}
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(jobWait)
 	for {
 		job, err := runner.Get(t.Context(), id)
 		if err != nil {

@@ -62,6 +62,8 @@ const HOME = {
     minutes_total: 30,
     meal_source: 'cook',
   },
+  manualTonight: null,
+  evening: null,
   sideQuestCount: 0,
   shoppingList: { weekStart: WEEK, label: 'Week 41 · Oct 5 – 11', ready: true, sentToChatAt: null },
   recentUpdates: { unread: false },

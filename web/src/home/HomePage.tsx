@@ -1,7 +1,7 @@
 import { Bell, ChevronRight, Compass, Search, ShoppingCart, Zap, type LucideIcon } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
-import { opensRecipe } from '../dinners/api.ts'
+import { MEAL_SOURCE_LABEL, opensRecipe } from '../dinners/api.ts'
 import { useOpenRecipe, type RecipeDinner } from '../dinners/useOpenRecipe.tsx'
 import { RECIPE_NAME_PARAM, RECIPE_PARAM } from '../push/notification.ts'
 import { duration } from '../plan/PlanPage.tsx'
@@ -57,8 +57,10 @@ function TonightCard({ tonight, cached, onRecipe }: { tonight: Tonight; cached: 
   )
 }
 
-// TonightSlot is the Tonight card for home, or NoPlan when today has no plan.
-function ManualTonightCard({ label }: { label: string }) {
+// NameOnlyTonight is a Tonight card that is only a name: a one-off manual
+// night, or a Delivery or Dining-out evening. No photo, so no dish-photo
+// placeholder, and no recipe.
+function NameOnlyTonight({ label }: { label: string }) {
   return (
     <section aria-label="Tonight" className={styles.card}>
       <div className={styles.manualFoot}>
@@ -68,9 +70,13 @@ function ManualTonightCard({ label }: { label: string }) {
   )
 }
 
+// TonightSlot is today's planned state. At most one of a dinner, a manual
+// night and a Delivery or Dining-out evening is set; none of them is an
+// empty night.
 function TonightSlot({ home, onRecipe }: { home: Home; onRecipe: (dinner: Tonight) => void }) {
-  const { tonight, manualTonight, cached } = home
-  if (manualTonight !== null) return <ManualTonightCard label={manualTonight} />
+  const { tonight, manualTonight, evening, cached } = home
+  if (evening !== null) return <NameOnlyTonight label={MEAL_SOURCE_LABEL[evening]} />
+  if (manualTonight !== null) return <NameOnlyTonight label={manualTonight} />
   return tonight === null ? <NoPlan /> : <TonightCard tonight={tonight} cached={cached} onRecipe={() => onRecipe(tonight)} />
 }
 

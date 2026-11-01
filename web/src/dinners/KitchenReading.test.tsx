@@ -64,6 +64,7 @@ function planBody(weekStart: string, ...bowlsOn: number[]) {
           : { id: `p${i}`, name: `Dinner ${i}`, status: 'regular', photo: null, minutes: 30, method: 'stovetop', meal_source: 'cook' },
       is_new: bowlsOn.includes(i),
       start_by: null,
+      meal_source: 'cook' as const,
     })),
   }
 }

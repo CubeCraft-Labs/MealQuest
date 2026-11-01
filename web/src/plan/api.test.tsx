@@ -59,6 +59,7 @@ function planBody(changes: Record<number, { id: string; name: string; is_new?: b
           photo: null, minutes: null, method: null as string | null, origin: 'regular', meal_source: 'cook' },
         is_new: change?.is_new ?? false,
         start_by: change?.start_by ?? null,
+        meal_source: 'cook' as string,
       }
     }),
   }
@@ -179,6 +180,66 @@ describe('usePlan', () => {
 
     expect(plan.error?.message).toContain(said)
   })
+
+  it("reads a day's meal source, Delivery and Dining out included", () => {
+    const body = planBody()
+    body.days[5] = {
+      date: '2026-10-10',
+      dinner: null,
+      manual_label: null,
+      meal_source: 'delivery',
+      is_new: false,
+      start_by: null,
+    } as unknown as (typeof body.days)[number]
+    body.days[6] = {
+      date: '2026-10-11',
+      dinner: null,
+      manual_label: null,
+      meal_source: 'dining_out',
+      is_new: false,
+      start_by: null,
+    } as unknown as (typeof body.days)[number]
+    const plan = parsePlan(`GET ${PLAN}`, WEEK, body, false)
+
+    expect(plan.days.map((day) => day.meal_source)).toEqual(['cook', 'cook', 'cook', 'cook', 'cook', 'delivery', 'dining_out'])
+    expect(plan.days[5]).toEqual({
+      date: '2026-10-10',
+      dinner: null,
+      manual_label: null,
+      meal_source: 'delivery',
+      is_new: false,
+      start_by: null,
+    })
+    expect(plan.days[0]!.meal_source).toBe('cook')
+  })
+
+  it.each([
+    ['no meal source', (body: ReturnType<typeof planBody>) => Reflect.deleteProperty(body.days[0]!, 'meal_source'), 'meal_source undefined'],
+    ['a meal source it does not know', (body: ReturnType<typeof planBody>) => (body.days[0]!.meal_source = 'takeout'), 'meal_source "takeout"'],
+    [
+      'a Delivery evening that also has a dinner',
+      (body: ReturnType<typeof planBody>) => (body.days[0]!.meal_source = 'delivery'),
+      'a night with a dinner is not a delivery evening',
+    ],
+    [
+      'a Dining-out evening that also has a manual label',
+      (body: ReturnType<typeof planBody>) => {
+        body.days[1] = {
+          date: '2026-10-06',
+          dinner: null,
+          manual_label: 'mummy dogs',
+          meal_source: 'dining_out',
+          is_new: false,
+          start_by: null,
+        } as unknown as (typeof body.days)[number]
+      },
+      'a dining_out evening also has a manual label',
+    ],
+  ])('refuses a plan day with %s', (_, change, said) => {
+    const body = planBody()
+    change(body)
+    expect(() => parsePlan(`GET ${PLAN}`, WEEK, body, false)).toThrow(said)
+  })
 })
 
 describe('useSwapDay', () => {
@@ -243,7 +304,7 @@ describe('useSwapDay', () => {
 
     act(() => result.current.swap.mutate(ORZO))
     await waitFor(() =>
-      expect(plan().days[4]).toEqual({ date: '2026-10-09', dinner: ORZO.dinner, manual_label: null, is_new: true, start_by: null }),
+      expect(plan().days[4]).toEqual({ date: '2026-10-09', dinner: ORZO.dinner, manual_label: null, meal_source: 'cook', is_new: true, start_by: null }),
     )
     read = planBody({ 4: { id: 'q1', name: 'Lemon orzo', is_new: true, start_by: '2026-10-09T14:00:00-04:00' } })
     await act(() => result.current.plan.refetch())
@@ -254,6 +315,7 @@ describe('useSwapDay', () => {
       date: '2026-10-09',
       dinner: ORZO.dinner,
       manual_label: null,
+      meal_source: 'cook',
       is_new: true,
       start_by: '2026-10-09T14:00:00-04:00',
     })
@@ -271,7 +333,7 @@ describe('useSwapDay', () => {
 
     // The read finds Friday lemon orzo, field for field the day the swap
     // wrote: the server has it, whatever this swap's PUT is answered with.
-    const swapped = { date: '2026-10-09', dinner: ORZO.dinner, manual_label: null, is_new: true, start_by: null }
+    const swapped = { date: '2026-10-09', dinner: ORZO.dinner, manual_label: null, meal_source: 'cook', is_new: true, start_by: null }
     act(() => result.current.swap.mutate(ORZO))
     await waitFor(() => expect(plan().days[4]).toEqual(swapped))
     read = planBody({ 4: { id: 'q1', name: 'Lemon orzo', is_new: true } })
@@ -324,6 +386,35 @@ describe('useSwapDay', () => {
     const sent = vi.mocked(fetch).mock.calls.map(([input, init]) => `${init?.method ?? 'GET'} ${String(input)}`)
     expect(sent.filter((call) => call === `PUT ${FRIDAY}`)).toHaveLength(1)
     expect(sent.filter((call) => call === `GET ${PLAN}`)).toHaveLength(2)
+  })
+
+  it('sets a day to Delivery at once, sends meal_source, and puts the day back when that is refused', async () => {
+    const monday = deferred()
+    stubServer({
+      [`GET ${PLAN}`]: () => jsonResponse(200, planBody()),
+      [`PUT ${MONDAY}`]: () => monday.reply,
+    })
+    const { result, plan, queryClient } = await renderSwaps()
+    const before = plan().days[0]
+
+    act(() => result.current.swap.mutate({ date: '2026-10-05', meal_source: 'delivery' }))
+    await waitFor(() =>
+      expect(plan().days[0]).toEqual({
+        date: '2026-10-05',
+        dinner: null,
+        manual_label: null,
+        meal_source: 'delivery',
+        is_new: false,
+        start_by: null,
+      }),
+    )
+    const sent = vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === 'PUT').map(([input, init]) => `${String(input)} ${String(init?.body)}`)
+    expect(sent).toEqual([`${MONDAY} {"meal_source":"delivery"}`])
+
+    await act(async () => monday.send(errorResponse(500, 'internal')))
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0))
+    expect(plan().days[0]).toEqual(before)
+    expect(result.current.swap.failed?.swap).toEqual({ date: '2026-10-05', meal_source: 'delivery' })
   })
 
   it('refuses to dismiss a pending swap', async () => {

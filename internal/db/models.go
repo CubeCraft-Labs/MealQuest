@@ -155,6 +155,7 @@ type PlanDay struct {
 	Date            string
 	DinnerID        sql.NullString
 	ManualLabel     sql.NullString
+	MealSource      string
 	IsNew           int64
 	CalendarEventID sql.NullString
 	CreatedAt       string

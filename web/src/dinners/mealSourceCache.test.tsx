@@ -46,6 +46,7 @@ const PLAN = {
     },
     is_new: false,
     start_by: null,
+    meal_source: 'cook',
   })),
 }
 
@@ -61,6 +62,8 @@ const HOME = {
     minutes_total: 30,
     meal_source: 'cook',
   },
+  manualTonight: null,
+  evening: null,
   sideQuestCount: 0,
   shoppingList: { weekStart: WEEK, label: 'Week 41 · Oct 5 – 11', ready: true, sentToChatAt: null },
   recentUpdates: { unread: false },
@@ -221,6 +224,7 @@ function planFor(week: string, dates: string[], monday: { id: string; name: stri
           : { id: `x${week}-${i}`, name: `Other ${i}`, status: 'regular', photo: null, minutes: 30, method: 'stovetop', meal_source: 'cook' },
       is_new: false,
       start_by: null,
+      meal_source: 'cook',
     })),
   }
 }

@@ -124,12 +124,38 @@ describe('HomePage', () => {
   })
 
   it('shows a one-off night as its name, with no photo and no recipe', async () => {
-    renderHome({ ...HOME, tonight: null, manualTonight: 'mummy dogs' })
+    renderHome({ ...HOME, tonight: null, manualTonight: 'mummy dogs', evening: null })
     const tonight = await screen.findByRole('region', { name: 'Tonight' })
     expect(within(tonight).getByRole('heading', { name: 'mummy dogs' })).toBeInTheDocument()
     expect(within(tonight).queryByRole('button', { name: 'Recipe' })).not.toBeInTheDocument()
     expect(within(tonight).queryByRole('img')).not.toBeInTheDocument()
     expect(within(tonight).queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  // A Delivery or Dining-out evening is planned. It is the name alone:
+  // no recipe, and no photo or dish-photo placeholder.
+  it.each([
+    ['delivery', 'Delivery'],
+    ['dining_out', 'Dining out'],
+  ] as const)('shows a %s evening as %s, with no recipe and no photo', async (evening, label) => {
+    renderHome({ ...HOME, tonight: null, evening })
+
+    const tonight = await screen.findByRole('region', { name: 'Tonight' })
+    expect(within(tonight).getByRole('heading', { name: label })).toBeInTheDocument()
+    expect(within(tonight).queryByRole('button', { name: 'Recipe' })).not.toBeInTheDocument()
+    expect(within(tonight).queryByRole('img')).not.toBeInTheDocument()
+    expect(within(tonight).queryByRole('link')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'No quest planned tonight' })).not.toBeInTheDocument()
+  })
+
+  it('reports an unknown evening rather than showing an empty night', async () => {
+    renderHome({ ...HOME, tonight: null, evening: 'takeout' })
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'evening "takeout" is not one of delivery, dining_out',
+    )
+    expect(screen.queryByRole('heading', { name: 'No quest planned tonight' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Tonight' })).not.toBeInTheDocument()
   })
 
   it('labels a Side quest tonight "Side quest"', async () => {

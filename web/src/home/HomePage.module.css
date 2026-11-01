@@ -72,7 +72,8 @@
   padding: 2px 18px 16px;
 }
 
-/* A one-off night: the name alone, with no photo and no recipe. */
+/* A one-off night, or a Delivery or Dining-out evening: the name alone,
+   with no photo and no recipe. */
 .manualFoot {
   padding: 18px 18px 16px;
 }

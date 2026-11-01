@@ -77,6 +77,8 @@ export const HOME = {
     minutes_total: 40,
     meal_source: 'cook',
   },
+  manualTonight: null,
+  evening: null,
   sideQuestCount: 10,
   shoppingList: { weekStart: '2026-10-05', label: 'Week 41 · Oct 5 – 11', ready: true, sentToChatAt: null },
   recentUpdates: { unread: true },

@@ -16,6 +16,11 @@ export const UPDATES_KEY = ['updates'] as const
 export const ORIGINS = ['regular', 'side_quest'] as const
 export type Origin = (typeof ORIGINS)[number]
 
+// EVENING_SOURCES is a Delivery or Dining-out evening. Cook is a dinner, a
+// manual night or a cleared night, not one of these.
+const EVENING_SOURCES = ['delivery', 'dining_out'] as const
+export type Evening = (typeof EVENING_SOURCES)[number]
+
 // Tonight is the dinner planned for today: status is its status now —
 // archived once it was removed from Regulars after the plan was made, when
 // it has no detail to open — photo_id is its stored photo's id, from photo,
@@ -40,17 +45,22 @@ export type ShoppingListStatus = { weekStart: string; dates: string; ready: bool
 
 // Home is GET /api/v1/home: dateLabel is today, household-local, "Friday,
 // Oct 2"; timezone is the household's IANA zone, whose midnight starts the
-// next day; tonight is null when today has no plan; sideQuestCount is how
+// next day; tonight is null when today has no dinner; sideQuestCount is how
 // many Side quests wait in the deck; unread says the Recent updates hold
 // something not yet seen. cached says the service worker answered from its
-// cache: the server may have changed it since.
+// cache: the server may have changed it since. At most one of tonight, a
+// manual night and a Delivery or Dining-out evening is set.
 export type Home = {
   dateLabel: string
   timezone: string
   tonight: Tonight | null
   // manualTonight is today's free-text night. Null unless today is a one-off
-  // label, and never set together with tonight.
+  // label, and never set together with tonight or evening.
   manualTonight: string | null
+  // evening is delivery or dining_out when today is that evening, and null
+  // for a dinner, a manual night, a cleared night, or a week with no plan.
+  // An unknown value is refused; it is never read as an empty night.
+  evening: Evening | null
   sideQuestCount: number
   shoppingList: ShoppingListStatus
   unread: boolean
@@ -70,6 +80,14 @@ function parseManualTonight(where: string, body: unknown): string | null {
   if (body === undefined || body === null) return null
   if (typeof body !== 'string' || body.trim() === '') throw new Error(`${where}: manualTonight is not a name`)
   return body
+}
+
+// parseEvening reads the evening the Home API returns. Null is a dinner, a
+// manual night, a cleared night, or no plan. Anything else, including a
+// missing field and cook, is refused — never treated as an empty night.
+function parseEvening(where: string, body: unknown): Evening | null {
+  if (body === null) return null
+  return oneOf(where, 'evening', EVENING_SOURCES, body)
 }
 
 function parseTonight(where: string, body: unknown): Tonight | null {
@@ -124,14 +142,22 @@ export function parseHome(where: string, body: unknown, cached: boolean): Home {
   if (!isRecord(updates) || typeof updates.unread !== 'boolean') throw new Error(`${where}: recentUpdates has no unread flag`)
   const tonight = parseTonight(where, body.tonight)
   const manualTonight = parseManualTonight(where, body.manualTonight)
+  const evening = parseEvening(where, body.evening)
   if (tonight !== null && manualTonight !== null) {
     throw new Error(`${where}: tonight is both a dinner and a manual night`)
+  }
+  if (tonight !== null && evening !== null) {
+    throw new Error(`${where}: tonight is both a dinner and a ${evening} evening`)
+  }
+  if (manualTonight !== null && evening !== null) {
+    throw new Error(`${where}: tonight is both a manual night and a ${evening} evening`)
   }
   return {
     dateLabel: body.dateLabel,
     timezone: body.timezone,
     tonight,
     manualTonight,
+    evening,
     sideQuestCount: body.sideQuestCount as number,
     shoppingList: parseShoppingList(where, body.shoppingList),
     unread: updates.unread,

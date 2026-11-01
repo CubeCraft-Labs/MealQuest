@@ -39,15 +39,59 @@ describe('parseUpdates', () => {
   })
 })
 
+const homeWhere = 'GET /api/v1/home'
+
 describe('parseHome', () => {
   it("keeps the household's zone, and refuses one that is not an IANA zone", () => {
-    expect(parseHome('GET /api/v1/home', HOME, false).timezone).toBe('America/New_York')
-    expect(() => parseHome('GET /api/v1/home', { ...HOME, timezone: 'Mars/Olympus' }, false)).toThrow(
+    expect(parseHome(homeWhere, HOME, false).timezone).toBe('America/New_York')
+    expect(() => parseHome(homeWhere, { ...HOME, timezone: 'Mars/Olympus' }, false)).toThrow(
       'GET /api/v1/home: timezone "Mars/Olympus" is not an IANA zone',
     )
-    expect(() => parseHome('GET /api/v1/home', { ...HOME, timezone: undefined }, false)).toThrow(
+    expect(() => parseHome(homeWhere, { ...HOME, timezone: undefined }, false)).toThrow(
       'GET /api/v1/home: timezone undefined is not an IANA zone',
     )
+  })
+
+  // A Delivery or Dining-out evening is its own Tonight state. Dropping it
+  // would show that night as empty.
+  it.each(['delivery', 'dining_out'] as const)('keeps a %s evening, with no dinner and no manual night', (evening) => {
+    const home = parseHome(homeWhere, { ...HOME, tonight: null, evening }, false)
+
+    expect(home.evening).toBe(evening)
+    expect(home.tonight).toBeNull()
+    expect(home.manualTonight).toBeNull()
+  })
+
+  it('keeps a null evening when tonight is a dinner or a cleared night', () => {
+    expect(parseHome(homeWhere, { ...HOME, evening: null }, false).evening).toBeNull()
+    const cleared = parseHome(homeWhere, { ...HOME, tonight: null, evening: null }, false)
+    expect(cleared.evening).toBeNull()
+    expect(cleared.tonight).toBeNull()
+    expect(cleared.manualTonight).toBeNull()
+  })
+
+  it.each([
+    ['an unknown evening', 'takeout'],
+    ['cook, which is not an evening', 'cook'],
+    ['a missing evening', undefined],
+  ])('refuses %s', (_, evening) => {
+    const body = { ...HOME, tonight: null, evening }
+    if (evening === undefined) delete body.evening
+    expect(() => parseHome(homeWhere, body, false)).toThrow(
+      `${homeWhere}: evening ${JSON.stringify(evening)} is not one of delivery, dining_out`,
+    )
+  })
+
+  it('refuses a dinner and an evening together', () => {
+    expect(() => parseHome(homeWhere, { ...HOME, evening: 'delivery' }, false)).toThrow(
+      `${homeWhere}: tonight is both a dinner and a delivery evening`,
+    )
+  })
+
+  it('refuses a manual night and an evening together', () => {
+    expect(() =>
+      parseHome(homeWhere, { ...HOME, tonight: null, manualTonight: 'mummy dogs', evening: 'dining_out' }, false),
+    ).toThrow(`${homeWhere}: tonight is both a manual night and a dining_out evening`)
   })
 })
 

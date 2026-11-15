@@ -1,91 +1,38 @@
 ---
-description: CTXD and Maestro project identity, development, evidence, review and release policy
+description: CTXD and Maestro roles, source authorities, and development boundaries
 alwaysApply: true
 ---
 
 # CTXD and Maestro project contract
 
-Determine the role first. A delegated developer uses the controller-supplied
-verified identity, context and assignment; live discovery/provisioning, tracking
-and context writes below belong to the direct session/controller. Do not enable
-disabled integrations or broaden a worker's scope to satisfy these rules.
+Use the project binding in .cursor/project-governance.json and the project rule
+in .cursor/rules/10-project-settings.mdc. Confirm the repository, CTXD project,
+Maestro workspace and project against live records. A binding is routing context.
+Preserve applicable project instructions and approved product and design decisions.
+Follow the established project-specific workflow and canonical CTXD runbook.
 
-Preserve the established project-specific review and merge policy in
-10-project-settings.mdc and applicable repository instructions. References below
-to automated roles or promotion triggers apply only where configured/authorized.
-Human-only review/merge projects remain human-only; do not provision new roles.
+CTXD holds durable project context and decisions. Maestro holds scope, tasks,
+ownership, dependencies and acceptance evidence. Use a verified Maestro task
+for implementation and preserve other workers' branches and worktrees. Keep
+project procedures exclusively in CTXD RUNBOOKS.MD. Repository rules can point
+to procedures and define role boundaries.
 
-Read .cursor/project-governance.json before planning or changing this project.
-That file contains non-secret routing hints, not independently verified authority.
-Verify its repository, Maestro workspace/project/context_key and CTXD slug against
-Git and the live services at startup. Never use a similar name in another tenant.
-If the binding is incomplete, resolve it before implementation; exploratory reads
-and preparation may continue. Discover current tool schemas before invoking them.
+A delegated worker uses its supplied assignment, identity and context.
+It stays in the assigned worktree and returns evidence to its controller.
+Tracker mutations, new credentials and broader tool access are outside that
+worker role. A direct Cursor session follows the project's own access
+and approval policy.
 
-Read applicable repository instructions and current CTXD context, decisions and
-project-specific runbook. Preserve approved designs, acceptance requirements,
-engineering/security rules, role assignments and release topology. Current
-explicit user decisions supersede dated model pins; do not change role models
-or launch a cycle merely because these rules are installed.
+Require the project's applicable tests, CI, browser or physical validation
+and checkable evidence for task closure. Source integration and production
+acceptance are separate milestones. An agent's summary is not acceptance evidence.
 
-## Scope and tracking
+Keep independent review separate from implementation. Automated reviewers use
+the project's isolated read-only wrapper and exact PR commits. Only the trusted
+outer wrapper publishes its verdict. Use the existing separate approver where
+the project has one. Human-only review or merge policies still apply. Only
+Joshua merges main. Promotion triggers and release procedures live in the
+project's canonical CTXD runbook and release policy. Respect protected branches.
 
-- CTXD holds durable architecture/context/decisions. Maestro holds all feature/task
-  tracking, ownership, dependencies, progress and evidence; do not duplicate its
-  backlog in the repository or CTXD. Discover existing/archived records before
-  creating project/features/tasks. Missing provisioning tools require a concrete
-  owner handoff or documented authorized API, never fabricated IDs or writes.
-- Before implementation, reconcile existing tasks, workers, dirty worktrees and
-  PRs. Use verifiable done-conditions and actual dependency restrictions. Prefer
-  claim_next_task when available; never steal another worker's task or assume an
-  unassigned in_progress task is abandoned. Use isolated task branches/worktrees
-  from the verified integration base. Preserve partial and unrelated work.
-- A delegated developer follows only its assigned task and cannot mutate
-  CTXD/Maestro, add MCP access, launch other roles or merge. Return tracker/context/
-  procedure deltas to the controller. A direct Cursor session may coordinate its
-  authorized task via verified integrations, while review/approval stay separate.
-
-## Evidence, review and release
-
-- Implement only authorized scope. Run required meaningful tests on isolated data.
-  UI work requires actual browser/UX verification against approved designs and
-  required viewports/flows. Report limitations, failures and skipped checks.
-- Publish only through authorized developer identity; otherwise READY_FOR_PUBLISH.
-  Require fresh isolated read-only independent review of immutable base/head SHAs,
-  required CI, valid UI evidence and findings disposition. Supply sanitized evidence,
-  not developer history, publication secrets or write-capable reviewer tools.
-  The trusted outer wrapper alone publishes the unchanged exact-head verdict/status.
-- Fix BLOCKER/HIGH findings. Resolve others by fix, evidenced disproof or scoped
-  attributed follow-up under the project's policy. Changed code/head invalidates
-  review. Refresh other stale evidence. Five unsuccessful review rounds on a PR
-  require Joshua's decision; independent work may continue.
-- Automated integration uses only the installed separate approver and allowed dev
-  merge broker/topology. Without that path, hand off a review-ready PR. Never merge
-  main, bypass gates, forge checks, weaken protections or directly push protected
-  branches. Only Joshua (GitHub maniacsmansion) merges main.
-- Prepare/update the single nonempty promotion after eligible reviewed dev merges,
-  a verified task-complete feature or an authorized release milestone, according to
-  the project's release policy. Include all current scope, exact head, fresh required
-  review/CI and owner assignment. Do not invent a release branch/topology or falsely
-  close production-dependent tasks to make release preparation possible.
-- Close tasks only with the actual done-condition met and checkable closing_evidence:
-  exact commits/PRs, test outcomes, CI/artifact references, and production behavior
-  where required. A dev merge is not production acceptance. Stalled needs a real
-  stall_reason. Read fresh versions before replacing task/feature fields.
-
-## Durable context and continuation
-
-- ALL runbook/procedure changes go only to CTXD <ctxd_project>/RUNBOOKS.MD from
-  the verified binding. No operational/setup/deploy/migration/backup/rollback/
-  recovery/troubleshooting prose in repository README/docs/rules, other dossier
-  files or another project's runbook. Preserve legacy prose; do not expand it.
-  Executable tooling and non-runbook engineering references may remain in code.
-- CTXD updates require a fresh read, merged content, exact base_version and readback.
-  Re-read/merge conflicts rather than force stale replacements. Never sync/copy a
-  compiled runbook into the repo or overwrite AGENTS.md with it. Keep secrets and
-  raw authentication traces out of code, CTXD, Maestro, PRs and retained evidence.
-- Continue authorized eligible work after results; process any completed child while
-  other children continue if the installed runtime supports it. Rules cannot supply
-  a scheduler. Do not invent runtime tools, unattended wakeups or completed checks.
-  Honor stop; preserve partial work and give a precise state plus task/branch/SHA/
-  PR/evidence/blockers. Never use a progress summary as proof of completion.
+These rules apply to authorized work within the current session. Use installed
+orchestration tools where applicable and preserve work and evidence on handoff.

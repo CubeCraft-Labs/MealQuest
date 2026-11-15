@@ -27,14 +27,11 @@ against the canonical GitHub repository before publishing or scheduling work.
 - Independent reviewer: Codex CLI / gpt-6-sol / high.
 - Separate approval: OpenCode / openrouter/deepseek/deepseek-v4.1-flash / medium.
 
-These existing launchers run on overseer@10.60.1.85, not implicitly on this Mac:
+Installed orchestration roles (server environment):
 orchestrator mq-orchestrate; developer mq-agent developer;
 reviewer mq-review; permitted dev merge broker mq-approve-merge.
-Before an authorized launch, read the current approved server profile at
-/home/overseer/.local/share/mealquest-orchestrator/templates/mealquest.profile.json and relevant workflow/release references under
-/home/overseer/.local/share/mealquest-orchestrator/templates/references/.
-Keep later explicit user-approved settings; never treat this dated snapshot as
-permission to revert a newer configuration. Installing rules does not launch work.
+Canonical launch and release procedures are in CTXD RUNBOOKS.MD.
+Use the current owner-approved role settings.
 
 The reviewer remains a fresh isolated read-only process with immutable source,
 sanitized evidence and no developer conversation, publishing credential, shell,

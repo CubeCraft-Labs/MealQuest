@@ -17,5 +17,5 @@
   "developer_launcher": "mq-agent developer",
   "review_launcher": "mq-review",
   "merge_broker": "mq-approve-merge",
-  "release_policy_reference": "overseer@10.60.1.85:/home/overseer/.local/share/mealquest-orchestrator/templates/references/release.md"
+  "release_policy_reference": "CTXD mealquest/RUNBOOKS.MD"
 }

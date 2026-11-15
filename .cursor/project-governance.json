@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "project_name": "MealQuest",
+  "canonical_repository": "https://github.com/CubeCraft-Labs/MealQuest.git",
+  "ctxd_project": "mealquest",
+  "runbook_file": "RUNBOOKS.MD",
+  "maestro": {
+    "connection": "maestro-maniacs-mansion-mcp",
+    "workspace_id": "fe2d4776-2689-4c5b-ba26-d388c691fad8",
+    "project_id": "ed541617-e587-4e64-bc49-84c976728b4a",
+    "context_key": "mealquest"
+  },
+  "integration_branch": "dev",
+  "release_branch": "main",
+  "main_merge_owner": "maniacsmansion",
+  "orchestrator_launcher": "mq-orchestrate",
+  "developer_launcher": "mq-agent developer",
+  "review_launcher": "mq-review",
+  "merge_broker": "mq-approve-merge",
+  "release_policy_reference": "overseer@10.60.1.85:/home/overseer/.local/share/mealquest-orchestrator/templates/references/release.md"
+}

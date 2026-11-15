@@ -15,7 +15,10 @@ Maestro: MealQuest (ed541617-e587-4e64-bc49-84c976728b4a), workspace fe2d4776-26
 Use local Cursor connection maestro-maniacs-mansion-mcp; the server launcher's
 connection name maestro-maniacs-mansion-workspace is a separate environment binding.
 Integration: dev; production: main.
-Only Joshua (GitHub maniacsmansion) merges main.
+Only Joshua (GitHub maniacsmansion) merges main. AGENTS.md line naming
+overseer for release merges refers to Joshua's historical Gitea account.
+For the canonical GitHub repository use maniacsmansion and the existing
+GitHub App gates. Verify all other project security and release controls.
 
 Older checkouts may point to a legacy origin. Verify the current checkout
 against the canonical GitHub repository before publishing or scheduling work.

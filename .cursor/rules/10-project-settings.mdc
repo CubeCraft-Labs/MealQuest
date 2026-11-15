@@ -1,0 +1,54 @@
+---
+description: MealQuest identity and preserved project-specific role settings
+alwaysApply: true
+---
+
+# MealQuest settings
+
+The shared policy adds workflow guidance; it does not replace this project's
+applicable agent instructions, approved product/design constraints, tests,
+reviewer isolation or branch/release topology. Preserve stronger project gates.
+
+Canonical repository: https://github.com/CubeCraft-Labs/MealQuest.git
+CTXD: mealquest; all procedure updates only in its RUNBOOKS.MD.
+Maestro: MealQuest (ed541617-e587-4e64-bc49-84c976728b4a), workspace fe2d4776-2689-4c5b-ba26-d388c691fad8.
+Use local Cursor connection maestro-maniacs-mansion-mcp; the server launcher's
+connection name maestro-maniacs-mansion-workspace is a separate environment binding.
+Integration: dev; production: main.
+Only Joshua (GitHub maniacsmansion) merges main. AGENTS.md line naming
+overseer for release merges refers to Joshua's historical Gitea account.
+For the canonical GitHub repository use maniacsmansion and the existing
+GitHub App gates. Verify all other project security and release controls.
+
+Older checkouts may point to a legacy origin. Verify the current checkout
+against the canonical GitHub repository before publishing or scheduling work.
+
+## Existing roles — verified 2026-11-01
+
+- Orchestration: OpenCode / openrouter/deepseek/deepseek-v4.1-flash / high.
+- Developer: Cursor CLI / grok-4.7[context=500k,reasoning_effort=high,fast=false] / high.
+- Independent reviewer: Codex CLI / gpt-6-sol / high.
+- Separate approval: OpenCode / openrouter/deepseek/deepseek-v4.1-flash / medium.
+
+Installed orchestration roles (server environment):
+orchestrator mq-orchestrate; developer mq-agent developer;
+reviewer mq-review; permitted dev merge broker mq-approve-merge.
+Canonical launch and release procedures are in CTXD RUNBOOKS.MD.
+Use the current owner-approved role settings.
+
+The reviewer remains a fresh isolated read-only process with immutable source,
+sanitized evidence and no developer conversation, publishing credential, shell,
+browser, write tool or MCP access. The trusted outer wrapper alone publishes its
+unchanged exact-head verdict/status. Never replace it with self-review or a native
+Cursor reviewer. Only the separate broker-backed approver may automate allowed
+integration merges. If the trusted server paths are unavailable, hand off the
+exact branch/head/evidence rather than replacing the reviewer or merge mechanism.
+
+## Project guardrails
+
+Read current CTXD mealquest context/decisions and repository AGENTS.md. Preserve approved dependencies, fail-fast behavior, household model, terminology, tests and authoritative design references. Preserve its task-to-feature-to-dev integration topology and current release policy.
+
+Read the current project CTXD context/decisions and repository instructions for
+the full engineering requirements. Keep runbook prose in CTXD only; do not copy
+the dossier or operating procedures into this rule. Existing legacy forge/account
+references do not override the owner-approved GitHub routing and owner identity.

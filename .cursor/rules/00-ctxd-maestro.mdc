@@ -1,0 +1,38 @@
+---
+description: CTXD and Maestro roles, source authorities, and development boundaries
+alwaysApply: true
+---
+
+# CTXD and Maestro project contract
+
+Use the project binding in .cursor/project-governance.json and the project rule
+in .cursor/rules/10-project-settings.mdc. Confirm the repository, CTXD project,
+Maestro workspace and project against live records. A binding is routing context.
+Preserve applicable project instructions and approved product and design decisions.
+Follow the established project-specific workflow and canonical CTXD runbook.
+
+CTXD holds durable project context and decisions. Maestro holds scope, tasks,
+ownership, dependencies and acceptance evidence. Use a verified Maestro task
+for implementation and preserve other workers' branches and worktrees. Keep
+project procedures exclusively in CTXD RUNBOOKS.MD. Repository rules can point
+to procedures and define role boundaries.
+
+A delegated worker uses its supplied assignment, identity and context.
+It stays in the assigned worktree and returns evidence to its controller.
+Tracker mutations, new credentials and broader tool access are outside that
+worker role. A direct Cursor session follows the project's own access
+and approval policy.
+
+Require the project's applicable tests, CI, browser or physical validation
+and checkable evidence for task closure. Source integration and production
+acceptance are separate milestones. An agent's summary is not acceptance evidence.
+
+Keep independent review separate from implementation. Automated reviewers use
+the project's isolated read-only wrapper and exact PR commits. Only the trusted
+outer wrapper publishes its verdict. Use the existing separate approver where
+the project has one. Human-only review or merge policies still apply. Only
+Joshua merges main. Promotion triggers and release procedures live in the
+project's canonical CTXD runbook and release policy. Respect protected branches.
+
+These rules apply to authorized work within the current session. Use installed
+orchestration tools where applicable and preserve work and evidence on handoff.
